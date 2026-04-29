@@ -3,6 +3,7 @@ import {
   FileText,
   FolderOpen,
   GitCompareArrows,
+  GitFork,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -29,24 +30,30 @@ import type { Project } from "@/lib/projects"
 
 interface Props {
   project: Project
-  sessionId: string | null
   resumeSessionId: string | null
+  jsonlSessionId: string | null
   title: string
   onPinChange?: () => void
   onRename?: () => void
+  onFork?: () => void
   onDelete?: () => void
+  onShowDiff?: () => void
+  diffCount?: number
 }
 
 export function ChatHeader({
   project,
-  sessionId,
   resumeSessionId,
+  jsonlSessionId,
   title,
   onPinChange,
   onRename,
-  onDelete
+  onFork,
+  onDelete,
+  onShowDiff,
+  diffCount = 0
 }: Props) {
-  const pinTarget = resumeSessionId ?? sessionId
+  const pinTarget = resumeSessionId ?? jsonlSessionId
   const pinned = pinTarget ? isPinned(project.id, pinTarget) : false
 
   const copy = async (text: string, label: string) => {
@@ -118,6 +125,13 @@ export function ChatHeader({
               <Pencil />
               <span>重命名会话</span>
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => onFork?.()}
+              disabled={!onFork}
+            >
+              <GitFork />
+              <span>分叉会话</span>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={handleOpen}>
               <FolderOpen />
@@ -161,14 +175,22 @@ export function ChatHeader({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 text-muted-foreground hover:text-foreground"
-                aria-label="文件 diff（即将推出）"
-                disabled
+                className="size-7 text-muted-foreground hover:text-foreground relative"
+                aria-label="文件 diff"
+                onClick={() => onShowDiff?.()}
+                disabled={!onShowDiff || diffCount === 0}
               >
                 <GitCompareArrows className="size-4" />
+                {diffCount > 0 && (
+                  <span className="absolute -top-1 -right-1 size-4 rounded-full bg-primary text-primary-foreground text-[9px] font-medium inline-flex items-center justify-center">
+                    {diffCount > 9 ? "9+" : diffCount}
+                  </span>
+                )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">文件 diff（即将推出）</TooltipContent>
+            <TooltipContent side="bottom">
+              {diffCount > 0 ? `文件 diff（${diffCount}）` : "暂无文件变更"}
+            </TooltipContent>
           </Tooltip>
         </div>
       </div>

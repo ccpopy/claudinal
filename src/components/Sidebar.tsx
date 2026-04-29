@@ -4,6 +4,7 @@ import {
   Copy,
   FolderOpen,
   FolderPlus,
+  Loader2,
   MessageSquarePlus,
   Pin,
   PinOff,
@@ -21,14 +22,24 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { listProjectSessions, openPath, type SessionMeta } from "@/lib/ipc"
+import {
+  listenSessionsChanged,
+  listProjectSessions,
+  openPath,
+  unwatchSessions,
+  watchSessions,
+  type SessionMeta
+} from "@/lib/ipc"
 import type { Project } from "@/lib/projects"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
+import { getSessionTitle } from "@/lib/sessionTitles"
 
 interface Props {
   projects: Project[]
   selectedProjectId: string | null
   selectedSessionId: string | null
+  streamingProjectId: string | null
+  streamingSessionId: string | null
   onSelectProject: (p: Project) => void
   onSelectSession: (p: Project, s: SessionMeta) => void
   onAdd: () => void
@@ -59,6 +70,8 @@ export function Sidebar({
   projects,
   selectedProjectId,
   selectedSessionId,
+  streamingProjectId,
+  streamingSessionId,
   onSelectProject,
   onSelectSession,
   onAdd,
@@ -150,6 +163,25 @@ export function Sidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects])
 
+  // notify watcher：监听 ~/.claude/projects/<cwd>/ 变化触发增量刷新
+  useEffect(() => {
+    const cleanups: Array<() => void> = []
+    const cwds = projects.map((p) => p.cwd)
+    for (const p of projects) {
+      watchSessions(p.cwd).catch(() => undefined)
+      listenSessionsChanged(p.cwd, () => {
+        loadSessions(p)
+      })
+        .then((un) => cleanups.push(un))
+        .catch(() => undefined)
+    }
+    return () => {
+      cleanups.forEach((u) => u())
+      for (const cwd of cwds) unwatchSessions(cwd).catch(() => undefined)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects])
+
   // 主区触发的刷新（如发送消息后），把所有项目 sessions 重新拉一遍
   useEffect(() => {
     if (refreshKey === 0) return
@@ -223,6 +255,10 @@ export function Sidebar({
                     active={
                       selectedProjectId === project.id &&
                       selectedSessionId === session.id
+                    }
+                    streaming={
+                      streamingProjectId === project.id &&
+                      streamingSessionId === session.id
                     }
                     indented={false}
                     onSelect={() => onSelectSession(project, session)}
@@ -383,6 +419,10 @@ export function Sidebar({
                                   selectedProjectId === p.id &&
                                   selectedSessionId === s.id
                                 }
+                                streaming={
+                                  streamingProjectId === p.id &&
+                                  streamingSessionId === s.id
+                                }
                                 indented
                                 onSelect={() => onSelectSession(p, s)}
                                 onCopyId={() => copyText(s.id, "会话 ID")}
@@ -423,6 +463,7 @@ function SessionRow({
   session,
   pinned,
   active,
+  streaming,
   indented,
   onSelect,
   onCopyId,
@@ -432,13 +473,17 @@ function SessionRow({
   session: SessionMeta
   pinned: boolean
   active: boolean
+  streaming: boolean
   indented: boolean
   onSelect: () => void
   onCopyId: () => void
   onTogglePin: () => void
 }) {
   const title =
-    session.ai_title || session.first_user_text || session.id.slice(0, 8)
+    getSessionTitle(session.id) ||
+    session.ai_title ||
+    session.first_user_text ||
+    session.id.slice(0, 8)
   return (
     <div
       onClick={onSelect}
@@ -479,22 +524,32 @@ function SessionRow({
           <span className="shrink-0">{fmtRelative(session.modified_ts)}</span>
         </div>
       </div>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="size-5 inline-flex items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground opacity-0 group-hover/session:opacity-100 shrink-0"
-            aria-label="复制会话 ID"
-            onClick={(e) => {
-              e.stopPropagation()
-              onCopyId()
-            }}
+      <div className="relative size-5 shrink-0">
+        {streaming && (
+          <span
+            aria-label="运行中"
+            className="absolute inset-0 inline-flex items-center justify-center text-sidebar-muted group-hover/session:opacity-0 transition-opacity"
           >
-            <Copy className="size-3" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="right">复制会话 ID</TooltipContent>
-      </Tooltip>
+            <Loader2 className="size-3 animate-spin" />
+          </span>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="absolute inset-0 inline-flex items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground opacity-0 group-hover/session:opacity-100"
+              aria-label="复制会话 ID"
+              onClick={(e) => {
+                e.stopPropagation()
+                onCopyId()
+              }}
+            >
+              <Copy className="size-3" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">复制会话 ID</TooltipContent>
+        </Tooltip>
+      </div>
     </div>
   )
 }

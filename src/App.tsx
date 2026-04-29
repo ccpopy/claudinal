@@ -9,9 +9,13 @@ import {
   listenSessionEvents,
   listenSessionErrors,
   readSessionTranscript,
+  readSessionSidecar,
+  writeSessionSidecar,
+  deleteSessionJsonl,
   type SessionMeta
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxy } from "@/lib/proxy"
+import { loadSettings, recordResultUsage } from "@/lib/settings"
 import { reduce, init as reducerInit } from "@/lib/reducer"
 import {
   listProjects,
@@ -25,10 +29,14 @@ import { MessageStream } from "@/components/MessageStream"
 import { Sidebar } from "@/components/Sidebar"
 import { Welcome } from "@/components/Welcome"
 import { AddProjectDialog } from "@/components/AddProjectDialog"
+import { RenameSessionDialog } from "@/components/RenameSessionDialog"
+import { DiffOverview } from "@/components/DiffOverview"
+import { BuddyLoader } from "@/components/BuddyLoader"
 import { Settings } from "@/components/Settings"
 import { ChatHeader } from "@/components/ChatHeader"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
+import { getSessionTitle, setSessionTitle } from "@/lib/sessionTitles"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -38,8 +46,13 @@ const SUGGESTIONS = [
 
 function chatTitle(
   state: ReturnType<typeof reducerInit>,
-  project: Project
+  project: Project,
+  jsonlSessionId: string | null
 ): string {
+  if (jsonlSessionId) {
+    const custom = getSessionTitle(jsonlSessionId)
+    if (custom) return custom
+  }
   for (const e of state.entries) {
     if (e.kind === "message" && e.role === "user") {
       for (const b of e.blocks) {
@@ -48,6 +61,55 @@ function chatTitle(
     }
   }
   return `${project.name} · 新对话`
+}
+
+function findInitSessionId(
+  state: ReturnType<typeof reducerInit>
+): string | null {
+  for (const e of state.entries) {
+    if (e.kind === "system_init" && e.sessionId) return e.sessionId
+  }
+  return null
+}
+
+const FALLBACK_SLASH = [
+  "clear",
+  "compact",
+  "context",
+  "init",
+  "review",
+  "security-review",
+  "usage"
+]
+
+function findSlashCommands(
+  state: ReturnType<typeof reducerInit>
+): string[] {
+  for (let i = state.entries.length - 1; i >= 0; i--) {
+    const e = state.entries[i]
+    if (e.kind === "system_init" && e.slashCommands?.length) {
+      return e.slashCommands
+    }
+  }
+  return FALLBACK_SLASH
+}
+
+function countDiffFiles(
+  entries: ReturnType<typeof reducerInit>["entries"]
+): number {
+  const set = new Set<string>()
+  for (const e of entries) {
+    if (e.kind !== "message" || e.role !== "user") continue
+    for (const b of e.blocks) {
+      if (b.type !== "tool_result") continue
+      const tur = b.toolUseResult as
+        | { type?: string; filePath?: string }
+        | undefined
+      if (!tur || !tur.filePath) continue
+      if (tur.type === "create" || tur.type === "update") set.add(tur.filePath)
+    }
+  }
+  return set.size
 }
 
 export default function App() {
@@ -62,7 +124,15 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [draft, setDraft] = useState("")
   const [pinTick, setPinTick] = useState(0)
+  const [titleTick, setTitleTick] = useState(0)
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
+  const [showRename, setShowRename] = useState(false)
+  const [showDiff, setShowDiff] = useState(false)
+  const [loadingSession, setLoadingSession] = useState(false)
+  const [forkPendingId, setForkPendingId] = useState<string | null>(null)
+  const [pending, setPending] = useState<
+    Array<{ localId: string; text: string; images: string[] }>
+  >([])
   const unlistenRef = useRef<UnlistenFn[]>([])
 
   useEffect(() => {
@@ -87,6 +157,28 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
+  useEffect(() => {
+    if (streaming) return
+    if (pending.length === 0) return
+    if (!sessionId) return
+    const head = pending[0]
+    setPending((cur) => cur.slice(1))
+    dispatch({ kind: "unqueue_local", localId: head.localId })
+    const blocks: Array<Record<string, unknown>> = []
+    if (head.text) blocks.push({ type: "text", text: head.text })
+    for (const data of head.images) {
+      blocks.push({
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data }
+      })
+    }
+    setStreaming(true)
+    sendUserMessage(sessionId, blocks).catch((e) => {
+      toast.error(`发送失败: ${String(e)}`)
+      setStreaming(false)
+    })
+  }, [streaming, pending, sessionId])
+
   const teardown = useCallback(async () => {
     if (sessionId) {
       try {
@@ -99,6 +191,13 @@ export default function App() {
     unlistenRef.current = []
     setSessionId(null)
     setStreaming(false)
+    setPending((cur) => {
+      if (cur.length > 0) {
+        for (const p of cur) dispatch({ kind: "drop_local", localId: p.localId })
+        toast(`已取消排队中的 ${cur.length} 条消息`)
+      }
+      return []
+    })
   }, [sessionId])
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
@@ -109,20 +208,48 @@ export default function App() {
     if (sessionId) return sessionId
     try {
       const proxyEnv = buildProxyEnv(loadProxy())
+      const userSettings = loadSettings()
+      const env: Record<string, string> = { ...proxyEnv }
+      if (userSettings.claudeCliPath) env.CLAUDE_CLI_PATH = userSettings.claudeCliPath
       const id = await spawnSession({
         cwd: project.cwd,
-        model: null,
-        effort: null,
-        permissionMode: "acceptEdits",
-        resumeSessionId: selectedSessionId,
-        env: Object.keys(proxyEnv).length > 0 ? proxyEnv : null
+        model: userSettings.defaultModel || null,
+        effort: userSettings.defaultEffort || null,
+        permissionMode: userSettings.defaultPermissionMode,
+        resumeSessionId: forkPendingId ? null : selectedSessionId,
+        forkSessionId: forkPendingId,
+        env: Object.keys(env).length > 0 ? env : null
       })
+      if (forkPendingId) setForkPendingId(null)
       const u1 = await listenSessionEvents(id, (ev) => {
         dispatch({ kind: "event", event: ev })
         const t = (ev as { type?: string }).type
+        if (t === "system") {
+          const apiKeySource = (ev as { apiKeySource?: string }).apiKeySource
+          if (apiKeySource) {
+            try {
+              localStorage.setItem("claudinal.api-key-source", apiKeySource)
+            } catch {
+              // ignore
+            }
+          }
+        }
         if (t === "result") {
           setStreaming(false)
           setSidebarRefreshKey((k) => k + 1)
+          recordResultUsage(
+            ev as {
+              total_cost_usd?: number
+              modelUsage?: Record<string, never>
+            }
+          )
+          const sid =
+            (ev as { session_id?: string }).session_id ?? null
+          if (project && sid) {
+            writeSessionSidecar(project.cwd, sid, { result: ev }).catch((e) =>
+              console.warn("sidecar write failed:", e)
+            )
+          }
         }
       })
       const u2 = await listenSessionErrors(id, (line) => {
@@ -136,10 +263,32 @@ export default function App() {
       toast.error(`启动会话失败: ${String(e)}`)
       return null
     }
-  }, [project, sessionId, selectedSessionId])
+  }, [project, sessionId, selectedSessionId, forkPendingId])
 
   const send = useCallback(
     async (text: string, images: string[]) => {
+      const uiBlocks: UIBlock[] = []
+      if (text) uiBlocks.push({ type: "text", text })
+      for (const data of images) {
+        uiBlocks.push({
+          type: "image",
+          imageMediaType: "image/png",
+          imageData: data
+        })
+      }
+      const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+
+      if (streaming) {
+        dispatch({
+          kind: "user_local",
+          blocks: uiBlocks,
+          queued: true,
+          localId
+        })
+        setPending((cur) => [...cur, { localId, text, images }])
+        return
+      }
+
       const id = await ensureSession()
       if (!id) return
       const blocks: Array<Record<string, unknown>> = []
@@ -150,16 +299,7 @@ export default function App() {
           source: { type: "base64", media_type: "image/png", data }
         })
       }
-      const uiBlocks: UIBlock[] = []
-      if (text) uiBlocks.push({ type: "text", text })
-      for (const data of images) {
-        uiBlocks.push({
-          type: "image",
-          imageMediaType: "image/png",
-          imageData: data
-        })
-      }
-      dispatch({ kind: "user_local", blocks: uiBlocks })
+      dispatch({ kind: "user_local", blocks: uiBlocks, localId })
       setStreaming(true)
       try {
         await sendUserMessage(id, blocks)
@@ -168,7 +308,7 @@ export default function App() {
         setStreaming(false)
       }
     },
-    [ensureSession]
+    [streaming, ensureSession]
   )
 
   const stop = useCallback(async () => {
@@ -188,15 +328,24 @@ export default function App() {
   const switchSession = useCallback(
     async (p: Project, s: SessionMeta) => {
       await teardown()
+      setLoadingSession(true)
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(s.id)
       setSidebarRefreshKey((k) => k + 1)
       try {
-        const events = await readSessionTranscript(p.cwd, s.id)
-        dispatch({ kind: "load_transcript", events: events as ClaudeEvent[] })
+        const events = (await readSessionTranscript(p.cwd, s.id)) as ClaudeEvent[]
+        // sidecar 里持久化的 result 事件追加到末尾，恢复 ✓ 完成 chip
+        const sidecar = (await readSessionSidecar(p.cwd, s.id)) as
+          | { result?: ClaudeEvent }
+          | null
+        const merged: ClaudeEvent[] =
+          sidecar?.result ? [...events, sidecar.result] : events
+        dispatch({ kind: "load_transcript", events: merged })
       } catch (e) {
         toast.error(`加载会话失败: ${String(e)}`)
+      } finally {
+        setLoadingSession(false)
       }
     },
     [teardown]
@@ -232,9 +381,50 @@ export default function App() {
     await teardown()
     dispatch({ kind: "reset" })
     setSelectedSessionId(null)
+    setForkPendingId(null)
   }, [teardown])
 
+  const forkCurrentSession = useCallback(async () => {
+    if (!project) return
+    const target = selectedSessionId ?? findInitSessionId(state)
+    if (!target) {
+      toast.error("当前还没有 session id，无法分叉")
+      return
+    }
+    await teardown()
+    dispatch({ kind: "reset" })
+    setSelectedSessionId(null)
+    setForkPendingId(target)
+    toast.success(`已基于 ${target.slice(0, 8)} 创建分叉，发送消息开始`)
+  }, [project, selectedSessionId, state, teardown])
+
+  const deleteCurrentSession = useCallback(async () => {
+    if (!project) return
+    const target = selectedSessionId ?? findInitSessionId(state)
+    if (!target) {
+      toast.error("当前还没有 session id，无法删除")
+      return
+    }
+    if (!window.confirm(`删除会话 ${target.slice(0, 8)}？jsonl 将被删除，无法恢复。`))
+      return
+    await teardown()
+    try {
+      await deleteSessionJsonl(project.cwd, target)
+      dispatch({ kind: "reset" })
+      setSelectedSessionId(null)
+      setSidebarRefreshKey((k) => k + 1)
+      toast.success("会话已删除")
+    } catch (e) {
+      toast.error(`删除失败: ${String(e)}`)
+    }
+  }, [project, selectedSessionId, state, teardown])
+
   const empty = state.entries.length === 0
+  const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
+  const streamingJsonlId = streaming ? jsonlSessionId : null
+  const diffCount = countDiffFiles(state.entries)
+  const slashCommands = findSlashCommands(state)
+  void titleTick
 
   return (
     <TooltipProvider>
@@ -243,6 +433,8 @@ export default function App() {
           projects={projects}
           selectedProjectId={project?.id ?? null}
           selectedSessionId={selectedSessionId}
+          streamingProjectId={streaming ? project?.id ?? null : null}
+          streamingSessionId={streamingJsonlId}
           onSelectProject={switchProject}
           onSelectSession={switchSession}
           onAdd={() => setShowAdd(true)}
@@ -255,16 +447,27 @@ export default function App() {
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {project && !empty && (
             <ChatHeader
-              key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}`}
+              key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}-${titleTick}`}
               project={project}
-              sessionId={sessionId}
               resumeSessionId={selectedSessionId}
-              title={chatTitle(state, project)}
+              jsonlSessionId={jsonlSessionId}
+              title={chatTitle(state, project, jsonlSessionId)}
               onPinChange={() => setPinTick((t) => t + 1)}
+              onRename={
+                jsonlSessionId ? () => setShowRename(true) : undefined
+              }
+              onFork={jsonlSessionId ? forkCurrentSession : undefined}
+              onDelete={deleteCurrentSession}
+              onShowDiff={() => setShowDiff(true)}
+              diffCount={diffCount}
             />
           )}
 
-          {empty ? (
+          {loadingSession ? (
+            <div className="flex-1 min-h-0 grid place-items-center">
+              <BuddyLoader />
+            </div>
+          ) : empty ? (
             <div className="flex-1 min-h-0 overflow-y-auto flex items-center justify-center px-6 py-10">
               <div className="w-full max-w-2xl flex flex-col items-center gap-6">
                 <Welcome
@@ -283,6 +486,8 @@ export default function App() {
                       centered
                       externalText={draft}
                       onExternalTextConsumed={() => setDraft("")}
+                      cwd={project.cwd}
+                      slashCommands={slashCommands}
                     />
                   </div>
                 )}
@@ -302,6 +507,8 @@ export default function App() {
                 disabled={!cliPath || !project}
                 externalText={draft}
                 onExternalTextConsumed={() => setDraft("")}
+                cwd={project?.cwd ?? null}
+                slashCommands={slashCommands}
               />
             </>
           )}
@@ -311,6 +518,24 @@ export default function App() {
           open={showAdd}
           onOpenChange={setShowAdd}
           onAdded={onProjectAdded}
+        />
+        {jsonlSessionId && (
+          <RenameSessionDialog
+            open={showRename}
+            onOpenChange={setShowRename}
+            initial={getSessionTitle(jsonlSessionId) ?? ""}
+            onSubmit={(t) => {
+              setSessionTitle(jsonlSessionId, t)
+              setTitleTick((n) => n + 1)
+              setSidebarRefreshKey((n) => n + 1)
+              toast.success(t.trim() ? "标题已保存" : "已恢复默认标题")
+            }}
+          />
+        )}
+        <DiffOverview
+          open={showDiff}
+          onOpenChange={setShowDiff}
+          entries={state.entries}
         />
         <Settings open={showSettings} onOpenChange={setShowSettings} />
         <Toaster />

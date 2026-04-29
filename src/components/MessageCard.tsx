@@ -2,12 +2,15 @@ import { useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
+  Clock,
   Cog,
   DollarSign,
   FileWarning,
   Gauge,
   Loader2,
-  Timer
+  ShieldAlert,
+  Timer,
+  Webhook
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
@@ -24,6 +27,7 @@ export function MessageCard({ entry }: Props) {
   if (entry.kind === "system_status") return null
   if (entry.kind === "result") return <ResultView e={entry} />
   if (entry.kind === "rate_limit") return null
+  if (entry.kind === "hook") return <HookEventView e={entry} />
   if (entry.kind === "stderr") {
     return <SimpleRow label="stderr" tone="error" content={entry.line} />
   }
@@ -43,10 +47,21 @@ function MessageView({ msg }: { msg: UIMessage }) {
     )
   }
   return (
-    <div className="flex flex-col gap-2 items-stretch">
+    <div
+      className={cn(
+        "flex flex-col gap-2 items-stretch",
+        msg.queued && "opacity-70"
+      )}
+    >
       {msg.blocks.map((b, i) => (
         <BlockView key={i} role={msg.role} block={b} />
       ))}
+      {msg.queued && msg.role === "user" && (
+        <div className="self-end inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+          <Clock className="size-3" />
+          <span>将在当前回合后发送</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -141,38 +156,98 @@ function SystemInitView({
   )
 }
 
+interface PermissionDenial {
+  tool_name?: string
+  tool_input?: Record<string, unknown>
+  tool_use_id?: string
+}
+
 function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
+  const denials = (e.permissionDenials as PermissionDenial[] | undefined) ?? []
   return (
-    <div
-      className={cn(
-        "flex flex-wrap items-center gap-3 text-xs pt-1",
-        e.isError ? "text-destructive" : "text-muted-foreground"
-      )}
-    >
-      {e.isError ? (
-        <AlertTriangle className="size-3.5" />
-      ) : (
-        <CheckCircle2 className="size-3.5" />
-      )}
-      <span>{e.isError ? "失败" : "完成"}</span>
-      {typeof e.totalCostUsd === "number" && (
-        <span className="inline-flex items-center gap-1">
-          <DollarSign className="size-3" />
-          {e.totalCostUsd.toFixed(4)}
-        </span>
-      )}
-      {typeof e.durationMs === "number" && (
-        <span className="inline-flex items-center gap-1">
-          <Timer className="size-3" />
-          {fmtMs(e.durationMs)}
-        </span>
-      )}
-      {typeof e.numTurns === "number" && (
-        <span className="inline-flex items-center gap-1">
-          <Gauge className="size-3" />
-          {e.numTurns} turn{e.numTurns === 1 ? "" : "s"}
-        </span>
-      )}
+    <div className="flex flex-col gap-1.5 pt-1">
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-3 text-xs",
+          e.isError ? "text-destructive" : "text-muted-foreground"
+        )}
+      >
+        {e.isError ? (
+          <AlertTriangle className="size-3.5" />
+        ) : (
+          <CheckCircle2 className="size-3.5" />
+        )}
+        <span>{e.isError ? "失败" : "完成"}</span>
+        {typeof e.totalCostUsd === "number" && (
+          <span className="inline-flex items-center gap-1">
+            <DollarSign className="size-3" />
+            {e.totalCostUsd.toFixed(4)}
+          </span>
+        )}
+        {typeof e.durationMs === "number" && (
+          <span className="inline-flex items-center gap-1">
+            <Timer className="size-3" />
+            {fmtMs(e.durationMs)}
+          </span>
+        )}
+        {typeof e.numTurns === "number" && (
+          <span className="inline-flex items-center gap-1">
+            <Gauge className="size-3" />
+            {e.numTurns} turn{e.numTurns === 1 ? "" : "s"}
+          </span>
+        )}
+      </div>
+      {denials.length > 0 && <PermissionDenialList denials={denials} />}
     </div>
+  )
+}
+
+function PermissionDenialList({ denials }: { denials: PermissionDenial[] }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <ExpandableRow
+      open={open}
+      onToggle={() => setOpen(!open)}
+      icon={ShieldAlert}
+      label={`权限被拒 · ${denials.length} 个工具`}
+      tone="error"
+    >
+      <div className="space-y-1.5">
+        {denials.map((d, i) => (
+          <DenialRow key={d.tool_use_id ?? i} d={d} />
+        ))}
+        <div className="text-[11px] text-muted-foreground">
+          运行 <code className="font-mono px-1 bg-muted rounded">/permissions</code> 把上述工具加白名单后重试。
+        </div>
+      </div>
+    </ExpandableRow>
+  )
+}
+
+function DenialRow({ d }: { d: PermissionDenial }) {
+  const name = d.tool_name ?? "?"
+  const input = d.tool_input ?? {}
+  const cmd = (input.command as string) ?? null
+  const fp = (input.file_path as string) ?? (input.path as string) ?? null
+  const summary = cmd ?? fp ?? JSON.stringify(input).slice(0, 120)
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs space-y-0.5">
+      <div className="font-mono text-destructive">{name}</div>
+      <div className="font-mono break-all text-foreground/80">{summary}</div>
+    </div>
+  )
+}
+
+function HookEventView({ e }: { e: Extract<UIEntry, { kind: "hook" }> }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <ExpandableRow
+      open={open}
+      onToggle={() => setOpen(!open)}
+      icon={Webhook}
+      label={`hook · ${e.hookEventName ?? "event"}${e.toolName ? ` · ${e.toolName}` : ""}`}
+    >
+      <CodeBlock>{JSON.stringify(e.raw, null, 2)}</CodeBlock>
+    </ExpandableRow>
   )
 }

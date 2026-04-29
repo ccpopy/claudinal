@@ -1,3 +1,4 @@
+import { memo, useDeferredValue, useEffect, useRef, useState } from "react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
@@ -149,12 +150,52 @@ const components: Components = {
   )
 }
 
+// 流式期间用 80ms 节流降低重 parse 频率；完成后立即升级到完整文本。
+function useThrottledText(text: string, partial: boolean): string {
+  const [throttled, setThrottled] = useState(text)
+  const lastSyncRef = useRef(0)
+  const pendingRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!partial) {
+      setThrottled(text)
+      return
+    }
+    const now = Date.now()
+    const elapsed = now - lastSyncRef.current
+    const flush = () => {
+      lastSyncRef.current = Date.now()
+      pendingRef.current = null
+      setThrottled(text)
+    }
+    if (elapsed >= 80) {
+      flush()
+    } else if (pendingRef.current === null) {
+      pendingRef.current = window.setTimeout(flush, 80 - elapsed)
+    }
+    return () => {
+      if (pendingRef.current !== null) {
+        window.clearTimeout(pendingRef.current)
+        pendingRef.current = null
+      }
+    }
+  }, [text, partial])
+  return partial ? throttled : text
+}
+
+const MarkdownInner = memo(function MarkdownInner({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
 export function AssistantMarkdown({ text, partial }: Props) {
+  const throttled = useThrottledText(text, !!partial)
+  const deferred = useDeferredValue(throttled)
   return (
     <div className="text-sm leading-relaxed text-foreground break-words">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {text}
-      </ReactMarkdown>
+      <MarkdownInner text={deferred} />
       {partial && <span className="caret">▍</span>}
     </div>
   )

@@ -2,15 +2,21 @@ import {
   useState,
   useRef,
   useEffect,
+  useCallback,
   type KeyboardEvent,
   type ChangeEvent,
   type ClipboardEvent,
   type DragEvent
 } from "react"
-import { Send, Square, X } from "lucide-react"
+import { ListPlus, Send, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { listFiles } from "@/lib/ipc"
+import {
+  SuggestionPanel,
+  type SuggestionItem
+} from "./SuggestionPanel"
 
 interface Props {
   onSend: (text: string, images: string[]) => void | Promise<void>
@@ -20,6 +26,37 @@ interface Props {
   centered?: boolean
   externalText?: string
   onExternalTextConsumed?: () => void
+  cwd?: string | null
+  slashCommands?: string[]
+}
+
+interface TriggerInfo {
+  kind: "@" | "/"
+  start: number // 触发字符位置
+  query: string
+}
+
+function parseTrigger(text: string, caret: number): TriggerInfo | null {
+  // 从光标向前找最近的 @ 或 /，遇到空白或越界则停。
+  let i = caret - 1
+  while (i >= 0) {
+    const c = text[i]
+    if (c === "@" || c === "/") {
+      // 触发符前必须是行首或空白（避免 a/b 触发）
+      const prev = i > 0 ? text[i - 1] : "\n"
+      if (prev === " " || prev === "\n" || prev === "\t" || i === 0) {
+        return {
+          kind: c as "@" | "/",
+          start: i,
+          query: text.slice(i + 1, caret)
+        }
+      }
+      return null
+    }
+    if (c === " " || c === "\n") return null
+    i--
+  }
+  return null
 }
 
 interface Thumb {
@@ -34,12 +71,91 @@ export function Composer({
   disabled,
   centered,
   externalText,
-  onExternalTextConsumed
+  onExternalTextConsumed,
+  cwd,
+  slashCommands
 }: Props) {
   const [text, setText] = useState("")
   const [images, setImages] = useState<Thumb[]>([])
   const [dragOver, setDragOver] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
+  const [trigger, setTrigger] = useState<TriggerInfo | null>(null)
+  const [items, setItems] = useState<SuggestionItem[]>([])
+  const [activeIdx, setActiveIdx] = useState(0)
+  const fileReqRef = useRef(0)
+
+  const refreshSuggestions = useCallback(
+    async (info: TriggerInfo) => {
+      if (info.kind === "/") {
+        const all = (slashCommands ?? []).filter((c) => c)
+        const filtered = info.query
+          ? all.filter((c) =>
+              c.toLowerCase().includes(info.query.toLowerCase())
+            )
+          : all
+        setItems(
+          filtered.slice(0, 60).map((c) => ({ key: c, primary: `/${c}` }))
+        )
+        setActiveIdx(0)
+        return
+      }
+      // @ 文件补全
+      if (!cwd) {
+        setItems([])
+        return
+      }
+      const seq = ++fileReqRef.current
+      try {
+        const matches = await listFiles(cwd, info.query)
+        if (seq !== fileReqRef.current) return
+        setItems(
+          matches.slice(0, 60).map((m) => ({
+            key: m.rel,
+            primary: m.rel,
+            secondary: m.is_dir ? "目录" : undefined
+          }))
+        )
+        setActiveIdx(0)
+      } catch {
+        if (seq === fileReqRef.current) setItems([])
+      }
+    },
+    [cwd, slashCommands]
+  )
+
+  const updateTrigger = useCallback(
+    (next: string, caret: number) => {
+      const t = parseTrigger(next, caret)
+      setTrigger(t)
+      if (t) refreshSuggestions(t)
+      else setItems([])
+    },
+    [refreshSuggestions]
+  )
+
+  const applySuggestion = useCallback(
+    (idx: number) => {
+      if (!trigger) return
+      const it = items[idx]
+      if (!it) return
+      const insert = trigger.kind === "/" ? it.primary : `@${it.primary}`
+      const before = text.slice(0, trigger.start)
+      const caret = ref.current?.selectionStart ?? trigger.start + 1 + trigger.query.length
+      const after = text.slice(caret)
+      const next = `${before}${insert} ${after}`
+      setText(next)
+      setTrigger(null)
+      setItems([])
+      requestAnimationFrame(() => {
+        const el = ref.current
+        if (!el) return
+        const pos = before.length + insert.length + 1
+        el.setSelectionRange(pos, pos)
+        el.focus()
+      })
+    },
+    [trigger, items, text]
+  )
 
   useEffect(() => {
     const el = ref.current
@@ -68,10 +184,32 @@ export function Composer({
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (trigger && items.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        setActiveIdx((i) => (i + 1) % items.length)
+        return
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault()
+        setActiveIdx((i) => (i - 1 + items.length) % items.length)
+        return
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault()
+        applySuggestion(activeIdx)
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        setTrigger(null)
+        setItems([])
+        return
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
-      if (streaming) onStop()
-      else send()
+      send()
     } else if (e.key === "Escape" && streaming) {
       e.preventDefault()
       onStop()
@@ -160,16 +298,43 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2">
+      <div className="flex items-end gap-2 relative">
+        <SuggestionPanel
+          open={!!trigger}
+          items={items}
+          activeIdx={activeIdx}
+          onPick={applySuggestion}
+          onHover={setActiveIdx}
+          emptyHint={
+            trigger?.kind === "/" ? "无匹配命令" : "无匹配文件"
+          }
+        />
         <Textarea
           ref={ref}
           value={text}
-          onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setText(e.target.value)}
+          onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
+            const v = e.target.value
+            setText(v)
+            const caret = e.target.selectionStart ?? v.length
+            updateTrigger(v, caret)
+          }}
+          onKeyUp={(e) => {
+            const el = e.currentTarget
+            updateTrigger(el.value, el.selectionStart ?? 0)
+          }}
+          onClick={(e) => {
+            const el = e.currentTarget
+            updateTrigger(el.value, el.selectionStart ?? 0)
+          }}
+          onBlur={() => {
+            // 延迟关闭：让点击 SuggestionPanel 项的 onClick 先触发
+            setTimeout(() => setTrigger(null), 100)
+          }}
           onKeyDown={onKey}
           onPaste={onPaste}
           placeholder={
             streaming
-              ? "运行中…按 Esc 或 Enter 中断"
+              ? "Enter 排队，发送将在当前回合后投递；Esc 中断"
               : centered
                 ? "问 Claude 任何事，输入 @ 引用文件…"
                 : "输入消息，Enter 发送，Shift+Enter 换行，可粘贴/拖拽图片"
@@ -181,24 +346,28 @@ export function Composer({
             !centered && "border bg-background shadow-xs"
           )}
         />
-        {streaming ? (
-          <Button
-            onClick={() => onStop()}
-            variant="destructive"
-            disabled={disabled}
-          >
-            <Square fill="currentColor" />
-            停止
-          </Button>
-        ) : (
+        <div className="flex items-center gap-1">
+          {streaming && (
+            <Button
+              onClick={() => onStop()}
+              variant="ghost"
+              size="icon"
+              disabled={disabled}
+              aria-label="中断当前回合"
+              title="中断当前回合 (Esc)"
+            >
+              <Square fill="currentColor" className="size-3" />
+            </Button>
+          )}
           <Button
             onClick={send}
             disabled={disabled || (!text.trim() && images.length === 0)}
+            variant={streaming ? "secondary" : "default"}
           >
-            <Send />
-            发送
+            {streaming ? <ListPlus /> : <Send />}
+            {streaming ? "排队" : "发送"}
           </Button>
-        )}
+        </div>
       </div>
       </div>
     </div>

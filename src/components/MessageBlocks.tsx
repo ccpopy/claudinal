@@ -17,6 +17,8 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import type { UIBlock } from "@/types/ui"
 import { AssistantMarkdown } from "./AssistantMarkdown"
+import { CopyButton } from "./CopyButton"
+import { ImageLightbox } from "./ImageLightbox"
 
 export function BlockView({
   role,
@@ -35,16 +37,11 @@ export function BlockView({
 
 function stripImageMetaLines(s: string | undefined): string {
   if (!s) return ""
-  // 1) CLI 把粘贴的图片转为 "[Image: source: <path>]" → 屏蔽
-  // 2) CLI 注入的 <system-reminder>...</system-reminder> → 屏蔽
-  let cleaned = s.replace(
-    /<system-reminder>[\s\S]*?<\/system-reminder>/gi,
-    ""
-  )
-  cleaned = cleaned
-    .split("\n")
-    .filter((l) => !/^\s*\[Image[^\]]*\]\s*$/i.test(l))
-    .join("\n")
+  // 1) CLI 注入的 <system-reminder>...</system-reminder> → 屏蔽
+  // 2) `[Image: source: <path>]` 含本地路径 → 屏蔽（reducer 已剥，兜底）
+  // 3) `[Image #N]` 保留：与下方缩略图右下角 #N 角标互相参照
+  let cleaned = s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+  cleaned = cleaned.replace(/\[Image\s*:\s*source\s*:\s*[^\]]+\]/gi, "")
   return cleaned.replace(/\n{3,}/g, "\n\n").trim()
 }
 
@@ -60,16 +57,34 @@ function TextBlock({
     const cleaned = stripImageMetaLines(block.text)
     if (!cleaned) return null
     return (
-      <div className="self-end max-w-[80%] bg-muted text-foreground rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed break-words">
-        {cleaned}
+      <div className="group/msg self-end max-w-[80%] min-w-0 flex flex-col items-end gap-0.5">
+        <div className="max-w-full min-w-0 bg-muted text-foreground rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
+          {cleaned}
+        </div>
+        <CopyButton
+          text={cleaned}
+          ariaLabel="复制消息"
+          label="消息已复制"
+          className="opacity-0 group-hover/msg:opacity-100 transition-opacity"
+        />
       </div>
     )
   }
   return (
-    <AssistantMarkdown
-      text={block.text ?? ""}
-      partial={!!block.partial}
-    />
+    <div className="self-start w-full flex flex-col gap-0.5">
+      <AssistantMarkdown
+        text={block.text ?? ""}
+        partial={!!block.partial}
+      />
+      {!block.partial && block.text && (
+        <CopyButton
+          text={block.text}
+          ariaLabel="复制消息"
+          label="消息已复制"
+          className="-ml-1.5 self-start"
+        />
+      )}
+    </div>
   )
 }
 
@@ -98,16 +113,31 @@ function ImageBlock({
   role: "user" | "assistant"
   block: UIBlock
 }) {
+  const [open, setOpen] = useState(false)
   if (!block.imageData || !block.imageMediaType) return null
+  const src = `data:${block.imageMediaType};base64,${block.imageData}`
+  const alt = block.imageAlt ?? ""
   return (
-    <img
-      src={`data:${block.imageMediaType};base64,${block.imageData}`}
-      alt=""
-      className={cn(
-        "rounded-lg border max-h-60",
-        role === "user" && "self-end"
-      )}
-    />
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className={cn(
+          "group/img relative rounded-lg border overflow-hidden cursor-zoom-in transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-ring",
+          role === "user" && "self-end"
+        )}
+        aria-label={alt ? `放大图片 ${alt}` : "放大图片"}
+        title={alt || "点击放大"}
+      >
+        <img src={src} alt={alt} className="block max-h-60" />
+        {block.imageAlt && (
+          <span className="absolute right-1 bottom-1 rounded-md bg-background/85 text-foreground/90 text-[10px] font-mono px-1.5 py-0.5 border">
+            {block.imageAlt}
+          </span>
+        )}
+      </button>
+      <ImageLightbox open={open} src={src} alt={alt} onClose={() => setOpen(false)} />
+    </>
   )
 }
 
@@ -188,9 +218,11 @@ function ToolUseDetails({
     const cmd = input.command as string | undefined
     const desc = input.description as string | undefined
     return (
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         {desc && <div className="text-xs text-muted-foreground italic">{desc}</div>}
-        <CodeBlock>{cmd ?? ""}</CodeBlock>
+        <TerminalBlock prompt={n === "powershell" ? "PS>" : "$"}>
+          {cmd ?? ""}
+        </TerminalBlock>
       </div>
     )
   }
@@ -359,11 +391,13 @@ function ToolResultBlock({ block }: { block: UIBlock }) {
       {turType === "update" && tur?.structuredPatch ? (
         <DiffView patch={tur.structuredPatch} />
       ) : turType === "text" && tur?.file?.content ? (
-        <CodeBlock>{tur.file.content}</CodeBlock>
+        <CollapsedOutput text={tur.file.content} />
       ) : turType === "create" && tur?.content ? (
-        <CodeBlock>{tur.content}</CodeBlock>
+        <CollapsedOutput text={tur.content} />
       ) : (
-        <CodeBlock>{renderToolResultContent(block.toolResultContent)}</CodeBlock>
+        <CollapsedOutput
+          text={renderToolResultContent(block.toolResultContent)}
+        />
       )}
     </ExpandableRow>
   )
@@ -493,6 +527,68 @@ function DiffView({ patch }: { patch: StructuredPatchHunk[] }) {
           })}
         </div>
       ))}
+    </div>
+  )
+}
+
+function TerminalBlock({
+  prompt,
+  children
+}: {
+  prompt: string
+  children: string
+}) {
+  const lines = children.split("\n")
+  return (
+    <div className="rounded-md border bg-foreground/[0.06] dark:bg-black/40 overflow-hidden">
+      <div className="px-2 py-1 border-b border-foreground/10 text-[10px] uppercase tracking-wider text-muted-foreground font-mono flex items-center gap-1.5">
+        <span className="size-2 rounded-full bg-destructive/60" />
+        <span className="size-2 rounded-full bg-warn/60" />
+        <span className="size-2 rounded-full bg-connected/60" />
+        <span className="ml-1">terminal</span>
+      </div>
+      <pre className="px-2 py-1.5 text-[12px] font-mono whitespace-pre-wrap break-words max-h-80 overflow-auto scrollbar-thin">
+        {lines.map((line, i) => (
+          <div key={i} className="flex gap-2">
+            {i === 0 && (
+              <span className="text-primary shrink-0 select-none">
+                {prompt}
+              </span>
+            )}
+            {i > 0 && <span className="shrink-0 select-none w-4" />}
+            <span className="break-all">{line}</span>
+          </div>
+        ))}
+      </pre>
+    </div>
+  )
+}
+
+function CollapsedOutput({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const lines = text.split("\n")
+  const PREVIEW = 8
+  const truncated = lines.length > PREVIEW
+  const shown = open || !truncated ? lines : lines.slice(0, PREVIEW)
+  return (
+    <div className="space-y-1">
+      <pre className="p-2 rounded-md bg-muted/50 border text-[12px] font-mono whitespace-pre-wrap break-words max-h-80 overflow-auto scrollbar-thin">
+        {shown.join("\n")}
+        {truncated && !open && (
+          <span className="block text-muted-foreground italic mt-1">
+            … 还有 {lines.length - PREVIEW} 行
+          </span>
+        )}
+      </pre>
+      {truncated && (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          {open ? "收起" : "展开全部"}
+        </button>
+      )}
     </div>
   )
 }

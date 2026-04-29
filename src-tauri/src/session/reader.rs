@@ -15,7 +15,7 @@ pub struct SessionMeta {
     pub first_user_text: Option<String>,
 }
 
-/// Claude CLI 的 cwd 编码规则：
+/// Claude CLI 的 cwd 编码规则（导出给 watcher 用）：
 /// 把所有非字母数字非连字符的字符替换为 `-`（不压缩连续 `-`）。
 /// 例：`F:\project\claude-test` → `F--project-claude-test`
 pub fn encode_cwd(cwd: &str) -> String {
@@ -129,6 +129,59 @@ fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>) {
         }
     }
     (count, ai_title, first_user_text)
+}
+
+fn sidecar_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
+    if session_id.contains('/') || session_id.contains('\\') || session_id.contains("..") {
+        return Err(Error::Other(format!("invalid session id: {session_id}")));
+    }
+    let dir = projects_dir(cwd)?;
+    Ok(dir.join(format!("{}.claudinal.json", session_id)))
+}
+
+pub fn read_session_sidecar(cwd: &str, session_id: &str) -> Result<Option<serde_json::Value>> {
+    let path = sidecar_path(cwd, session_id)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let v: serde_json::Value = serde_json::from_str(&raw)?;
+    Ok(Some(v))
+}
+
+pub fn write_session_sidecar(
+    cwd: &str,
+    session_id: &str,
+    data: serde_json::Value,
+) -> Result<()> {
+    let path = sidecar_path(cwd, session_id)?;
+    if let Some(parent) = path.parent() {
+        if !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+    let text = serde_json::to_string_pretty(&data)?;
+    std::fs::write(&path, text).map_err(Error::from)?;
+    Ok(())
+}
+
+pub fn delete_session_jsonl(cwd: &str, session_id: &str) -> Result<()> {
+    if session_id.contains('/') || session_id.contains('\\') || session_id.contains("..") {
+        return Err(Error::Other(format!("invalid session id: {session_id}")));
+    }
+    let dir = projects_dir(cwd)?;
+    let path = dir.join(format!("{}.jsonl", session_id));
+    if !path.is_file() {
+        return Err(Error::Other(format!(
+            "transcript not found: {}",
+            path.display()
+        )));
+    }
+    std::fs::remove_file(&path).map_err(Error::from)?;
+    // 同步删除 sidecar（如果有）
+    let sidecar = sidecar_path(cwd, session_id)?;
+    let _ = std::fs::remove_file(&sidecar);
+    Ok(())
 }
 
 pub fn read_session_transcript(

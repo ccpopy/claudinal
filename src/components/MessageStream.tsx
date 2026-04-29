@@ -84,15 +84,24 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
           stamp(m.ts)
         }
         if (userVisible.length > 0) {
-          if (state.current) state.current.running = false
-          state.current = null
-          groups.push({
-            kind: "msg",
-            key: `msg-${m.id}`,
-            msg: { ...m, blocks: userVisible }
-          })
-          // 立即开一个新的 run，给"处理中…"占位让用户可见秒表
-          ensureRun(m.ts)
+          if (m.queued) {
+            // 排队中的 user 消息插在当前 run 后面，但不关掉当前 run
+            groups.push({
+              kind: "msg",
+              key: `msg-${m.id}`,
+              msg: { ...m, blocks: userVisible }
+            })
+          } else {
+            if (state.current) state.current.running = false
+            state.current = null
+            groups.push({
+              kind: "msg",
+              key: `msg-${m.id}`,
+              msg: { ...m, blocks: userVisible }
+            })
+            // 立即开一个新的 run，给"处理中…"占位让用户可见秒表
+            ensureRun(m.ts)
+          }
         }
       } else {
         const stepBlocks: UIBlock[] = []
@@ -111,7 +120,8 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
           }
         }
         // assistant 消息（含末尾 text 段）也算入当前轮的 endTs
-        stamp(m.ts)
+        // 优先 stopTs（message_stop 时间），其次 ts（message_start 时间）
+        stamp(m.stopTs ?? m.ts)
         if (visibleBlocks.length > 0) {
           groups.push({
             kind: "msg",

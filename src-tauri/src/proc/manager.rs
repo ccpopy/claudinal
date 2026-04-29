@@ -20,6 +20,7 @@ pub struct SpawnOptions {
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
     pub resume_session_id: Option<String>,
+    pub fork_session_id: Option<String>,
     pub env: Option<std::collections::HashMap<String, String>>,
 }
 
@@ -64,6 +65,9 @@ impl Manager {
         }
         if let Some(rid) = &opts.resume_session_id {
             cmd.arg("--resume").arg(rid);
+        }
+        if let Some(fid) = &opts.fork_session_id {
+            cmd.arg("--fork-session").arg(fid);
         }
 
         if let Some(env) = &opts.env {

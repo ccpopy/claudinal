@@ -23,7 +23,7 @@ function fmtDuration(ms: number, running: boolean): string {
   const totalSec = Math.floor(ms / 1000)
   const m = Math.floor(totalSec / 60)
   const s = totalSec % 60
-  if (m > 0) return `${m}m${s.toString().padStart(2, "0")}s`
+  if (m > 0) return `${m}m${s}s`
   // 流式：直接整数秒；完成：保留 1 位小数（除非正好整秒）
   if (running) return `${totalSec}s`
   const sec = ms / 1000

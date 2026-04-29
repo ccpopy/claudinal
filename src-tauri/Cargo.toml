@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 which = "6"
 dashmap = "6"
 dirs = "5"
+notify = "6"
 
 [profile.dev]
 incremental = true

@@ -464,36 +464,29 @@ F:\project\claudecli\
 
 ### 9.1.1 Sidebar / 会话项交互
 
-- [ ] **重命名会话**：ChatHeader 下拉菜单已留 `onRename` 接口，未实现。需要：
-  - 独立 store（`localStorage["claudinal.session-titles"] = { [sessionId]: customTitle }`）
-  - SessionRow / ChatHeader 显示时优先 customTitle
-  - 不动 jsonl（CLI 自己维护）；与 ai_title 区分但优先级最高
-- [ ] **删除会话**：ChatHeader / SessionRow 都需要二次确认对话框，调用 Rust 命令 `delete_session_jsonl(cwd, sessionId)`（待实现）
-- [ ] **fork session**：CLI `--fork-session` 透传给 spawn_session；Sidebar 右键 / 菜单暴露
-- [ ] **复制深度链接（claudinal://）**：协议路由暂未实现，先留菜单条目
+- [x] **重命名会话**：`src/lib/sessionTitles.ts`（`localStorage["claudinal.session-titles"]`），`RenameSessionDialog` Dialog；ChatHeader 下拉菜单 onRename 触发；Sidebar `SessionRow` 显示时优先读 `getSessionTitle(session.id)`，留空恢复默认。
+- [x] **删除会话**：Rust `delete_session_jsonl(cwd, sessionId)` + 注册；前端 ipc 包装；ChatHeader 下拉菜单 onDelete `window.confirm` 二次确认 → teardown → 删 jsonl → reset → 刷新 Sidebar。
+- [x] **fork session**：Rust `SpawnOptions.fork_session_id` + `--fork-session <sid>` 透传；前端 `forkPendingId` 状态在下次 `ensureSession` 时注入；ChatHeader 下拉菜单「分叉会话」入口；fork 完成后 toast 提示发送消息开始。
+- ~~复制深度链接（claudinal://）~~ — 取消：jsonl 本地存储，跨设备打不开；同设备多窗口/自跳转价值低，删除条目，菜单不留占位。
 
 ### 9.1.2a 流式中途引导输入（"插话"）
 
-> CLI 支持在 Claude 思考 / 执行工具的过程中，先把后续的提示打进去 → 模型完成当前步骤后会把这条作为下一轮的输入读取。Claudinal 目前 **没有** 实现这个能力（Composer 在 streaming=true 时只能 Stop / Esc，不能 send）。
+> CLI 支持在 Claude 思考 / 执行工具的过程中，先把后续的提示打进去 → 模型完成当前步骤后会把这条作为下一轮的输入读取。
 
-- [ ] **流式中途发送下一轮输入**：
-  - Composer 在 `streaming=true` 时仍允许输入 + 发送（按钮文案改为「下一轮发送」/「排队」），不强制 Stop。
-  - 排队中的 user 消息：本地 reducer 立即 push 一条 user 气泡，并打上「等待中」灰色标记（左下角小 chip 「将在当前回合后发送」）。
-  - 实际投递时机：当前回合的 `result` 事件（或 `message_stop` 兜底）出现后，立即对当前 sessionId 调用 `sendUserMessage`。如果用户继续打字，多条按 FIFO 队列。
-  - 中断（Esc / Stop）时清空队列，给 toast 提示。
-  - 历史会话只读模式不允许排队（Composer disabled）。
-  - 状态：App.tsx 加 `pendingMessages: Array<{text, images}>`；`listenSessionEvents` 收到 `result` 后 dequeue 一条；新发送会先入队。
+- [x] **流式中途发送下一轮输入**：
+  - Composer streaming 态：Enter 仍触发 send；按钮文案改「排队」（ListPlus 图标，secondary 变体）+ 旁边 ghost 图标按钮「中断」（Square）。
+  - 排队中的 user 消息：reducer `user_local` action 加 `queued?: boolean`，立即 push 带 70% 透明度 + 右下角「将在当前回合后发送」chip（`Clock` 图标）。
+  - 投递时机：`result` 事件触发 `setStreaming(false)`；`useEffect([streaming, pending, sessionId])` 监听到 !streaming && pending.length>0 → dequeue 一条 → 派发 `unqueue_local`（移到 entries 末尾 + 清 queued + 更新 ts，避免 buildGroups grouping 错位）→ `sendUserMessage` 投递。
+  - 中断（Esc / Stop）：teardown 内 `setPending([])` + 对每条派发 `drop_local` 移除占位气泡 + toast 提示「已取消排队中的 N 条消息」。
+  - `MessageStream::buildGroups` 看到 queued user 消息时不关闭当前 run（避免提前关掉运行中的 RunGroup）。
 
 ### 9.1.2b Sidebar 会话状态图标
 
-> 当前会话项右侧 hover 才出现「复制 ID」按钮；非 hover 态完全是空白，看不出哪个会话还在跑。
-
-- [ ] **运行中会话显示 spinner**：
-  - 进行中的（`sessionId` 已 spawn 且 `streaming=true`）那条 SessionRow，**非 hover 态**右侧固定显示一个 `<Loader2 className="size-3 animate-spin" />`（与 RunGroup 的处理中 spinner 同款），与「处理中…」节奏一致。
-  - 流式结束（`result` 事件到 / Esc 中断 / teardown）后图标自动消失，回到空白。
-  - hover 仍显示「Pin / 复制 ID」原有按钮，覆盖 spinner。
-  - 数据来源：App.tsx 把 `streamingSessionId`（当前正在流的 sessionId）作为 prop 传给 Sidebar；SessionRow 用 `streaming = (project.id === streamingProjectId && session.id === streamingSessionId)` 判断。
+- [x] **运行中会话显示 spinner**：
+  - App.tsx 派生 `streamingJsonlId = streaming ? (selectedSessionId ?? findInitSessionId(state)) : null`，连同 `streamingProjectId` 透传给 Sidebar。
+  - SessionRow 接 `streaming` prop；右侧固定区改成 `<div className="relative size-5">`，运行中显示 `<Loader2 className="size-3 animate-spin" />`（绝对定位，hover 时 fade out 让位给复制按钮）。
   - 置顶区与项目区下的 SessionRow 都生效。
+  - 顺带修复：ChatHeader Pin/Copy/Delete 用 `jsonlSessionId`（resume id 或 system_init.session_id），不再误用本地 manager uuid。
 
 ### 9.1.2 主区 / 流式渲染
 
@@ -501,46 +494,33 @@ F:\project\claudecli\
 - [x] RunGroup 折叠/展开边框翻转（折叠下边框 / 展开上边框）
 - [x] 用户消息「[Image: source: ...]」占位行剥离（保留真实 base64 图片）
 - [x] RunGroup 流式占位 + 实时秒表（user 发送后立即 push run，startTs 兜底）
-- [ ] **每条对话消息可复制**：user / assistant 的可见对话内容都要有复制入口；复制内容只包含该条消息的正文与必要占位文本，不包含 RunGroup 触发器（例如「已处理 1m08s · 14 步」），也不包含展开后的 thinking / tool_use / tool_result 步骤内容。
-- [ ] **会话图片点击放大**（lightbox）：
-  - user 消息中的图片缩略图（`MessageBlocks::ImageBlock`）和 assistant 内嵌图片均要支持点击 → 居中放大预览（Dialog/`role="dialog"` 模态 + 暗背景 + Esc/点击外部关闭）。
-  - 多图时支持左右切换（`◀ ▶` 按钮 + 键盘 ←/→），底部小圆点指示。
-  - 放大态保持原始 base64，不下采样；最大宽 90vw / 最大高 90vh，超出可滚动 / `object-contain`。
-  - 触发器要有可访问性：`role="button"` `aria-label="放大图片"`；hover 显示「点击放大」浮层。
-- [ ] **图片占位文本与真实图片关联**（保留当前 text + 独立缩略图布局，不做 inline 替换）：
-  - 现状：CLI 把粘贴的图片转成 `[Image #9]` / `[Image: source: ...]` 这种占位插在用户文本中，UI 上把占位行剥离了，再单独渲染图片缩略图，但用户看不出文中哪个 `[Image #N]` 对应哪张缩略图。
-  - 期望：保留现有「文本块 + 独立缩略图」的排版，**通过 `alt` / `title` / 角标把序号绑回去**：
-    - reducer 解析 `user` 消息时，按出现顺序把 `[Image #N]` 占位与同一条消息的 image content block 配对，把序号 `N`（或 `[Image: source: <basename>]` 的文件名）记到 `UIBlock.imageAlt` 字段。
-    - `MessageBlocks::ImageBlock` 渲染：`<img alt={imageAlt} title={imageAlt}>`；缩略图右下角加一个 `[#N]` 小角标（数字徽章）；hover 时浮层显示对应原文中的占位字样（"对应 [Image #9]"）。
-    - user 消息 text 中保留 `[Image #N]` 字样不剥离（仅剥离 `[Image: source: <path>]` 这种含本地路径的形态），保证上下文「这是 claude cli 的 [Image #9]」可读，同时下面缩略图角标 `#9` 让人一眼对上。
-  - 历史会话也需生效（jsonl `user.message.content` 数组里 text 与 image block 交错出现，按出现序号配对即可）。
-- [ ] **文件 diff 全景视图**：ChatHeader 右上 `GitCompareArrows` 按钮已留位，未实现。计划：从当前会话 collect 所有 Edit/Write tool_use_result.structuredPatch，按 file 聚合渲染；侧拉抽屉 `<Sheet>` 容器
-- [ ] permission_request 弹窗（需要拿到样本）
-- [ ] hook_event 侧边 chip
-- [ ] Bash 终端样式美化（ANSI / stdout 折叠）
+- [x] **每条对话消息可复制**：`CopyButton` 复用组件；user 气泡左侧 -7 偏移 hover fade in，assistant 文本块右上角 hover fade in；复制纯文本，不包含 RunGroup / thinking / tool_use 内容。
+- [x] **会话图片点击放大**（lightbox，单图版）：`ImageLightbox` 全屏 dialog（Esc / 点击外部关闭），`object-contain max-w-[90vw] max-h-[90vh]`；ImageBlock 改成 button 触发，`cursor-zoom-in`，aria-label 含 imageAlt。多图左右切换留 P4。
+- [x] **图片占位文本与真实图片关联**：reducer `bindImagePlaceholders` 按出现顺序把 `[Image #N]` / `[Image: source: <path>]` 与同条消息的 image block 配对，写入 `UIBlock.imageAlt`；`[Image #N]` 文中保留可读，`[Image: source: ...]` 剥离；缩略图右下角 #N 角标 + alt/title 提示。流式与历史 jsonl 都生效。
+- [x] **文件 diff 全景视图**：`DiffOverview` 自定义侧拉抽屉（无 Sheet primitive，用 fixed inset 右贴 + 暗背景点击外部关闭）；按 filePath 聚合 user `tool_result.toolUseResult` 的 create/update；左列文件列表（+/- 计数 + FilePlus/FileEdit 图标）+ 右列 hunk diff（按 +/- 着色）；ChatHeader `GitCompareArrows` 按钮带文件数 badge，0 文件时禁用。
+- [x] **权限拒绝渲染**：CLI headless 协议不发交互式 `permission_request`，而是把被拦截的工具放到 `result.permission_denials`。`ResultView` 在 result chip 下方加 `PermissionDenialList`（红 chip + ShieldAlert 图标），展开看每条 `tool_name` / `command` / `file_path`，提示运行 `/permissions` 加白名单。
+- [x] **hook_event 侧边 chip**：reducer `reduceHook` 处理 `hook_event` / `hook` 事件 → `UIHookEvent`；`HookEventView` 渲染为可展开 chip（`Webhook` 图标 + hookEventName + toolName + 完整 raw JSON）。
+- [x] **Bash 终端样式美化**：Bash/PowerShell ToolUseDetails 改 `TerminalBlock`（带 macOS 风三圆点 header + 暖橙 `$` / `PS>` 提示符 + 等宽多行）；ToolResultBlock 兜底分支统一改 `CollapsedOutput`（>8 行折叠预览 + 「展开全部 / 收起」按钮）。ANSI 着色留 P4。
 
 ### 9.1.3 设置页
 
-- [ ] P3.1 常规：启动行为 / 关闭行为 / 自动检查更新
-- [ ] P3.3 配置：默认 model / effort / permission_mode / max-budget / CLAUDE_CLI_PATH 覆盖 / 默认 add-dir
+- [x] P3.1 常规：自动检查更新 toggle（启动 / 关闭行为留 P4）
+- [x] P3.3 配置：默认 model / effort / permission_mode / CLAUDE_CLI_PATH（写 `claudinal.settings`，spawn 时 `loadSettings()` 注入）
 - [ ] P3.4 个性化：append-system-prompt / 默认 agents / 自定义 slash 快捷面板
 - [ ] P3.5 MCP 服务器：列表 + 启用 toggle + OAuth + 编辑 mcp.json
 - [ ] P3.6 / 3.7 / 3.8 / 3.9 / 3.10：Git / 环境 / 工作树 / 浏览器 / 已归档对话（占位）
-- [ ] P3.11 账号 & Usage：从 system/init.apiKeySource 读 + result.modelUsage 累计 + rate_limit_event 限额面板
+- [x] P3.11 账号 & Usage：apiKeySource 来自 system_init（写 `claudinal.api-key-source`）+ `recordResultUsage` 在 result 事件累计 modelUsage 到 `claudinal.usage`；Account 页面显示登录方式 + 总成本 / tokens / cache + 按模型拆分表 + 清空 usage 按钮
 - [ ] P3.12 收尾：测试连接按钮（spawn `curl --proxy ... -I https://api.anthropic.com`）+ keychain 加密密码 + PAC URL + 全应用范围（含 webview，等 Tauri 2 setProxy 稳定）
 
 ### 9.1.4 代码 / 渲染细节遗留
 
-- [ ] **Result chip 持久化**：jsonl 不存 `result` 行（仅有 user/assistant/queue-operation/attachment/ai-title/isMeta），所以历史会话切回后看不到 「✓ 完成 $0.0223 6.59s 1 turn」。需要自己写一份 `~/.claude/projects/<encoded>/<sid>.claudinal.json` 存最近一次 result，加载时合并到 transcript
+- [x] **Result chip 持久化**：Rust `read/write_session_sidecar(cwd, sid)` 命令；前端 result 事件到来时写 `~/.claude/projects/<encoded>/<sid>.claudinal.json`（`{ result: <event> }`）；switchSession 加载 transcript 后合并 sidecar.result 到 events 末尾，让 ResultView chip 在历史会话也显示。
 - [x] 历史 jsonl 用 timestamp 字段还原 step.startedAt/endedAt（reducer.parseTs）
-- [ ] **RunGroup 时长口径与 CLI 对齐**：
-  - 现状：本地用 `min(step.startedAt) ~ max(step.endedAt)`，漏算 TTFT（user 发送 → 第一个 content_block_start，日志中 `ttft_ms`）以及末尾 text 段（最后 tool 完成 → message_stop / text 输出耗时），所以会比 CLI `Crunched for Xs` 偏短（实测 14.6s vs 19s）。
-  - 改为优先用 `result.duration_ms`（CLI 给的全程墙钟，等价 Crunched）；其次用 user 消息 ts → 最后 assistant `message_stop` ts；step 范围只作为兜底。
-  - 流式中实时秒表也以 user msg ts 为起点（已实现 startTs prop），保持口径一致。
-- [ ] AssistantMarkdown 在流式过程中频繁 re-parse（每 delta 都重 render），考虑节流或仅在 stop 时升级到完整解析
-- [ ] notify watcher 增量更新 sessions 列表（目前 lazy load，多窗口/多客户端写入感知不到）
+- [x] **RunGroup 时长口径与 CLI 对齐**：RunGroup 已优先用 `result.duration_ms`（CLI 全程墙钟）；reducer 在 `message_stop` 时记录 `UIMessage.stopTs`；buildGroups assistant 分支用 `m.stopTs ?? m.ts` 推 endTs，避免末尾 text 段漏算。startTs 仍取首个 user 消息 ts。
+- [x] **AssistantMarkdown 流式节流**：自定义 `useThrottledText` 在 partial 期间限制 80ms 同步一次；`useDeferredValue` 让 React 把 markdown 重 parse 推迟到空闲帧；`MarkdownInner` 用 `memo` 包裹避免相同 text re-render。完成态（partial=false）立即升级到完整文本。
+- [x] **notify watcher 增量更新**：Rust `WatcherState`（基于 `notify` crate，200ms 节流，仅触发 .jsonl 修改）→ emit `claudinal://sessions/<cwd>/changed`；前端 Sidebar `useEffect` 挂载时 `watchSessions` + `listenSessionsChanged` 触发 `loadSessions(p)` 增量刷新；卸载时 `unwatchSessions`。
 - [ ] sqlite 索引（当前 jsonl 全量扫描，超过几百 session 后再升）
-- [ ] @ 文件补全 / 斜杠面板（依赖 system/init.slash_commands）
+- [x] **@ 文件补全 / 斜杠面板**：Rust `list_files(cwd, prefix)` 浅扫（max depth 4 / 500 项，跳过 node_modules/.git/target 等）；前端 `SuggestionPanel` 浮在 Composer 上方；@ 触发文件补全（按相对路径模糊匹配，文件优先短路径优先），/ 触发斜杠命令（`system/init.slash_commands` + `FALLBACK_SLASH` 兜底）；↑↓ 选择 / Tab/Enter 补全 / Esc 关闭。
 
 ---
 
@@ -578,6 +558,31 @@ F:\project\claudecli\
   - 项目列表稳定排序（去掉 `touchProject` 引发的上浮）
   - Sidebar 会话副信息行 msg 数 / 时间 space-between 排版
   - 切换会话 MessageStream 用 sessionId 作 key，强制重挂载避免内部 state 残留
+- ✅ **2026-04-30 后续（会话项交互 & 排队）**：
+  - Sidebar 运行中 spinner（`streamingProjectId/streamingSessionId` 透传 + 绝对定位 fade）
+  - Rust 新增 `delete_session_jsonl` 命令；ChatHeader 下拉菜单删除会话（`window.confirm` 二次确认）
+  - 自定义会话标题 store（`src/lib/sessionTitles.ts`）+ `RenameSessionDialog`；Sidebar/ChatHeader 都优先读自定义
+  - ChatHeader 切换为 `jsonlSessionId` 取代本地 manager uuid（修复新会话 pin/copy 用错 id 的 bug）
+  - 流式中途排队消息（"插话"）：reducer 加 `user_local.queued / unqueue_local / drop_local`；Composer streaming 时 Enter 改排队，旁边 ghost「中断」按钮；teardown 清空队列；buildGroups 排队消息不关闭当前 run
+- ✅ **2026-04-30 后续 #2（消息 / 图片 / 时长口径）**：
+  - `CopyButton` 复用组件；user 气泡 hover 才显示，assistant 文本块复制按钮常显（codex 风），位置贴正文左下/右下，不浮出
+  - `ImageLightbox` 全屏 dialog；ImageBlock 改 button 触发；`cursor-zoom-in`；Esc / 点击外部关闭
+  - reducer `bindImagePlaceholders` 优先用 `[Image #N]` 数字（与文中字样所见即所得）；source 形态仅剥离不计入配对；缩略图右下角 #N 角标
+  - `UIMessage.stopTs` 在 `message_stop` 时记录；buildGroups 用 `stopTs ?? ts` 推 endTs，对齐 CLI Crunched 时长（result.duration_ms 仍优先）
+- ✅ **2026-04-30 后续 #3（持久化 & diff 全景）**：
+  - Result chip sidecar：Rust `read/write_session_sidecar`；前端 result 事件落 `<sid>.claudinal.json`，switchSession 时合并；删 jsonl 同步删 sidecar
+  - 文件 diff 全景：`DiffOverview` 侧拉抽屉（fixed 右贴）；按 filePath 聚合 create/update；左列 +/- 计数 + 图标，右列 hunk 着色；ChatHeader `GitCompareArrows` 带 diffCount badge
+- ✅ **2026-04-30 后续 #4（buddy / Bash / Fork / 流式节流）**：
+  - 切换会话过渡：`BuddyLoader` 复刻 buddy.md 电子宠物（3 物种 cat/duck/owl × 3 眼睛 × 5 稀有度加权 × 1% 闪光）；15 帧 IDLE_SEQUENCE / 500ms；自动每 5s 触发 5 帧 ♥ 抚摸特效，无需点击
+  - Bash 终端样式：`TerminalBlock`（macOS 三圆点 + 暖橙提示符）；`CollapsedOutput`（>8 行折叠 + 展开按钮）替代所有 ToolResultBlock 兜底
+  - Fork session：Rust `--fork-session` 透传；`forkPendingId` 在 ensureSession 注入；ChatHeader「分叉会话」菜单
+  - AssistantMarkdown 节流：`useThrottledText`（80ms）+ `useDeferredValue` + `memo` 三件套
+- ✅ **2026-04-30 后续 #5（权限 / hook / 设置 / watcher / 补全）**：
+  - 权限拒绝渲染（headless 协议无双向交互，渲染 `result.permission_denials`）
+  - hook_event reducer 分支 + chip 渲染（Webhook 图标 + raw JSON）
+  - P3 设置：General（自动更新 toggle）/ Config（model/effort/permission/CLI 路径）/ Account（登录方式 + usage 累计 + 按模型拆分表）；`claudinal.settings` + `claudinal.usage` + `claudinal.api-key-source` 三个 store；spawn 时 `loadSettings` 注入参数
+  - notify fs watcher：Rust `WatcherState` + 200ms 节流 + Sidebar 增量刷新
+  - @ 文件补全 + / 斜杠面板：Rust `list_files`（4 层深度 / 500 上限 / 跳过常见构建目录）+ `SuggestionPanel` 浮窗 + ↑↓ Tab/Enter Esc 键盘交互
 - ⏳ 待用户实测 `pnpm tauri dev`
 - ⏳ P3 其他分类：配置 / 个性化 / MCP / Git / 环境 / 工作树 / 浏览器 / 归档 / 账号Usage（占位）
 

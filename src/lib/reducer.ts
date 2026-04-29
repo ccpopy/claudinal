@@ -7,7 +7,9 @@ export interface State {
 
 export type Action =
   | { kind: "event"; event: ClaudeEvent }
-  | { kind: "user_local"; blocks: UIBlock[] }
+  | { kind: "user_local"; blocks: UIBlock[]; queued?: boolean; localId?: string }
+  | { kind: "unqueue_local"; localId: string }
+  | { kind: "drop_local"; localId: string }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
   | { kind: "reset" }
 
@@ -21,13 +23,32 @@ export function reduce(state: State, action: Action): State {
     const ts = Date.now()
     const msg: UIMessage = {
       kind: "message",
-      id: `local-${state.entries.length}-${ts}`,
+      id: action.localId ?? `local-${state.entries.length}-${ts}`,
       role: "user",
       blocks: action.blocks,
       streaming: false,
+      queued: action.queued,
       ts
     }
     return { entries: [...state.entries, msg] }
+  }
+  if (action.kind === "unqueue_local") {
+    // 排队消息 dispatch 时落在 entries 中间，flush 时需要移到末尾
+    // （排在 result 之后），否则 buildGroups 的 run 切分会错位。
+    const idx = state.entries.findIndex(
+      (e) => e.kind === "message" && e.id === action.localId
+    )
+    if (idx < 0) return state
+    const cur = state.entries[idx] as UIMessage
+    const filtered = state.entries.filter((_, i) => i !== idx)
+    return { entries: [...filtered, { ...cur, queued: false, ts: Date.now() }] }
+  }
+  if (action.kind === "drop_local") {
+    return {
+      entries: state.entries.filter(
+        (e) => !(e.kind === "message" && e.id === action.localId)
+      )
+    }
   }
   if (action.kind === "load_transcript") {
     let s: State = init()
@@ -91,6 +112,8 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   if (t === "result") return reduceResult(state, ev as Record<string, unknown>, ts)
   if (t === "rate_limit_event")
     return reduceRateLimit(state, ev as Record<string, unknown>, ts)
+  if (t === "hook_event" || t === "hook")
+    return reduceHook(state, ev as Record<string, unknown>, ts)
   if (t === "raw") {
     return {
       entries: [...state.entries, { kind: "raw", line: (ev as { line?: string }).line, ts }]
@@ -247,7 +270,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
   }
 
   if (t === "message_stop") {
-    entries[idx] = { ...cur, streaming: false }
+    entries[idx] = { ...cur, streaming: false, stopTs: ts }
     return { entries }
   }
 
@@ -307,6 +330,7 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
   if (ev.isMeta === true) return state
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const blocks = convertContentBlocks(msg.content)
+  bindImagePlaceholders(blocks)
   const tur = ev.tool_use_result
   if (tur != null) {
     const target = blocks.find((b) => b.type === "tool_result")
@@ -329,6 +353,41 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
     ts
   }
   return { entries: [...entries, entry] }
+}
+
+// 把 user 消息文本中的 [Image #N] 序号占位与同条消息的 image content block 按出现顺序
+// 一一配对（角标 / lightbox alt 用 #N，与文中字样所见即所得）。
+// `[Image: source: <path>]` 这种含本地路径形态只做剥离，不计入配对（CLI 常和 #N 并列出现，
+// 同一张图配 2 个占位会错位）。fallback 用 basename。
+function bindImagePlaceholders(blocks: UIBlock[]) {
+  const numbered: string[] = []
+  const sourceBasenames: string[] = []
+  const numberedRe = /\[Image\s+#(\d+)\]/gi
+  const sourceRe = /\[Image\s*:\s*source\s*:\s*([^\]]+)\]/gi
+  for (const b of blocks) {
+    if (b.type !== "text" || !b.text) continue
+    let m: RegExpExecArray | null
+    while ((m = numberedRe.exec(b.text)) !== null) numbered.push(m[1])
+    numberedRe.lastIndex = 0
+    while ((m = sourceRe.exec(b.text)) !== null) {
+      const raw = m[1].trim()
+      const base = raw.replace(/\\/g, "/").split("/").pop() ?? raw
+      sourceBasenames.push(base)
+    }
+    sourceRe.lastIndex = 0
+    // 剥离含本地路径的形态（保留 [Image #N] 让用户能与角标对照）
+    b.text = b.text.replace(sourceRe, "").trim()
+  }
+  let ni = 0
+  let si = 0
+  for (const b of blocks) {
+    if (b.type !== "image") continue
+    if (ni < numbered.length) {
+      b.imageAlt = `#${numbered[ni++]}`
+    } else if (si < sourceBasenames.length) {
+      b.imageAlt = sourceBasenames[si++]
+    }
+  }
 }
 
 function stampToolEndedAt(entries: UIEntry[], toolUseId: string, ts: number): UIEntry[] {
@@ -368,6 +427,22 @@ function reduceResult(state: State, ev: Record<string, unknown>, ts: number): St
         permissionDenials: ev.permission_denials as unknown[] | undefined,
         ts
       }
+    ]
+  }
+}
+
+function reduceHook(state: State, ev: Record<string, unknown>, ts: number): State {
+  const hookEventName =
+    (ev.hook_event_name as string | undefined) ??
+    (ev.hookEventName as string | undefined) ??
+    (ev.event as string | undefined)
+  const toolName =
+    (ev.tool_name as string | undefined) ??
+    (ev.toolName as string | undefined)
+  return {
+    entries: [
+      ...state.entries,
+      { kind: "hook", hookEventName, toolName, raw: ev, ts }
     ]
   }
 }

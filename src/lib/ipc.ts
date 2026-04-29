@@ -8,6 +8,7 @@ export type SpawnArgs = {
   effort: string | null
   permissionMode: string | null
   resumeSessionId?: string | null
+  forkSessionId?: string | null
   env?: Record<string, string> | null
 }
 
@@ -73,8 +74,58 @@ export async function readSessionTranscript(
   return invoke<ClaudeEvent[]>("read_session_transcript", { cwd, sessionId })
 }
 
+export async function deleteSessionJsonl(
+  cwd: string,
+  sessionId: string
+): Promise<void> {
+  return invoke("delete_session_jsonl", { cwd, sessionId })
+}
+
+export async function readSessionSidecar(
+  cwd: string,
+  sessionId: string
+): Promise<unknown | null> {
+  return invoke<unknown | null>("read_session_sidecar", { cwd, sessionId })
+}
+
+export async function writeSessionSidecar(
+  cwd: string,
+  sessionId: string,
+  data: unknown
+): Promise<void> {
+  return invoke("write_session_sidecar", { cwd, sessionId, data })
+}
+
 export async function openPath(path: string): Promise<void> {
   return invoke("open_path", { path })
+}
+
+export async function watchSessions(cwd: string): Promise<void> {
+  return invoke("watch_sessions", { cwd })
+}
+
+export async function unwatchSessions(cwd: string): Promise<void> {
+  return invoke("unwatch_sessions", { cwd })
+}
+
+export async function listenSessionsChanged(
+  cwd: string,
+  handler: () => void
+): Promise<UnlistenFn> {
+  return listen(`claudinal://sessions/${cwd}/changed`, () => handler())
+}
+
+export interface FileMatch {
+  path: string
+  rel: string
+  is_dir: boolean
+}
+
+export async function listFiles(
+  cwd: string,
+  prefix: string
+): Promise<FileMatch[]> {
+  return invoke<FileMatch[]>("list_files", { cwd, prefix })
 }
 
 export async function listenSessionEvents(

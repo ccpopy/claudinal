@@ -24,6 +24,8 @@ import { cn } from "@/lib/utils"
 import { General } from "./sections/General"
 import { Appearance } from "./sections/Appearance"
 import { Network } from "./sections/Network"
+import { Config } from "./sections/Config"
+import { Account } from "./sections/Account"
 import { Placeholder } from "./sections/Placeholder"
 
 interface Props {
@@ -45,7 +47,7 @@ const SECTIONS: SectionDef[] = [
     id: "config",
     label: "配置",
     icon: Settings2,
-    Component: () => <Placeholder title="配置" />
+    Component: Config
   },
   {
     id: "personalization",
@@ -93,7 +95,7 @@ const SECTIONS: SectionDef[] = [
     id: "account",
     label: "账号 & Usage",
     icon: Monitor,
-    Component: () => <Placeholder title="账号 & Usage" />
+    Component: Account
   },
   {
     id: "network",

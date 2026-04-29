@@ -17,6 +17,7 @@ export interface UIBlock {
   isError?: boolean
   imageMediaType?: string
   imageData?: string
+  imageAlt?: string
   partial?: boolean
   raw?: unknown
   startedAt?: number
@@ -32,7 +33,9 @@ export interface UIMessage {
   usage?: Record<string, unknown>
   stopReason?: string | null
   streaming: boolean
+  queued?: boolean
   ts: number
+  stopTs?: number
 }
 
 export interface UISystemInit {
@@ -82,6 +85,14 @@ export interface UIRateLimit {
   ts: number
 }
 
+export interface UIHookEvent {
+  kind: "hook"
+  hookEventName?: string
+  toolName?: string
+  raw: unknown
+  ts: number
+}
+
 export interface UIRaw {
   kind: "raw"
   line?: string
@@ -106,6 +117,7 @@ export type UIEntry =
   | UISystemStatus
   | UIResult
   | UIRateLimit
+  | UIHookEvent
   | UIRaw
   | UIStderr
   | UIUnknown
