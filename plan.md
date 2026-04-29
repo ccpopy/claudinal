@@ -501,6 +501,7 @@ F:\project\claudecli\
 - [x] RunGroup 折叠/展开边框翻转（折叠下边框 / 展开上边框）
 - [x] 用户消息「[Image: source: ...]」占位行剥离（保留真实 base64 图片）
 - [x] RunGroup 流式占位 + 实时秒表（user 发送后立即 push run，startTs 兜底）
+- [ ] **每条对话消息可复制**：user / assistant 的可见对话内容都要有复制入口；复制内容只包含该条消息的正文与必要占位文本，不包含 RunGroup 触发器（例如「已处理 1m08s · 14 步」），也不包含展开后的 thinking / tool_use / tool_result 步骤内容。
 - [ ] **会话图片点击放大**（lightbox）：
   - user 消息中的图片缩略图（`MessageBlocks::ImageBlock`）和 assistant 内嵌图片均要支持点击 → 居中放大预览（Dialog/`role="dialog"` 模态 + 暗背景 + Esc/点击外部关闭）。
   - 多图时支持左右切换（`◀ ▶` 按钮 + 键盘 ←/→），底部小圆点指示。
@@ -785,3 +786,9 @@ pnpm tauri build               # 打包安装包（首次较慢）
 - **Composer 双形态**：`centered` prop 控制——empty 状态居中、圆角卡片样式；有消息后回到底部、border-top 紧贴模式。两种形态下输入逻辑完全一致。
 - **建议预填**：Welcome 上点击建议项 → `setDraft(s)` → Composer 通过 `externalText` prop 拿到 → 填入 textarea + 焦点（用户可改后再发）。
 - **P1 切入点（codex 接手）**：在 Sidebar 项目下展开"最近会话"，数据来自 `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` 索引；`onSelect` 改为 `(project, sessionId?)` 携带恢复目标，`spawn_session` 调用时传 `--resume <id>`。
+
+---
+
+## 12. 最后一步：构建体积收尾
+
+- [ ] **优化 Vite chunk 体积**：当前 `npm run build` 会提示部分 chunk 超过 500 kB。等功能稳定后再处理代码分割，优先评估 `react-markdown` / `rehype-highlight` / 设置页相关模块的动态导入，以及 `build.rollupOptions.output.manualChunks` 拆包策略。

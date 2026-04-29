@@ -111,7 +111,7 @@ const components: Components = {
       return (
         <code
           className={cn(
-            "px-1 py-0.5 rounded bg-primary/10 text-primary font-mono text-[12px]",
+            "px-1 py-0.5 rounded bg-muted text-foreground/90 font-mono text-[12px]",
             className
           )}
           {...props}
