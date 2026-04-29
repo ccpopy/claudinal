@@ -1,0 +1,158 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Claude 暖色调 light 主题（默认） */
+:root,
+.light {
+  --background: oklch(0.98 0.005 95);
+  --foreground: oklch(0.21 0.005 80);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.005 80);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.005 80);
+  --primary: oklch(0.66 0.13 40);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.95 0.012 90);
+  --secondary-foreground: oklch(0.25 0.005 80);
+  --muted: oklch(0.96 0.01 90);
+  --muted-foreground: oklch(0.52 0.012 90);
+  --accent: oklch(0.94 0.015 85);
+  --accent-foreground: oklch(0.21 0.005 80);
+  --destructive: oklch(0.55 0.2 27);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.92 0.018 90);
+  --input: oklch(0.92 0.018 90);
+  --ring: oklch(0.66 0.13 40 / 0.4);
+  --radius: 0.625rem;
+
+  --sidebar: oklch(0.96 0.012 90);
+  --sidebar-foreground: oklch(0.21 0.005 80);
+  --sidebar-muted: oklch(0.52 0.012 90);
+  --sidebar-border: oklch(0.9 0.015 90);
+  --sidebar-accent: oklch(0.93 0.015 85);
+
+  --user: oklch(0.95 0.018 70);
+  --user-foreground: oklch(0.25 0.005 80);
+  --thinking: oklch(0.96 0.018 80);
+  --tool: oklch(0.96 0.02 150);
+  --connected: oklch(0.55 0.13 150);
+  --warn: oklch(0.6 0.13 80);
+}
+
+.dark {
+  --background: oklch(0.16 0.005 80);
+  --foreground: oklch(0.96 0.005 80);
+  --card: oklch(0.21 0.005 80);
+  --card-foreground: oklch(0.96 0.005 80);
+  --popover: oklch(0.21 0.005 80);
+  --popover-foreground: oklch(0.96 0.005 80);
+  --primary: oklch(0.7 0.13 40);
+  --primary-foreground: oklch(0.16 0.005 80);
+  --secondary: oklch(0.27 0.005 80);
+  --secondary-foreground: oklch(0.96 0.005 80);
+  --muted: oklch(0.27 0.005 80);
+  --muted-foreground: oklch(0.7 0.005 80);
+  --accent: oklch(0.27 0.005 80);
+  --accent-foreground: oklch(0.96 0.005 80);
+  --destructive: oklch(0.55 0.18 27);
+  --destructive-foreground: oklch(0.96 0.005 80);
+  --border: oklch(0.27 0.005 80);
+  --input: oklch(0.27 0.005 80);
+  --ring: oklch(0.7 0.13 40 / 0.4);
+
+  --sidebar: oklch(0.18 0.005 80);
+  --sidebar-foreground: oklch(0.96 0.005 80);
+  --sidebar-muted: oklch(0.55 0.005 80);
+  --sidebar-border: oklch(0.25 0.005 80);
+  --sidebar-accent: oklch(0.24 0.005 80);
+
+  --user: oklch(0.32 0.06 270);
+  --user-foreground: oklch(0.95 0.005 270);
+  --thinking: oklch(0.27 0.04 320);
+  --tool: oklch(0.25 0.04 150);
+  --connected: oklch(0.62 0.13 150);
+  --warn: oklch(0.62 0.13 80);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+
+  --color-user: var(--user);
+  --color-user-foreground: var(--user-foreground);
+  --color-thinking: var(--thinking);
+  --color-tool: var(--tool);
+  --color-connected: var(--connected);
+  --color-warn: var(--warn);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html, body, #root { height: 100%; margin: 0; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+  }
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  &::-webkit-scrollbar { width: 8px; height: 8px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 4px;
+  }
+  &::-webkit-scrollbar-thumb:hover { background: var(--ring); }
+  &::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
+  &::-webkit-scrollbar-corner { background: transparent; }
+}
+
+/* 全局兜底：textarea / pre 滚动按钮去掉 */
+textarea::-webkit-scrollbar-button,
+pre::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+@keyframes blink-caret {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+.caret { animation: blink-caret 1s steps(2, end) infinite; }

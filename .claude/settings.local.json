@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude --version)",
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(npm --version)",
+      "Bash(pnpm --version)",
+      "Bash(where claude *)",
+      "Bash(pnpm install *)",
+      "Bash(pnpm add *)",
+      "Bash(cargo fetch *)",
+      "Bash(pnpm exec *)",
+      "Bash(cargo check *)",
+      "PowerShell(Join-Path *)",
+      "Bash(pnpm build *)",
+      "Bash(node *)"
+    ]
+  }
+}
