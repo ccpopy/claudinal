@@ -53,6 +53,10 @@ export function SuggestionPanel({
             data-idx={i}
             type="button"
             onMouseEnter={() => onHover(i)}
+            onMouseDown={(e) => {
+              // 阻止 textarea blur 导致面板提前关闭吞掉 onClick
+              e.preventDefault()
+            }}
             onClick={() => onPick(i)}
             role="option"
             aria-selected={i === activeIdx}

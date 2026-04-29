@@ -36,7 +36,7 @@ export function General() {
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 max-w-3xl space-y-6">
+        <div className="px-8 pb-6 w-full space-y-6">
           <section className="space-y-4 rounded-lg border bg-card p-5">
             <div className="flex items-center justify-between">
               <div>

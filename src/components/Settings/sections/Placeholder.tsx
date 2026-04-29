@@ -13,7 +13,7 @@ export function Placeholder({ title, hint }: Props) {
         <h2 className="text-xl font-semibold">{title}</h2>
       </div>
       <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-8 max-w-3xl">
+        <div className="px-8 pb-8 w-full">
           <div className="rounded-lg border bg-muted/40 p-6 flex items-start gap-3">
             <Construction className="size-5 text-muted-foreground shrink-0 mt-0.5" />
             <div className="text-sm text-muted-foreground">

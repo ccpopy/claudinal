@@ -217,7 +217,7 @@ export function Sidebar({
   )
 
   return (
-    <aside className="w-64 shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground flex flex-col">
+    <aside className="w-64 shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground flex flex-col rounded-lg">
       <div className="px-3 pt-3 flex flex-col gap-2">
         <Button
           variant="ghost"
@@ -375,12 +375,7 @@ export function Sidebar({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation()
-                                if (
-                                  window.confirm(
-                                    `从列表移除「${p.name}」？（不会删除磁盘文件与历史会话）`
-                                  )
-                                )
-                                  onRemove(p.id)
+                                onRemove(p.id)
                               }}
                               className="size-5 inline-flex items-center justify-center rounded opacity-0 group-hover:opacity-100 text-destructive hover:bg-destructive/10 transition-opacity"
                               aria-label="移除项目"

@@ -17,6 +17,7 @@ import {
   SuggestionPanel,
   type SuggestionItem
 } from "./SuggestionPanel"
+import { ImageLightbox } from "./ImageLightbox"
 
 interface Props {
   onSend: (text: string, images: string[]) => void | Promise<void>
@@ -82,6 +83,7 @@ export function Composer({
   const [trigger, setTrigger] = useState<TriggerInfo | null>(null)
   const [items, setItems] = useState<SuggestionItem[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null)
   const fileReqRef = useRef(0)
 
   const refreshSuggestions = useCallback(
@@ -277,19 +279,24 @@ export function Composer({
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {images.map((img, i) => (
-            <div
-              key={i}
-              className="relative size-16 rounded-md border bg-cover bg-center"
-              style={{
-                backgroundImage: `url(data:${img.mime};base64,${img.data})`
-              }}
-            >
+            <div key={i} className="relative size-16 group/thumb">
+              <button
+                type="button"
+                aria-label="放大图片"
+                title="点击放大"
+                onClick={() => setPreviewIdx(i)}
+                className="size-16 rounded-md border bg-cover bg-center cursor-zoom-in transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
+                style={{
+                  backgroundImage: `url(data:${img.mime};base64,${img.data})`
+                }}
+              />
               <button
                 type="button"
                 aria-label="移除图片"
-                onClick={() =>
+                onClick={(e) => {
+                  e.stopPropagation()
                   setImages((cur) => cur.filter((_, j) => j !== i))
-                }
+                }}
                 className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-foreground/90 text-background inline-flex items-center justify-center hover:bg-foreground"
               >
                 <X className="size-3" />
@@ -297,6 +304,14 @@ export function Composer({
             </div>
           ))}
         </div>
+      )}
+      {previewIdx !== null && images[previewIdx] && (
+        <ImageLightbox
+          open
+          src={`data:${images[previewIdx].mime};base64,${images[previewIdx].data}`}
+          alt={`待发送图片 ${previewIdx + 1}`}
+          onClose={() => setPreviewIdx(null)}
+        />
       )}
       <div className="flex items-end gap-2 relative">
         <SuggestionPanel

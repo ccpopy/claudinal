@@ -466,7 +466,11 @@ F:\project\claudecli\
 
 - [x] **重命名会话**：`src/lib/sessionTitles.ts`（`localStorage["claudinal.session-titles"]`），`RenameSessionDialog` Dialog；ChatHeader 下拉菜单 onRename 触发；Sidebar `SessionRow` 显示时优先读 `getSessionTitle(session.id)`，留空恢复默认。
 - [x] **删除会话**：Rust `delete_session_jsonl(cwd, sessionId)` + 注册；前端 ipc 包装；ChatHeader 下拉菜单 onDelete `window.confirm` 二次确认 → teardown → 删 jsonl → reset → 刷新 Sidebar。
-- [x] **fork session**：Rust `SpawnOptions.fork_session_id` + `--fork-session <sid>` 透传；前端 `forkPendingId` 状态在下次 `ensureSession` 时注入；ChatHeader 下拉菜单「分叉会话」入口；fork 完成后 toast 提示发送消息开始。
+- [ ] **派生到新工作树（基于 CLI `--fork-session`）** — 备选项，不一定实现。曾尝试落地（Rust `SpawnOptions.fork_session_id` + 前端 `forkPendingId` + ChatHeader 「分叉会话 / 复制为新会话」菜单），用户反馈命名晦涩、实际场景少，整段移除。
+  若未来重做，命名规范为「**派生到新工作树**」，对齐 git worktree 心智：
+  - 文案：菜单「派生到新工作树」+ tooltip「以当前会话历史为起点开一支独立分支，不影响本工作树」
+  - 触发入口从 ChatHeader 菜单移到 Sidebar 右键，避开主流程误触
+  - 跑前预览：sidecar 复制最近一次 result + 自动生成派生工作树名（`<原 cwd basename>-fork-<n>`）
 - ~~复制深度链接（claudinal://）~~ — 取消：jsonl 本地存储，跨设备打不开；同设备多窗口/自跳转价值低，删除条目，菜单不留占位。
 
 ### 9.1.2a 流式中途引导输入（"插话"）
@@ -583,6 +587,28 @@ F:\project\claudecli\
   - P3 设置：General（自动更新 toggle）/ Config（model/effort/permission/CLI 路径）/ Account（登录方式 + usage 累计 + 按模型拆分表）；`claudinal.settings` + `claudinal.usage` + `claudinal.api-key-source` 三个 store；spawn 时 `loadSettings` 注入参数
   - notify fs watcher：Rust `WatcherState` + 200ms 节流 + Sidebar 增量刷新
   - @ 文件补全 + / 斜杠面板：Rust `list_files`（4 层深度 / 500 上限 / 跳过常见构建目录）+ `SuggestionPanel` 浮窗 + ↑↓ Tab/Enter Esc 键盘交互
+- ✅ **2026-04-30 后续 #6（settings.json 集成 / 权限 Phase 2 / bug 修复）**：
+  - 修补全点击 bug：SuggestionPanel 加 `onMouseDown preventDefault` 阻止 textarea blur 抢先关面板吞掉 onClick
+  - 斜杠命令本地路由：`/clear` / `/reset` 客户端清空会话；其他斜杠仍发给 CLI 但 toast 提示是 TUI 专属
+  - Rust `read/write_claude_settings(scope, cwd?)` + `claude_settings_path_for(scope)`，scope=global/project/project-local
+  - Config 分类重写：直接读写 `~/.claude/settings.json`（model / effortLevel / language / alwaysThinkingEnabled / env）；env 区列出 Anthropic 系列 + 代理 env，敏感字段（AUTH_TOKEN / API_KEY）显隐切换；右上角「打开 settings.json」按钮
+  - Account 分类重写：`detectAuth(env, apiKeySource)` 区分第三方 API（AUTH_TOKEN）/ 官方 key / OAuth / 未登录；显示 base URL + 脱敏 token；本机累计 usage 改副标题；新增「计划用量限额」占位（数据接口待 P4）
+  - plan.md §13 新增「权限审批模块（独立设计）」：现状 + 三条路径（A MCP 桥 / B 命令行预批 / C settings.json allow）+ 阶段性方案 + 不做清单
+  - 权限 Phase 2：`PermissionDenialList` 每条 denial 加「允许 Bash(curl:*)」按钮 → `inferAllowRule` + `read/writeClaudeSettings("global")` 写 `permissions.allow`；toast 提示下次会话生效
+  - App.tsx 移除 `loadSettings` 注入（settings.json 在 CLI 端自动读取，不再透传 spawn 参数）
+- ✅ **2026-04-30 后续 #7（OAuth 用量真接口 / Config 收敛 / 代理冲突）**：
+  - 调研官方 settings.json schema（https://code.claude.com/docs/en/settings）：确认 effortLevel 字段名（取值 low/medium/high/xhigh，无 max）；permissions 含 allow/ask/deny/defaultMode/additionalDirectories；OAuth 凭据存 `~/.claude/.credentials.json` 的 `claudeAiOauth.accessToken`（macOS 在 Keychain，留 P4）
+  - Config 分类收敛：移除 env 编辑（避免和 OAuth/第三方 API 冲突），只保留 model / effortLevel / language / alwaysThinkingEnabled；底部提示「env / 鉴权 / 权限请直接编辑 settings.json」
+  - Rust `read_claude_oauth_token` + `fetch_oauth_usage` 命令（`reqwest 0.12 + rustls-tls`）；调 `GET https://api.anthropic.com/api/oauth/usage`（Bearer + `anthropic-beta: <DEFAULT_OAUTH_BETA or env override>`）
+  - Account 计划用量：按 Anthropic.com 截图 1:1 复刻「计划用量限额 / 每周限额」中文文案（当前会话 / 全部模型 / 仅 Sonnet / 仅 Opus），UsageBar grid 三栏 + 暖橙/警黄/destructive 阈值；删 Extra usage 段；不在响应里的字段（Claude Design / Daily routine runs）干脆不显示
+  - 网络代理冲突检测：Network 页加载时读 settings.json env.HTTPS_PROXY/HTTP_PROXY；若有则顶部黄色警告卡（CLI 启动时 settings.json env 优先级高于 spawn 注入），引导去 Config 打开 settings.json 删除冲突字段
+- ✅ **2026-04-30 后续 #8（Usage / Statistics 拆分 + fork 废弃 + 二次确认）**：
+  - 设置页拆分：Account 改名「Usage」（仅登录 + 计划用量）；新增「统计」分类
+  - Rust `chrono` 依赖；`scan_all_usage_sidecars` 全局扫 sidecar 累加；`scan_activity_heatmap(days)` 扫所有 jsonl 按本地时区桶到 (date, hour, count)
+  - Statistics 页：全部会话累计（成本 / tokens / cache / 按模型）+ 30 天 × 24 小时 ActivityHeatmap（Tooltip 显示日期+小时+消息数，5 档暖橙强度）
+  - Fork 功能整段废弃（Rust SpawnOptions.fork_session_id / --fork-session、ChatHeader 菜单项、App forkCurrentSession + forkPendingId、ipc.forkSessionId 全部移除）
+  - 通用 `ConfirmDialog` 走 shadcn `AlertDialog`（`@radix-ui/react-alert-dialog`，role=alertdialog，按 Esc / 点外部不关，专门给不可逆操作）；删除会话 + 项目从列表移除全部走 Dialog 二次确认替代 window.confirm
+  - 「分叉会话」菜单项已移除（用户反馈命名晦涩 + 实际场景少）；plan.md §9.1.1 标记为备选项，未来重做时命名规范定为「派生到新工作树」（对齐 git worktree 心智）
 - ⏳ 待用户实测 `pnpm tauri dev`
 - ⏳ P3 其他分类：配置 / 个性化 / MCP / Git / 环境 / 工作树 / 浏览器 / 归档 / 账号Usage（占位）
 
@@ -797,3 +823,52 @@ pnpm tauri build               # 打包安装包（首次较慢）
 ## 12. 最后一步：构建体积收尾
 
 - [ ] **优化 Vite chunk 体积**：当前 `npm run build` 会提示部分 chunk 超过 500 kB。等功能稳定后再处理代码分割，优先评估 `react-markdown` / `rehype-highlight` / 设置页相关模块的动态导入，以及 `build.rollupOptions.output.manualChunks` 拆包策略。
+
+---
+
+## 13. 权限审批模块（独立设计）
+
+> **TL;DR**：headless `--input-format stream-json` 模式下，CLI **不会**像 TUI 那样发交互式 `permission_request` 事件等待我们 ack —— 它直接拒绝并把记录塞到 `result.permission_denials`。所以"弹窗 → 用户 Allow → 工具执行"这条交互链在当前协议下做不到。这一节专门记录现状、调研、阶段性方案，避免后续再走弯路。
+
+### 13.1 当前观察（来自 `doc/stream-json-permission.txt`）
+
+- 用户提示：`跑一下 curl https://example.com -I`
+- CLI assistant 文字：`命令需要你批准后才能执行。请在权限提示中允许，或运行 /permissions 添加 Bash(curl:*) 到允许列表后我再重试。`
+- `result` 事件：
+  ```json
+  "permission_denials": [
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_…",
+      "tool_input": { "command": "curl https://example.com -I", "description": "…" }
+    }
+  ]
+  ```
+- **没有** `permission_request` 事件抵达 stdout，也没有 stdin 协议让我们写回 `allow` / `deny`。
+- 可重现：`permissionMode: "default"` + 任意未在 settings.json `permissions.allow` 里的工具调用。
+
+### 13.2 三条可行路径
+
+| 方案 | 描述 | 工作量 | 局限 |
+|------|------|--------|------|
+| **A：`--permission-prompt-tool` MCP 桥** | spawn 时带 `--permission-prompt-tool <mcp_tool_name>`，CLI 把权限请求路由到指定 MCP 工具；我们注册一个本地 stdio MCP server，把请求转发到桌面 UI 弹窗，等用户决议后回写工具结果 | 高（需要写最小 MCP server + 协议解析 + 跨进程通信） | 必须先弄清 CLI 实际向 MCP tool 发什么 schema；版本兼容性风险 |
+| **B：`--allowed-tools` / `--disallowed-tools` 命令行预批** | spawn 时把白名单作为参数传入；UI 提供「常用工具一键放行」按钮 | 低 | 启动后无法动态加白名单，只能等下一会话 |
+| **C：写 `settings.json.permissions.allow`** | 拿到 denial 后，UI 给一个「加入 allowlist」按钮；写规则进 `~/.claude/settings.json` 或项目 `.claude/settings.json`；下次会话生效 | 低（已有 read/write_claude_settings） | 仍需重启一次会话；规则语法（`Bash(curl:*)`）需查官方文档 |
+
+### 13.3 阶段性实施
+
+**Phase 1（已实现）**：渲染 `result.permission_denials` 为可见红 chip，告知用户去 `/permissions` 加白名单。
+
+**Phase 2（实施中，方案 C）**：
+- `PermissionDenialList` 每条 denial 加「加入 allowlist」按钮
+- 点击 → 推断规则字符串（Bash → `Bash(<cmd_first_word>:*)`、Write → `Write(<file_path>)` 等）→ 读 `~/.claude/settings.json` → `permissions.allow` 数组追加去重 → 写回
+- toast 提示「已加入白名单，下次会话生效」
+- 规则推断函数 `inferAllowRule(toolName, toolInput)` 在 `src/lib/permissionRules.ts`，单元覆盖 Bash / Write / Edit / WebFetch / MCP 工具
+
+**Phase 3（P4，方案 A）**：搭一个最小 stdio MCP server（`src-tauri/bin/permission-mcp.rs`），spawn 时 `--mcp-config` 注入 + `--permission-prompt-tool <name>`；MCP server 通过 Tauri event 唤起前端 PermissionDialog，等待 `allow` / `deny` 决议后通过 stdout 回写工具结果。需先抓到 CLI 发给 MCP 的实际 schema。
+
+### 13.4 不做清单
+
+- 自行 patch CLI 二进制注入 hook —— 升级即失效，且违反 plan §1 不变量。
+- 复制 TUI 的 inquirer 阻塞流 —— headless 协议不暴露 stdin tty，做不了。
+- 缓存"上次允许过的工具调用"在桌面端旁路 CLI 决策 —— 等于自己实现权限系统，违反不变量。

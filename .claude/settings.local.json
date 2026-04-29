@@ -16,7 +16,12 @@
       "Bash(pnpm build *)",
       "Bash(node *)",
       "Bash(echo \"exit=$?\")",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "WebFetch(domain:docs.claude.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:codelynx.dev)",
+      "WebFetch(domain:gist.github.com)"
     ]
   }
 }

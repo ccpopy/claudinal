@@ -1,109 +1,153 @@
-import { useState } from "react"
-import { Save, Settings2 } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { ExternalLink, Save, Settings2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
-import { Separator } from "@/components/ui/separator"
-import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings"
+import { Switch } from "@/components/ui/switch"
+import {
+  claudeSettingsPath,
+  openPath,
+  readClaudeSettings,
+  writeClaudeSettings
+} from "@/lib/ipc"
 
+// 官方 settings.json 字段（来自 https://code.claude.com/docs/en/settings）
+// effortLevel 取值：low / medium / high / xhigh
 const EFFORT_OPTIONS = [
-  { value: "", label: "默认" },
+  { value: "", label: "（默认）" },
   { value: "low", label: "low" },
   { value: "medium", label: "medium" },
   { value: "high", label: "high" },
-  { value: "xhigh", label: "xhigh" },
-  { value: "max", label: "max" }
+  { value: "xhigh", label: "xhigh" }
 ]
 
-const PERMISSION_OPTIONS = [
-  { value: "default", label: "default（每次询问）" },
-  { value: "acceptEdits", label: "acceptEdits（自动批准编辑）" },
-  { value: "plan", label: "plan（仅规划，不执行）" },
-  { value: "bypassPermissions", label: "bypassPermissions（全放行）" }
-] as const
+interface CliSettings {
+  model?: string
+  effortLevel?: string
+  language?: string
+  alwaysThinkingEnabled?: boolean
+  env?: Record<string, string>
+  permissions?: { allow?: string[]; deny?: string[]; ask?: string[] }
+  [k: string]: unknown
+}
 
 export function Config() {
-  const [cfg, setCfg] = useState<AppSettings>(() => loadSettings())
+  const [cliSettings, setCliSettings] = useState<CliSettings>({})
+  const [filePath, setFilePath] = useState<string>("")
+  const [loading, setLoading] = useState(false)
   const [dirty, setDirty] = useState(false)
 
-  const update = (patch: Partial<AppSettings>) => {
-    setCfg((c) => ({ ...c, ...patch }))
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const path = await claudeSettingsPath("global")
+      setFilePath(path)
+      const raw = await readClaudeSettings("global")
+      setCliSettings((raw as CliSettings | null) ?? {})
+      setDirty(false)
+    } catch (e) {
+      toast.error(`读取失败: ${String(e)}`)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const update = (patch: Partial<CliSettings>) => {
+    setCliSettings((c) => ({ ...c, ...patch }))
     setDirty(true)
   }
 
-  const save = () => {
-    saveSettings(cfg)
-    setDirty(false)
-    toast.success("已保存，下次启动会话生效")
+  const save = async () => {
+    try {
+      await writeClaudeSettings("global", cliSettings as Record<string, unknown>)
+      setDirty(false)
+      toast.success("已保存到 settings.json，下次启动会话生效")
+    } catch (e) {
+      toast.error(`保存失败: ${String(e)}`)
+    }
   }
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <Settings2 className="size-5" />
-          配置
-        </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          spawn 默认参数与 CLI 路径覆盖，下次启动会话生效。
-        </p>
+      <div className="px-8 pt-8 pb-4 shrink-0 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <Settings2 className="size-5" />
+            配置
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            直接读写 <code className="font-mono text-xs">~/.claude/settings.json</code>，环境变量 / 鉴权请直接编辑文件。
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-6 shrink-0"
+          onClick={() =>
+            filePath && openPath(filePath).catch((e) => toast.error(String(e)))
+          }
+          disabled={!filePath}
+        >
+          <ExternalLink className="size-3.5" />
+          打开 settings.json
+        </Button>
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 max-w-3xl space-y-6">
-          <section className="space-y-4 rounded-lg border bg-card p-5">
+        <div className="px-8 pb-6 w-full space-y-6">
+          <section className="rounded-lg border bg-card p-5 space-y-4">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground">
+              CLI 行为
+            </div>
             <Row label="模型">
               <Input
-                value={cfg.defaultModel}
-                onChange={(e) => update({ defaultModel: e.target.value })}
-                placeholder="留空使用 CLI 默认（如 claude-opus-4-7）"
+                value={(cliSettings.model as string) ?? ""}
+                onChange={(e) => update({ model: e.target.value })}
+                placeholder="如 claude-sonnet-4-6 / opus[1m]"
                 className="font-mono text-xs flex-1"
+                disabled={loading}
               />
             </Row>
-            <Row label="effort">
+            <Row label="effortLevel">
               <Select
-                value={cfg.defaultEffort}
-                onChange={(e) => update({ defaultEffort: e.target.value })}
+                value={(cliSettings.effortLevel as string) ?? ""}
+                onChange={(e) => update({ effortLevel: e.target.value })}
                 options={EFFORT_OPTIONS}
                 triggerClassName="max-w-[260px]"
+                disabled={loading}
               />
             </Row>
-            <Row label="权限">
-              <Select
-                value={cfg.defaultPermissionMode}
-                onChange={(e) =>
-                  update({
-                    defaultPermissionMode: e.target
-                      .value as AppSettings["defaultPermissionMode"]
-                  })
-                }
-                options={PERMISSION_OPTIONS as unknown as Array<{ value: string; label: string }>}
-                triggerClassName="max-w-[280px]"
-              />
-            </Row>
-            <Separator />
-            <Row label="CLI 路径">
+            <Row label="语言">
               <Input
-                value={cfg.claudeCliPath}
-                onChange={(e) => update({ claudeCliPath: e.target.value })}
-                placeholder="留空走 PATH 自动定位"
-                className="font-mono text-xs flex-1"
+                value={(cliSettings.language as string) ?? ""}
+                onChange={(e) => update({ language: e.target.value })}
+                placeholder="Chinese / English / japanese"
+                className="text-xs flex-1"
+                disabled={loading}
               />
             </Row>
-            <div className="text-[11px] text-muted-foreground">
-              覆盖 CLAUDE_CLI_PATH 环境变量；填后启动会话时通过 env 注入。
-            </div>
+            <Row label="深思">
+              <Switch
+                checked={!!cliSettings.alwaysThinkingEnabled}
+                onCheckedChange={(v) => update({ alwaysThinkingEnabled: v })}
+                disabled={loading}
+              />
+            </Row>
           </section>
         </div>
       </ScrollArea>
 
       <div className="px-8 py-4 shrink-0 flex items-center gap-2">
-        <Button onClick={save} disabled={!dirty}>
+        <Button onClick={save} disabled={!dirty || loading}>
           <Save />
-          保存
+          保存到 settings.json
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
       </div>
@@ -120,7 +164,7 @@ function Row({
 }) {
   return (
     <div className="flex items-center gap-3">
-      <Label className="w-20 text-xs shrink-0">{label}</Label>
+      <Label className="w-24 text-xs shrink-0">{label}</Label>
       {children}
     </div>
   )

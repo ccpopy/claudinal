@@ -3,7 +3,6 @@ import {
   FileText,
   FolderOpen,
   GitCompareArrows,
-  GitFork,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -35,7 +34,6 @@ interface Props {
   title: string
   onPinChange?: () => void
   onRename?: () => void
-  onFork?: () => void
   onDelete?: () => void
   onShowDiff?: () => void
   diffCount?: number
@@ -48,7 +46,6 @@ export function ChatHeader({
   title,
   onPinChange,
   onRename,
-  onFork,
   onDelete,
   onShowDiff,
   diffCount = 0
@@ -124,13 +121,6 @@ export function ChatHeader({
             >
               <Pencil />
               <span>重命名会话</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => onFork?.()}
-              disabled={!onFork}
-            >
-              <GitFork />
-              <span>分叉会话</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={handleOpen}>

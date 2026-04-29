@@ -1,0 +1,339 @@
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { BarChart3, RefreshCw } from "lucide-react"
+import { toast } from "sonner"
+import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+import {
+  scanActivityHeatmap,
+  scanGlobalUsage,
+  type ActivityCell,
+  type GlobalUsage
+} from "@/lib/ipc"
+
+const HEATMAP_DAYS = 30
+
+function fmt(n: number): string {
+  if (!Number.isFinite(n)) return "0"
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
+}
+
+function fmtDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = (d.getMonth() + 1).toString().padStart(2, "0")
+  const day = d.getDate().toString().padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+export function Statistics() {
+  const [usage, setUsage] = useState<GlobalUsage | null>(null)
+  const [cells, setCells] = useState<ActivityCell[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [u, c] = await Promise.all([
+        scanGlobalUsage(),
+        scanActivityHeatmap(HEATMAP_DAYS)
+      ])
+      setUsage(u)
+      setCells(c)
+    } catch (e) {
+      toast.error(`扫描失败: ${String(e)}`)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const sortedModels = useMemo(() => {
+    if (!usage) return [] as Array<[string, GlobalUsage["by_model"][string]]>
+    return Object.entries(usage.by_model).sort(
+      (a, b) => b[1].cost_usd - a[1].cost_usd
+    )
+  }, [usage])
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="px-8 pt-8 pb-4 shrink-0 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <BarChart3 className="size-5" />
+            统计
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            全部会话累计来源于 <code className="font-mono text-xs">~/.claude/projects/</code> 目录，此处只统计 gui 端 result 的数据；活跃度按本地时区聚合最近 {HEATMAP_DAYS} 天。
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-6 shrink-0"
+          onClick={refresh}
+          disabled={loading}
+        >
+          <RefreshCw className={loading ? "animate-spin" : ""} />
+          刷新
+        </Button>
+      </div>
+
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="px-8 pb-6 w-full space-y-6">
+          <section className="rounded-lg border bg-card p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                全部会话累计
+              </div>
+              {usage && usage.last_updated > 0 && (
+                <div className="text-[11px] text-muted-foreground tabular-nums">
+                  最后扫描：{new Date(usage.last_updated * 1000).toLocaleString("zh-CN")}
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-3 gap-3 text-sm">
+              <Stat
+                label="会话数"
+                value={fmt(usage?.session_count ?? 0)}
+                hint={
+                  usage && usage.with_sidecar_count !== usage.session_count
+                    ? `其中 ${usage.with_sidecar_count} 条有 GUI 端 result`
+                    : undefined
+                }
+              />
+              <Stat
+                label="总成本"
+                value={`$${(usage?.total_cost_usd ?? 0).toFixed(4)}`}
+                hint="仅 GUI 端记录的会话"
+              />
+              <Stat
+                label="输入 tokens"
+                value={fmt(usage?.total_input_tokens ?? 0)}
+              />
+              <Stat
+                label="输出 tokens"
+                value={fmt(usage?.total_output_tokens ?? 0)}
+              />
+              <Stat
+                label="缓存命中"
+                value={fmt(usage?.total_cache_read ?? 0)}
+              />
+              <Stat
+                label="缓存创建"
+                value={fmt(usage?.total_cache_write ?? 0)}
+              />
+            </div>
+            <Separator />
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                按模型拆分
+              </div>
+              {sortedModels.length === 0 ? (
+                <div className="text-xs text-muted-foreground">
+                  没有 sidecar 记录 — 完成一轮对话后会自动写入。
+                </div>
+              ) : (
+                <div className="rounded-md border">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        <th className="text-left px-3 py-1.5 font-medium">模型</th>
+                        <th className="text-right px-3 py-1.5 font-medium">成本</th>
+                        <th className="text-right px-3 py-1.5 font-medium">输入</th>
+                        <th className="text-right px-3 py-1.5 font-medium">输出</th>
+                        <th className="text-right px-3 py-1.5 font-medium">缓存命中</th>
+                        <th className="text-right px-3 py-1.5 font-medium">缓存创建</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedModels.map(([model, m]) => (
+                        <tr key={model} className="border-t">
+                          <td className="px-3 py-1.5 font-mono break-all">{model}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            ${m.cost_usd.toFixed(4)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {fmt(m.input_tokens)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {fmt(m.output_tokens)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {fmt(m.cache_read_input_tokens)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {fmt(m.cache_creation_input_tokens)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-lg border bg-card p-5 space-y-3">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground">
+              活跃度热力图（最近 {HEATMAP_DAYS} 天）
+            </div>
+            <ActivityHeatmap cells={cells} days={HEATMAP_DAYS} />
+          </section>
+        </div>
+      </ScrollArea>
+    </div>
+  )
+}
+
+function Stat({
+  label,
+  value,
+  hint
+}: {
+  label: string
+  value: string
+  hint?: string
+}) {
+  return (
+    <div className="rounded-md bg-muted/30 px-3 py-2">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="text-sm font-mono tabular-nums">{value}</div>
+      {hint && (
+        <div className="text-[10px] text-muted-foreground/70 mt-0.5">{hint}</div>
+      )}
+    </div>
+  )
+}
+
+function ActivityHeatmap({ cells, days }: { cells: ActivityCell[]; days: number }) {
+  const dates = useMemo(() => {
+    const arr: string[] = []
+    const now = new Date()
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now)
+      d.setDate(d.getDate() - i)
+      arr.push(fmtDate(d))
+    }
+    return arr
+  }, [days])
+
+  const matrix = useMemo(() => {
+    // [hour][dateIdx] = count
+    const m: number[][] = Array.from({ length: 24 }, () =>
+      Array(dates.length).fill(0)
+    )
+    const dateIndex = new Map<string, number>()
+    dates.forEach((d, i) => dateIndex.set(d, i))
+    let max = 0
+    for (const c of cells) {
+      const di = dateIndex.get(c.date)
+      if (di == null) continue
+      if (c.hour < 0 || c.hour > 23) continue
+      m[c.hour][di] += c.count
+      if (m[c.hour][di] > max) max = m[c.hour][di]
+    }
+    return { m, max }
+  }, [cells, dates])
+
+  if (matrix.max === 0) {
+    return (
+      <div className="text-xs text-muted-foreground py-6">
+        暂无活动数据 — 在窗口内发起对话后会更新。
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-center overflow-x-auto scrollbar-thin">
+        <div className="inline-flex flex-col gap-0.5">
+          {/* 24 行（小时） */}
+          {Array.from({ length: 24 }).map((_, hour) => (
+            <div key={hour} className="flex items-center gap-1">
+              <div className="w-7 text-[10px] text-muted-foreground tabular-nums shrink-0 text-right">
+                {hour % 3 === 0 ? hour.toString().padStart(2, "0") : ""}
+              </div>
+              <div className="flex gap-0.5">
+                {dates.map((d, di) => {
+                  const count = matrix.m[hour][di]
+                  return (
+                    <Tooltip key={di}>
+                      <TooltipTrigger asChild>
+                        <div
+                          className={cn(
+                            "size-3 rounded-[2px] transition-colors",
+                            cellTone(count, matrix.max)
+                          )}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        <div className="text-xs">
+                          {d} · {hour.toString().padStart(2, "0")}:00
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {count} 条消息
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+          {/* 日期轴：首日 / 月初 / 末日 */}
+          <div className="flex items-center gap-1 mt-1">
+            <div className="w-7 shrink-0" />
+            <div className="flex gap-0.5">
+              {dates.map((d, di) => {
+                const day = new Date(d).getDate()
+                const show = di === 0 || day === 1 || di === dates.length - 1
+                return (
+                  <div
+                    key={di}
+                    className="w-3 text-[9px] text-muted-foreground tabular-nums text-center"
+                  >
+                    {show ? day : ""}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center justify-center gap-2 text-[10px] text-muted-foreground">
+        <span>少</span>
+        {[0.05, 0.25, 0.5, 0.75, 1].map((r) => (
+          <div
+            key={r}
+            className={cn(
+              "size-3 rounded-[2px]",
+              cellTone(r * matrix.max, matrix.max)
+            )}
+          />
+        ))}
+        <span>多</span>
+      </div>
+    </div>
+  )
+}
+
+function cellTone(count: number, max: number): string {
+  if (count === 0) return "bg-muted/40"
+  const ratio = max > 0 ? count / max : 0
+  if (ratio < 0.2) return "bg-primary/20"
+  if (ratio < 0.4) return "bg-primary/40"
+  if (ratio < 0.6) return "bg-primary/60"
+  if (ratio < 0.8) return "bg-primary/80"
+  return "bg-primary"
+}

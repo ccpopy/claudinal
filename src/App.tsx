@@ -1,4 +1,11 @@
-import { useEffect, useReducer, useRef, useState, useCallback } from "react"
+import {
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  useCallback
+} from "react"
 import type { UnlistenFn } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import {
@@ -15,7 +22,7 @@ import {
   type SessionMeta
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxy } from "@/lib/proxy"
-import { loadSettings, recordResultUsage } from "@/lib/settings"
+import { recordResultUsage } from "@/lib/settings"
 import { reduce, init as reducerInit } from "@/lib/reducer"
 import {
   listProjects,
@@ -31,6 +38,7 @@ import { Welcome } from "@/components/Welcome"
 import { AddProjectDialog } from "@/components/AddProjectDialog"
 import { RenameSessionDialog } from "@/components/RenameSessionDialog"
 import { DiffOverview } from "@/components/DiffOverview"
+import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { BuddyLoader } from "@/components/BuddyLoader"
 import { Settings } from "@/components/Settings"
 import { ChatHeader } from "@/components/ChatHeader"
@@ -128,11 +136,15 @@ export default function App() {
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
   const [showRename, setShowRename] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [pendingRemoveProjectId, setPendingRemoveProjectId] = useState<
+    string | null
+  >(null)
   const [loadingSession, setLoadingSession] = useState(false)
-  const [forkPendingId, setForkPendingId] = useState<string | null>(null)
   const [pending, setPending] = useState<
     Array<{ localId: string; text: string; images: string[] }>
   >([])
+  // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
   const unlistenRef = useRef<UnlistenFn[]>([])
 
   useEffect(() => {
@@ -208,19 +220,14 @@ export default function App() {
     if (sessionId) return sessionId
     try {
       const proxyEnv = buildProxyEnv(loadProxy())
-      const userSettings = loadSettings()
-      const env: Record<string, string> = { ...proxyEnv }
-      if (userSettings.claudeCliPath) env.CLAUDE_CLI_PATH = userSettings.claudeCliPath
       const id = await spawnSession({
         cwd: project.cwd,
-        model: userSettings.defaultModel || null,
-        effort: userSettings.defaultEffort || null,
-        permissionMode: userSettings.defaultPermissionMode,
-        resumeSessionId: forkPendingId ? null : selectedSessionId,
-        forkSessionId: forkPendingId,
-        env: Object.keys(env).length > 0 ? env : null
+        model: null,
+        effort: null,
+        permissionMode: "acceptEdits",
+        resumeSessionId: selectedSessionId,
+        env: Object.keys(proxyEnv).length > 0 ? proxyEnv : null
       })
-      if (forkPendingId) setForkPendingId(null)
       const u1 = await listenSessionEvents(id, (ev) => {
         dispatch({ kind: "event", event: ev })
         const t = (ev as { type?: string }).type
@@ -263,10 +270,24 @@ export default function App() {
       toast.error(`启动会话失败: ${String(e)}`)
       return null
     }
-  }, [project, sessionId, selectedSessionId, forkPendingId])
+  }, [project, sessionId, selectedSessionId])
 
   const send = useCallback(
     async (text: string, images: string[]) => {
+      // 客户端可处理的斜杠命令直接拦截，不投递给 CLI
+      const trimmed = text.trim()
+      if (trimmed === "/clear" || trimmed === "/reset") {
+        await teardown()
+        dispatch({ kind: "reset" })
+        setSelectedSessionId(null)
+        toast.success("已清空当前会话")
+        return
+      }
+      if (trimmed.startsWith("/") && images.length === 0) {
+        // 其他斜杠命令是 TUI 专属（/usage、/permissions、/login 等），桌面端做不了
+        // 仍把文本发给 CLI（CLI 会当普通文本处理），同时给一次性提醒
+        toast.info("斜杠命令是 CLI TUI 专属，GUI 中作普通文本处理")
+      }
       const uiBlocks: UIBlock[] = []
       if (text) uiBlocks.push({ type: "text", text })
       for (const data of images) {
@@ -308,7 +329,7 @@ export default function App() {
         setStreaming(false)
       }
     },
-    [streaming, ensureSession]
+    [streaming, ensureSession, teardown]
   )
 
   const stop = useCallback(async () => {
@@ -363,50 +384,53 @@ export default function App() {
     [teardown]
   )
 
-  const handleRemove = useCallback(
-    (id: string) => {
-      removeProjectStore(id)
-      setProjects(listProjects())
-      if (project?.id === id) {
-        teardown()
-        setProject(null)
-        setSelectedSessionId(null)
-        dispatch({ kind: "reset" })
-      }
-    },
-    [project, teardown]
+  const handleRemove = useCallback((id: string) => {
+    setPendingRemoveProjectId(id)
+  }, [])
+
+  const performRemoveProject = useCallback(async () => {
+    const id = pendingRemoveProjectId
+    if (!id) return
+    removeProjectStore(id)
+    setProjects(listProjects())
+    if (project?.id === id) {
+      await teardown()
+      setProject(null)
+      setSelectedSessionId(null)
+      dispatch({ kind: "reset" })
+    }
+    setPendingRemoveProjectId(null)
+    toast.success("项目已从列表移除")
+  }, [pendingRemoveProjectId, project, teardown])
+
+  const pendingRemoveProject = useMemo(
+    () =>
+      pendingRemoveProjectId
+        ? projects.find((p) => p.id === pendingRemoveProjectId)
+        : null,
+    [pendingRemoveProjectId, projects]
   )
 
   const newConversation = useCallback(async () => {
     await teardown()
     dispatch({ kind: "reset" })
     setSelectedSessionId(null)
-    setForkPendingId(null)
   }, [teardown])
 
-  const forkCurrentSession = useCallback(async () => {
-    if (!project) return
-    const target = selectedSessionId ?? findInitSessionId(state)
-    if (!target) {
-      toast.error("当前还没有 session id，无法分叉")
-      return
-    }
-    await teardown()
-    dispatch({ kind: "reset" })
-    setSelectedSessionId(null)
-    setForkPendingId(target)
-    toast.success(`已基于 ${target.slice(0, 8)} 创建分叉，发送消息开始`)
-  }, [project, selectedSessionId, state, teardown])
-
-  const deleteCurrentSession = useCallback(async () => {
+  const deleteCurrentSession = useCallback(() => {
     if (!project) return
     const target = selectedSessionId ?? findInitSessionId(state)
     if (!target) {
       toast.error("当前还没有 session id，无法删除")
       return
     }
-    if (!window.confirm(`删除会话 ${target.slice(0, 8)}？jsonl 将被删除，无法恢复。`))
-      return
+    setShowDeleteConfirm(true)
+  }, [project, selectedSessionId, state])
+
+  const performDelete = useCallback(async () => {
+    if (!project) return
+    const target = selectedSessionId ?? findInitSessionId(state)
+    if (!target) return
     await teardown()
     try {
       await deleteSessionJsonl(project.cwd, target)
@@ -428,90 +452,91 @@ export default function App() {
 
   return (
     <TooltipProvider>
-      <div className="flex h-screen bg-background text-foreground">
-        <Sidebar
-          projects={projects}
-          selectedProjectId={project?.id ?? null}
-          selectedSessionId={selectedSessionId}
-          streamingProjectId={streaming ? project?.id ?? null : null}
-          streamingSessionId={streamingJsonlId}
-          onSelectProject={switchProject}
-          onSelectSession={switchSession}
-          onAdd={() => setShowAdd(true)}
-          onRemove={handleRemove}
-          onNewConversation={newConversation}
-          onOpenSettings={() => setShowSettings(true)}
-          refreshKey={sidebarRefreshKey}
-        />
+      <>
+        <div className="flex h-screen bg-sidebar text-foreground gap-1.5 p-1.5">
+          <Sidebar
+            projects={projects}
+            selectedProjectId={project?.id ?? null}
+            selectedSessionId={selectedSessionId}
+            streamingProjectId={streaming ? project?.id ?? null : null}
+            streamingSessionId={streamingJsonlId}
+            onSelectProject={switchProject}
+            onSelectSession={switchSession}
+            onAdd={() => setShowAdd(true)}
+            onRemove={handleRemove}
+            onNewConversation={newConversation}
+            onOpenSettings={() => setShowSettings(true)}
+            refreshKey={sidebarRefreshKey}
+          />
 
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          {project && !empty && (
-            <ChatHeader
-              key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}-${titleTick}`}
-              project={project}
-              resumeSessionId={selectedSessionId}
-              jsonlSessionId={jsonlSessionId}
-              title={chatTitle(state, project, jsonlSessionId)}
-              onPinChange={() => setPinTick((t) => t + 1)}
-              onRename={
-                jsonlSessionId ? () => setShowRename(true) : undefined
-              }
-              onFork={jsonlSessionId ? forkCurrentSession : undefined}
-              onDelete={deleteCurrentSession}
-              onShowDiff={() => setShowDiff(true)}
-              diffCount={diffCount}
-            />
-          )}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background rounded-lg border overflow-hidden">
+            {project && !empty && (
+              <ChatHeader
+                key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}-${titleTick}`}
+                project={project}
+                resumeSessionId={selectedSessionId}
+                jsonlSessionId={jsonlSessionId}
+                title={chatTitle(state, project, jsonlSessionId)}
+                onPinChange={() => setPinTick((t) => t + 1)}
+                onRename={
+                  jsonlSessionId ? () => setShowRename(true) : undefined
+                }
+                onDelete={deleteCurrentSession}
+                onShowDiff={() => setShowDiff(true)}
+                diffCount={diffCount}
+              />
+            )}
 
-          {loadingSession ? (
-            <div className="flex-1 min-h-0 grid place-items-center">
-              <BuddyLoader />
-            </div>
-          ) : empty ? (
-            <div className="flex-1 min-h-0 overflow-y-auto flex items-center justify-center px-6 py-10">
-              <div className="w-full max-w-2xl flex flex-col items-center gap-6">
-                <Welcome
-                  project={project}
-                  onAddProject={() => setShowAdd(true)}
-                  suggestions={project ? SUGGESTIONS : undefined}
-                  onPickSuggestion={(s) => setDraft(s)}
-                />
-                {project && (
-                  <div className="w-full">
-                    <Composer
-                      onSend={send}
-                      onStop={stop}
-                      streaming={streaming}
-                      disabled={!cliPath}
-                      centered
-                      externalText={draft}
-                      onExternalTextConsumed={() => setDraft("")}
-                      cwd={project.cwd}
-                      slashCommands={slashCommands}
-                    />
-                  </div>
-                )}
+            {loadingSession ? (
+              <div className="flex-1 min-h-0 grid place-items-center">
+                <BuddyLoader />
               </div>
-            </div>
-          ) : (
-            <>
-              <MessageStream
-                key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
-                entries={state.entries}
-                streaming={streaming}
-              />
-              <Composer
-                onSend={send}
-                onStop={stop}
-                streaming={streaming}
-                disabled={!cliPath || !project}
-                externalText={draft}
-                onExternalTextConsumed={() => setDraft("")}
-                cwd={project?.cwd ?? null}
-                slashCommands={slashCommands}
-              />
-            </>
-          )}
+            ) : empty ? (
+              <div className="flex-1 min-h-0 overflow-y-auto flex items-center justify-center px-6 py-10">
+                <div className="w-full max-w-2xl flex flex-col items-center gap-6">
+                  <Welcome
+                    project={project}
+                    onAddProject={() => setShowAdd(true)}
+                    suggestions={project ? SUGGESTIONS : undefined}
+                    onPickSuggestion={(s) => setDraft(s)}
+                  />
+                  {project && (
+                    <div className="w-full">
+                      <Composer
+                        onSend={send}
+                        onStop={stop}
+                        streaming={streaming}
+                        disabled={!cliPath}
+                        centered
+                        externalText={draft}
+                        onExternalTextConsumed={() => setDraft("")}
+                        cwd={project.cwd}
+                        slashCommands={slashCommands}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                <MessageStream
+                  key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
+                  entries={state.entries}
+                  streaming={streaming}
+                />
+                <Composer
+                  onSend={send}
+                  onStop={stop}
+                  streaming={streaming}
+                  disabled={!cliPath || !project}
+                  externalText={draft}
+                  onExternalTextConsumed={() => setDraft("")}
+                  cwd={project?.cwd ?? null}
+                  slashCommands={slashCommands}
+                />
+              </>
+            )}
+          </div>
         </div>
 
         <AddProjectDialog
@@ -532,6 +557,40 @@ export default function App() {
             }}
           />
         )}
+        <ConfirmDialog
+          open={showDeleteConfirm}
+          onOpenChange={setShowDeleteConfirm}
+          title="删除会话"
+          destructive
+          confirmText="删除"
+          description={
+            <span>
+              将永久删除会话{" "}
+              <code className="font-mono text-xs">
+                {(jsonlSessionId ?? "").slice(0, 8)}
+              </code>{" "}
+              的 jsonl 文件，此操作不可恢复。
+            </span>
+          }
+          onConfirm={performDelete}
+        />
+        <ConfirmDialog
+          open={!!pendingRemoveProjectId}
+          onOpenChange={(v) => !v && setPendingRemoveProjectId(null)}
+          title="从列表移除项目"
+          destructive
+          confirmText="移除"
+          description={
+            pendingRemoveProject ? (
+              <span>
+                项目「
+                <span className="font-medium">{pendingRemoveProject.name}</span>
+                」会从侧边栏移除，但磁盘文件与历史会话不会删除。
+              </span>
+            ) : null
+          }
+          onConfirm={performRemoveProject}
+        />
         <DiffOverview
           open={showDiff}
           onOpenChange={setShowDiff}
@@ -539,7 +598,7 @@ export default function App() {
         />
         <Settings open={showSettings} onOpenChange={setShowSettings} />
         <Toaster />
-      </div>
+      </>
     </TooltipProvider>
   )
 }

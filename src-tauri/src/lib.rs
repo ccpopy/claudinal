@@ -34,6 +34,13 @@ pub fn run() {
             commands::watch_sessions,
             commands::unwatch_sessions,
             commands::list_files,
+            commands::claude_settings_path_for,
+            commands::read_claude_settings,
+            commands::write_claude_settings,
+            commands::read_claude_oauth_token,
+            commands::fetch_oauth_usage,
+            commands::scan_global_usage,
+            commands::scan_activity_heatmap,
             commands::open_path,
         ])
         .run(tauri::generate_context!())

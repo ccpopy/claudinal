@@ -10,6 +10,7 @@ import { useTheme, type Theme } from "@/lib/theme"
 import {
   applyAppearance,
   loadAppearance,
+  matchPreset,
   PRESETS,
   resetAppearance,
   saveAppearance,
@@ -47,6 +48,8 @@ export function Appearance() {
     persist(preset.appearance)
   }
 
+  const activePresetId = matchPreset(a)
+
   const resetAll = () => {
     resetAppearance()
     setA({ light: {}, dark: {} })
@@ -62,7 +65,7 @@ export function Appearance() {
         </p>
       </div>
       <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-8 max-w-3xl space-y-8">
+        <div className="px-8 pb-8 w-full space-y-8">
 
       <section className="space-y-3">
         <Label>主题</Label>
@@ -95,31 +98,57 @@ export function Appearance() {
             全部重置
           </Button>
         </div>
-        <div className="grid grid-cols-3 gap-2">
-          {Object.entries(PRESETS).map(([id, p]) => (
-            <Button
-              key={id}
-              variant="outline"
-              onClick={() => applyPreset(id)}
-              className="h-auto py-3 flex-col gap-1"
-            >
-              <div className="flex gap-1">
-                {[
-                  p.appearance.light.accent ?? "#d97757",
-                  p.appearance.light.background ?? "#faf9f5",
-                  p.appearance.dark.accent ?? "#e89270",
-                  p.appearance.dark.background ?? "#1a1a17"
-                ].map((c, i) => (
-                  <span
-                    key={i}
-                    className="size-3 rounded-full border"
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
-              <span className="text-xs font-normal">{p.label}</span>
-            </Button>
-          ))}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {Object.entries(PRESETS).map(([id, p]) => {
+            const active = activePresetId === id
+            return (
+              <Button
+                key={id}
+                variant={active ? "default" : "outline"}
+                onClick={() => applyPreset(id)}
+                className="h-auto py-3 flex-col gap-1"
+              >
+                <div className="flex gap-1">
+                  {[
+                    p.appearance.light.accent ?? "#d97757",
+                    p.appearance.light.background ?? "#faf9f5",
+                    p.appearance.dark.accent ?? "#e89270",
+                    p.appearance.dark.background ?? "#1a1a17"
+                  ].map((c, i) => (
+                    <span
+                      key={i}
+                      className="size-3 rounded-full border"
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+                <span className="text-xs font-normal">{p.label}</span>
+              </Button>
+            )
+          })}
+          {/* 「自定义」：4 色点跟随当前 a.light/dark 实时变化；无匹配预设时高亮 */}
+          <Button
+            variant={activePresetId ? "outline" : "default"}
+            disabled
+            className="h-auto py-3 flex-col gap-1 cursor-default opacity-100 disabled:opacity-100"
+            aria-label="当前自定义配色预览"
+          >
+            <div className="flex gap-1">
+              {[
+                a.light.accent ?? "#d97757",
+                a.light.background ?? "#faf9f5",
+                a.dark.accent ?? "#e89270",
+                a.dark.background ?? "#1a1a17"
+              ].map((c, i) => (
+                <span
+                  key={i}
+                  className="size-3 rounded-full border transition-colors"
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+            <span className="text-xs font-normal">自定义</span>
+          </Button>
         </div>
       </section>
 

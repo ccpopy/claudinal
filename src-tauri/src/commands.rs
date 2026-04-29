@@ -9,8 +9,10 @@ use crate::session::{
     list_project_sessions as list_sessions_inner,
     read_session_sidecar as read_sidecar_inner,
     read_session_transcript as read_transcript_inner,
+    scan_activity_heatmap as scan_heatmap_inner,
+    scan_all_usage_sidecars as scan_usage_inner,
     write_session_sidecar as write_sidecar_inner,
-    SessionMeta, WatcherState,
+    ActivityCell, GlobalUsage, SessionMeta, WatcherState,
 };
 
 #[tauri::command]
@@ -28,7 +30,6 @@ pub async fn spawn_session(
     effort: Option<String>,
     permission_mode: Option<String>,
     resume_session_id: Option<String>,
-    fork_session_id: Option<String>,
     env: Option<std::collections::HashMap<String, String>>,
 ) -> Result<String> {
     if !std::path::Path::new(&cwd).is_dir() {
@@ -40,7 +41,6 @@ pub async fn spawn_session(
         effort,
         permission_mode,
         resume_session_id,
-        fork_session_id,
         env,
     };
     manager.spawn(app, opts).await
@@ -219,6 +219,16 @@ pub async fn list_files(cwd: String, prefix: String) -> Result<Vec<FileMatch>> {
 }
 
 #[tauri::command]
+pub async fn scan_global_usage() -> Result<GlobalUsage> {
+    scan_usage_inner()
+}
+
+#[tauri::command]
+pub async fn scan_activity_heatmap(days: u32) -> Result<Vec<ActivityCell>> {
+    scan_heatmap_inner(days)
+}
+
+#[tauri::command]
 pub async fn watch_sessions(
     app: AppHandle,
     watcher: State<'_, WatcherState>,
@@ -234,6 +244,133 @@ pub async fn unwatch_sessions(
 ) -> Result<()> {
     watcher.unwatch(&cwd);
     Ok(())
+}
+
+fn claude_settings_path(scope: &str, cwd: Option<&str>) -> Result<std::path::PathBuf> {
+    match scope {
+        "global" => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| Error::Other("home dir not found".into()))?;
+            Ok(home.join(".claude").join("settings.json"))
+        }
+        "project" => {
+            let cwd = cwd.ok_or_else(|| Error::Other("cwd required for project scope".into()))?;
+            Ok(std::path::PathBuf::from(cwd)
+                .join(".claude")
+                .join("settings.json"))
+        }
+        "project-local" => {
+            let cwd = cwd.ok_or_else(|| Error::Other("cwd required for project-local scope".into()))?;
+            Ok(std::path::PathBuf::from(cwd)
+                .join(".claude")
+                .join("settings.local.json"))
+        }
+        _ => Err(Error::Other(format!("invalid scope: {scope}"))),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_settings_path_for(
+    scope: String,
+    cwd: Option<String>,
+) -> Result<String> {
+    let p = claude_settings_path(&scope, cwd.as_deref())?;
+    Ok(p.display().to_string())
+}
+
+#[tauri::command]
+pub async fn read_claude_settings(
+    scope: String,
+    cwd: Option<String>,
+) -> Result<Option<Value>> {
+    let path = claude_settings_path(&scope, cwd.as_deref())?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let v: Value = serde_json::from_str(&raw)?;
+    Ok(Some(v))
+}
+
+#[tauri::command]
+pub async fn write_claude_settings(
+    scope: String,
+    cwd: Option<String>,
+    data: Value,
+) -> Result<()> {
+    let path = claude_settings_path(&scope, cwd.as_deref())?;
+    if let Some(parent) = path.parent() {
+        if !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+    let text = serde_json::to_string_pretty(&data)?;
+    std::fs::write(&path, text).map_err(Error::from)?;
+    Ok(())
+}
+
+/// 读 ~/.claude/.credentials.json 中的 claudeAiOauth.accessToken。
+/// macOS 上 CLI 把凭据存在 Keychain（"Claude Code-credentials"），
+/// 当前实现仅覆盖 Linux/Windows；macOS 留 P4。
+fn read_oauth_access_token() -> Result<Option<String>> {
+    let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
+    let path = home.join(".claude").join(".credentials.json");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let v: Value = serde_json::from_str(&raw)?;
+    let token = v
+        .pointer("/claudeAiOauth/accessToken")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    Ok(token)
+}
+
+#[tauri::command]
+pub async fn read_claude_oauth_token() -> Result<Option<String>> {
+    read_oauth_access_token()
+}
+
+/// `anthropic-beta` 头当前默认值（抓包社区共识，非官方公开文档）。
+/// Anthropic 升级 beta 时此处会失效；可通过环境变量 `ANTHROPIC_OAUTH_BETA` 临时覆盖。
+const DEFAULT_OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// 调用 Anthropic 的 OAuth usage 端点；返回 JSON 透传给前端。
+/// 端点：GET https://api.anthropic.com/api/oauth/usage
+/// 头：Authorization: Bearer <token> + anthropic-beta: <ANTHROPIC_OAUTH_BETA or default>
+#[tauri::command]
+pub async fn fetch_oauth_usage() -> Result<Value> {
+    let token = read_oauth_access_token()?
+        .ok_or_else(|| Error::Other("OAuth 未登录：未找到 ~/.claude/.credentials.json".into()))?;
+    let beta = std::env::var("ANTHROPIC_OAUTH_BETA")
+        .unwrap_or_else(|_| DEFAULT_OAUTH_BETA.to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| Error::Other(format!("http client: {e}")))?;
+    let resp = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .bearer_auth(token)
+        .header("anthropic-beta", beta)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "Claudinal/0.1")
+        .send()
+        .await
+        .map_err(|e| Error::Other(format!("usage request: {e}")))?;
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Other(format!("usage parse: {e}")))?;
+    if !status.is_success() {
+        return Err(Error::Other(format!(
+            "usage http {}: {}",
+            status,
+            serde_json::to_string(&body).unwrap_or_default()
+        )));
+    }
+    Ok(body)
 }
 
 #[tauri::command]

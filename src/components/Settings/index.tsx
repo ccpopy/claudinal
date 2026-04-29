@@ -1,6 +1,7 @@
 import { useState } from "react"
 import {
   Archive,
+  BarChart3,
   Cog,
   GitBranch,
   Globe,
@@ -26,6 +27,7 @@ import { Appearance } from "./sections/Appearance"
 import { Network } from "./sections/Network"
 import { Config } from "./sections/Config"
 import { Account } from "./sections/Account"
+import { Statistics } from "./sections/Statistics"
 import { Placeholder } from "./sections/Placeholder"
 
 interface Props {
@@ -93,9 +95,15 @@ const SECTIONS: SectionDef[] = [
   },
   {
     id: "account",
-    label: "账号 & Usage",
+    label: "Usage",
     icon: Monitor,
     Component: Account
+  },
+  {
+    id: "statistics",
+    label: "统计",
+    icon: BarChart3,
+    Component: Statistics
   },
   {
     id: "network",
@@ -114,8 +122,10 @@ export function Settings({ open, onOpenChange }: Props) {
       <DialogContent className="max-w-5xl w-[90vw] h-[85vh] p-0 gap-0 grid grid-rows-1 grid-cols-[220px_1fr] overflow-hidden">
         <DialogTitle className="sr-only">设置</DialogTitle>
         <aside className="bg-sidebar border-r border-sidebar-border flex flex-col">
-          <div className="px-4 py-3 text-xs uppercase tracking-wider text-sidebar-muted">
-            设置
+          <div className="px-4 py-3 flex items-center">
+            <span className="text-xs uppercase tracking-wider text-sidebar-muted">
+              设置
+            </span>
           </div>
           <ScrollArea className="flex-1">
             <div className="px-2 pb-3 flex flex-col gap-0.5">

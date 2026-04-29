@@ -8,7 +8,6 @@ export type SpawnArgs = {
   effort: string | null
   permissionMode: string | null
   resumeSessionId?: string | null
-  forkSessionId?: string | null
   env?: Record<string, string> | null
 }
 
@@ -126,6 +125,100 @@ export async function listFiles(
   prefix: string
 ): Promise<FileMatch[]> {
   return invoke<FileMatch[]>("list_files", { cwd, prefix })
+}
+
+export type SettingsScope = "global" | "project" | "project-local"
+
+export async function claudeSettingsPath(
+  scope: SettingsScope,
+  cwd?: string
+): Promise<string> {
+  return invoke<string>("claude_settings_path_for", { scope, cwd: cwd ?? null })
+}
+
+export async function readClaudeSettings(
+  scope: SettingsScope,
+  cwd?: string
+): Promise<Record<string, unknown> | null> {
+  return invoke<Record<string, unknown> | null>("read_claude_settings", {
+    scope,
+    cwd: cwd ?? null
+  })
+}
+
+export async function writeClaudeSettings(
+  scope: SettingsScope,
+  data: Record<string, unknown>,
+  cwd?: string
+): Promise<void> {
+  return invoke("write_claude_settings", {
+    scope,
+    cwd: cwd ?? null,
+    data
+  })
+}
+
+export interface OauthUsageWindow {
+  utilization: number
+  resets_at: string
+}
+
+export interface OauthUsageExtra {
+  is_enabled: boolean
+  monthly_limit: number | null
+  used_credits: number | null
+  utilization: number | null
+}
+
+export interface OauthUsage {
+  five_hour?: OauthUsageWindow
+  seven_day?: OauthUsageWindow
+  seven_day_opus?: OauthUsageWindow | null
+  seven_day_sonnet?: OauthUsageWindow | null
+  extra_usage?: OauthUsageExtra
+  [k: string]: unknown
+}
+
+export async function readClaudeOauthToken(): Promise<string | null> {
+  return invoke<string | null>("read_claude_oauth_token")
+}
+
+export async function fetchOauthUsage(): Promise<OauthUsage> {
+  return invoke<OauthUsage>("fetch_oauth_usage")
+}
+
+export interface ModelUsageAgg {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+  cost_usd: number
+}
+
+export interface GlobalUsage {
+  total_cost_usd: number
+  total_input_tokens: number
+  total_output_tokens: number
+  total_cache_read: number
+  total_cache_write: number
+  session_count: number
+  with_sidecar_count: number
+  by_model: Record<string, ModelUsageAgg>
+  last_updated: number
+}
+
+export interface ActivityCell {
+  date: string
+  hour: number
+  count: number
+}
+
+export async function scanGlobalUsage(): Promise<GlobalUsage> {
+  return invoke<GlobalUsage>("scan_global_usage")
+}
+
+export async function scanActivityHeatmap(days: number): Promise<ActivityCell[]> {
+  return invoke<ActivityCell[]>("scan_activity_heatmap", { days })
 }
 
 export async function listenSessionEvents(

@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { Network as NetworkIcon, Save } from "lucide-react"
+import { useEffect, useState } from "react"
+import { AlertTriangle, Network as NetworkIcon, Save } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { readClaudeSettings } from "@/lib/ipc"
 import {
   describeProxy,
   formatProxyUrl,
@@ -29,6 +30,23 @@ const PROTOCOL_OPTIONS: Array<{ value: ProxyProtocol; label: string }> = [
 export function Network() {
   const [config, setConfig] = useState<ProxyConfig>(() => loadProxy())
   const [dirty, setDirty] = useState(false)
+  const [conflict, setConflict] = useState<{
+    https?: string
+    http?: string
+  } | null>(null)
+
+  useEffect(() => {
+    // 检测 settings.json env 是否已设代理 —— CLI 会优先合并 env 覆盖 spawn 注入
+    readClaudeSettings("global")
+      .then((s) => {
+        const env = ((s as { env?: Record<string, string> } | null)?.env) ?? {}
+        const c: { https?: string; http?: string } = {}
+        if (env.HTTPS_PROXY) c.https = env.HTTPS_PROXY
+        if (env.HTTP_PROXY) c.http = env.HTTP_PROXY
+        setConflict(c.https || c.http ? c : null)
+      })
+      .catch(() => setConflict(null))
+  }, [])
 
   const update = (patch: Partial<ProxyConfig>) => {
     setConfig((c) => ({ ...c, ...patch }))
@@ -57,7 +75,26 @@ export function Network() {
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 max-w-3xl space-y-6">
+        <div className="px-8 pb-6 w-full space-y-6">
+          {conflict && (
+            <section className="rounded-lg border border-warn/40 bg-warn/10 p-4 flex items-start gap-2">
+              <AlertTriangle className="size-4 text-warn shrink-0 mt-0.5" />
+              <div className="text-xs text-foreground/90 space-y-1">
+                <div className="font-medium">
+                  如果 settings.json 中 env 字段属性值配置了代理的话，会覆盖此处配置
+                </div>
+                {conflict.https && (
+                  <div className="font-mono">"HTTPS_PROXY": "{conflict.https}"</div>
+                )}
+                {conflict.http && (
+                  <div className="font-mono">"HTTP_PROXY": "{conflict.http}"</div>
+                )}
+                <div className="text-muted-foreground">
+                  CLI 启动时会把 settings.json 中的 env 属性值合并到进程环境，优先级高于 spawn 注入。要让此处生效，请打开 settings.json 删除上述字段。
+                </div>
+              </div>
+            </section>
+          )}
           <section className="space-y-4 rounded-lg border bg-card p-5">
             <div className="flex items-center justify-between">
               <Label htmlFor="proxy-enabled" className="text-sm">

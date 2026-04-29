@@ -20,15 +20,26 @@ const EMPTY: Appearance = { light: {}, dark: {} }
 export const PRESETS: Record<string, { label: string; appearance: Appearance }> = {
   claude: {
     label: "Claude（默认）",
-    appearance: EMPTY
+    appearance: {
+      light: {
+        accent: "#cc7d5e",
+        background: "#f9f9f7",
+        foreground: "#2d2d2b"
+      },
+      dark: {
+        accent: "#cc7d5e",
+        background: "#2d2d2b",
+        foreground: "#f9f9f7"
+      }
+    }
   },
   codex: {
     label: "Codex",
     appearance: {
       light: {
-        accent: "#cc7d5e",
-        background: "#f9f9f7",
-        foreground: "#2d2d2b",
+        accent: "#0169cc",
+        background: "#ffffff",
+        foreground: "#0d0d0d",
         contrast: 45,
         translucentSidebar: true
       },
@@ -41,23 +52,51 @@ export const PRESETS: Record<string, { label: string; appearance: Appearance }> 
       }
     }
   },
-  absolutely: {
-    label: "Absolutely",
+  github: {
+    label: "GitHub",
     appearance: {
       light: {
-        accent: "#cc7d5e",
+        accent: "#0969da",
         background: "#ffffff",
-        foreground: "#1a1a1a",
-        contrast: 40
+        foreground: "#1f2328"
       },
       dark: {
-        accent: "#cc7d5e",
-        background: "#0d0d0d",
-        foreground: "#fafafa",
-        contrast: 55
+        accent: "#1f6feb",
+        background: "#0d1117",
+        foreground: "#e6edf3"
       }
     }
   }
+}
+
+/// 比较核心三色 × 双模式 = 6 字段，全等才视为匹配该预设。
+/// 其他字段（contrast / fontUI / fontMono / translucentSidebar）不参与匹配，
+/// 用户在某预设基础上微调这些不影响 "激活态" 高亮。
+/// 6 字段全 undefined（重置 / 首次启动）= 走 token 默认 = Claude。
+export function matchPreset(a: Appearance): string | null {
+  const allEmpty =
+    !a.light.accent &&
+    !a.light.background &&
+    !a.light.foreground &&
+    !a.dark.accent &&
+    !a.dark.background &&
+    !a.dark.foreground
+  if (allEmpty) return "claude"
+  for (const [id, p] of Object.entries(PRESETS)) {
+    const l = p.appearance.light
+    const d = p.appearance.dark
+    if (
+      a.light.accent === l.accent &&
+      a.light.background === l.background &&
+      a.light.foreground === l.foreground &&
+      a.dark.accent === d.accent &&
+      a.dark.background === d.background &&
+      a.dark.foreground === d.foreground
+    ) {
+      return id
+    }
+  }
+  return null
 }
 
 export function loadAppearance(): Appearance {
