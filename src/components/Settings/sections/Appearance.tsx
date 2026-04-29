@@ -3,7 +3,9 @@ import { Monitor, Moon, RotateCcw, Sun } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
 import { useTheme, type Theme } from "@/lib/theme"
 import {
   applyAppearance,
@@ -52,13 +54,15 @@ export function Appearance() {
   }
 
   return (
-    <div className="p-8 max-w-3xl space-y-8">
-      <div>
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="px-8 pt-8 pb-4 shrink-0">
         <h2 className="text-xl font-semibold">外观</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          浅色与深色主题独立配置；保存到本地，全局即时生效。
+          浅色与深色独立配置，实时生效。
         </p>
       </div>
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="px-8 pb-8 max-w-3xl space-y-8">
 
       <section className="space-y-3">
         <Label>主题</Label>
@@ -130,6 +134,8 @@ export function Appearance() {
           onReset={() => update(mode, {})}
         />
       ))}
+        </div>
+      </ScrollArea>
     </div>
   )
 }
@@ -272,23 +278,7 @@ function ToggleRow({
   return (
     <div className="flex items-center justify-between">
       <Label className="text-xs">{label}</Label>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={
-          "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors " +
-          (checked ? "bg-primary" : "bg-muted")
-        }
-      >
-        <span
-          className={
-            "pointer-events-none inline-block size-4 rounded-full bg-background shadow-lg ring-0 transition-transform " +
-            (checked ? "translate-x-4" : "translate-x-0")
-          }
-        />
-      </button>
+      <Switch checked={checked} onCheckedChange={onChange} />
     </div>
   )
 }

@@ -19,6 +19,8 @@ export interface UIBlock {
   imageData?: string
   partial?: boolean
   raw?: unknown
+  startedAt?: number
+  endedAt?: number
 }
 
 export interface UIMessage {

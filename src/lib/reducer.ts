@@ -39,7 +39,19 @@ export function reduce(state: State, action: Action): State {
         t === "attachment" ||
         t === "ai-title" ||
         t === "deferred_tools_delta" ||
-        t === "skill_listing"
+        t === "skill_listing" ||
+        t === "tools_changed" ||
+        t === "permission-mode" ||
+        t === "last-prompt" ||
+        t === "file-history-snapshot" ||
+        t === "task_reminder" ||
+        t === "tool_reference" ||
+        t === "system_changed" ||
+        t === "edited_text_file" ||
+        t === "unavailable" ||
+        t === "date_change" ||
+        t === "todo_reminder" ||
+        t === "queued_command"
       )
         continue
       s = reduceEvent(s, ev)
@@ -53,8 +65,22 @@ export function reduce(state: State, action: Action): State {
   return reduceEvent(state, action.event)
 }
 
+function parseTs(ev: unknown): number {
+  if (ev && typeof ev === "object") {
+    const obj = ev as Record<string, unknown>
+    const raw = obj.timestamp ?? obj.ts
+    if (typeof raw === "string") {
+      const ms = Date.parse(raw)
+      if (!Number.isNaN(ms)) return ms
+    } else if (typeof raw === "number") {
+      return raw
+    }
+  }
+  return Date.now()
+}
+
 function reduceEvent(state: State, ev: ClaudeEvent): State {
-  const ts = Date.now()
+  const ts = parseTs(ev)
   const t = (ev as { type?: string }).type
 
   if (t === "system") return reduceSystem(state, ev as Record<string, unknown>, ts)
@@ -151,11 +177,14 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
     const blkType = (cb.type as string) ?? "unknown"
     const blk: UIBlock = { type: blkType as UIBlock["type"], partial: true }
     if (blkType === "text") blk.text = (cb.text as string) ?? ""
-    else if (blkType === "thinking") blk.text = (cb.thinking as string) ?? ""
-    else if (blkType === "tool_use") {
+    else if (blkType === "thinking") {
+      blk.text = (cb.thinking as string) ?? ""
+      blk.startedAt = ts
+    } else if (blkType === "tool_use") {
       blk.toolName = cb.name as string | undefined
       blk.toolUseId = cb.id as string | undefined
       blk.toolInput = cb.input ?? {}
+      blk.startedAt = ts
     } else {
       blk.raw = cb
     }
@@ -199,6 +228,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
         // 保留原始 partial 字符串
       }
     }
+    if (next.type === "thinking") next.endedAt = ts
     blocks[i] = next
     entries[idx] = { ...cur, blocks }
     return { entries }
@@ -230,13 +260,20 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
 function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number): State {
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const id = msg.id as string | undefined
+  const blocks = convertContentBlocks(msg.content)
+  // jsonl 历史路径：用消息 ts 给 thinking/tool_use 块当 startedAt
+  for (const b of blocks) {
+    if ((b.type === "thinking" || b.type === "tool_use") && !b.startedAt) {
+      b.startedAt = ts
+    }
+  }
   if (id) {
     const idx = findMessageIdx(state.entries, id)
     if (idx >= 0) {
       const cur = state.entries[idx] as UIMessage
       const replaced: UIMessage = {
         ...cur,
-        blocks: convertContentBlocks(msg.content),
+        blocks,
         model: (msg.model as string | undefined) ?? cur.model,
         usage: (msg.usage as Record<string, unknown> | undefined) ?? cur.usage,
         stopReason:
@@ -252,7 +289,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
     kind: "message",
     id: id ?? `asst-${state.entries.length}`,
     role: "assistant",
-    blocks: convertContentBlocks(msg.content),
+    blocks,
     model: msg.model as string | undefined,
     usage: msg.usage as Record<string, unknown> | undefined,
     stopReason: (msg.stop_reason as string | null | undefined) ?? null,
@@ -264,7 +301,10 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
 
 // user 事件常携带顶级 tool_use_result（结构化 file/structuredPatch/originalFile/type 等）
 // 把它附着到对应 tool_result block 上，供 UI 做 diff 渲染。
+// 同时把结束时间写回上游 assistant 消息中对应 toolUseId 的 tool_use 块（用于显示耗时）。
 function reduceUser(state: State, ev: Record<string, unknown>, ts: number): State {
+  // jsonl 中 CLI 注入的 system-reminder 标记为 isMeta:true，不展示给用户
+  if (ev.isMeta === true) return state
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const blocks = convertContentBlocks(msg.content)
   const tur = ev.tool_use_result
@@ -272,6 +312,12 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
     const target = blocks.find((b) => b.type === "tool_result")
     if (target) {
       target.toolUseResult = tur
+    }
+  }
+  let entries = state.entries
+  for (const b of blocks) {
+    if (b.type === "tool_result" && b.toolUseId) {
+      entries = stampToolEndedAt(entries, b.toolUseId, ts)
     }
   }
   const entry: UIMessage = {
@@ -282,7 +328,26 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
     streaming: false,
     ts
   }
-  return { entries: [...state.entries, entry] }
+  return { entries: [...entries, entry] }
+}
+
+function stampToolEndedAt(entries: UIEntry[], toolUseId: string, ts: number): UIEntry[] {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (e.kind !== "message") continue
+    const m = e as UIMessage
+    const idx = m.blocks.findIndex(
+      (b) => b.type === "tool_use" && b.toolUseId === toolUseId
+    )
+    if (idx < 0) continue
+    if (m.blocks[idx].endedAt) return entries
+    const nextBlocks = m.blocks.slice()
+    nextBlocks[idx] = { ...nextBlocks[idx], endedAt: ts }
+    const next = entries.slice()
+    next[i] = { ...m, blocks: nextBlocks } as UIMessage
+    return next
+  }
+  return entries
 }
 
 function reduceResult(state: State, ev: Record<string, unknown>, ts: number): State {

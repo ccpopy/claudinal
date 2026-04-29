@@ -457,7 +457,93 @@ F:\project\claudecli\
 
 ---
 
-## 10. 当前进度快照（2026-04-29 · 续三）
+## 9.1 待办：尚未完成的功能（来自 2026-04-30 用户反馈）
+
+> 已实现见 §10 进度快照。此处列出 **明确知道还没做** 的事项，按优先级排序。
+> 接手者直接对照本节挑任务即可。
+
+### 9.1.1 Sidebar / 会话项交互
+
+- [ ] **重命名会话**：ChatHeader 下拉菜单已留 `onRename` 接口，未实现。需要：
+  - 独立 store（`localStorage["claudinal.session-titles"] = { [sessionId]: customTitle }`）
+  - SessionRow / ChatHeader 显示时优先 customTitle
+  - 不动 jsonl（CLI 自己维护）；与 ai_title 区分但优先级最高
+- [ ] **删除会话**：ChatHeader / SessionRow 都需要二次确认对话框，调用 Rust 命令 `delete_session_jsonl(cwd, sessionId)`（待实现）
+- [ ] **fork session**：CLI `--fork-session` 透传给 spawn_session；Sidebar 右键 / 菜单暴露
+- [ ] **复制深度链接（claudinal://）**：协议路由暂未实现，先留菜单条目
+
+### 9.1.2a 流式中途引导输入（"插话"）
+
+> CLI 支持在 Claude 思考 / 执行工具的过程中，先把后续的提示打进去 → 模型完成当前步骤后会把这条作为下一轮的输入读取。Claudinal 目前 **没有** 实现这个能力（Composer 在 streaming=true 时只能 Stop / Esc，不能 send）。
+
+- [ ] **流式中途发送下一轮输入**：
+  - Composer 在 `streaming=true` 时仍允许输入 + 发送（按钮文案改为「下一轮发送」/「排队」），不强制 Stop。
+  - 排队中的 user 消息：本地 reducer 立即 push 一条 user 气泡，并打上「等待中」灰色标记（左下角小 chip 「将在当前回合后发送」）。
+  - 实际投递时机：当前回合的 `result` 事件（或 `message_stop` 兜底）出现后，立即对当前 sessionId 调用 `sendUserMessage`。如果用户继续打字，多条按 FIFO 队列。
+  - 中断（Esc / Stop）时清空队列，给 toast 提示。
+  - 历史会话只读模式不允许排队（Composer disabled）。
+  - 状态：App.tsx 加 `pendingMessages: Array<{text, images}>`；`listenSessionEvents` 收到 `result` 后 dequeue 一条；新发送会先入队。
+
+### 9.1.2b Sidebar 会话状态图标
+
+> 当前会话项右侧 hover 才出现「复制 ID」按钮；非 hover 态完全是空白，看不出哪个会话还在跑。
+
+- [ ] **运行中会话显示 spinner**：
+  - 进行中的（`sessionId` 已 spawn 且 `streaming=true`）那条 SessionRow，**非 hover 态**右侧固定显示一个 `<Loader2 className="size-3 animate-spin" />`（与 RunGroup 的处理中 spinner 同款），与「处理中…」节奏一致。
+  - 流式结束（`result` 事件到 / Esc 中断 / teardown）后图标自动消失，回到空白。
+  - hover 仍显示「Pin / 复制 ID」原有按钮，覆盖 spinner。
+  - 数据来源：App.tsx 把 `streamingSessionId`（当前正在流的 sessionId）作为 prop 传给 Sidebar；SessionRow 用 `streaming = (project.id === streamingProjectId && session.id === streamingSessionId)` 判断。
+  - 置顶区与项目区下的 SessionRow 都生效。
+
+### 9.1.2 主区 / 流式渲染
+
+- [x] Markdown 渲染（react-markdown + remark-gfm + rehype-highlight，跟随主题色）
+- [x] RunGroup 折叠/展开边框翻转（折叠下边框 / 展开上边框）
+- [x] 用户消息「[Image: source: ...]」占位行剥离（保留真实 base64 图片）
+- [x] RunGroup 流式占位 + 实时秒表（user 发送后立即 push run，startTs 兜底）
+- [ ] **会话图片点击放大**（lightbox）：
+  - user 消息中的图片缩略图（`MessageBlocks::ImageBlock`）和 assistant 内嵌图片均要支持点击 → 居中放大预览（Dialog/`role="dialog"` 模态 + 暗背景 + Esc/点击外部关闭）。
+  - 多图时支持左右切换（`◀ ▶` 按钮 + 键盘 ←/→），底部小圆点指示。
+  - 放大态保持原始 base64，不下采样；最大宽 90vw / 最大高 90vh，超出可滚动 / `object-contain`。
+  - 触发器要有可访问性：`role="button"` `aria-label="放大图片"`；hover 显示「点击放大」浮层。
+- [ ] **图片占位文本与真实图片关联**（保留当前 text + 独立缩略图布局，不做 inline 替换）：
+  - 现状：CLI 把粘贴的图片转成 `[Image #9]` / `[Image: source: ...]` 这种占位插在用户文本中，UI 上把占位行剥离了，再单独渲染图片缩略图，但用户看不出文中哪个 `[Image #N]` 对应哪张缩略图。
+  - 期望：保留现有「文本块 + 独立缩略图」的排版，**通过 `alt` / `title` / 角标把序号绑回去**：
+    - reducer 解析 `user` 消息时，按出现顺序把 `[Image #N]` 占位与同一条消息的 image content block 配对，把序号 `N`（或 `[Image: source: <basename>]` 的文件名）记到 `UIBlock.imageAlt` 字段。
+    - `MessageBlocks::ImageBlock` 渲染：`<img alt={imageAlt} title={imageAlt}>`；缩略图右下角加一个 `[#N]` 小角标（数字徽章）；hover 时浮层显示对应原文中的占位字样（"对应 [Image #9]"）。
+    - user 消息 text 中保留 `[Image #N]` 字样不剥离（仅剥离 `[Image: source: <path>]` 这种含本地路径的形态），保证上下文「这是 claude cli 的 [Image #9]」可读，同时下面缩略图角标 `#9` 让人一眼对上。
+  - 历史会话也需生效（jsonl `user.message.content` 数组里 text 与 image block 交错出现，按出现序号配对即可）。
+- [ ] **文件 diff 全景视图**：ChatHeader 右上 `GitCompareArrows` 按钮已留位，未实现。计划：从当前会话 collect 所有 Edit/Write tool_use_result.structuredPatch，按 file 聚合渲染；侧拉抽屉 `<Sheet>` 容器
+- [ ] permission_request 弹窗（需要拿到样本）
+- [ ] hook_event 侧边 chip
+- [ ] Bash 终端样式美化（ANSI / stdout 折叠）
+
+### 9.1.3 设置页
+
+- [ ] P3.1 常规：启动行为 / 关闭行为 / 自动检查更新
+- [ ] P3.3 配置：默认 model / effort / permission_mode / max-budget / CLAUDE_CLI_PATH 覆盖 / 默认 add-dir
+- [ ] P3.4 个性化：append-system-prompt / 默认 agents / 自定义 slash 快捷面板
+- [ ] P3.5 MCP 服务器：列表 + 启用 toggle + OAuth + 编辑 mcp.json
+- [ ] P3.6 / 3.7 / 3.8 / 3.9 / 3.10：Git / 环境 / 工作树 / 浏览器 / 已归档对话（占位）
+- [ ] P3.11 账号 & Usage：从 system/init.apiKeySource 读 + result.modelUsage 累计 + rate_limit_event 限额面板
+- [ ] P3.12 收尾：测试连接按钮（spawn `curl --proxy ... -I https://api.anthropic.com`）+ keychain 加密密码 + PAC URL + 全应用范围（含 webview，等 Tauri 2 setProxy 稳定）
+
+### 9.1.4 代码 / 渲染细节遗留
+
+- [ ] **Result chip 持久化**：jsonl 不存 `result` 行（仅有 user/assistant/queue-operation/attachment/ai-title/isMeta），所以历史会话切回后看不到 「✓ 完成 $0.0223 6.59s 1 turn」。需要自己写一份 `~/.claude/projects/<encoded>/<sid>.claudinal.json` 存最近一次 result，加载时合并到 transcript
+- [x] 历史 jsonl 用 timestamp 字段还原 step.startedAt/endedAt（reducer.parseTs）
+- [ ] **RunGroup 时长口径与 CLI 对齐**：
+  - 现状：本地用 `min(step.startedAt) ~ max(step.endedAt)`，漏算 TTFT（user 发送 → 第一个 content_block_start，日志中 `ttft_ms`）以及末尾 text 段（最后 tool 完成 → message_stop / text 输出耗时），所以会比 CLI `Crunched for Xs` 偏短（实测 14.6s vs 19s）。
+  - 改为优先用 `result.duration_ms`（CLI 给的全程墙钟，等价 Crunched）；其次用 user 消息 ts → 最后 assistant `message_stop` ts；step 范围只作为兜底。
+  - 流式中实时秒表也以 user msg ts 为起点（已实现 startTs prop），保持口径一致。
+- [ ] AssistantMarkdown 在流式过程中频繁 re-parse（每 delta 都重 render），考虑节流或仅在 stop 时升级到完整解析
+- [ ] notify watcher 增量更新 sessions 列表（目前 lazy load，多窗口/多客户端写入感知不到）
+- [ ] sqlite 索引（当前 jsonl 全量扫描，超过几百 session 后再升）
+- [ ] @ 文件补全 / 斜杠面板（依赖 system/init.slash_commands）
+
+---
+
+## 10. 当前进度快照（2026-04-30）
 
 - ✅ P0 骨架完成（tsc 无错 / vite build 1852 modules / cargo check 通过）
 - ✅ 事件归并 reducer + 真实样本（`doc/stream-json-1.txt` + `doc/stream-json-2.txt` 含 thinking / Write / Read / structuredPatch）
@@ -475,6 +561,22 @@ F:\project\claudecli\
 - ✅ **P3.2 外观完整**：主题 / 预设 / 浅色深色双套 6 项独立配置 / 实时生效
 - ✅ **P3.12 网络代理**：HTTP/HTTPS/SOCKS5/SOCKS5h + 用户名密码（show/hide）+ NO_PROXY + 子进程 env 注入
 - ✅ **消息渲染细节修复**：对齐归位（tool 行不再随 user 右对齐）+ grid 行高动画（展开丝滑）+ tool_use 展开按工具分流（Write 显示 content / Edit 显示移除·新增双侧 / 不再 dump 原始 JSON）
+- ✅ **2026-04-30 大改**（Codex 风落地）：
+  - thinking / tool_use 块加 `startedAt/endedAt`；reducer 在 user `tool_result` 出现时反向给 assistant 中对应 tool_use 写 `endedAt`
+  - 新增 `RunGroup` 合并卡片：同一轮 thinking + tool 在流式中默认展开，完成后坍缩为「已处理 3m55s · N 步」，**展开方向向上**（trigger 在底，内容在上），折叠下边框 / 展开上边框
+  - 流式占位：发送 user 消息后立即 push 空 run（带 startTs），实时秒表跑，避免空白等待焦虑
+  - Markdown 渲染：`react-markdown + remark-gfm + rehype-highlight`，自定义 components 跟随 Claudinal 主题色（hljs token 写到 index.css）
+  - 用户消息中 `[Image: source: ...]` 占位行被剥离
+  - 主区 `ChatHeader`：标题 + cwd 名 + DropdownMenu（置顶 / 重命名 / 打开目录 / 复制 ID / 复制 resume / 删除）+ 右侧预留 diff 图标位
+  - Sidebar 重设计：去左侧 chat 图标；hover 显示左侧 Pin；置顶顶部独立区，置顶不参与项目筛选；只剩置顶会话的项目从下方列表隐藏；项目行删除图标改 destructive 红 + 新增打开目录按钮
+  - Settings 内容区改 ScrollArea；Network 去 sticky 顶/底 + 上边框；shadcn `Switch` / `Select` primitives；密码用浏览器原生
+  - Composer 去 `border-t`；Header 去 `border-b`；三块视觉不再被分割线切开
+  - `dropdown-menu` primitive（基于 `@radix-ui/react-dropdown-menu`）
+  - Rust 新增 `open_path` 命令（Windows explorer / macOS open / Linux xdg-open）
+  - `lib/pinned.ts`：localStorage `claudinal.pinned` 置顶 store
+  - 项目列表稳定排序（去掉 `touchProject` 引发的上浮）
+  - Sidebar 会话副信息行 msg 数 / 时间 space-between 排版
+  - 切换会话 MessageStream 用 sessionId 作 key，强制重挂载避免内部 state 残留
 - ⏳ 待用户实测 `pnpm tauri dev`
 - ⏳ P3 其他分类：配置 / 个性化 / MCP / Git / 环境 / 工作树 / 浏览器 / 归档 / 账号Usage（占位）
 

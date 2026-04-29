@@ -47,18 +47,17 @@ export function formatProxyUrl(c: ProxyConfig): string {
 export function buildProxyEnv(c: ProxyConfig | null): Record<string, string> {
   if (!c || !c.enabled || !c.host || !c.port) return {}
   const url = formatProxyUrl(c)
-  const noProxy = (c.noProxy || "").trim()
+  // noProxy 留空时带默认 localhost,127.0.0.1,::1，避免本机回环服务被代理拦截
+  const noProxy = (c.noProxy || "").trim() || DEFAULT_PROXY.noProxy
   const env: Record<string, string> = {
     HTTP_PROXY: url,
     HTTPS_PROXY: url,
     ALL_PROXY: url,
     http_proxy: url,
     https_proxy: url,
-    all_proxy: url
-  }
-  if (noProxy) {
-    env.NO_PROXY = noProxy
-    env.no_proxy = noProxy
+    all_proxy: url,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy
   }
   return env
 }

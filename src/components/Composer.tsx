@@ -122,10 +122,10 @@ export function Composer({
   return (
     <div
       className={cn(
-        "p-3 space-y-2 transition-colors",
+        "transition-colors",
         centered
-          ? "rounded-2xl border bg-card shadow-sm"
-          : "border-t bg-card/30",
+          ? "p-3 rounded-2xl border bg-card shadow-sm"
+          : "px-6 py-3 bg-background",
         dragOver && "ring-2 ring-ring/50 ring-inset bg-accent/40"
       )}
       onDrop={onDrop}
@@ -135,6 +135,7 @@ export function Composer({
       }}
       onDragLeave={() => setDragOver(false)}
     >
+      <div className={cn("space-y-2", !centered && "max-w-3xl mx-auto")}>
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {images.map((img, i) => (
@@ -198,6 +199,7 @@ export function Composer({
             发送
           </Button>
         )}
+      </div>
       </div>
     </div>
   )

@@ -83,7 +83,7 @@ export function AddProjectDialog({ open, onOpenChange, onAdded }: Props) {
             添加项目
           </DialogTitle>
           <DialogDescription>
-            选择已有目录，或填入新路径自动创建。Claude CLI 将以此目录作为 cwd 启动。
+            选择目录或填入新路径，不存在会自动创建。
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">

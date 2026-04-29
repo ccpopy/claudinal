@@ -14,7 +14,9 @@
       "Bash(cargo check *)",
       "PowerShell(Join-Path *)",
       "Bash(pnpm build *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

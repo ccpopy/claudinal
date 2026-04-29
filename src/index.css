@@ -156,3 +156,16 @@ pre::-webkit-scrollbar-button {
   50.01%, 100% { opacity: 0; }
 }
 .caret { animation: blink-caret 1s steps(2, end) infinite; }
+
+/* highlight.js 主题色：跟随 Claudinal 配色（避免引入第三方 css 主题导致色差） */
+.hljs { color: var(--foreground); background: transparent; }
+.hljs-comment, .hljs-quote { color: var(--muted-foreground); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-section, .hljs-title, .hljs-name { color: var(--primary); }
+.hljs-built_in, .hljs-type, .hljs-class, .hljs-attribute { color: var(--connected); }
+.hljs-string, .hljs-doctag, .hljs-template-tag, .hljs-template-variable { color: var(--connected); }
+.hljs-variable, .hljs-literal, .hljs-number, .hljs-symbol, .hljs-bullet { color: var(--warn); }
+.hljs-meta, .hljs-meta-string { color: var(--muted-foreground); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+.hljs-deletion { color: var(--destructive); }
+.hljs-addition { color: var(--connected); }

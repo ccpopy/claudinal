@@ -16,7 +16,6 @@ import { reduce, init as reducerInit } from "@/lib/reducer"
 import {
   listProjects,
   removeProject as removeProjectStore,
-  touchProject,
   type Project
 } from "@/lib/projects"
 import type { UIBlock } from "@/types/ui"
@@ -27,15 +26,29 @@ import { Sidebar } from "@/components/Sidebar"
 import { Welcome } from "@/components/Welcome"
 import { AddProjectDialog } from "@/components/AddProjectDialog"
 import { Settings } from "@/components/Settings"
+import { ChatHeader } from "@/components/ChatHeader"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
-import { Badge } from "@/components/ui/badge"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
   "给我讲讲这个项目",
   "扫一遍代码，列出潜在的 bug 与改进点"
 ]
+
+function chatTitle(
+  state: ReturnType<typeof reducerInit>,
+  project: Project
+): string {
+  for (const e of state.entries) {
+    if (e.kind === "message" && e.role === "user") {
+      for (const b of e.blocks) {
+        if (b.type === "text" && b.text) return b.text.split("\n")[0].slice(0, 80)
+      }
+    }
+  }
+  return `${project.name} · 新对话`
+}
 
 export default function App() {
   const [state, dispatch] = useReducer(reduce, undefined, reducerInit)
@@ -48,6 +61,8 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [draft, setDraft] = useState("")
+  const [pinTick, setPinTick] = useState(0)
+  const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
   const unlistenRef = useRef<UnlistenFn[]>([])
 
   useEffect(() => {
@@ -105,7 +120,10 @@ export default function App() {
       const u1 = await listenSessionEvents(id, (ev) => {
         dispatch({ kind: "event", event: ev })
         const t = (ev as { type?: string }).type
-        if (t === "result") setStreaming(false)
+        if (t === "result") {
+          setStreaming(false)
+          setSidebarRefreshKey((k) => k + 1)
+        }
       })
       const u2 = await listenSessionErrors(id, (line) => {
         const ev = { type: "stderr", line } as unknown as ClaudeEvent
@@ -113,8 +131,6 @@ export default function App() {
       })
       unlistenRef.current.push(u1, u2)
       setSessionId(id)
-      touchProject(project.id)
-      setProjects(listProjects())
       return id
     } catch (e) {
       toast.error(`启动会话失败: ${String(e)}`)
@@ -165,8 +181,6 @@ export default function App() {
       dispatch({ kind: "reset" })
       setProject(next)
       setSelectedSessionId(null)
-      touchProject(next.id)
-      setProjects(listProjects())
     },
     [teardown]
   )
@@ -177,11 +191,10 @@ export default function App() {
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(s.id)
+      setSidebarRefreshKey((k) => k + 1)
       try {
         const events = await readSessionTranscript(p.cwd, s.id)
         dispatch({ kind: "load_transcript", events: events as ClaudeEvent[] })
-        touchProject(p.id)
-        setProjects(listProjects())
       } catch (e) {
         toast.error(`加载会话失败: ${String(e)}`)
       }
@@ -236,26 +249,19 @@ export default function App() {
           onRemove={handleRemove}
           onNewConversation={newConversation}
           onOpenSettings={() => setShowSettings(true)}
+          refreshKey={sidebarRefreshKey}
         />
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {project && !empty && (
-            <header className="flex items-center gap-2 px-4 py-2 border-b bg-card/40 shrink-0">
-              <span className="text-sm font-medium truncate">{project.name}</span>
-              {selectedSessionId && (
-                <Badge variant="outline" className="font-mono text-[10px]">
-                  resume · {selectedSessionId.slice(0, 8)}
-                </Badge>
-              )}
-              {sessionId && (
-                <Badge variant="success" className="font-mono text-[10px]">
-                  active · {sessionId.slice(0, 8)}
-                </Badge>
-              )}
-              <span className="ml-auto text-xs text-muted-foreground font-mono truncate">
-                {project.cwd}
-              </span>
-            </header>
+            <ChatHeader
+              key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}`}
+              project={project}
+              sessionId={sessionId}
+              resumeSessionId={selectedSessionId}
+              title={chatTitle(state, project)}
+              onPinChange={() => setPinTick((t) => t + 1)}
+            />
           )}
 
           {empty ? (
@@ -284,7 +290,11 @@ export default function App() {
             </div>
           ) : (
             <>
-              <MessageStream entries={state.entries} streaming={streaming} />
+              <MessageStream
+                key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
+                entries={state.entries}
+                streaming={streaming}
+              />
               <Composer
                 onSend={send}
                 onStop={stop}

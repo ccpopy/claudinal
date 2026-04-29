@@ -22,10 +22,10 @@ export function Welcome({
           <Sparkles className="size-6" />
         </div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          欢迎使用 Claude Code Desktop
+          欢迎使用 Claudinal
         </h1>
         <p className="text-muted-foreground text-sm">
-          添加一个工作目录作为项目，与 Claude 在你的代码上协作。
+          添加一个工作目录开始对话。
         </p>
         <Button onClick={onAddProject} size="lg" className="mt-2">
           <Folder />

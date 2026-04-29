@@ -122,3 +122,33 @@ pub async fn read_session_transcript(
 ) -> Result<Vec<Value>> {
     read_transcript_inner(&cwd, &session_id)
 }
+
+#[tauri::command]
+pub async fn open_path(path: String) -> Result<()> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Err(Error::Other(format!("path not found: {path}")));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&p)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&p)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&p)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    Ok(())
+}

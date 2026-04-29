@@ -45,85 +45,55 @@ const SECTIONS: SectionDef[] = [
     id: "config",
     label: "配置",
     icon: Settings2,
-    Component: () => (
-      <Placeholder
-        title="配置"
-        hint="默认 model / effort / permission_mode / max-budget / CLAUDE_CLI_PATH 覆盖等。已写入 plan.md §6 P3.3。"
-      />
-    )
+    Component: () => <Placeholder title="配置" />
   },
   {
     id: "personalization",
     label: "个性化",
     icon: UserCircle,
-    Component: () => (
-      <Placeholder
-        title="个性化"
-        hint="系统提示扩展、默认 agents、自定义 slash 快捷面板。已写入 plan.md §6 P3.4。"
-      />
-    )
+    Component: () => <Placeholder title="个性化" />
   },
   {
     id: "mcp",
     label: "MCP 服务器",
     icon: Plug,
-    Component: () => (
-      <Placeholder
-        title="MCP 服务器"
-        hint="列表 / 启用 / OAuth / 编辑 mcp.json。已写入 plan.md §6 P3.5。"
-      />
-    )
+    Component: () => <Placeholder title="MCP 服务器" />
   },
   {
     id: "git",
     label: "Git",
     icon: GitBranch,
-    Component: () => (
-      <Placeholder title="Git" hint="commit signing / 默认 base branch / fetch 频率。" />
-    )
+    Component: () => <Placeholder title="Git" />
   },
   {
     id: "env",
     label: "环境",
     icon: SlidersHorizontal,
-    Component: () => (
-      <Placeholder title="环境" hint="环境变量覆盖 / PATH 追加。" />
-    )
+    Component: () => <Placeholder title="环境" />
   },
   {
     id: "worktree",
     label: "工作树",
     icon: TreePine,
-    Component: () => (
-      <Placeholder title="工作树" hint="默认根目录 / 自动清理已合并。" />
-    )
+    Component: () => <Placeholder title="工作树" />
   },
   {
     id: "browser",
     label: "浏览器使用",
     icon: Globe,
-    Component: () => (
-      <Placeholder title="浏览器使用" hint="playwright MCP 默认开关 / 默认 viewport。" />
-    )
+    Component: () => <Placeholder title="浏览器使用" />
   },
   {
     id: "archive",
     label: "已归档对话",
     icon: Archive,
-    Component: () => (
-      <Placeholder title="已归档对话" hint="列出归档的 sessions（暂未实现 archive 行为）。" />
-    )
+    Component: () => <Placeholder title="已归档对话" />
   },
   {
     id: "account",
     label: "账号 & Usage",
     icon: Monitor,
-    Component: () => (
-      <Placeholder
-        title="账号 & Usage"
-        hint="登录方式（API key / OAuth / Bedrock / Vertex / Foundry） + Usage 面板（5h / 1h / weekly + 累计成本）。已写入 plan.md §6 P3.11。"
-      />
-    )
+    Component: () => <Placeholder title="账号 & Usage" />
   },
   {
     id: "network",
@@ -170,9 +140,9 @@ export function Settings({ open, onOpenChange }: Props) {
             </div>
           </ScrollArea>
         </aside>
-        <ScrollArea className="bg-background">
+        <div className="bg-background h-full min-h-0 overflow-hidden flex flex-col">
           <Cur />
-        </ScrollArea>
+        </div>
       </DialogContent>
     </Dialog>
   )

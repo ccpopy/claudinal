@@ -73,6 +73,10 @@ export async function readSessionTranscript(
   return invoke<ClaudeEvent[]>("read_session_transcript", { cwd, sessionId })
 }
 
+export async function openPath(path: string): Promise<void> {
+  return invoke("open_path", { path })
+}
+
 export async function listenSessionEvents(
   sessionId: string,
   handler: (ev: ClaudeEvent) => void
