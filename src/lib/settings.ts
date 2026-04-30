@@ -23,6 +23,8 @@ export interface AppSettings {
   permissionMcpEnabled: boolean
   permissionPromptTool: string
   permissionMcpConfig: string
+  // P3.4 个性化：高频 slash 命令 pin（不带 / 前缀，与 system/init.slash_commands 一致）
+  pinnedSlash: string[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -33,21 +35,26 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeCliPath: "",
   permissionMcpEnabled: false,
   permissionPromptTool: DEFAULT_PERMISSION_MCP_TOOL,
-  permissionMcpConfig: DEFAULT_PERMISSION_MCP_CONFIG
+  permissionMcpConfig: DEFAULT_PERMISSION_MCP_CONFIG,
+  pinnedSlash: []
 }
 
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY)
-    if (!raw) return { ...DEFAULT_SETTINGS }
+    if (!raw) return { ...DEFAULT_SETTINGS, pinnedSlash: [] }
     const obj = JSON.parse(raw)
     if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-      return { ...DEFAULT_SETTINGS, ...(obj as Partial<AppSettings>) }
+      const merged = { ...DEFAULT_SETTINGS, ...(obj as Partial<AppSettings>) }
+      // 字段类型护栏：旧版本 / 手改 localStorage 时可能写错
+      if (!Array.isArray(merged.pinnedSlash)) merged.pinnedSlash = []
+      else merged.pinnedSlash = merged.pinnedSlash.filter((s) => typeof s === "string")
+      return merged
     }
   } catch {
     // ignore
   }
-  return { ...DEFAULT_SETTINGS }
+  return { ...DEFAULT_SETTINGS, pinnedSlash: [] }
 }
 
 export function saveSettings(s: AppSettings) {

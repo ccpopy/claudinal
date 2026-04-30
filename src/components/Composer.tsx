@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { listFiles } from "@/lib/ipc"
+import { loadSettings } from "@/lib/settings"
 import type { ImagePayload } from "@/types/ui"
 import {
   SuggestionPanel,
@@ -88,14 +89,32 @@ export function Composer({
     async (info: TriggerInfo) => {
       if (info.kind === "/") {
         const all = (slashCommands ?? []).filter((c) => c)
+        const pinned = new Set(loadSettings().pinnedSlash)
         const filtered = info.query
           ? all.filter((c) =>
               c.toLowerCase().includes(info.query.toLowerCase())
             )
           : all
-        setItems(
-          filtered.slice(0, 60).map((c) => ({ key: c, primary: `/${c}` }))
-        )
+        const pinnedList: SuggestionItem[] = []
+        const restList: SuggestionItem[] = []
+        for (const c of filtered) {
+          if (pinned.has(c)) {
+            pinnedList.push({
+              key: `pin:${c}`,
+              primary: `/${c}`,
+              pinned: true,
+              group: "置顶"
+            })
+          } else {
+            restList.push({
+              key: c,
+              primary: `/${c}`,
+              group: pinnedList.length > 0 ? "全部命令" : undefined
+            })
+          }
+        }
+        const merged = [...pinnedList, ...restList].slice(0, 60)
+        setItems(merged)
         setActiveIdx(0)
         return
       }

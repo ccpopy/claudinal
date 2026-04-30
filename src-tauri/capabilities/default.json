@@ -9,6 +9,7 @@
     "core:window:default",
     "core:webview:default",
     "dialog:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }

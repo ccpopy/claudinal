@@ -29,17 +29,19 @@ import { Config } from "./sections/Config"
 import { Account } from "./sections/Account"
 import { Statistics } from "./sections/Statistics"
 import { Placeholder } from "./sections/Placeholder"
+import { Personalization } from "./sections/Personalization"
 
 interface Props {
   open: boolean
   onOpenChange: (v: boolean) => void
+  currentCwd?: string | null
 }
 
 interface SectionDef {
   id: string
   label: string
   icon: LucideIcon
-  Component: React.ComponentType
+  Component: React.ComponentType<{ cwd?: string | null }>
 }
 
 const SECTIONS: SectionDef[] = [
@@ -55,7 +57,7 @@ const SECTIONS: SectionDef[] = [
     id: "personalization",
     label: "个性化",
     icon: UserCircle,
-    Component: () => <Placeholder title="个性化" />
+    Component: Personalization
   },
   {
     id: "mcp",
@@ -113,7 +115,7 @@ const SECTIONS: SectionDef[] = [
   }
 ]
 
-export function Settings({ open, onOpenChange }: Props) {
+export function Settings({ open, onOpenChange, currentCwd }: Props) {
   const [section, setSection] = useState<string>("appearance")
   const cur = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
   const Cur = cur.Component
@@ -153,7 +155,7 @@ export function Settings({ open, onOpenChange }: Props) {
           </ScrollArea>
         </aside>
         <div className="bg-background h-full min-h-0 overflow-hidden flex flex-col">
-          <Cur />
+          <Cur cwd={currentCwd ?? null} />
         </div>
       </DialogContent>
     </Dialog>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ExternalLink, Save, Settings2 } from "lucide-react"
+import { Download, ExternalLink, Save, Settings2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -13,15 +13,18 @@ import {
   readClaudeSettings,
   writeClaudeSettings
 } from "@/lib/ipc"
+import { ConfigExportDialog } from "./ConfigExportDialog"
 
 // 官方 settings.json 字段（来自 https://code.claude.com/docs/en/settings）
-// effortLevel 取值：low / medium / high / xhigh
+// effortLevel 取值：low / medium / high / xhigh / max / auto
 const EFFORT_OPTIONS = [
   { value: "", label: "（默认）" },
   { value: "low", label: "low" },
   { value: "medium", label: "medium" },
   { value: "high", label: "high" },
-  { value: "xhigh", label: "xhigh" }
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
+  { value: "auto", label: "auto" }
 ]
 
 interface CliSettings {
@@ -39,6 +42,7 @@ export function Config() {
   const [filePath, setFilePath] = useState<string>("")
   const [loading, setLoading] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -86,18 +90,19 @@ export function Config() {
             直接读写 <code className="font-mono text-xs">~/.claude/settings.json</code>，环境变量 / 鉴权请直接编辑文件。
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="mt-6 shrink-0"
-          onClick={() =>
-            filePath && openPath(filePath).catch((e) => toast.error(String(e)))
-          }
-          disabled={!filePath}
-        >
-          <ExternalLink className="size-3.5" />
-          打开 settings.json
-        </Button>
+        <div className="flex flex-col gap-2 mt-6 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              filePath && openPath(filePath).catch((e) => toast.error(String(e)))
+            }
+            disabled={!filePath}
+          >
+            <ExternalLink className="size-3.5" />
+            打开 settings.json
+          </Button>
+        </div>
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
@@ -140,6 +145,17 @@ export function Config() {
                 disabled={loading}
               />
             </Row>
+            <Row label="">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setExportOpen(true)}
+                disabled={loading}
+              >
+                <Download className="size-3.5" />
+                导出配置
+              </Button>
+            </Row>
           </section>
         </div>
       </ScrollArea>
@@ -151,6 +167,12 @@ export function Config() {
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
       </div>
+
+      <ConfigExportDialog
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        settings={cliSettings as Record<string, unknown>}
+      />
     </div>
   )
 }

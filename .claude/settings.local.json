@@ -32,7 +32,13 @@
       "Bash(curl -fL --connect-timeout 10 -o /tmp/nsis-test.zip --silent --show-error https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip)",
       "Bash(\"/c/Users/13434/AppData/Local/tauri/NSIS/makensis.exe\" -VERSION)",
       "Bash(pnpm bootstrap:nsis)",
-      "Bash(pnpm package:zip)"
+      "Bash(pnpm package:zip)",
+      "Bash(codex exec *)",
+      "Bash(git -C F:/project/claudecli status --short)",
+      "Bash(tasklist)",
+      "Bash(pkill -f 'codex exec')",
+      "Bash(pkill -f codex.js)",
+      "Bash(git *)"
     ]
   }
 }

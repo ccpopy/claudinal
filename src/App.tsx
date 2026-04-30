@@ -25,6 +25,7 @@ import {
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxy } from "@/lib/proxy"
 import { loadSettings, recordResultUsage } from "@/lib/settings"
+import { saveSlashCommandsCache } from "@/lib/slashCommands"
 import { reduce, init as reducerInit } from "@/lib/reducer"
 import {
   listProjects,
@@ -267,6 +268,14 @@ export default function App() {
             } catch {
               // ignore
             }
+          }
+          const slash = (ev as { slash_commands?: unknown }).slash_commands
+          if (Array.isArray(slash)) {
+            saveSlashCommandsCache(
+              (slash as unknown[]).filter(
+                (s): s is string => typeof s === "string"
+              )
+            )
           }
         }
         if (t === "result") {
@@ -643,7 +652,11 @@ export default function App() {
           onOpenChange={setShowDiff}
           entries={state.entries}
         />
-        <Settings open={showSettings} onOpenChange={setShowSettings} />
+        <Settings
+          open={showSettings}
+          onOpenChange={setShowSettings}
+          currentCwd={project?.cwd ?? null}
+        />
         <PermissionDialog
           request={activePermissionRequest}
           onSettled={(requestId) =>

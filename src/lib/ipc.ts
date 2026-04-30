@@ -163,6 +163,10 @@ export async function openPath(path: string): Promise<void> {
   return invoke("open_path", { path })
 }
 
+export async function writeTextFile(path: string, contents: string): Promise<void> {
+  return invoke("write_text_file", { path, contents })
+}
+
 export async function watchSessions(cwd: string): Promise<void> {
   return invoke("watch_sessions", { cwd })
 }
@@ -219,6 +223,33 @@ export async function writeClaudeSettings(
     scope,
     cwd: cwd ?? null,
     data
+  })
+}
+
+/** CLAUDE.md 三 scope：global = ~/.claude/CLAUDE.md，project = <cwd>/CLAUDE.md，project-local = <cwd>/.claude/CLAUDE.local.md */
+export async function claudeMdPath(
+  scope: SettingsScope,
+  cwd?: string
+): Promise<string> {
+  return invoke<string>("claude_md_path_for", { scope, cwd: cwd ?? null })
+}
+
+export async function readClaudeMd(
+  scope: SettingsScope,
+  cwd?: string
+): Promise<string> {
+  return invoke<string>("read_claude_md", { scope, cwd: cwd ?? null })
+}
+
+export async function writeClaudeMd(
+  scope: SettingsScope,
+  contents: string,
+  cwd?: string
+): Promise<void> {
+  return invoke("write_claude_md", {
+    scope,
+    cwd: cwd ?? null,
+    contents
   })
 }
 

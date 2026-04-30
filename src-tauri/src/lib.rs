@@ -45,11 +45,15 @@ pub fn run() {
             commands::claude_settings_path_for,
             commands::read_claude_settings,
             commands::write_claude_settings,
+            commands::claude_md_path_for,
+            commands::read_claude_md,
+            commands::write_claude_md,
             commands::read_claude_oauth_token,
             commands::fetch_oauth_usage,
             commands::scan_global_usage,
             commands::scan_activity_heatmap,
             commands::open_path,
+            commands::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -343,6 +343,63 @@ pub async fn write_claude_settings(scope: String, cwd: Option<String>, data: Val
     Ok(())
 }
 
+/// CLAUDE.md 三 scope 路径解析。
+/// - global → `~/.claude/CLAUDE.md`
+/// - project → `<cwd>/CLAUDE.md`
+/// - project-local → `<cwd>/.claude/CLAUDE.local.md`
+fn claude_md_path(scope: &str, cwd: Option<&str>) -> Result<std::path::PathBuf> {
+    match scope {
+        "global" => {
+            let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
+            Ok(home.join(".claude").join("CLAUDE.md"))
+        }
+        "project" => {
+            let cwd = cwd.ok_or_else(|| Error::Other("cwd required for project scope".into()))?;
+            Ok(std::path::PathBuf::from(cwd).join("CLAUDE.md"))
+        }
+        "project-local" => {
+            let cwd =
+                cwd.ok_or_else(|| Error::Other("cwd required for project-local scope".into()))?;
+            Ok(std::path::PathBuf::from(cwd)
+                .join(".claude")
+                .join("CLAUDE.local.md"))
+        }
+        _ => Err(Error::Other(format!("invalid scope: {scope}"))),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_md_path_for(scope: String, cwd: Option<String>) -> Result<String> {
+    let p = claude_md_path(&scope, cwd.as_deref())?;
+    Ok(p.display().to_string())
+}
+
+#[tauri::command]
+pub async fn read_claude_md(scope: String, cwd: Option<String>) -> Result<String> {
+    let path = claude_md_path(&scope, cwd.as_deref())?;
+    if !path.is_file() {
+        return Ok(String::new());
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    Ok(raw)
+}
+
+#[tauri::command]
+pub async fn write_claude_md(
+    scope: String,
+    cwd: Option<String>,
+    contents: String,
+) -> Result<()> {
+    let path = claude_md_path(&scope, cwd.as_deref())?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+    std::fs::write(&path, contents).map_err(Error::from)?;
+    Ok(())
+}
+
 /// 读 ~/.claude/.credentials.json 中的 claudeAiOauth.accessToken。
 /// macOS 上 CLI 把凭据存在 Keychain（"Claude Code-credentials"），
 /// 当前实现仅覆盖 Linux/Windows；macOS 留 P4。
@@ -405,6 +462,18 @@ pub async fn fetch_oauth_usage() -> Result<Value> {
         )));
     }
     Ok(body)
+}
+
+#[tauri::command]
+pub async fn write_text_file(path: String, contents: String) -> Result<()> {
+    let p = std::path::PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+    std::fs::write(&p, contents).map_err(Error::from)?;
+    Ok(())
 }
 
 #[tauri::command]

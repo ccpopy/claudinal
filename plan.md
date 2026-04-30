@@ -352,13 +352,13 @@ F:\project\claudecli\
 > 仅暴露 Claude Code 真有的入口，未实现的能力（如 Codex 风「记忆 / 跳过工具辅助对话 / 重置记忆」）一律不做占位。
 > 参考：`~/.claude/CLAUDE.md`（global） + `<cwd>/CLAUDE.md`（project） + `<cwd>/.claude/CLAUDE.local.md`（local，被 git 忽略）。
 
-- [ ] **自定义指令（CLAUDE.md）**
+- [x] **自定义指令（CLAUDE.md）**
   - 三个 scope：global / project / project-local，对应文件路径见上
   - UI：textarea（mono 字体，行号可选）+ scope 切换 tab + 「保存」按钮（dirty 才启用）
   - 使用 `read_claude_settings(scope, cwd?)` 模式扩展 `read/write_claude_md(scope, cwd?)` Rust 命令；不存在文件时 read 返回空串
   - 顶部链接「了解更多」指向 Anthropic 官方文档
   - **不做** 记忆系统（Claude Code 没有 Codex 那种 memory toggle，能力由 CLAUDE.md 一站式覆盖）
-- [ ] 高频命令 pin：从 `system/init.slash_commands` 列表勾选，写 `claudinal.settings.pinnedSlash`，Composer `/` 面板顶部置顶展示
+- [x] 高频命令 pin：从 `system/init.slash_commands` 列表勾选，写 `claudinal.settings.pinnedSlash`，Composer `/` 面板顶部置顶展示
 - [ ] **不做** `--append-system-prompt`、`--agents` JSON 编辑器：保持 CLAUDE.md 一条路径，避免 prompt 来源分裂
 
 #### P3.5 MCP 服务器（参考 Codex UI 形态，但写入 Claude 原生 mcp.json）
@@ -543,7 +543,7 @@ F:\project\claudecli\
 
 - [x] P3.1 常规：自动检查更新 toggle（启动 / 关闭行为留 P4）
 - [x] P3.3 配置：默认 model / effort / permission_mode / CLAUDE_CLI_PATH（写 `claudinal.settings`，spawn 时 `loadSettings()` 注入）
-- [ ] P3.4 个性化：CLAUDE.md 三 scope 编辑（global / project / project-local）+ pin 高频 slash；**不做** Codex 风记忆系统
+- [x] P3.4 个性化：CLAUDE.md 三 scope 编辑（global / project / project-local）+ pin 高频 slash；**不做** Codex 风记忆系统
 - [ ] P3.5 MCP 服务器：列表卡 + 启用 toggle；详情编辑分 STDIO / 流式 HTTP，字段含启动命令 / 参数 / 环境变量 / 环境变量传递 / 工作目录；scope = global(`~/.claude/mcp.json`) / project(`<cwd>/.mcp.json`)；**需新增 Breadcrumb 组件**
 - [ ] P3.7 环境（项目级）：项目列表 + 编辑视图（名称 / 设置脚本 / 清理脚本 / 操作，按 default/macOS/Linux/Windows 平台分 tab）；存 `localStorage["claudinal.project-env"]`；**复用 Breadcrumb 组件**
 - [ ] P3.6 / 3.8 / 3.9 / 3.10：Git / 工作树 / 浏览器 / 已归档对话（占位）
@@ -643,6 +643,15 @@ F:\project\claudecli\
   - Fork 功能整段废弃（Rust SpawnOptions.fork_session_id / --fork-session、ChatHeader 菜单项、App forkCurrentSession + forkPendingId、ipc.forkSessionId 全部移除）
   - 通用 `ConfirmDialog` 走 shadcn `AlertDialog`（`@radix-ui/react-alert-dialog`，role=alertdialog，按 Esc / 点外部不关，专门给不可逆操作）；删除会话 + 项目从列表移除全部走 Dialog 二次确认替代 window.confirm
   - 「分叉会话」菜单项已移除（用户反馈命名晦涩 + 实际场景少）；plan.md §9.1.1 标记为备选项，未来重做时命名规范定为「派生到新工作树」（对齐 git worktree 心智）
+- ✅ **2026-04-30 后续 #10（P3.4 个性化落地）**：
+  - Rust 新增 `claude_md_path_for` / `read_claude_md` / `write_claude_md`（三 scope：global = `~/.claude/CLAUDE.md`，project = `<cwd>/CLAUDE.md`，project-local = `<cwd>/.claude/CLAUDE.local.md`），父目录不存在时自动创建；不存在 read 返回空串
+  - 前端 ipc.ts 包装 `claudeMdPath / readClaudeMd / writeClaudeMd`
+  - `Settings/sections/Personalization.tsx`：scope tab 切换（Folder / FileText / FolderLock 图标 + hint）+ mono Textarea + dirty 才启用「保存」+「撤销」+「在系统中打开」+ 顶部「了解 CLAUDE.md」链接到 docs.claude.com/memory；项目级 scope 在无 cwd 时显示占位提示
+  - `lib/slashCommands.ts`：缓存 `system/init.slash_commands` 到 `claudinal.slash-commands.cache`，App.tsx 在 system 事件触发时写入；Personalization 页与 Composer 复用同一缓存
+  - `AppSettings.pinnedSlash: string[]`：Personalization 页顶部「已置顶」chip 区可单击取消 + 全量候选列表（cached + FALLBACK 兜底）+ 搜索；勾选写 settings store
+  - `SuggestionPanel` 增加 `pinned` / `group` 字段：分组标题 + 置顶 Pin 图标；非 pinned 项左侧留空 size-3 占位保持文字对齐
+  - Composer `/` 触发 refreshSuggestions 时按 pinnedSlash 拆成 pinned 在前 + 全部命令在后两组
+  - Settings index 接受 `currentCwd` prop 并向所有 section 透传 `cwd`；其它 section 不声明 `cwd` 仍可正常运行（TS 函数参数兼容）
 - ✅ **2026-04-30 后续 #9（Welcome 默认项目 + 项目选择器 + 计划口径修正）**：
   - 启动时若已有项目，App.tsx 自动选中列表第一个，进入「要在 X 中构建什么？」环境，不再被 Welcome「添加项目」拦截
   - 新增 `ProjectPicker`（DropdownMenu + 搜索 + 项目列表勾选 + 「添加新项目」 + 「不使用项目」），挂在 Welcome 居中 Composer 下方左对齐
