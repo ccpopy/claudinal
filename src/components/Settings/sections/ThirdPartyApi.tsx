@@ -5,6 +5,7 @@ import {
   Eye,
   EyeOff,
   Key,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -14,11 +15,20 @@ import {
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { cn } from "@/lib/utils"
 import { loadSettings, saveSettings } from "@/lib/settings"
 import {
   claudeSettingsPath,
@@ -61,9 +71,23 @@ const AUTH_FIELD_OPTIONS: Array<{ value: ProviderAuthField; label: string }> = [
   { value: "ANTHROPIC_API_KEY", label: "ANTHROPIC_API_KEY" }
 ]
 
+function providerExists(store: ThirdPartyApiStore, id: string | null) {
+  if (!id) return false
+  return (
+    id === OFFICIAL_PROVIDER_ID ||
+    store.providers.some((provider) => provider.id === id)
+  )
+}
+
 export function ThirdPartyApi() {
   const [store, setStore] = useState<ThirdPartyApiStore>(() =>
     loadThirdPartyApiStore()
+  )
+  const [selectedProviderId, setSelectedProviderId] = useState(
+    store.activeProviderId
+  )
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(
+    null
   )
   const [cliSettings, setCliSettings] = useState<CliSettings>({})
   const [filePath, setFilePath] = useState("")
@@ -77,15 +101,25 @@ export function ThirdPartyApi() {
     () => store.providers.find((p) => p.id === store.activeProviderId) ?? null,
     [store]
   )
-  const config = activeProvider
+  const editingProvider = useMemo(
+    () => store.providers.find((p) => p.id === editingProviderId) ?? null,
+    [editingProviderId, store]
+  )
+  const activeConfig = activeProvider
     ? { ...activeProvider, enabled: true }
     : createThirdPartyApiProvider()
-  const officialSelected = store.activeProviderId === OFFICIAL_PROVIDER_ID
+  const editorConfig = editingProvider
+    ? { ...editingProvider, enabled: true }
+    : null
+  const activeOfficial = store.activeProviderId === OFFICIAL_PROVIDER_ID
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setStore(loadThirdPartyApiStore())
+      const nextStore = loadThirdPartyApiStore()
+      setStore(nextStore)
+      setSelectedProviderId(nextStore.activeProviderId)
+      setEditingProviderId(null)
       setDirty(false)
       const path = await claudeSettingsPath("global")
       setFilePath(path)
@@ -103,22 +137,22 @@ export function ThirdPartyApi() {
   }, [load])
 
   const update = (patch: Partial<ThirdPartyApiProvider>) => {
-    if (!activeProvider) return
+    if (!editingProvider) return
     setStore((cur) => ({
       ...cur,
       providers: cur.providers.map((p) =>
-        p.id === activeProvider.id ? { ...p, ...patch } : p
+        p.id === editingProvider.id ? { ...p, ...patch } : p
       )
     }))
     setDirty(true)
   }
 
   const updateModels = (patch: Partial<ModelMapping>) => {
-    if (!activeProvider) return
+    if (!editingProvider) return
     setStore((cur) => ({
       ...cur,
       providers: cur.providers.map((p) =>
-        p.id === activeProvider.id
+        p.id === editingProvider.id
           ? { ...p, models: { ...p.models, ...patch } }
           : p
       )
@@ -130,10 +164,32 @@ export function ThirdPartyApi() {
     setStore(next)
     saveThirdPartyApiStore(next)
     setDirty(false)
+    setSelectedProviderId((id) =>
+      providerExists(next, id) ? id : next.activeProviderId
+    )
+    setEditingProviderId((id) => (providerExists(next, id) ? id : null))
   }
 
   const selectProvider = (id: string) => {
+    setSelectedProviderId(id)
+    if (id === OFFICIAL_PROVIDER_ID) {
+      setEditingProviderId(null)
+    } else {
+      setEditingProviderId((cur) => (cur === id ? cur : null))
+    }
+  }
+
+  const activateProvider = (id: string) => {
     persistStore({ ...store, activeProviderId: id })
+    setSelectedProviderId(id)
+  }
+
+  const editProvider = (id: string) => {
+    if (id === OFFICIAL_PROVIDER_ID) return
+    setSelectedProviderId(id)
+    setShowKey(false)
+    setModelOptions([])
+    setEditingProviderId(id)
   }
 
   const addProvider = () => {
@@ -142,9 +198,13 @@ export function ThirdPartyApi() {
       enabled: true
     })
     persistStore({
-      activeProviderId: provider.id,
+      activeProviderId: store.activeProviderId,
       providers: [...store.providers, provider]
     })
+    setSelectedProviderId(provider.id)
+    setShowKey(false)
+    setModelOptions([])
+    setEditingProviderId(provider.id)
   }
 
   const removeProvider = (id: string) => {
@@ -154,6 +214,13 @@ export function ThirdPartyApi() {
         ? providers[0]?.id ?? OFFICIAL_PROVIDER_ID
         : store.activeProviderId
     persistStore({ activeProviderId, providers })
+    setSelectedProviderId((cur) => (cur === id ? activeProviderId : cur))
+    setEditingProviderId((cur) => (cur === id ? null : cur))
+  }
+
+  const closeEditor = () => {
+    setEditingProviderId(null)
+    setShowKey(false)
   }
 
   const saveLocal = () => {
@@ -162,13 +229,16 @@ export function ThirdPartyApi() {
     toast.success("第三方 API 配置已保存")
   }
 
-  const validate = (): boolean => {
-    if (officialSelected) return true
-    if (!trimApiUrl(config.requestUrl)) {
+  const validate = (
+    target: ThirdPartyApiProvider,
+    official = false
+  ): boolean => {
+    if (official) return true
+    if (!trimApiUrl(target.requestUrl)) {
       toast.error("请填写请求地址")
       return false
     }
-    if (!config.apiKey.trim()) {
+    if (!target.apiKey.trim()) {
       toast.error("请填写 API Key")
       return false
     }
@@ -176,10 +246,10 @@ export function ThirdPartyApi() {
   }
 
   const applyToClaude = async () => {
-    if (!validate()) return
+    if (!validate(activeConfig, activeOfficial)) return
     setSaving(true)
     try {
-      if (officialSelected) {
+      if (activeOfficial) {
         const nextSettings: CliSettings = {
           ...cliSettings,
           env: clearManagedClaudeEnv(cliSettings.env),
@@ -197,7 +267,7 @@ export function ThirdPartyApi() {
         toast.success("已切换为 Claude Official")
         return
       }
-      const nextEnv = buildClaudeEnv(config, cliSettings.env)
+      const nextEnv = buildClaudeEnv(activeConfig, cliSettings.env)
       const nextSettings: CliSettings = {
         ...cliSettings,
         env: nextEnv,
@@ -239,16 +309,16 @@ export function ThirdPartyApi() {
   }
 
   const loadModels = async () => {
-    if (officialSelected) return
-    if (!validate()) return
+    if (!editorConfig) return
+    if (!validate(editorConfig)) return
     setModelsLoading(true)
     try {
       const list = await fetchProviderModels({
-        requestUrl: config.requestUrl,
-        apiKey: config.apiKey,
-        authField: config.authField,
-        inputFormat: config.inputFormat,
-        useFullUrl: config.useFullUrl
+        requestUrl: editorConfig.requestUrl,
+        apiKey: editorConfig.apiKey,
+        authField: editorConfig.authField,
+        inputFormat: editorConfig.inputFormat,
+        useFullUrl: editorConfig.useFullUrl
       })
       setModelOptions(list)
       toast.success(`已获取 ${list.length} 个模型`)
@@ -260,7 +330,8 @@ export function ThirdPartyApi() {
   }
 
   const preview = useMemo(() => {
-    const env = buildClaudeEnv(config, cliSettings.env)
+    const target = editorConfig ?? activeConfig
+    const env = buildClaudeEnv(target, cliSettings.env)
     const maskedEnv = Object.fromEntries(
       Object.entries(env).map(([key, value]) => [
         key,
@@ -274,14 +345,17 @@ export function ThirdPartyApi() {
       null,
       2
     )
-  }, [cliSettings.env, config])
+  }, [activeConfig, cliSettings.env, editorConfig])
 
-  const providerTitle = officialSelected
+  const activeTitle = activeOfficial
     ? "Claude Official"
-    : config.providerName.trim() || "未命名供应商"
-  const activeSubtitle = officialSelected
+    : activeProvider?.providerName.trim() || "未命名供应商"
+  const activeSubtitle = activeOfficial
     ? "Claude CLI 官方登录"
-    : config.models.mainModel.trim() || config.requestUrl.trim() || "第三方 API"
+    : activeProvider?.models.mainModel.trim() ||
+      activeProvider?.requestUrl.trim() ||
+      "第三方 API"
+  const editorTitle = editorConfig?.providerName.trim() || "未命名供应商"
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -331,13 +405,10 @@ export function ThirdPartyApi() {
                   选择当前会话使用的供应商；第三方供应商会通过本地代理转发。
                 </div>
               </div>
-              <Badge variant={officialSelected ? "secondary" : "success"}>
-                当前使用：{providerTitle}
-              </Badge>
             </div>
             <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs">
               <span className="text-muted-foreground">当前会话将使用：</span>
-              <span className="font-medium">{providerTitle}</span>
+              <span className="font-medium">{activeTitle}</span>
               <span className="text-muted-foreground"> · {activeSubtitle}</span>
             </div>
             <div className="flex justify-end">
@@ -350,214 +421,250 @@ export function ThirdPartyApi() {
               <ProviderCard
                 title="Claude Official"
                 subtitle="https://www.anthropic.com/claude-code"
-                active={officialSelected}
+                active={activeOfficial}
+                selected={selectedProviderId === OFFICIAL_PROVIDER_ID}
                 fixed
                 onSelect={() => selectProvider(OFFICIAL_PROVIDER_ID)}
+                onActivate={() => activateProvider(OFFICIAL_PROVIDER_ID)}
               />
               {store.providers.map((provider) => (
                 <ProviderCard
                   key={provider.id}
                   title={provider.providerName || "未命名供应商"}
-                  subtitle={provider.remark || provider.officialUrl || provider.requestUrl || "第三方 API"}
+                  subtitle={
+                    provider.remark ||
+                    provider.officialUrl ||
+                    provider.requestUrl ||
+                    "第三方 API"
+                  }
                   active={store.activeProviderId === provider.id}
+                  selected={selectedProviderId === provider.id}
                   onSelect={() => selectProvider(provider.id)}
+                  onActivate={() => activateProvider(provider.id)}
+                  onEdit={() => editProvider(provider.id)}
                   onRemove={() => removeProvider(provider.id)}
                 />
               ))}
             </div>
           </section>
 
-          {officialSelected ? (
-            <section className="rounded-lg border bg-card p-5 space-y-2">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                当前供应商
-              </div>
-              <div className="text-sm font-medium">Claude Official</div>
-              <div className="text-xs text-muted-foreground">
-                使用 Claude CLI 自身登录与默认模型，不启用第三方 API 本地代理。
-              </div>
-            </section>
-          ) : (
-            <>
-          <section className="rounded-lg border bg-card p-5 space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                  供应商
-                </div>
-                <div className="text-sm font-medium mt-1">{providerTitle}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="success">
-                  当前使用
-                </Badge>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-5">
-              <StackField label="供应商名称">
-                <Input
-                  value={config.providerName}
-                  onChange={(e) => update({ providerName: e.target.value })}
-                  placeholder="CLI"
-                  disabled={loading || saving}
-                />
-              </StackField>
-              <StackField label="备注">
-                <Input
-                  value={config.remark}
-                  onChange={(e) => update({ remark: e.target.value })}
-                  placeholder="gpt"
-                  disabled={loading || saving}
-                />
-              </StackField>
-            </div>
-
-            <StackField label="官网链接">
-              <Input
-                value={config.officialUrl}
-                onChange={(e) => update({ officialUrl: e.target.value })}
-                placeholder="https://cli.addy777.com"
-                className="font-mono text-xs"
-                disabled={loading || saving}
-              />
-            </StackField>
-
-            <StackField label="API Key">
-              <div className="relative">
-                <Input
-                  type={showKey ? "text" : "password"}
-                  value={config.apiKey}
-                  onChange={(e) => update({ apiKey: e.target.value })}
-                  className="font-mono text-xs pr-10"
-                  autoComplete="off"
-                  disabled={loading || saving}
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-0 top-0 size-9 text-muted-foreground"
-                  onClick={() => setShowKey((v) => !v)}
-                  disabled={!config.apiKey}
-                  aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
-                >
-                  {showKey ? <EyeOff /> : <Eye />}
-                </Button>
-              </div>
-            </StackField>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <Label className="text-sm font-medium">请求地址</Label>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>完整 URL</span>
-                  <Switch
-                    checked={config.useFullUrl}
-                    onCheckedChange={(useFullUrl) => update({ useFullUrl })}
-                    disabled={loading || saving}
-                  />
-                </div>
-              </div>
-              <Input
-                value={config.requestUrl}
-                onChange={(e) => update({ requestUrl: e.target.value })}
-                placeholder="https://cli.addy777.com/v1"
-                className="font-mono text-xs"
-                disabled={loading || saving}
-              />
-              <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-                填写供应商兼容端点地址，保存到 Claude 时会写入 ANTHROPIC_BASE_URL。
-              </div>
-            </div>
-          </section>
-
-          <section className="rounded-lg border bg-card p-5 space-y-4">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              协议映射
-            </div>
-            <Row label="输入格式">
-              <Select
-                value={config.inputFormat}
-                onChange={(e) =>
-                  update({ inputFormat: e.target.value as ProviderInputFormat })
-                }
-                options={INPUT_FORMAT_OPTIONS}
-                disabled={loading || saving}
-                triggerClassName="max-w-[360px]"
-              />
-            </Row>
-            <Row label="认证字段">
-              <Select
-                value={config.authField}
-                onChange={(e) =>
-                  update({ authField: e.target.value as ProviderAuthField })
-                }
-                options={AUTH_FIELD_OPTIONS}
-                disabled={loading || saving}
-                triggerClassName="max-w-[360px]"
-              />
-            </Row>
-            {config.inputFormat === "openai-chat-completions" && (
-              <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-                Claude CLI 原生发送 Anthropic Messages。OpenAI Chat Completions
-                端点需要供应商侧兼容 Claude 请求，或前面有转换代理。
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-lg border bg-card p-5 space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                  使用模型
-                </div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  Claude 会通过本地代理转发请求，实际发送给供应商的是这里配置的模型。
-                </div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={loadModels}
-                disabled={loading || saving || modelsLoading}
-              >
-                <Download className={modelsLoading ? "animate-pulse" : ""} />
-                获取模型列表
-              </Button>
-            </div>
-
-            <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              Claude 启动时不指定模型；本地代理会在请求转发前把模型替换为下面的供应商模型。
-            </div>
-            {modelOptions.length > 0 && (
-              <div className="text-[11px] text-muted-foreground">
-                已获取 {modelOptions.length} 个模型，点击输入框可从完整列表中选择，也可以手动输入。
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 max-w-[520px] gap-5">
-              <ModelField
-                label="供应商模型"
-                value={config.models.mainModel}
-                onChange={(mainModel) => updateModels({ mainModel })}
-                options={modelOptions}
-              />
-            </div>
-          </section>
-
-          <section className="rounded-lg border bg-muted/40 p-5 space-y-3">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              Claude 映射预览
-            </div>
-            <pre className="max-h-72 overflow-auto rounded-md bg-background border p-3 text-xs font-mono leading-relaxed">
-              {preview}
-            </pre>
-          </section>
-            </>
-          )}
         </div>
       </ScrollArea>
+
+      <Dialog
+        open={Boolean(editorConfig)}
+        onOpenChange={(open) => {
+          if (!open) closeEditor()
+        }}
+      >
+        {editorConfig && (
+          <DialogContent className="h-[86vh] w-[min(100vw-2rem,980px)] max-w-none grid-rows-[auto_1fr_auto] gap-0 overflow-hidden p-0">
+            <DialogHeader className="border-b px-6 py-5 pr-12">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <DialogTitle>编辑供应商</DialogTitle>
+                  <DialogDescription className="mt-1">
+                    {editorTitle}
+                  </DialogDescription>
+                </div>
+                {editingProviderId === store.activeProviderId && (
+                  <CurrentBadge />
+                )}
+              </div>
+            </DialogHeader>
+
+            <ScrollArea className="min-h-0">
+              <div className="space-y-4 p-6">
+                <section className="rounded-lg border bg-card p-5 space-y-4">
+                  <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                    <StackField label="供应商名称">
+                      <Input
+                        value={editorConfig.providerName}
+                        onChange={(e) =>
+                          update({ providerName: e.target.value })
+                        }
+                        placeholder="CLI"
+                        disabled={loading || saving}
+                      />
+                    </StackField>
+                    <StackField label="备注">
+                      <Input
+                        value={editorConfig.remark}
+                        onChange={(e) => update({ remark: e.target.value })}
+                        placeholder="gpt"
+                        disabled={loading || saving}
+                      />
+                    </StackField>
+                  </div>
+
+                  <StackField label="官网链接">
+                    <Input
+                      value={editorConfig.officialUrl}
+                      onChange={(e) => update({ officialUrl: e.target.value })}
+                      placeholder="https://cli.addy777.com"
+                      className="font-mono text-xs"
+                      disabled={loading || saving}
+                    />
+                  </StackField>
+
+                  <StackField label="API Key">
+                    <div className="relative">
+                      <Input
+                        type={showKey ? "text" : "password"}
+                        value={editorConfig.apiKey}
+                        onChange={(e) => update({ apiKey: e.target.value })}
+                        className="font-mono text-xs pr-10"
+                        autoComplete="off"
+                        disabled={loading || saving}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="absolute right-0 top-0 size-9 text-muted-foreground"
+                        onClick={() => setShowKey((v) => !v)}
+                        disabled={!editorConfig.apiKey}
+                        aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                      >
+                        {showKey ? <EyeOff /> : <Eye />}
+                      </Button>
+                    </div>
+                  </StackField>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <Label className="text-sm font-medium">请求地址</Label>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>完整 URL</span>
+                        <Switch
+                          checked={editorConfig.useFullUrl}
+                          onCheckedChange={(useFullUrl) =>
+                            update({ useFullUrl })
+                          }
+                          disabled={loading || saving}
+                        />
+                      </div>
+                    </div>
+                    <Input
+                      value={editorConfig.requestUrl}
+                      onChange={(e) => update({ requestUrl: e.target.value })}
+                      placeholder="https://cli.addy777.com/v1"
+                      className="font-mono text-xs"
+                      disabled={loading || saving}
+                    />
+                    <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+                      填写供应商兼容端点地址，保存到 Claude 时会写入 ANTHROPIC_BASE_URL。
+                    </div>
+                  </div>
+                </section>
+
+                <section className="rounded-lg border bg-card p-5 space-y-4">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    协议映射
+                  </div>
+                  <Row label="输入格式">
+                    <Select
+                      value={editorConfig.inputFormat}
+                      onChange={(e) =>
+                        update({
+                          inputFormat: e.target.value as ProviderInputFormat
+                        })
+                      }
+                      options={INPUT_FORMAT_OPTIONS}
+                      disabled={loading || saving}
+                      triggerClassName="max-w-[360px]"
+                    />
+                  </Row>
+                  <Row label="认证字段">
+                    <Select
+                      value={editorConfig.authField}
+                      onChange={(e) =>
+                        update({
+                          authField: e.target.value as ProviderAuthField
+                        })
+                      }
+                      options={AUTH_FIELD_OPTIONS}
+                      disabled={loading || saving}
+                      triggerClassName="max-w-[360px]"
+                    />
+                  </Row>
+                  {editorConfig.inputFormat === "openai-chat-completions" && (
+                    <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+                      Claude CLI 原生发送 Anthropic Messages。OpenAI Chat
+                      Completions 端点需要供应商侧兼容 Claude 请求，或前面有转换代理。
+                    </div>
+                  )}
+                </section>
+
+                <section className="rounded-lg border bg-card p-5 space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                        使用模型
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        Claude 会通过本地代理转发请求，实际发送给供应商的是这里配置的模型。
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={loadModels}
+                      disabled={loading || saving || modelsLoading}
+                    >
+                      <Download
+                        className={modelsLoading ? "animate-pulse" : ""}
+                      />
+                      获取模型列表
+                    </Button>
+                  </div>
+
+                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                    Claude 启动时不指定模型；本地代理会在请求转发前把模型替换为下面的供应商模型。
+                  </div>
+                  {modelOptions.length > 0 && (
+                    <div className="text-[11px] text-muted-foreground">
+                      已获取 {modelOptions.length} 个模型，点击输入框可从完整列表中选择，也可以手动输入。
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 max-w-[520px] gap-5">
+                    <ModelField
+                      label="供应商模型"
+                      value={editorConfig.models.mainModel}
+                      onChange={(mainModel) => updateModels({ mainModel })}
+                      options={modelOptions}
+                    />
+                  </div>
+                </section>
+
+                <section className="rounded-lg border bg-muted/40 p-5 space-y-3">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    Claude 映射预览
+                  </div>
+                  <pre className="max-h-64 overflow-auto rounded-md bg-background border p-3 text-xs font-mono leading-relaxed">
+                    {preview}
+                  </pre>
+                </section>
+              </div>
+            </ScrollArea>
+
+            <DialogFooter className="border-t bg-card px-6 py-4">
+              <Button type="button" variant="outline" onClick={closeEditor}>
+                关闭
+              </Button>
+              <Button
+                type="button"
+                onClick={saveLocal}
+                disabled={!dirty || loading || saving}
+              >
+                <Save />
+                保存配置
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
 
       <div className="px-8 py-4 shrink-0 flex items-center gap-2">
         <Button onClick={saveLocal} disabled={!dirty || loading || saving}>
@@ -616,15 +723,21 @@ function ProviderCard({
   title,
   subtitle,
   active,
+  selected,
   fixed,
   onSelect,
+  onActivate,
+  onEdit,
   onRemove
 }: {
   title: string
   subtitle: string
   active: boolean
+  selected: boolean
   fixed?: boolean
   onSelect: () => void
+  onActivate: () => void
+  onEdit?: () => void
   onRemove?: () => void
 }) {
   const initials = title
@@ -635,21 +748,29 @@ function ProviderCard({
     .toUpperCase()
   return (
     <div
-      className={
-        active
-          ? "group relative flex items-center gap-3 rounded-lg border border-connected bg-connected/10 p-3 shadow-sm"
-          : "group flex items-center gap-3 rounded-lg border bg-background p-3 hover:bg-accent/40"
-      }
+      className={cn(
+        "group relative flex min-h-[66px] items-center gap-3 rounded-lg border p-3 transition-colors",
+        selected
+          ? "border-primary/45 bg-primary/5 shadow-sm"
+          : "bg-card hover:border-primary/25 hover:bg-accent/45"
+      )}
     >
-      {active && (
-        <div className="absolute inset-y-3 left-0 w-1 rounded-r-full bg-connected" />
+      {selected && (
+        <div className="absolute inset-y-3 left-0 w-1 rounded-r-full bg-primary" />
       )}
       <button
         type="button"
         onClick={onSelect}
         className="min-w-0 flex-1 flex items-center gap-3 text-left"
       >
-        <div className="grid size-10 shrink-0 place-items-center rounded-md border bg-muted text-xs font-semibold text-muted-foreground">
+        <div
+          className={cn(
+            "grid size-10 shrink-0 place-items-center rounded-md border text-xs font-semibold",
+            selected
+              ? "border-primary/20 bg-primary/10 text-primary"
+              : "bg-muted text-muted-foreground"
+          )}
+        >
           {fixed ? "AI" : initials || "API"}
         </div>
         <div className="min-w-0">
@@ -659,35 +780,48 @@ function ProviderCard({
           </div>
         </div>
       </button>
-      {active && (
-        <Badge variant="success" className="shrink-0">
-          当前使用
-        </Badge>
-      )}
-      {!active && (
-        <Button
-          type="button"
-          size="sm"
-          className="shrink-0"
-          onClick={onSelect}
-        >
-          <Play className="size-3.5" />
-          启用
-        </Button>
-      )}
-      {!fixed && onRemove && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 shrink-0 opacity-70 group-hover:opacity-100"
-          onClick={onRemove}
-          aria-label={`删除供应商 ${title}`}
-        >
-          <Trash2 className="size-4" />
-        </Button>
+      {selected && (
+        <div className="flex shrink-0 items-center gap-2">
+          {active ? (
+            <CurrentBadge />
+          ) : (
+            <Button type="button" size="sm" onClick={onActivate}>
+              <Play className="size-3.5" />
+              启用
+            </Button>
+          )}
+          {!fixed && onEdit && (
+            <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+              <Pencil className="size-3.5" />
+              编辑
+            </Button>
+          )}
+          {!fixed && onRemove && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 text-muted-foreground hover:text-destructive"
+              onClick={onRemove}
+              aria-label={`删除供应商 ${title}`}
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          )}
+        </div>
       )}
     </div>
+  )
+}
+
+function CurrentBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="border-primary/30 bg-primary/10 font-sans text-primary"
+    >
+      当前使用
+    </Badge>
   )
 }
 

@@ -366,18 +366,18 @@ F:\project\claudecli\
 > 列表页 + 详情编辑页双视图（用 Breadcrumb 在页内导航：`MCP 服务器 > playwright > 编辑`）。
 > 配置文件：用户级 `~/.claude/mcp.json`，项目级 `<cwd>/.mcp.json`（Claude Code 文档约定）。
 
-- [ ] **列表视图**
+- [x] **列表视图**
   - Header：「MCP 服务器」标题 + 副标题「连接外部工具和数据源」+ 右上「+ 添加服务器」
   - 行卡片：服务器名 / 状态点（来自 `system/init.mcp_servers`：connected / needs-auth / failed）/ 齿轮按钮跳详情 / 启用 toggle
   - 数据源合并：`system/init.mcp_servers` 状态 + 解析两份 mcp.json 配置；以配置文件为权威来源
-- [ ] **详情/编辑视图**
+- [x] **详情/编辑视图**
   - 顶部 Breadcrumb「← 返回 MCP 服务器 > {name}」+ 右上「卸载」红按钮（移除该服务器条目）
   - 类型切换 tab：`STDIO` / `流式 HTTP`（对应 Claude Code mcp.json 的 `type: "stdio" | "http"`）
   - STDIO 字段：名称 / 启动命令（command）/ 参数（args[]，每行一个 + 删除按钮 + 「+ 添加参数」）/ 环境变量（key-value 对，「+ 添加环境变量」）/ 环境变量传递（envPassthrough[]，从父进程透传名）/ 工作目录（cwd）
   - HTTP 字段：名称 / URL / headers（key-value）/ 鉴权方式（none / bearer / oauth）
   - 「保存」按钮 dirty 才启用，原子写 mcp.json
 - [ ] needs-auth 走 OAuth：状态点提示，点击触发对应 server 的 OAuth flow（保留为 P4）
-- [ ] **scope 选择**：保存时让用户选 global（`~/.claude/mcp.json`）或 project（`<cwd>/.mcp.json`）
+- [x] **scope 选择**：保存时让用户选 global（`~/.claude/mcp.json`）或 project（`<cwd>/.mcp.json`）
 
 #### P3.6 Git
 
@@ -390,10 +390,10 @@ F:\project\claudecli\
 > 不再是简单的「全局环境变量列表」，而是按项目挂载工作树构建/清理脚本。命名沿用 Codex 的「环境」二级菜单。
 > 入口结构：`环境 > 选择项目 > {项目名} > 编辑`，用 Breadcrumb 显示完整路径。
 
-- [ ] **项目列表视图**
+- [x] **项目列表视图**
   - Header「环境」+ 副标题「本地环境用于指示 Claude 如何为项目设置工作树」+ 右上「添加项目」按钮（复用 `AddProjectDialog`）
   - 行：folder 图标 + 项目名 +（可选）短标签 + 右侧「+」加号点击进入编辑视图
-- [ ] **项目环境编辑视图**
+- [x] **项目环境编辑视图**
   - Breadcrumb：`← 返回 / 环境 / {项目名} / 编辑`
   - 「本地环境」只读卡：项目名 + 完整 cwd
   - 「名称」input：默认值 = 项目 basename，可改（写入 project store 的 `name` 字段）
@@ -402,8 +402,8 @@ F:\project\claudecli\
   - 「操作」分区：可添加任意命令到工具栏（待 P4，先占位「添加操作」按钮 + 提示文案）
   - 「保存」按钮 dirty 才启用
   - 存储：`localStorage["claudinal.project-env"][projectId] = { name?, setupScripts: { default?, macos?, linux?, windows? }, cleanupScripts: {...}, actions: [] }`
-- [ ] 工作树自动化（创建 / 清理 / 派生）放到 §9.1.1「派生到新工作树」一并实施，本节只暴露脚本配置入口
-- [ ] **不做** 全局 PATH 追加 / 全局 env 列表 —— 这部分由 settings.json env 字段直接编辑，已在 P3.3 移除（避免 OAuth 冲突）
+- [x] 工作树自动化（创建 / 清理 / 派生）放到 §9.1.1「派生到新工作树」一并实施，本节只暴露脚本配置入口
+- [x] **不做** 全局 PATH 追加 / 全局 env 列表 —— 这部分由 settings.json env 字段直接编辑，已在 P3.3 移除（避免 OAuth 冲突）
 
 #### P3.8 工作树
 
@@ -544,8 +544,8 @@ F:\project\claudecli\
 - [x] P3.1 常规：自动检查更新 toggle（启动 / 关闭行为留 P4）
 - [x] P3.3 配置：默认 model / effort / permission_mode / CLAUDE_CLI_PATH（写 `claudinal.settings`，spawn 时 `loadSettings()` 注入）
 - [x] P3.4 个性化：CLAUDE.md 三 scope 编辑（global / project / project-local）+ pin 高频 slash；**不做** Codex 风记忆系统
-- [ ] P3.5 MCP 服务器：列表卡 + 启用 toggle；详情编辑分 STDIO / 流式 HTTP，字段含启动命令 / 参数 / 环境变量 / 环境变量传递 / 工作目录；scope = global(`~/.claude/mcp.json`) / project(`<cwd>/.mcp.json`)；**需新增 Breadcrumb 组件**
-- [ ] P3.7 环境（项目级）：项目列表 + 编辑视图（名称 / 设置脚本 / 清理脚本 / 操作，按 default/macOS/Linux/Windows 平台分 tab）；存 `localStorage["claudinal.project-env"]`；**复用 Breadcrumb 组件**
+- [x] P3.5 MCP 服务器：列表卡 + 启用 toggle；详情编辑分 STDIO / 流式 HTTP，字段含启动命令 / 参数 / 环境变量 / 环境变量传递 / 工作目录；scope = global(`~/.claude/mcp.json`) / project(`<cwd>/.mcp.json`)；**已新增 Breadcrumb 组件**
+- [x] P3.7 环境（项目级）：项目列表 + 编辑视图（名称 / 设置脚本 / 清理脚本 / 操作，按 default/macOS/Linux/Windows 平台分 tab）；存 `localStorage["claudinal.project-env"]`；**复用 Breadcrumb 组件**
 - [ ] P3.6 / 3.8 / 3.9 / 3.10：Git / 工作树 / 浏览器 / 已归档对话（占位）
 - [x] P3.11 账号 & Usage：apiKeySource 来自 system_init（写 `claudinal.api-key-source`）+ `recordResultUsage` 在 result 事件累计 modelUsage 到 `claudinal.usage`；Account 页面显示登录方式 + 总成本 / tokens / cache + 按模型拆分表 + 清空 usage 按钮
 - [ ] P3.12 收尾：测试连接按钮（spawn `curl --proxy ... -I https://api.anthropic.com`）+ keychain 加密密码 + PAC URL + 全应用范围（含 webview，等 Tauri 2 setProxy 稳定）
@@ -659,8 +659,12 @@ F:\project\claudecli\
   - Button base class 加 `cursor-pointer`（disabled 由 `pointer-events-none` 自然回退）
   - plan.md §6 P3.4 / P3.5 / P3.7 重写：个性化对齐 Claude Code（CLAUDE.md 三 scope 而非 Codex 风记忆）；MCP 详情字段（启动命令 / 参数 / 环境变量 / 环境变量传递 / 工作目录，STDIO + 流式 HTTP 切换，scope global/project）；环境分类改为项目级运行环境（设置脚本 / 清理脚本 / 平台 tab / 操作）
   - plan.md §11.19 新增 Breadcrumb 组件约定（自实现轻量版，供 P3.5 / P3.7 共用）
+- ✅ **2026-04-30 后续 #11（P3.7 环境）**：
+  - Settings 环境页替换占位：项目列表 + 当前项目/脚本数量标签 + 右侧加号进入编辑；右上角复用 `AddProjectDialog`
+  - 项目环境编辑视图：Breadcrumb `← 返回 / 环境 / {项目名} / 编辑`；本地环境只读卡；名称 input；设置脚本 / 清理脚本按 default/macOS/Linux/Windows 独立 tab；变量 hint `$CLAUDINAL_WORKTREE_PATH`
+  - 新增 `lib/projectEnv.ts`：读写 `localStorage["claudinal.project-env"]`，结构为 `{ name?, setupScripts, cleanupScripts, actions: [] }`；操作区先按 P4 占位，不执行工作树自动化
 - ⏳ 待用户实测 `pnpm tauri dev`
-- ⏳ P3 其他分类：配置 / 个性化 / MCP / Git / 环境 / 工作树 / 浏览器 / 归档 / 账号Usage（占位）
+- ⏳ P3 其他分类：Git / 工作树 / 浏览器 / 归档（占位）；P3.12 代理收尾（测试连接 / keychain / PAC / webview）
 
 ---
 
