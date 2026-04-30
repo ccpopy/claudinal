@@ -429,7 +429,7 @@ F:\project\claudecli\
 | 第一份真实样本（普通对话） | `doc/stream-json-1.txt` |
 | schema 摘要 + 处理策略     | `doc/events.md`         |
 
-**未来需要补样本的场景**：`permission_request` / `hook_event` / subagent 嵌套 / 长 tool_result / 错误路径 / Bash 长运行。每补一个样本就在 `doc/events.md` 对应章节追加字段表。
+**未来需要补样本的场景**：`control_request` 权限流 / `hook_event` / subagent 嵌套 / 长 tool_result / 错误路径 / Bash 长运行。每补一个样本就在 `doc/events.md` 对应章节追加字段表。
 
 ---
 
@@ -439,7 +439,7 @@ F:\project\claudecli\
 | ----------------------- | ---------------------------------------------------- |
 | stream-json schema 漂移 | 适配层 + unknown fallback；锁 CLI minor 版本上限提示 |
 | Windows pipe + UTF-8    | tokio::process + 显式 utf-8 codec；stderr 独立       |
-| 权限请求事件未公开      | P0 跑 `acceptEdits` 验证主流程；P2 再做交互式权限    |
+| 权限请求 GUI 接管       | `--permission-prompt-tool stdio` 控制协议；保留 `permission_denials` 显式兜底 |
 | CLI 可执行路径定位      | which / 注册表 / 用户设置覆盖；首启向导              |
 | 子进程僵死              | 心跳超时 + force kill + 重新 spawn 用 --resume       |
 | jsonl 大文件            | reader 用尾读 + 流式解析，不全量加载                 |
@@ -502,7 +502,7 @@ F:\project\claudecli\
 - [x] **会话图片点击放大**（lightbox，单图版）：`ImageLightbox` 全屏 dialog（Esc / 点击外部关闭），`object-contain max-w-[90vw] max-h-[90vh]`；ImageBlock 改成 button 触发，`cursor-zoom-in`，aria-label 含 imageAlt。多图左右切换留 P4。
 - [x] **图片占位文本与真实图片关联**：reducer `bindImagePlaceholders` 按出现顺序把 `[Image #N]` / `[Image: source: <path>]` 与同条消息的 image block 配对，写入 `UIBlock.imageAlt`；`[Image #N]` 文中保留可读，`[Image: source: ...]` 剥离；缩略图右下角 #N 角标 + alt/title 提示。流式与历史 jsonl 都生效。
 - [x] **文件 diff 全景视图**：`DiffOverview` 自定义侧拉抽屉（无 Sheet primitive，用 fixed inset 右贴 + 暗背景点击外部关闭）；按 filePath 聚合 user `tool_result.toolUseResult` 的 create/update；左列文件列表（+/- 计数 + FilePlus/FileEdit 图标）+ 右列 hunk diff（按 +/- 着色）；ChatHeader `GitCompareArrows` 按钮带文件数 badge，0 文件时禁用。
-- [x] **权限拒绝渲染**：CLI headless 协议不发交互式 `permission_request`，而是把被拦截的工具放到 `result.permission_denials`。`ResultView` 在 result chip 下方加 `PermissionDenialList`（红 chip + ShieldAlert 图标），展开看每条 `tool_name` / `command` / `file_path`，提示运行 `/permissions` 加白名单。
+- [x] **权限拒绝渲染**：`ResultView` 在 result chip 下方保留 `PermissionDenialList`（红 chip + ShieldAlert 图标），作为 hook/MCP 权限桥不可用时的显式兜底；不再提供静默写全局 allowlist 的按钮。
 - [x] **hook_event 侧边 chip**：reducer `reduceHook` 处理 `hook_event` / `hook` 事件 → `UIHookEvent`；`HookEventView` 渲染为可展开 chip（`Webhook` 图标 + hookEventName + toolName + 完整 raw JSON）。
 - [x] **Bash 终端样式美化**：Bash/PowerShell ToolUseDetails 改 `TerminalBlock`（带 macOS 风三圆点 header + 暖橙 `$` / `PS>` 提示符 + 等宽多行）；ToolResultBlock 兜底分支统一改 `CollapsedOutput`（>8 行折叠预览 + 「展开全部 / 收起」按钮）。ANSI 着色留 P4。
 
@@ -593,9 +593,9 @@ F:\project\claudecli\
   - Rust `read/write_claude_settings(scope, cwd?)` + `claude_settings_path_for(scope)`，scope=global/project/project-local
   - Config 分类重写：直接读写 `~/.claude/settings.json`（model / effortLevel / language / alwaysThinkingEnabled / env）；env 区列出 Anthropic 系列 + 代理 env，敏感字段（AUTH_TOKEN / API_KEY）显隐切换；右上角「打开 settings.json」按钮
   - Account 分类重写：`detectAuth(env, apiKeySource)` 区分第三方 API（AUTH_TOKEN）/ 官方 key / OAuth / 未登录；显示 base URL + 脱敏 token；本机累计 usage 改副标题；新增「计划用量限额」占位（数据接口待 P4）
-  - plan.md §13 新增「权限审批模块（独立设计）」：现状 + 三条路径（A MCP 桥 / B 命令行预批 / C settings.json allow）+ 阶段性方案 + 不做清单
-  - 权限 Phase 2：`PermissionDenialList` 每条 denial 加「允许 Bash(curl:*)」按钮 → `inferAllowRule` + `read/writeClaudeSettings("global")` 写 `permissions.allow`；toast 提示下次会话生效
-  - App.tsx 移除 `loadSettings` 注入（settings.json 在 CLI 端自动读取，不再透传 spawn 参数）
+  - plan.md §13 新增「权限审批模块（独立设计）」：现状 + stdio control/MCP 路径 + 不默认写 settings 的阶段性方案 + 不做清单
+  - 权限 Phase 2 原方案废弃：不再从 denial 卡片静默写 `~/.claude/settings.json`，改由 `control_request` 在请求发生时让用户选择
+  - App.tsx 恢复 `loadSettings` 注入，用于 app 侧默认 model/effort/permission-mode/MCP 权限工具参数
 - ✅ **2026-04-30 后续 #7（OAuth 用量真接口 / Config 收敛 / 代理冲突）**：
   - 调研官方 settings.json schema（https://code.claude.com/docs/en/settings）：确认 effortLevel 字段名（取值 low/medium/high/xhigh，无 max）；permissions 含 allow/ask/deny/defaultMode/additionalDirectories；OAuth 凭据存 `~/.claude/.credentials.json` 的 `claudeAiOauth.accessToken`（macOS 在 Keychain，留 P4）
   - Config 分类收敛：移除 env 编辑（避免和 OAuth/第三方 API 冲突），只保留 model / effortLevel / language / alwaysThinkingEnabled；底部提示「env / 鉴权 / 权限请直接编辑 settings.json」
@@ -715,7 +715,7 @@ pnpm tauri build               # 打包安装包（首次较慢）
 | 风险                    | 当前处理                             | 待加强                                      |
 | ----------------------- | ------------------------------------ | ------------------------------------------- |
 | stream-json schema 漂移 | reducer fallback + UIUnknown         | P3 加 schema 版本告警                       |
-| 权限请求事件未样本化    | `--permission-mode acceptEdits` 旁路 | 拿到 `permission_request` 样本后做 GUI 弹窗 |
+| 权限请求 GUI 接管       | `--permission-prompt-tool stdio` + Tauri 权限弹窗 | 补充真实 control/MCP 样本并记录 schema |
 | 子进程僵死              | `kill_on_drop = true` + `start_kill` | P3 加心跳超时                               |
 | Windows 字符编码        | tokio + utf8 默认                    | 遇问题加 explicit decoder                   |
 | jsonl 大文件（P1）      | —                                    | reader 用尾读 + 增量                        |
@@ -828,13 +828,13 @@ pnpm tauri build               # 打包安装包（首次较慢）
 
 ## 13. 权限审批模块（独立设计）
 
-> **TL;DR**：headless `--input-format stream-json` 模式下，CLI **不会**像 TUI 那样发交互式 `permission_request` 事件等待我们 ack —— 它直接拒绝并把记录塞到 `result.permission_denials`。所以"弹窗 → 用户 Allow → 工具执行"这条交互链在当前协议下做不到。这一节专门记录现状、调研、阶段性方案，避免后续再走弯路。
+> **TL;DR**：首选不是事后写 `settings.json.permissions.allow`，也不是自建工具执行层，而是用 Claude Code 原生 stdio 权限控制协议接管 GUI 授权。启动 `claude -p` 时默认传 `--permission-prompt-tool stdio`，CLI 发出 `control_request` 后由桌面端弹窗，用户选择后写回 `control_response`。这样不修改本机配置，且保留 CLI 自己的权限判断和执行路径。
 
 ### 13.1 当前观察（来自 `doc/stream-json-permission.txt`）
 
 - 用户提示：`跑一下 curl https://example.com -I`
-- CLI assistant 文字：`命令需要你批准后才能执行。请在权限提示中允许，或运行 /permissions 添加 Bash(curl:*) 到允许列表后我再重试。`
-- `result` 事件：
+- 在未接管权限请求时，CLI assistant 文字：`命令需要你批准后才能执行。请在权限提示中允许，或运行 /permissions 添加 Bash(curl:*) 到允许列表后我再重试。`
+- `result` 事件里出现：
   ```json
   "permission_denials": [
     {
@@ -844,31 +844,84 @@ pnpm tauri build               # 打包安装包（首次较慢）
     }
   ]
   ```
-- **没有** `permission_request` 事件抵达 stdout，也没有 stdin 协议让我们写回 `allow` / `deny`。
-- 可重现：`permissionMode: "default"` + 任意未在 settings.json `permissions.allow` 里的工具调用。
+- 这说明当前 headless `stream-json` 流没有被 GUI 接管权限请求，CLI 最终只能把拒绝结果写进 `result.permission_denials`。
+- 实测结论：`PermissionRequest` hook 在当前 `claude -p --input-format stream-json` 路径下没有触发。加入 `--permission-prompt-tool stdio` 后，CLI 会在 stdout 发出 `type:"control_request"`，并等待 stdin 上同 `request_id` 的 `control_response`。
 
-### 13.2 三条可行路径
+### 13.2 首选方案：stdio 权限控制协议
 
-| 方案 | 描述 | 工作量 | 局限 |
-|------|------|--------|------|
-| **A：`--permission-prompt-tool` MCP 桥** | spawn 时带 `--permission-prompt-tool <mcp_tool_name>`，CLI 把权限请求路由到指定 MCP 工具；我们注册一个本地 stdio MCP server，把请求转发到桌面 UI 弹窗，等用户决议后回写工具结果 | 高（需要写最小 MCP server + 协议解析 + 跨进程通信） | 必须先弄清 CLI 实际向 MCP tool 发什么 schema；版本兼容性风险 |
-| **B：`--allowed-tools` / `--disallowed-tools` 命令行预批** | spawn 时把白名单作为参数传入；UI 提供「常用工具一键放行」按钮 | 低 | 启动后无法动态加白名单，只能等下一会话 |
-| **C：写 `settings.json.permissions.allow`** | 拿到 denial 后，UI 给一个「加入 allowlist」按钮；写规则进 `~/.claude/settings.json` 或项目 `.claude/settings.json`；下次会话生效 | 低（已有 read/write_claude_settings） | 仍需重启一次会话；规则语法（`Bash(curl:*)`）需查官方文档 |
+启动会话时，`Manager::spawn` 默认追加：
 
-### 13.3 阶段性实施
+```text
+--permission-prompt-tool stdio
+```
 
-**Phase 1（已实现）**：渲染 `result.permission_denials` 为可见红 chip，告知用户去 `/permissions` 加白名单。
+当 stdout 出现 `control_request`：
 
-**Phase 2（实施中，方案 C）**：
-- `PermissionDenialList` 每条 denial 加「加入 allowlist」按钮
-- 点击 → 推断规则字符串（Bash → `Bash(<cmd_first_word>:*)`、Write → `Write(<file_path>)` 等）→ 读 `~/.claude/settings.json` → `permissions.allow` 数组追加去重 → 写回
-- toast 提示「已加入白名单，下次会话生效」
-- 规则推断函数 `inferAllowRule(toolName, toolInput)` 在 `src/lib/permissionRules.ts`，单元覆盖 Bash / Write / Edit / WebFetch / MCP 工具
+```json
+{
+  "type": "control_request",
+  "request_id": "…",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Write",
+    "display_name": "Write",
+    "input": { "file_path": "…", "content": "…" },
+    "permission_suggestions": [
+      { "type": "setMode", "mode": "acceptEdits", "destination": "session" }
+    ]
+  }
+}
+```
 
-**Phase 3（P4，方案 A）**：搭一个最小 stdio MCP server（`src-tauri/bin/permission-mcp.rs`），spawn 时 `--mcp-config` 注入 + `--permission-prompt-tool <name>`；MCP server 通过 Tauri event 唤起前端 PermissionDialog，等待 `allow` / `deny` 决议后通过 stdout 回写工具结果。需先抓到 CLI 发给 MCP 的实际 schema。
+Rust 后端处理链路：
 
-### 13.4 不做清单
+1. stdout reader 识别 `control_request`。
+2. 注入 GUI 内部 `session_id` 和 `cwd`，通过 Tauri event 发给前端。
+3. 前端弹窗展示工具名、说明、参数、CLI 给出的 `permission_suggestions`。
+4. 用户选择后通过 Tauri command 回写同一个 Claude CLI 进程 stdin。
+5. 回写格式：
+
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "…",
+    "response": { "behavior": "allow", "updatedInput": { } }
+  }
+}
+```
+
+用户选择映射：
+
+| GUI 选项 | control response 内层 `response` |
+| --- | --- |
+| 是 | `behavior:"allow"` + `updatedInput:<原 tool input>` |
+| 否 | `behavior:"deny"`，`message` 告诉 Claude 用户拒绝及原因 |
+| 本次会话允许所有编辑 | `behavior:"allow"` + `updatedPermissions:[{type:"setMode", mode:"acceptEdits", destination:"session"}]` |
+| 本次会话允许此类工具 | `behavior:"allow"` + `updatedPermissions:[{type:"addRules", rules:[...], behavior:"allow", destination:"session"}]` |
+| 写入项目本地规则 | `behavior:"allow"` + `updatedPermissions:[{type:"addRules", rules:[...], behavior:"allow", destination:"localSettings"}]`，仅用户明确选择时写 `.claude/settings.local.json` |
+
+### 13.3 MCP 增强定位
+
+Rust 侧内置一个最小 MCP permission server：同一个 Tauri 二进制正常运行时启动 GUI；带 `--permission-mcp-server` 参数运行时进入 stdio MCP server 模式。
+
+- 设置中用“使用 MCP 权限工具”开关控制。关闭时走内置 `stdio` control 弹窗；开启时传 `--permission-prompt-tool` 和 `--mcp-config`。
+- 默认工具名：`mcp__claudinal_permission__approval_prompt`。
+- 默认 MCP 配置 JSON 指向 `${CLAUDINAL_EXE} --permission-mcp-server`，后端启动时把 `${CLAUDINAL_EXE}` 替换为当前应用二进制路径。
+- MCP server 无 GUI bridge 环境时默认拒绝权限请求；由桌面端 spawn 时会注入本地 bridge env，把 MCP tool call 转发到同一个权限弹窗。
+- 已验证：直接 JSON-RPC 调用 `initialize` / `tools/list` / `tools/call` 正常；Claude CLI 通过 `--mcp-config` 加载后 `claudinal_permission` 为 connected，`--permission-prompt-tool mcp__claudinal_permission__approval_prompt` 能拦截 Write 权限并拒绝，测试文件未创建。
+
+### 13.4 兜底与兼容
+
+- 保留现有 `result.permission_denials` 渲染，作为 hook 未启用、hook 失败、CLI 版本不支持时的显式错误展示。
+- 不再默认写 `~/.claude/settings.json` 或项目 `.claude/settings.local.json`。
+- 只有用户在 GUI 明确选择“写入项目本地规则”或类似持久化选项，才返回 `updatedPermissions.destination = "localSettings"`。
+- 会话级授权一律使用 `destination:"session"`，不落盘。
+
+### 13.5 不做清单
 
 - 自行 patch CLI 二进制注入 hook —— 升级即失效，且违反 plan §1 不变量。
-- 复制 TUI 的 inquirer 阻塞流 —— headless 协议不暴露 stdin tty，做不了。
-- 缓存"上次允许过的工具调用"在桌面端旁路 CLI 决策 —— 等于自己实现权限系统，违反不变量。
+- 默认开启 `acceptEdits` 或 `bypassPermissions` 来绕过权限问题 —— 会扩大误删、误改风险。
+- 静默写 `settings.json.permissions.allow` —— 用户没有明确授权持久化时不落盘。
+- 在桌面端自己执行 Bash/Edit/Write —— 会变成自研 agent/tool runtime，违反“不重造 agent”原则。

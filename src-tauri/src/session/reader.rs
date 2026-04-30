@@ -20,7 +20,13 @@ pub struct SessionMeta {
 /// 例：`F:\project\claude-test` → `F--project-claude-test`
 pub fn encode_cwd(cwd: &str) -> String {
     cwd.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -149,11 +155,7 @@ pub fn read_session_sidecar(cwd: &str, session_id: &str) -> Result<Option<serde_
     Ok(Some(v))
 }
 
-pub fn write_session_sidecar(
-    cwd: &str,
-    session_id: &str,
-    data: serde_json::Value,
-) -> Result<()> {
+pub fn write_session_sidecar(cwd: &str, session_id: &str, data: serde_json::Value) -> Result<()> {
     let path = sidecar_path(cwd, session_id)?;
     if let Some(parent) = path.parent() {
         if !parent.is_dir() {
@@ -184,10 +186,7 @@ pub fn delete_session_jsonl(cwd: &str, session_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn read_session_transcript(
-    cwd: &str,
-    session_id: &str,
-) -> Result<Vec<serde_json::Value>> {
+pub fn read_session_transcript(cwd: &str, session_id: &str) -> Result<Vec<serde_json::Value>> {
     let dir = projects_dir(cwd)?;
     let path = dir.join(format!("{}.jsonl", session_id));
     if !path.is_file() {

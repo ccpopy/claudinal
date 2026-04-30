@@ -1,18 +1,18 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
 use crate::error::{Error, Result};
+use crate::permission_mcp::{
+    render_default_mcp_config, PermissionMcpBridge, DEFAULT_PERMISSION_MCP_TOOL,
+};
 use crate::proc::{Manager, SpawnOptions};
 use crate::session::{
-    delete_session_jsonl as delete_jsonl_inner,
-    list_project_sessions as list_sessions_inner,
-    read_session_sidecar as read_sidecar_inner,
-    read_session_transcript as read_transcript_inner,
-    scan_activity_heatmap as scan_heatmap_inner,
-    scan_all_usage_sidecars as scan_usage_inner,
-    write_session_sidecar as write_sidecar_inner,
-    ActivityCell, GlobalUsage, SessionMeta, WatcherState,
+    delete_session_jsonl as delete_jsonl_inner, list_project_sessions as list_sessions_inner,
+    read_session_sidecar as read_sidecar_inner, read_session_transcript as read_transcript_inner,
+    scan_activity_heatmap as scan_heatmap_inner, scan_all_usage_sidecars as scan_usage_inner,
+    write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalUsage, SessionMeta,
+    WatcherState,
 };
 
 #[tauri::command]
@@ -25,25 +25,74 @@ pub async fn detect_claude_cli() -> Result<String> {
 pub async fn spawn_session(
     app: AppHandle,
     manager: State<'_, Manager>,
+    permission_bridge: State<'_, PermissionMcpBridge>,
     cwd: String,
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
     resume_session_id: Option<String>,
     env: Option<std::collections::HashMap<String, String>>,
+    permission_mcp_enabled: Option<bool>,
+    permission_prompt_tool: Option<String>,
+    mcp_config: Option<String>,
 ) -> Result<String> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
+    let mut env = env.unwrap_or_default();
+    let (permission_prompt_tool, mcp_config) = if permission_mcp_enabled.unwrap_or(false) {
+        env.extend(permission_bridge.env(app.clone()).await?);
+        let tool = permission_prompt_tool
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_PERMISSION_MCP_TOOL)
+            .to_string();
+        let config = render_default_mcp_config(mcp_config.as_deref())?;
+        (Some(tool), Some(config))
+    } else {
+        (None, None)
+    };
     let opts = SpawnOptions {
         cwd: cwd.into(),
         model,
         effort,
         permission_mode,
         resume_session_id,
-        env,
+        env: if env.is_empty() { None } else { Some(env) },
+        permission_prompt_tool,
+        mcp_config,
     };
     manager.spawn(app, opts).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionResolution {
+    session_id: String,
+    request_id: String,
+    transport: Option<String>,
+    response: Value,
+}
+
+#[tauri::command]
+pub async fn resolve_permission_request(
+    manager: State<'_, Manager>,
+    permission_bridge: State<'_, PermissionMcpBridge>,
+    resolution: PermissionResolution,
+) -> Result<()> {
+    if resolution.transport.as_deref() == Some("mcp") {
+        return permission_bridge
+            .resolve(&resolution.request_id, resolution.response)
+            .await;
+    }
+    manager
+        .resolve_control_request(
+            &resolution.session_id,
+            &resolution.request_id,
+            resolution.response,
+        )
+        .await
 }
 
 #[tauri::command]
@@ -121,10 +170,7 @@ pub async fn list_project_sessions(cwd: String) -> Result<Vec<SessionMeta>> {
 }
 
 #[tauri::command]
-pub async fn read_session_transcript(
-    cwd: String,
-    session_id: String,
-) -> Result<Vec<Value>> {
+pub async fn read_session_transcript(cwd: String, session_id: String) -> Result<Vec<Value>> {
     read_transcript_inner(&cwd, &session_id)
 }
 
@@ -134,19 +180,12 @@ pub async fn delete_session_jsonl(cwd: String, session_id: String) -> Result<()>
 }
 
 #[tauri::command]
-pub async fn read_session_sidecar(
-    cwd: String,
-    session_id: String,
-) -> Result<Option<Value>> {
+pub async fn read_session_sidecar(cwd: String, session_id: String) -> Result<Option<Value>> {
     read_sidecar_inner(&cwd, &session_id)
 }
 
 #[tauri::command]
-pub async fn write_session_sidecar(
-    cwd: String,
-    session_id: String,
-    data: Value,
-) -> Result<()> {
+pub async fn write_session_sidecar(cwd: String, session_id: String, data: Value) -> Result<()> {
     write_sidecar_inner(&cwd, &session_id, data)
 }
 
@@ -170,7 +209,15 @@ pub async fn list_files(cwd: String, prefix: String) -> Result<Vec<FileMatch>> {
     let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
     const MAX_DEPTH: usize = 4;
     const MAX_RESULTS: usize = 500;
-    let skip_dirs = ["node_modules", ".git", "target", "dist", ".next", ".venv", "venv"];
+    let skip_dirs = [
+        "node_modules",
+        ".git",
+        "target",
+        "dist",
+        ".next",
+        ".venv",
+        "venv",
+    ];
     while let Some((dir, depth)) = stack.pop() {
         if out.len() >= MAX_RESULTS {
             break;
@@ -238,10 +285,7 @@ pub async fn watch_sessions(
 }
 
 #[tauri::command]
-pub async fn unwatch_sessions(
-    watcher: State<'_, WatcherState>,
-    cwd: String,
-) -> Result<()> {
+pub async fn unwatch_sessions(watcher: State<'_, WatcherState>, cwd: String) -> Result<()> {
     watcher.unwatch(&cwd);
     Ok(())
 }
@@ -249,8 +293,7 @@ pub async fn unwatch_sessions(
 fn claude_settings_path(scope: &str, cwd: Option<&str>) -> Result<std::path::PathBuf> {
     match scope {
         "global" => {
-            let home = dirs::home_dir()
-                .ok_or_else(|| Error::Other("home dir not found".into()))?;
+            let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
             Ok(home.join(".claude").join("settings.json"))
         }
         "project" => {
@@ -260,7 +303,8 @@ fn claude_settings_path(scope: &str, cwd: Option<&str>) -> Result<std::path::Pat
                 .join("settings.json"))
         }
         "project-local" => {
-            let cwd = cwd.ok_or_else(|| Error::Other("cwd required for project-local scope".into()))?;
+            let cwd =
+                cwd.ok_or_else(|| Error::Other("cwd required for project-local scope".into()))?;
             Ok(std::path::PathBuf::from(cwd)
                 .join(".claude")
                 .join("settings.local.json"))
@@ -270,19 +314,13 @@ fn claude_settings_path(scope: &str, cwd: Option<&str>) -> Result<std::path::Pat
 }
 
 #[tauri::command]
-pub async fn claude_settings_path_for(
-    scope: String,
-    cwd: Option<String>,
-) -> Result<String> {
+pub async fn claude_settings_path_for(scope: String, cwd: Option<String>) -> Result<String> {
     let p = claude_settings_path(&scope, cwd.as_deref())?;
     Ok(p.display().to_string())
 }
 
 #[tauri::command]
-pub async fn read_claude_settings(
-    scope: String,
-    cwd: Option<String>,
-) -> Result<Option<Value>> {
+pub async fn read_claude_settings(scope: String, cwd: Option<String>) -> Result<Option<Value>> {
     let path = claude_settings_path(&scope, cwd.as_deref())?;
     if !path.is_file() {
         return Ok(None);
@@ -293,11 +331,7 @@ pub async fn read_claude_settings(
 }
 
 #[tauri::command]
-pub async fn write_claude_settings(
-    scope: String,
-    cwd: Option<String>,
-    data: Value,
-) -> Result<()> {
+pub async fn write_claude_settings(scope: String, cwd: Option<String>, data: Value) -> Result<()> {
     let path = claude_settings_path(&scope, cwd.as_deref())?;
     if let Some(parent) = path.parent() {
         if !parent.is_dir() {
@@ -343,8 +377,8 @@ const DEFAULT_OAUTH_BETA: &str = "oauth-2025-04-20";
 pub async fn fetch_oauth_usage() -> Result<Value> {
     let token = read_oauth_access_token()?
         .ok_or_else(|| Error::Other("OAuth 未登录：未找到 ~/.claude/.credentials.json".into()))?;
-    let beta = std::env::var("ANTHROPIC_OAUTH_BETA")
-        .unwrap_or_else(|_| DEFAULT_OAUTH_BETA.to_string());
+    let beta =
+        std::env::var("ANTHROPIC_OAUTH_BETA").unwrap_or_else(|_| DEFAULT_OAUTH_BETA.to_string());
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()

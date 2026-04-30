@@ -259,7 +259,7 @@ function PlanUsageSection({
         )}
         {sevenDaySonnet && (
           <UsageBar
-            label="仅 Sonnet"
+            label="Sonnet"
             sub={`${fmtResetAt(sevenDaySonnet.resets_at)} 重置`}
             window={sevenDaySonnet}
           />

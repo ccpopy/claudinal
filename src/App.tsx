@@ -15,14 +15,16 @@ import {
   stopSession,
   listenSessionEvents,
   listenSessionErrors,
+  listenPermissionRequests,
   readSessionTranscript,
   readSessionSidecar,
   writeSessionSidecar,
   deleteSessionJsonl,
+  type PermissionRequestPayload,
   type SessionMeta
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxy } from "@/lib/proxy"
-import { recordResultUsage } from "@/lib/settings"
+import { loadSettings, recordResultUsage } from "@/lib/settings"
 import { reduce, init as reducerInit } from "@/lib/reducer"
 import {
   listProjects,
@@ -35,6 +37,7 @@ import { Composer } from "@/components/Composer"
 import { MessageStream } from "@/components/MessageStream"
 import { Sidebar } from "@/components/Sidebar"
 import { Welcome } from "@/components/Welcome"
+import { ProjectPicker } from "@/components/ProjectPicker"
 import { AddProjectDialog } from "@/components/AddProjectDialog"
 import { RenameSessionDialog } from "@/components/RenameSessionDialog"
 import { DiffOverview } from "@/components/DiffOverview"
@@ -42,6 +45,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { BuddyLoader } from "@/components/BuddyLoader"
 import { Settings } from "@/components/Settings"
 import { ChatHeader } from "@/components/ChatHeader"
+import { PermissionDialog } from "@/components/PermissionDialog"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 import { getSessionTitle, setSessionTitle } from "@/lib/sessionTitles"
@@ -144,17 +148,36 @@ export default function App() {
   const [pending, setPending] = useState<
     Array<{ localId: string; text: string; images: ImagePayload[] }>
   >([])
+  const [permissionRequests, setPermissionRequests] = useState<
+    PermissionRequestPayload[]
+  >([])
   // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
   const unlistenRef = useRef<UnlistenFn[]>([])
+  const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
 
   useEffect(() => {
     detectClaudeCli()
       .then(setCliPath)
       .catch((e) => toast.error(`未找到 claude CLI: ${String(e)}`))
-    setProjects(listProjects())
+    const list = listProjects()
+    setProjects(list)
+    if (list.length > 0) setProject((cur) => cur ?? list[0])
+    listenPermissionRequests((payload) => {
+      setPermissionRequests((cur) =>
+        cur.some((p) => p.request_id === payload.request_id)
+          ? cur
+          : [...cur, payload]
+      )
+    })
+      .then((u) => {
+        permissionUnlistenRef.current = u
+      })
+      .catch((e) => toast.error(`权限监听启动失败: ${String(e)}`))
     return () => {
       unlistenRef.current.forEach((u) => u())
       unlistenRef.current = []
+      permissionUnlistenRef.current?.()
+      permissionUnlistenRef.current = null
     }
   }, [])
 
@@ -201,6 +224,7 @@ export default function App() {
     }
     unlistenRef.current.forEach((u) => u())
     unlistenRef.current = []
+    setPermissionRequests([])
     setSessionId(null)
     setStreaming(false)
     setPending((cur) => {
@@ -220,13 +244,17 @@ export default function App() {
     if (sessionId) return sessionId
     try {
       const proxyEnv = buildProxyEnv(loadProxy())
+      const cfg = loadSettings()
       const id = await spawnSession({
         cwd: project.cwd,
-        model: null,
-        effort: null,
-        permissionMode: "acceptEdits",
+        model: cfg.defaultModel.trim() || null,
+        effort: cfg.defaultEffort.trim() || null,
+        permissionMode: cfg.defaultPermissionMode || "default",
         resumeSessionId: selectedSessionId,
-        env: Object.keys(proxyEnv).length > 0 ? proxyEnv : null
+        env: Object.keys(proxyEnv).length > 0 ? proxyEnv : null,
+        permissionMcpEnabled: cfg.permissionMcpEnabled,
+        permissionPromptTool: cfg.permissionPromptTool.trim() || null,
+        mcpConfig: cfg.permissionMcpConfig.trim() || null
       })
       const u1 = await listenSessionEvents(id, (ev) => {
         dispatch({ kind: "event", event: ev })
@@ -417,6 +445,13 @@ export default function App() {
     setSelectedSessionId(null)
   }, [teardown])
 
+  const clearProject = useCallback(async () => {
+    await teardown()
+    dispatch({ kind: "reset" })
+    setProject(null)
+    setSelectedSessionId(null)
+  }, [teardown])
+
   const deleteCurrentSession = useCallback(() => {
     if (!project) return
     const target = selectedSessionId ?? findInitSessionId(state)
@@ -448,6 +483,7 @@ export default function App() {
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const diffCount = countDiffFiles(state.entries)
   const slashCommands = findSlashCommands(state)
+  const activePermissionRequest = permissionRequests[0] ?? null
   void titleTick
 
   return (
@@ -501,7 +537,7 @@ export default function App() {
                     onPickSuggestion={(s) => setDraft(s)}
                   />
                   {project && (
-                    <div className="w-full">
+                    <div className="w-full space-y-2">
                       <Composer
                         onSend={send}
                         onStop={stop}
@@ -513,6 +549,17 @@ export default function App() {
                         cwd={project.cwd}
                         slashCommands={slashCommands}
                       />
+                      <div className="flex justify-start">
+                        <ProjectPicker
+                          projects={projects}
+                          current={project}
+                          onSelect={(p) => {
+                            if (p.id !== project.id) switchProject(p)
+                          }}
+                          onAdd={() => setShowAdd(true)}
+                          onClear={clearProject}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -597,6 +644,14 @@ export default function App() {
           entries={state.entries}
         />
         <Settings open={showSettings} onOpenChange={setShowSettings} />
+        <PermissionDialog
+          request={activePermissionRequest}
+          onSettled={(requestId) =>
+            setPermissionRequests((cur) =>
+              cur.filter((p) => p.request_id !== requestId)
+            )
+          }
+        />
         <Toaster />
       </>
     </TooltipProvider>

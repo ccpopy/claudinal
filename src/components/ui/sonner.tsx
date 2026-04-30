@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
-import { useTheme } from "@/lib/theme"
+import { useTheme } from "@/lib/theme-context"
 
 function Toaster({ position = "top-center", ...props }: ToasterProps) {
   const { resolvedTheme } = useTheme()

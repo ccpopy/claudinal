@@ -1,23 +1,14 @@
 import {
-  createContext,
-  useContext,
   useEffect,
   useState,
   type ReactNode
 } from "react"
 import { applyAppearance, loadAppearance } from "./appearance"
-
-export type Theme = "light" | "dark" | "system"
-
-interface ThemeContextValue {
-  theme: Theme
-  resolvedTheme: "light" | "dark"
-  setTheme: (t: Theme) => void
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null)
-
-export const THEME_STORAGE_KEY = "claudecli.theme"
+import {
+  THEME_STORAGE_KEY,
+  ThemeContext,
+  type Theme
+} from "./theme-context"
 
 function getSystemTheme(): "light" | "dark" {
   if (typeof window === "undefined") return "light"
@@ -67,10 +58,4 @@ export function ThemeProvider({
       {children}
     </ThemeContext.Provider>
   )
-}
-
-export function useTheme() {
-  const ctx = useContext(ThemeContext)
-  if (!ctx) throw new Error("useTheme must be inside ThemeProvider")
-  return ctx
 }

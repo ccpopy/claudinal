@@ -6,9 +6,10 @@ import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
-import { useTheme, type Theme } from "@/lib/theme"
+import { useTheme, type Theme } from "@/lib/theme-context"
 import {
   applyAppearance,
+  defaultAppearance,
   loadAppearance,
   matchPreset,
   PRESETS,
@@ -31,6 +32,7 @@ const themeOptions: Array<{
 export function Appearance() {
   const { theme, resolvedTheme, setTheme } = useTheme()
   const [a, setA] = useState<Appearance>(() => loadAppearance())
+  const [presetSelection, setPresetSelection] = useState<string | null>(null)
 
   const persist = (next: Appearance) => {
     setA(next)
@@ -39,21 +41,31 @@ export function Appearance() {
   }
 
   const update = (mode: "light" | "dark", patch: Partial<AppearanceConfig>) => {
+    setPresetSelection("custom")
     persist({ ...a, [mode]: { ...a[mode], ...patch } })
+  }
+
+  const resetMode = (mode: "light" | "dark") => {
+    setPresetSelection("custom")
+    persist({ ...a, [mode]: { ...defaultAppearance()[mode] } })
   }
 
   const applyPreset = (id: string) => {
     const preset = PRESETS[id]
     if (!preset) return
+    setPresetSelection(id)
     persist(preset.appearance)
   }
 
-  const activePresetId = matchPreset(a)
+  const matchedPresetId = matchPreset(a)
+  const activePresetId = presetSelection ?? matchedPresetId ?? "custom"
 
   const resetAll = () => {
     resetAppearance()
-    setA({ light: {}, dark: {} })
-    applyAppearance(resolvedTheme, { light: {}, dark: {} })
+    const next = defaultAppearance()
+    setPresetSelection(matchPreset(next) ?? "custom")
+    setA(next)
+    applyAppearance(resolvedTheme, next)
   }
 
   return (
@@ -126,12 +138,11 @@ export function Appearance() {
               </Button>
             )
           })}
-          {/* 「自定义」：4 色点跟随当前 a.light/dark 实时变化；无匹配预设时高亮 */}
           <Button
-            variant={activePresetId ? "outline" : "default"}
-            disabled
-            className="h-auto py-3 flex-col gap-1 cursor-default opacity-100 disabled:opacity-100"
-            aria-label="当前自定义配色预览"
+            variant={activePresetId === "custom" ? "default" : "outline"}
+            onClick={() => setPresetSelection("custom")}
+            className="h-auto py-3 flex-col gap-1"
+            aria-label="切换到自定义配色"
           >
             <div className="flex gap-1">
               {[
@@ -160,7 +171,7 @@ export function Appearance() {
           mode={mode}
           cfg={a[mode]}
           onUpdate={(patch) => update(mode, patch)}
-          onReset={() => update(mode, {})}
+          onReset={() => resetMode(mode)}
         />
       ))}
         </div>

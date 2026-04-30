@@ -9,6 +9,9 @@ export type SpawnArgs = {
   permissionMode: string | null
   resumeSessionId?: string | null
   env?: Record<string, string> | null
+  permissionMcpEnabled?: boolean | null
+  permissionPromptTool?: string | null
+  mcpConfig?: string | null
 }
 
 export interface DirEntry {
@@ -33,6 +36,67 @@ export async function detectClaudeCli(): Promise<string> {
 
 export async function spawnSession(args: SpawnArgs): Promise<string> {
   return invoke<string>("spawn_session", args as Record<string, unknown>)
+}
+
+export interface PermissionRule {
+  toolName?: string
+  ruleContent?: string
+  [k: string]: unknown
+}
+
+export interface PermissionUpdate {
+  type?: string
+  mode?: string
+  behavior?: "allow" | "deny" | "ask" | string
+  destination?: "session" | "localSettings" | "projectSettings" | "userSettings" | string
+  rules?: PermissionRule[]
+  [k: string]: unknown
+}
+
+export interface PermissionToolRequest {
+  subtype?: string
+  tool_name?: string
+  display_name?: string
+  input?: Record<string, unknown>
+  description?: string
+  permission_suggestions?: PermissionUpdate[]
+  tool_use_id?: string
+  [k: string]: unknown
+}
+
+export interface PermissionRequestPayload {
+  type: "control_request"
+  transport?: "stdio" | "mcp" | string
+  request_id: string
+  session_id: string
+  cwd?: string
+  request: PermissionToolRequest
+  [k: string]: unknown
+}
+
+export async function listenPermissionRequests(
+  handler: (payload: PermissionRequestPayload) => void
+): Promise<UnlistenFn> {
+  return listen<PermissionRequestPayload>(
+    "claudinal://permission/request",
+    (e) => handler(e.payload)
+  )
+}
+
+export async function resolvePermissionRequest(args: {
+  sessionId: string
+  requestId: string
+  transport?: string | null
+  response: Record<string, unknown>
+}): Promise<void> {
+  return invoke("resolve_permission_request", {
+    resolution: {
+      sessionId: args.sessionId,
+      requestId: args.requestId,
+      transport: args.transport ?? null,
+      response: args.response
+    }
+  })
 }
 
 export async function sendUserMessage(

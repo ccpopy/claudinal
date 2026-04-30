@@ -9,14 +9,9 @@ import {
   Gauge,
   Loader2,
   ShieldAlert,
-  ShieldCheck,
   Timer,
   Webhook
 } from "lucide-react"
-import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
-import { readClaudeSettings, writeClaudeSettings } from "@/lib/ipc"
-import { appendAllowRule, inferAllowRule } from "@/lib/permissionRules"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import type { UIEntry, UIMessage } from "@/types/ui"
@@ -230,60 +225,16 @@ function PermissionDenialList({ denials }: { denials: PermissionDenial[] }) {
 }
 
 function DenialRow({ d }: { d: PermissionDenial }) {
-  const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState(false)
   const name = d.tool_name ?? "?"
   const input = d.tool_input ?? {}
   const cmd = (input.command as string) ?? null
   const fp = (input.file_path as string) ?? (input.path as string) ?? null
   const summary = cmd ?? fp ?? JSON.stringify(input).slice(0, 120)
-  const rule = inferAllowRule({ toolName: d.tool_name, toolInput: d.tool_input })
-
-  const allowGlobally = async () => {
-    if (!rule) {
-      toast.error("无法推断规则")
-      return
-    }
-    setBusy(true)
-    try {
-      const cur = (await readClaudeSettings("global")) as
-        | (Record<string, unknown> & {
-            permissions?: { allow?: string[]; deny?: string[] }
-          })
-        | null
-      const next = (cur ?? {}) as Record<string, unknown> & {
-        permissions?: { allow?: string[]; deny?: string[] }
-      }
-      const perms = next.permissions ?? { allow: [], deny: [] }
-      perms.allow = appendAllowRule(perms.allow, rule)
-      next.permissions = perms
-      await writeClaudeSettings("global", next)
-      setDone(true)
-      toast.success(`已加白名单 ${rule}，下次会话生效`)
-    } catch (e) {
-      toast.error(`写入失败: ${String(e)}`)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return (
     <div className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs space-y-1">
       <div className="flex items-center justify-between gap-2">
         <div className="font-mono text-destructive">{name}</div>
-        {rule && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-6 text-[10px]"
-            onClick={allowGlobally}
-            disabled={busy || done}
-          >
-            <ShieldCheck className="size-3" />
-            {done ? "已加白名单" : `允许 ${rule}`}
-          </Button>
-        )}
       </div>
       <div className="font-mono break-all text-foreground/80">{summary}</div>
     </div>

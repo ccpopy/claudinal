@@ -15,23 +15,23 @@ export interface Appearance {
 
 const KEY = "claudecli.appearance"
 
-const EMPTY: Appearance = { light: {}, dark: {} }
+const CLAUDE_DEFAULT: Appearance = {
+  light: {
+    accent: "#cc7d5e",
+    background: "#f9f9f7",
+    foreground: "#2d2d2b"
+  },
+  dark: {
+    accent: "#cc7d5e",
+    background: "#2d2d2b",
+    foreground: "#f9f9f7"
+  }
+}
 
 export const PRESETS: Record<string, { label: string; appearance: Appearance }> = {
   claude: {
     label: "Claude（默认）",
-    appearance: {
-      light: {
-        accent: "#cc7d5e",
-        background: "#f9f9f7",
-        foreground: "#2d2d2b"
-      },
-      dark: {
-        accent: "#cc7d5e",
-        background: "#2d2d2b",
-        foreground: "#f9f9f7"
-      }
-    }
+    appearance: CLAUDE_DEFAULT
   },
   codex: {
     label: "Codex",
@@ -72,16 +72,7 @@ export const PRESETS: Record<string, { label: string; appearance: Appearance }> 
 /// 比较核心三色 × 双模式 = 6 字段，全等才视为匹配该预设。
 /// 其他字段（contrast / fontUI / fontMono / translucentSidebar）不参与匹配，
 /// 用户在某预设基础上微调这些不影响 "激活态" 高亮。
-/// 6 字段全 undefined（重置 / 首次启动）= 走 token 默认 = Claude。
 export function matchPreset(a: Appearance): string | null {
-  const allEmpty =
-    !a.light.accent &&
-    !a.light.background &&
-    !a.light.foreground &&
-    !a.dark.accent &&
-    !a.dark.background &&
-    !a.dark.foreground
-  if (allEmpty) return "claude"
   for (const [id, p] of Object.entries(PRESETS)) {
     const l = p.appearance.light
     const d = p.appearance.dark
@@ -99,17 +90,38 @@ export function matchPreset(a: Appearance): string | null {
   return null
 }
 
+function cloneClaudeDefault(): Appearance {
+  return {
+    light: { ...CLAUDE_DEFAULT.light },
+    dark: { ...CLAUDE_DEFAULT.dark }
+  }
+}
+
+export function defaultAppearance(): Appearance {
+  return cloneClaudeDefault()
+}
+
 export function loadAppearance(): Appearance {
   try {
     const raw = localStorage.getItem(KEY)
-    if (!raw) return EMPTY
+    if (!raw) return cloneClaudeDefault()
     const parsed = JSON.parse(raw)
-    return {
-      light: { ...EMPTY.light, ...(parsed?.light ?? {}) },
-      dark: { ...EMPTY.dark, ...(parsed?.dark ?? {}) }
+    const merged: Appearance = {
+      light: { ...(parsed?.light ?? {}) },
+      dark: { ...(parsed?.dark ?? {}) }
     }
+    // 兼容旧版本：核心 6 字段全空时升级为 Claude 预设，避免「激活但值丢失」。
+    const allEmpty =
+      !merged.light.accent &&
+      !merged.light.background &&
+      !merged.light.foreground &&
+      !merged.dark.accent &&
+      !merged.dark.background &&
+      !merged.dark.foreground
+    if (allEmpty) return cloneClaudeDefault()
+    return merged
   } catch {
-    return EMPTY
+    return cloneClaudeDefault()
   }
 }
 

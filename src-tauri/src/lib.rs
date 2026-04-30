@@ -1,13 +1,19 @@
 mod commands;
 mod error;
+mod permission_mcp;
 mod proc;
 mod session;
+
+pub fn run_permission_mcp_server() -> error::Result<()> {
+    permission_mcp::run_stdio_mcp_server()
+}
 
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,claudecli_desktop_lib=debug")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("info,claudecli_desktop_lib=debug")
+            }),
         )
         .with_target(false)
         .init();
@@ -15,11 +21,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(proc::Manager::new())
+        .manage(permission_mcp::PermissionMcpBridge::new())
         .manage(session::WatcherState::new())
         .setup(|_app| Ok(()))
         .invoke_handler(tauri::generate_handler![
             commands::detect_claude_cli,
             commands::spawn_session,
+            commands::resolve_permission_request,
             commands::send_user_message,
             commands::stop_session,
             commands::create_dir,

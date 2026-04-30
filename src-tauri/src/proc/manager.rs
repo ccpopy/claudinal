@@ -21,6 +21,8 @@ pub struct SpawnOptions {
     pub permission_mode: Option<String>,
     pub resume_session_id: Option<String>,
     pub env: Option<std::collections::HashMap<String, String>>,
+    pub permission_prompt_tool: Option<String>,
+    pub mcp_config: Option<String>,
 }
 
 struct Session {
@@ -65,6 +67,17 @@ impl Manager {
         if let Some(rid) = &opts.resume_session_id {
             cmd.arg("--resume").arg(rid);
         }
+        if let Some(config) = &opts.mcp_config {
+            cmd.arg("--mcp-config").arg(config);
+        }
+        let permission_prompt_tool = opts
+            .permission_prompt_tool
+            .as_deref()
+            .map(str::trim)
+            .filter(|tool| !tool.is_empty())
+            .unwrap_or("stdio");
+        cmd.arg("--permission-prompt-tool")
+            .arg(permission_prompt_tool);
 
         if let Some(env) = &opts.env {
             for (k, v) in env {
@@ -103,6 +116,7 @@ impl Manager {
             let app = app.clone();
             let topic = event_topic.clone();
             let sid = session_id.clone();
+            let cwd = opts.cwd.display().to_string();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout).lines();
                 loop {
@@ -115,16 +129,34 @@ impl Manager {
                             match serde_json::from_str::<Value>(trimmed) {
                                 Ok(value) => {
                                     debug!(session = %sid, "stdout event: {}", value);
+                                    if value
+                                        .get("type")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|t| t == "control_request")
+                                    {
+                                        let mut payload = value.clone();
+                                        if let Some(obj) = payload.as_object_mut() {
+                                            obj.insert("session_id".into(), json!(sid.clone()));
+                                            obj.insert("cwd".into(), json!(cwd.clone()));
+                                        }
+                                        if let Err(e) =
+                                            app.emit("claudinal://permission/request", payload)
+                                        {
+                                            error!(
+                                                session = %sid,
+                                                "permission request emit failed: {e}"
+                                            );
+                                        }
+                                        continue;
+                                    }
                                     if let Err(e) = app.emit(&topic, value) {
                                         error!(session = %sid, "emit failed: {e}");
                                     }
                                 }
                                 Err(e) => {
                                     warn!(session = %sid, "non-json line: {e}, raw: {trimmed}");
-                                    let _ = app.emit(
-                                        &topic,
-                                        json!({ "type": "raw", "line": trimmed }),
-                                    );
+                                    let _ =
+                                        app.emit(&topic, json!({ "type": "raw", "line": trimmed }));
                                 }
                             }
                         }
@@ -164,11 +196,6 @@ impl Manager {
     }
 
     pub async fn send(&self, session_id: &str, content_blocks: Value) -> Result<()> {
-        let session = self
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?
-            .clone();
         let payload = json!({
             "type": "user",
             "message": {
@@ -176,6 +203,32 @@ impl Manager {
                 "content": content_blocks
             }
         });
+        self.write_json_line(session_id, payload).await
+    }
+
+    pub async fn resolve_control_request(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        response: Value,
+    ) -> Result<()> {
+        let payload = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": response
+            }
+        });
+        self.write_json_line(session_id, payload).await
+    }
+
+    async fn write_json_line(&self, session_id: &str, payload: Value) -> Result<()> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?
+            .clone();
         let mut line = serde_json::to_string(&payload)?;
         debug!(session = %session_id, "stdin <- {} bytes", line.len());
         line.push('\n');

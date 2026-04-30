@@ -1,5 +1,17 @@
 const KEY = "claudinal.settings"
 
+export const DEFAULT_PERMISSION_MCP_TOOL =
+  "mcp__claudinal_permission__approval_prompt"
+
+export const DEFAULT_PERMISSION_MCP_CONFIG = `{
+  "mcpServers": {
+    "claudinal_permission": {
+      "command": "\${CLAUDINAL_EXE}",
+      "args": ["--permission-mcp-server"]
+    }
+  }
+}`
+
 export interface AppSettings {
   // P3.1 常规
   autoCheckUpdate: boolean
@@ -8,14 +20,20 @@ export interface AppSettings {
   defaultEffort: string
   defaultPermissionMode: "default" | "acceptEdits" | "plan" | "bypassPermissions"
   claudeCliPath: string
+  permissionMcpEnabled: boolean
+  permissionPromptTool: string
+  permissionMcpConfig: string
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   autoCheckUpdate: true,
   defaultModel: "",
   defaultEffort: "",
-  defaultPermissionMode: "acceptEdits",
-  claudeCliPath: ""
+  defaultPermissionMode: "default",
+  claudeCliPath: "",
+  permissionMcpEnabled: false,
+  permissionPromptTool: DEFAULT_PERMISSION_MCP_TOOL,
+  permissionMcpConfig: DEFAULT_PERMISSION_MCP_CONFIG
 }
 
 export function loadSettings(): AppSettings {

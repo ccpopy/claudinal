@@ -138,7 +138,7 @@ export function Settings({ open, onOpenChange }: Props) {
                     type="button"
                     onClick={() => setSection(s.id)}
                     className={cn(
-                      "flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors text-left",
+                      "flex cursor-pointer items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors text-left",
                       active
                         ? "bg-sidebar-accent text-sidebar-foreground"
                         : "hover:bg-sidebar-accent/60 text-sidebar-foreground/80"
