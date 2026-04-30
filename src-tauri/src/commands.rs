@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
+use crate::api_proxy::{start as start_api_proxy, ProxyConfig};
 use crate::error::{Error, Result};
 use crate::permission_mcp::{
     render_default_mcp_config, PermissionMcpBridge, DEFAULT_PERMISSION_MCP_TOOL,
@@ -40,6 +41,40 @@ pub async fn spawn_session(
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
     let mut env = env.unwrap_or_default();
+    let mut model = model;
+    let mut env_remove = Vec::new();
+    if let Some(proxy_config) = take_proxy_config(&mut env) {
+        let local_base_url = start_api_proxy(proxy_config).await?;
+        env.insert("ANTHROPIC_BASE_URL".into(), local_base_url);
+        env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
+        env.remove("ANTHROPIC_API_KEY");
+        env.remove("ANTHROPIC_MODEL");
+        env_remove.push("ANTHROPIC_MODEL".into());
+        model = None;
+    }
+    if let Some(model) = model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let is_claude_builtin = model == "default"
+            || model == "best"
+            || model == "sonnet"
+            || model == "opus"
+            || model == "haiku"
+            || model == "opusplan"
+            || model.starts_with("claude-")
+            || model.starts_with("anthropic.");
+        if !is_claude_builtin {
+            env.entry("ANTHROPIC_CUSTOM_MODEL_OPTION".into())
+                .or_insert_with(|| model.to_string());
+            env.entry("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME".into())
+                .or_insert_with(|| model.to_string());
+            env.entry("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION".into())
+                .or_insert_with(|| "Third-party API primary model".to_string());
+            env.entry("ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES".into())
+                .or_insert_with(|| {
+                    "effort,xhigh_effort,max_effort,thinking,adaptive_thinking,interleaved_thinking"
+                        .to_string()
+                });
+        }
+    }
     let (permission_prompt_tool, mcp_config) = if permission_mcp_enabled.unwrap_or(false) {
         env.extend(permission_bridge.env(app.clone()).await?);
         let tool = permission_prompt_tool
@@ -60,10 +95,30 @@ pub async fn spawn_session(
         permission_mode,
         resume_session_id,
         env: if env.is_empty() { None } else { Some(env) },
+        env_remove,
         permission_prompt_tool,
         mcp_config,
     };
     manager.spawn(app, opts).await
+}
+
+fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Option<ProxyConfig> {
+    let target_url = env.remove("CLAUDINAL_PROXY_TARGET_URL")?;
+    let api_key = env.remove("CLAUDINAL_PROXY_API_KEY").unwrap_or_default();
+    let auth_field = env
+        .remove("CLAUDINAL_PROXY_AUTH_FIELD")
+        .unwrap_or_else(|| "ANTHROPIC_AUTH_TOKEN".into());
+    let use_full_url = env
+        .remove("CLAUDINAL_PROXY_USE_FULL_URL")
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let main_model = env.remove("CLAUDINAL_PROXY_MAIN_MODEL").unwrap_or_default();
+    Some(ProxyConfig {
+        target_url,
+        api_key,
+        auth_field,
+        use_full_url,
+        main_model,
+    })
 }
 
 #[derive(Deserialize)]
@@ -385,11 +440,7 @@ pub async fn read_claude_md(scope: String, cwd: Option<String>) -> Result<String
 }
 
 #[tauri::command]
-pub async fn write_claude_md(
-    scope: String,
-    cwd: Option<String>,
-    contents: String,
-) -> Result<()> {
+pub async fn write_claude_md(scope: String, cwd: Option<String>, contents: String) -> Result<()> {
     let path = claude_md_path(&scope, cwd.as_deref())?;
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() && !parent.is_dir() {
@@ -474,6 +525,120 @@ pub async fn write_text_file(path: String, contents: String) -> Result<()> {
     }
     std::fs::write(&p, contents).map_err(Error::from)?;
     Ok(())
+}
+
+fn provider_models_url(request_url: &str, use_full_url: bool) -> Result<String> {
+    let mut url = request_url.trim().trim_end_matches('/').to_string();
+    if url.is_empty() {
+        return Err(Error::Other("requestUrl required".into()));
+    }
+    if use_full_url {
+        let lower = url.to_lowercase();
+        for suffix in ["/chat/completions", "/messages"] {
+            if lower.ends_with(suffix) {
+                let keep = url.len() - suffix.len();
+                url.truncate(keep);
+                break;
+            }
+        }
+    }
+    if !url.to_lowercase().ends_with("/models") {
+        url.push_str("/models");
+    }
+    Ok(url)
+}
+
+fn collect_model_ids(value: &Value, out: &mut Vec<String>) {
+    if let Some(s) = value.as_str() {
+        if !s.trim().is_empty() {
+            out.push(s.trim().to_string());
+        }
+        return;
+    }
+    if let Some(obj) = value.as_object() {
+        for key in ["id", "name", "model"] {
+            if let Some(s) = obj.get(key).and_then(|x| x.as_str()) {
+                if !s.trim().is_empty() {
+                    out.push(s.trim().to_string());
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn extract_provider_models(body: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(arr) = body.get("data").and_then(|x| x.as_array()) {
+        for item in arr {
+            collect_model_ids(item, &mut out);
+        }
+    }
+    if let Some(arr) = body.get("models").and_then(|x| x.as_array()) {
+        for item in arr {
+            collect_model_ids(item, &mut out);
+        }
+    }
+    if let Some(arr) = body.as_array() {
+        for item in arr {
+            collect_model_ids(item, &mut out);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[tauri::command]
+pub async fn fetch_provider_models(
+    request_url: String,
+    api_key: String,
+    auth_field: String,
+    input_format: String,
+    use_full_url: bool,
+) -> Result<Vec<String>> {
+    let url = provider_models_url(&request_url, use_full_url)?;
+    let token = api_key.trim();
+    if token.is_empty() {
+        return Err(Error::Other("apiKey required".into()));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| Error::Other(format!("http client: {e}")))?;
+    let mut req = client
+        .get(url)
+        .header("Accept", "application/json")
+        .header("User-Agent", "Claudinal/0.1");
+    if auth_field == "ANTHROPIC_API_KEY" && input_format != "openai-chat-completions" {
+        req = req
+            .header("x-api-key", token)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        let bearer = token.strip_prefix("Bearer ").unwrap_or(token);
+        req = req.bearer_auth(bearer);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| Error::Other(format!("models request: {e}")))?;
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Other(format!("models parse: {e}")))?;
+    if !status.is_success() {
+        return Err(Error::Other(format!(
+            "models http {}: {}",
+            status,
+            serde_json::to_string(&body).unwrap_or_default()
+        )));
+    }
+    let models = extract_provider_models(&body);
+    if models.is_empty() {
+        return Err(Error::Other("响应中未找到模型 ID".into()));
+    }
+    Ok(models)
 }
 
 #[tauri::command]
