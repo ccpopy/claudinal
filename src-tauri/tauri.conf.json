@@ -28,9 +28,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
     "icon": [
       "icons/icon.png"
-    ]
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Claude Code 桌面外壳",
+    "longDescription": "Claudinal 是 Claude Code CLI 的桌面外壳，提供流式对话、会话管理与可视化设置。",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["SimpChinese", "English"]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
   }
 }

@@ -347,19 +347,37 @@ F:\project\claudecli\
 - [ ] CLAUDE_CLI_PATH 覆盖
 - [ ] 默认 add-dir 列表
 
-#### P3.4 个性化
+#### P3.4 个性化（对齐 Claude Code 已有能力，**不照搬 Codex**）
 
-- [ ] 系统提示扩展（`--append-system-prompt`）
-- [ ] 默认 agents（`--agents` JSON 编辑器）
-- [ ] 自定义 slash 快捷面板（高频命令 pin）
+> 仅暴露 Claude Code 真有的入口，未实现的能力（如 Codex 风「记忆 / 跳过工具辅助对话 / 重置记忆」）一律不做占位。
+> 参考：`~/.claude/CLAUDE.md`（global） + `<cwd>/CLAUDE.md`（project） + `<cwd>/.claude/CLAUDE.local.md`（local，被 git 忽略）。
 
-#### P3.5 MCP 服务器
+- [ ] **自定义指令（CLAUDE.md）**
+  - 三个 scope：global / project / project-local，对应文件路径见上
+  - UI：textarea（mono 字体，行号可选）+ scope 切换 tab + 「保存」按钮（dirty 才启用）
+  - 使用 `read_claude_settings(scope, cwd?)` 模式扩展 `read/write_claude_md(scope, cwd?)` Rust 命令；不存在文件时 read 返回空串
+  - 顶部链接「了解更多」指向 Anthropic 官方文档
+  - **不做** 记忆系统（Claude Code 没有 Codex 那种 memory toggle，能力由 CLAUDE.md 一站式覆盖）
+- [ ] 高频命令 pin：从 `system/init.slash_commands` 列表勾选，写 `claudinal.settings.pinnedSlash`，Composer `/` 面板顶部置顶展示
+- [ ] **不做** `--append-system-prompt`、`--agents` JSON 编辑器：保持 CLAUDE.md 一条路径，避免 prompt 来源分裂
 
-- [ ] 列表：从 `system/init.mcp_servers` 读取 + 配置文件解析
-- [ ] 启用 / 禁用 toggle
-- [ ] 状态：connected / needs-auth / failed（连过去看）
-- [ ] 添加/编辑（写入 `~/.claude/mcp.json` 或本项目 `.claude/mcp.json`）
-- [ ] needs-auth 走 OAuth 流程（如 Google Drive）
+#### P3.5 MCP 服务器（参考 Codex UI 形态，但写入 Claude 原生 mcp.json）
+
+> 列表页 + 详情编辑页双视图（用 Breadcrumb 在页内导航：`MCP 服务器 > playwright > 编辑`）。
+> 配置文件：用户级 `~/.claude/mcp.json`，项目级 `<cwd>/.mcp.json`（Claude Code 文档约定）。
+
+- [ ] **列表视图**
+  - Header：「MCP 服务器」标题 + 副标题「连接外部工具和数据源」+ 右上「+ 添加服务器」
+  - 行卡片：服务器名 / 状态点（来自 `system/init.mcp_servers`：connected / needs-auth / failed）/ 齿轮按钮跳详情 / 启用 toggle
+  - 数据源合并：`system/init.mcp_servers` 状态 + 解析两份 mcp.json 配置；以配置文件为权威来源
+- [ ] **详情/编辑视图**
+  - 顶部 Breadcrumb「← 返回 MCP 服务器 > {name}」+ 右上「卸载」红按钮（移除该服务器条目）
+  - 类型切换 tab：`STDIO` / `流式 HTTP`（对应 Claude Code mcp.json 的 `type: "stdio" | "http"`）
+  - STDIO 字段：名称 / 启动命令（command）/ 参数（args[]，每行一个 + 删除按钮 + 「+ 添加参数」）/ 环境变量（key-value 对，「+ 添加环境变量」）/ 环境变量传递（envPassthrough[]，从父进程透传名）/ 工作目录（cwd）
+  - HTTP 字段：名称 / URL / headers（key-value）/ 鉴权方式（none / bearer / oauth）
+  - 「保存」按钮 dirty 才启用，原子写 mcp.json
+- [ ] needs-auth 走 OAuth：状态点提示，点击触发对应 server 的 OAuth flow（保留为 P4）
+- [ ] **scope 选择**：保存时让用户选 global（`~/.claude/mcp.json`）或 project（`<cwd>/.mcp.json`）
 
 #### P3.6 Git
 
@@ -367,10 +385,25 @@ F:\project\claudecli\
 - [ ] 默认 base branch
 - [ ] 自动 fetch 频率
 
-#### P3.7 环境
+#### P3.7 环境（**项目级运行环境，参考 Codex 设计**）
 
-- [ ] 环境变量列表（覆盖给 claude 子进程）
-- [ ] PATH 追加
+> 不再是简单的「全局环境变量列表」，而是按项目挂载工作树构建/清理脚本。命名沿用 Codex 的「环境」二级菜单。
+> 入口结构：`环境 > 选择项目 > {项目名} > 编辑`，用 Breadcrumb 显示完整路径。
+
+- [ ] **项目列表视图**
+  - Header「环境」+ 副标题「本地环境用于指示 Claude 如何为项目设置工作树」+ 右上「添加项目」按钮（复用 `AddProjectDialog`）
+  - 行：folder 图标 + 项目名 +（可选）短标签 + 右侧「+」加号点击进入编辑视图
+- [ ] **项目环境编辑视图**
+  - Breadcrumb：`← 返回 / 环境 / {项目名} / 编辑`
+  - 「本地环境」只读卡：项目名 + 完整 cwd
+  - 「名称」input：默认值 = 项目 basename，可改（写入 project store 的 `name` 字段）
+  - 「设置脚本」textarea + 平台 tab（默认 / macOS / Linux / Windows，每平台独立脚本）+ 右上「变量」hint（说明 `$CLAUDINAL_WORKTREE_PATH` 占位）—— 创建工作树时在项目根目录下运行
+  - 「清理脚本」textarea + 平台 tab —— 清理工作树之前在项目根目录下运行
+  - 「操作」分区：可添加任意命令到工具栏（待 P4，先占位「添加操作」按钮 + 提示文案）
+  - 「保存」按钮 dirty 才启用
+  - 存储：`localStorage["claudinal.project-env"][projectId] = { name?, setupScripts: { default?, macos?, linux?, windows? }, cleanupScripts: {...}, actions: [] }`
+- [ ] 工作树自动化（创建 / 清理 / 派生）放到 §9.1.1「派生到新工作树」一并实施，本节只暴露脚本配置入口
+- [ ] **不做** 全局 PATH 追加 / 全局 env 列表 —— 这部分由 settings.json env 字段直接编辑，已在 P3.3 移除（避免 OAuth 冲突）
 
 #### P3.8 工作树
 
@@ -510,9 +543,10 @@ F:\project\claudecli\
 
 - [x] P3.1 常规：自动检查更新 toggle（启动 / 关闭行为留 P4）
 - [x] P3.3 配置：默认 model / effort / permission_mode / CLAUDE_CLI_PATH（写 `claudinal.settings`，spawn 时 `loadSettings()` 注入）
-- [ ] P3.4 个性化：append-system-prompt / 默认 agents / 自定义 slash 快捷面板
-- [ ] P3.5 MCP 服务器：列表 + 启用 toggle + OAuth + 编辑 mcp.json
-- [ ] P3.6 / 3.7 / 3.8 / 3.9 / 3.10：Git / 环境 / 工作树 / 浏览器 / 已归档对话（占位）
+- [ ] P3.4 个性化：CLAUDE.md 三 scope 编辑（global / project / project-local）+ pin 高频 slash；**不做** Codex 风记忆系统
+- [ ] P3.5 MCP 服务器：列表卡 + 启用 toggle；详情编辑分 STDIO / 流式 HTTP，字段含启动命令 / 参数 / 环境变量 / 环境变量传递 / 工作目录；scope = global(`~/.claude/mcp.json`) / project(`<cwd>/.mcp.json`)；**需新增 Breadcrumb 组件**
+- [ ] P3.7 环境（项目级）：项目列表 + 编辑视图（名称 / 设置脚本 / 清理脚本 / 操作，按 default/macOS/Linux/Windows 平台分 tab）；存 `localStorage["claudinal.project-env"]`；**复用 Breadcrumb 组件**
+- [ ] P3.6 / 3.8 / 3.9 / 3.10：Git / 工作树 / 浏览器 / 已归档对话（占位）
 - [x] P3.11 账号 & Usage：apiKeySource 来自 system_init（写 `claudinal.api-key-source`）+ `recordResultUsage` 在 result 事件累计 modelUsage 到 `claudinal.usage`；Account 页面显示登录方式 + 总成本 / tokens / cache + 按模型拆分表 + 清空 usage 按钮
 - [ ] P3.12 收尾：测试连接按钮（spawn `curl --proxy ... -I https://api.anthropic.com`）+ keychain 加密密码 + PAC URL + 全应用范围（含 webview，等 Tauri 2 setProxy 稳定）
 
@@ -609,6 +643,13 @@ F:\project\claudecli\
   - Fork 功能整段废弃（Rust SpawnOptions.fork_session_id / --fork-session、ChatHeader 菜单项、App forkCurrentSession + forkPendingId、ipc.forkSessionId 全部移除）
   - 通用 `ConfirmDialog` 走 shadcn `AlertDialog`（`@radix-ui/react-alert-dialog`，role=alertdialog，按 Esc / 点外部不关，专门给不可逆操作）；删除会话 + 项目从列表移除全部走 Dialog 二次确认替代 window.confirm
   - 「分叉会话」菜单项已移除（用户反馈命名晦涩 + 实际场景少）；plan.md §9.1.1 标记为备选项，未来重做时命名规范定为「派生到新工作树」（对齐 git worktree 心智）
+- ✅ **2026-04-30 后续 #9（Welcome 默认项目 + 项目选择器 + 计划口径修正）**：
+  - 启动时若已有项目，App.tsx 自动选中列表第一个，进入「要在 X 中构建什么？」环境，不再被 Welcome「添加项目」拦截
+  - 新增 `ProjectPicker`（DropdownMenu + 搜索 + 项目列表勾选 + 「添加新项目」 + 「不使用项目」），挂在 Welcome 居中 Composer 下方左对齐
+  - 外观默认值改成 Claude 预设实值（`appearance.ts` `CLAUDE_DEFAULT` 常量 + `defaultAppearance()` 导出）；旧版 `{}` 视为升级到 Claude；matchPreset 移除 allEmpty=Claude 兜底；resetAll / 单模式 reset 都回到 Claude 预设；修复 `update(mode, {})` 实际不清空字段的 bug
+  - Button base class 加 `cursor-pointer`（disabled 由 `pointer-events-none` 自然回退）
+  - plan.md §6 P3.4 / P3.5 / P3.7 重写：个性化对齐 Claude Code（CLAUDE.md 三 scope 而非 Codex 风记忆）；MCP 详情字段（启动命令 / 参数 / 环境变量 / 环境变量传递 / 工作目录，STDIO + 流式 HTTP 切换，scope global/project）；环境分类改为项目级运行环境（设置脚本 / 清理脚本 / 平台 tab / 操作）
+  - plan.md §11.19 新增 Breadcrumb 组件约定（自实现轻量版，供 P3.5 / P3.7 共用）
 - ⏳ 待用户实测 `pnpm tauri dev`
 - ⏳ P3 其他分类：配置 / 个性化 / MCP / Git / 环境 / 工作树 / 浏览器 / 归档 / 账号Usage（占位）
 
@@ -789,6 +830,25 @@ pnpm tauri build               # 打包安装包（首次较慢）
 - **Sidebar 加载**：项目展开时（`toggleExpand`）懒加载 sessions；`selectedProjectId` 变化时自动展开 + 加载。
 - **不实现的**：fork（`--fork-session`）/ 删 jsonl 文件 —— P1 内可补，未做。
 
+### 11.19 Breadcrumb 组件（P3.5 MCP / P3.7 环境共用）
+
+> 设置页内的多级页面导航（`MCP 服务器 > playwright > 编辑`、`环境 > {项目名} > 编辑`）需要一个轻量 Breadcrumb，**不引入 shadcn breadcrumb registry**，自己写一个 50 行内组件即可。
+
+- 文件：`src/components/ui/breadcrumb.tsx`
+- API（含义对齐 Radix / shadcn 习惯）：
+  ```tsx
+  <Breadcrumb>
+    <BreadcrumbItem onClick={onBack}>← 返回</BreadcrumbItem>
+    <BreadcrumbSeparator />
+    <BreadcrumbItem onClick={() => setView("list")}>MCP 服务器</BreadcrumbItem>
+    <BreadcrumbSeparator />
+    <BreadcrumbItem current>playwright</BreadcrumbItem>
+  </Breadcrumb>
+  ```
+- 视觉：横向 flex + `text-xs text-muted-foreground`；非 `current` 项 `cursor-pointer hover:text-foreground`；`current` 不响应点击；分隔符用 `ChevronRight` lucide 图标 size-3 opacity-60。
+- 不做 dropdown / ellipsis 折叠（路径深度不超过 3 级，没必要）。
+- 设置页分类视图改造：每个分类组件在内部维护 `view: "list" | "edit" | "detail"` 与 `selected`（编辑/详情对应的项 id）；Settings.index.tsx 不感知子视图；Breadcrumb 永远渲染在分类页顶部。
+
 ### 11.18 P3 设置页骨架（给 codex 接手）
 
 实施这一节前先读 §6 P3 子节的全部条目，确定优先级。骨架建议：
@@ -820,9 +880,139 @@ pnpm tauri build               # 打包安装包（首次较慢）
 
 ---
 
-## 12. 最后一步：构建体积收尾
+## 12. 构建体积 & 打包产物
 
-- [ ] **优化 Vite chunk 体积**：当前 `npm run build` 会提示部分 chunk 超过 500 kB。等功能稳定后再处理代码分割，优先评估 `react-markdown` / `rehype-highlight` / 设置页相关模块的动态导入，以及 `build.rollupOptions.output.manualChunks` 拆包策略。
+### 12.1 Vite chunk 拆分（已实施）
+
+`vite.config.ts` 加 `build.rollupOptions.output.manualChunks`，按 node_modules 路径分桶：
+
+| chunk 名 | 命中规则 |
+| --- | --- |
+| `markdown` | `react-markdown` / `remark-*` / `rehype-*` / `micromark` / `mdast` / `hast` / `unified` / `unist-*` |
+| `highlight` | `highlight.js` / `lowlight` |
+| `radix` | `@radix-ui/*` |
+| `icons` | `lucide-react` |
+| `react` | `react` / `react-dom` / `scheduler` |
+| `vendor` | 其余 node_modules |
+
+同时 `build.target = "es2022"`、`chunkSizeWarningLimit = 800`，避免误报。
+
+后续优化备选（按需）：
+- `react-markdown` / `rehype-highlight` 改成动态 import（仅 MessageStream 用到，进一步减小首屏 JS）
+- 设置页 12 个 sections 改成 `React.lazy` + `<Suspense>`，仅在打开 Settings 时加载
+
+### 12.2 Rust release profile（已实施）
+
+`src-tauri/Cargo.toml [profile.release]`：`lto = true` / `opt-level = "s"` / `codegen-units = 1` / `panic = "abort"` / `strip = true`，确保单文件 exe 最小。
+
+### 12.3 npm 打包脚本（已新增，跨 Windows / macOS / Linux）
+
+> Tauri 打包受限于运行平台：**Windows 产物只能在 Windows 打**，**macOS 产物只能在 macOS 打**，**Linux 产物只能在 Linux 打**（除非交叉编译或走 GitHub Actions 矩阵）。脚本按平台分组提供。
+
+#### 通用
+
+| 命令 | 说明 |
+| --- | --- |
+| `pnpm tauri:dev` | 开发模式 |
+| `pnpm tauri:build` / `pnpm package` | 打当前平台 `tauri.conf.json::bundle.targets` 列出的全部目标 |
+
+#### Windows（在 Windows 上跑）
+
+| 命令 | 产物路径 |
+| --- | --- |
+| `pnpm package:exe` | `src-tauri/target/release/bundle/nsis/Claudinal_<ver>_x64-setup.exe`（NSIS 安装器，**双击即装，currentUser 不要管理员**） |
+| `pnpm package:msi` | `src-tauri/target/release/bundle/msi/Claudinal_<ver>_x64_en-US.msi` |
+| `pnpm package:win` | NSIS + MSI 双产物 |
+
+单文件主程序（无安装器）：`src-tauri/target/release/claudecli-desktop.exe`，可直接拷贝运行（Tauri 无内置 portable bundler，单文件即视为绿色版）。
+
+#### macOS（在 macOS 上跑）
+
+| 命令 | 产物 |
+| --- | --- |
+| `pnpm package:mac-app` | `src-tauri/target/release/bundle/macos/Claudinal.app`（.app 包） |
+| `pnpm package:dmg` | `src-tauri/target/release/bundle/dmg/Claudinal_<ver>_<arch>.dmg`（拖拽安装镜像） |
+| `pnpm package:mac` | .app + dmg 双产物 |
+| `pnpm package:mac-universal` | 通用二进制（Intel + Apple Silicon），需先 `rustup target add x86_64-apple-darwin aarch64-apple-darwin` |
+
+注意：默认未配置代码签名 / 公证，分发时 macOS 会触发 Gatekeeper 提示「应用已损坏」，需用户右键打开或在「系统设置 > 隐私与安全性」放行。生产分发需配置 Apple 开发者证书（留 P4）。
+
+#### Linux（在 Linux 上跑）
+
+| 命令 | 产物 |
+| --- | --- |
+| `pnpm package:deb` | `src-tauri/target/release/bundle/deb/claudinal_<ver>_amd64.deb`（Debian / Ubuntu） |
+| `pnpm package:rpm` | `src-tauri/target/release/bundle/rpm/claudinal-<ver>-1.x86_64.rpm`（Fedora / RHEL，需要安装 `rpm` 工具链） |
+| `pnpm package:appimage` | `src-tauri/target/release/bundle/appimage/claudinal_<ver>_amd64.AppImage`（绿色版，跨发行版） |
+| `pnpm package:linux` | deb + rpm + appimage 三产物 |
+
+Linux 系统依赖（首次需安装）：
+```bash
+sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
+```
+
+#### CI 多平台矩阵建议
+
+```yaml
+strategy:
+  matrix:
+    include:
+      - os: windows-latest
+        cmd: pnpm package:win
+      - os: macos-latest
+        cmd: pnpm package:mac
+      - os: ubuntu-22.04
+        cmd: pnpm package:linux
+```
+
+#### 通用注意
+
+- `tauri.conf.json::bundle.targets` 设为 `["nsis", "app", "dmg", "deb", "appimage"]`，Tauri 会自动跳过当前平台不支持的目标，无需按 OS 切换配置文件
+- 首次构建 Cargo 会下载 + 全量编译依赖，5-15 分钟；后续增量秒级
+- 图标统一在 `src-tauri/icons/icon.png`，Tauri 会按需生成 .icns / .ico；如需更精细图标可补 `icon.icns` / `icon.ico` 同名文件
+
+### 12.4 实际产物与一键打包脚本（已实施）
+
+> 实测产物（macOS 类似 .app/.dmg，Linux 类似 deb/rpm/AppImage，本节给 Windows 实测路径）：
+>
+> - `src-tauri/target/release/claudecli-desktop.exe` — 单文件主程序（约 5.7 MB）
+> - `src-tauri/target/release/bundle/nsis/Claudinal_<ver>_x64-setup.exe` — NSIS 安装器（约 2.2 MB）
+
+`scripts/package-release.mjs` 把上面两个产物分别打成 zip，输出到 `dist/` 同级的 `release/`：
+
+| 命令 | 产物 |
+| --- | --- |
+| `pnpm package:zip-portable` | `release/Claudinal-<ver>-portable.zip`（含 `Claudinal.exe` + `README.txt`） |
+| `pnpm package:zip-installer` | `release/Claudinal-<ver>-setup.zip`（含 `Claudinal_<ver>_x64-setup.exe`） |
+| `pnpm package:zip` | 同时输出两个 zip（缺哪个 skip 哪个，配合 `pnpm package:exe` 使用） |
+| `pnpm release:exe` | 一条龙：`tauri build --bundles nsis` + `package:zip` |
+
+`release/` 已加入 `.gitignore`。zip 命令在 Windows 用 PowerShell `Compress-Archive`，在 macOS / Linux 用 `zip -r -9` 命令。
+
+### 12.5 NSIS 离线引导（中国大陆网络环境）
+
+`tauri build --bundles nsis` 首次构建会从 GitHub releases 下载两个文件：
+- `nsis-3.11.zip`（NSIS 工具链本体，约 2.3 MB）
+- `nsis_tauri_utils.dll`（Tauri 自定义 NSIS 插件，约 30 KB，版本随 tauri-bundler 升级，**当前 tauri 2.10.x 用 v0.5.3**）
+
+如果直连 GitHub 不通会卡在 `failed to bundle project: timeout: global`。提供 `pnpm bootstrap:nsis` 走 ghproxy 镜像（`MIRROR=https://ghproxy.net/` 默认）一次性把两个文件放到 `%LOCALAPPDATA%\tauri\NSIS\`，之后离线 `pnpm package:exe` 直接用缓存：
+
+```bash
+pnpm bootstrap:nsis
+# 或自定义镜像：
+MIRROR=https://mirror.ghproxy.com/ pnpm bootstrap:nsis
+# 或直连：
+MIRROR= pnpm bootstrap:nsis
+```
+
+注意：Tauri 升级后 `nsis_tauri_utils.dll` 版本可能跟着变，需要同步更新 `scripts/bootstrap-nsis.mjs::TAURI_UTILS_VERSION`；定位方法是先跑一次 `pnpm package:exe` 看 Tauri 的 Downloading 日志。
+
+### 12.6 实测结果（2026-04-30）
+
+- ✅ Windows 上 `pnpm package:exe` 全流程通过：tsc + vite build（前端 chunk 6 个：react 193k / index 191k / markdown 156k / radix 106k / icons 30k / css 56k）→ cargo release（1m 50s）→ NSIS 打包 → 安装器 2.2 MB
+- ✅ `pnpm package:zip-portable` 输出 `Claudinal-0.1.0-portable.zip` (2.7 MB，含 5.7 MB exe + README)
+- ✅ `pnpm package:zip-installer` 输出 `Claudinal-0.1.0-setup.zip` (2.2 MB，含 setup.exe)
+- ✅ NSIS 离线引导：从 ghproxy.net 下载 nsis-3.11.zip + nsis_tauri_utils.dll v0.5.3 成功
 
 ---
 

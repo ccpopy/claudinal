@@ -30,7 +30,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/claudinal.git
+git clone https://github.com/ccpopy/claudinal.git
 cd claudinal
 
 # 安装依赖
@@ -38,19 +38,42 @@ pnpm install
 
 # 启动开发环境
 pnpm tauri dev
-
-# 打包构建
-pnpm tauri build
 ```
 
-## 📜 协议 (License)
+### 打包构建
+
+```bash
+# 各平台打包 (自动检测当前系统)
+pnpm tauri build
+
+# --- Windows ---
+pnpm package:exe          # NSIS 安装包 (.exe)
+pnpm package:msi          # MSI 安装包
+pnpm package:win          # 同时打包 NSIS + MSI
+
+# --- macOS ---
+pnpm package:dmg          # DMG 镜像
+pnpm package:mac-app      # .app 包
+pnpm package:mac          # .app + DMG
+pnpm package:mac-universal # Universal Binary (.app + DMG)
+
+# --- Linux ---
+pnpm package:deb          # Debian/Ubuntu (.deb)
+pnpm package:rpm          # RedHat/Fedora (.rpm)
+pnpm package:appimage     # AppImage 便携包
+pnpm package:linux        # 同时打包 deb + rpm + AppImage
+
+# 打包为便携版 zip (跨平台)
+pnpm package:zip          # 全平台 zip
+pnpm package:zip-installer  # 仅安装版 zip
+pnpm package:zip-portable   # 仅便携版 zip
+```
+
+## 📜 协议
 
 本项目采用 **GNU AGPLv3** 开源协议。
 
-AGPLv3 旨在保障用户的网络端使用自由，并促进开源社区的繁荣：
-- 允许免费用于个人、学术及商业用途。
-- 允许修改源码，但**任何基于本项目的修改及衍生作品，必须同样以 AGPLv3 协议开源**。
-- 如果您将此项目部署为网络服务（哪怕用户没有直接获取代码），**也必须向用户提供该服务的完整源代码**。
-
-> ⚠️ **关于商业闭源使用的特别说明**：
-> 只要您遵守 AGPLv3 协议开源您的修改与衍生代码，您完全可以进行商业化。但如果您希望将本项目嵌入到您的**闭源商业产品**中，这是**被严格禁止的**。
+- 个人、学术及商业使用均免费。
+- 修改或衍生作品必须以 AGPLv3 协议开源。
+- 网络部署须向用户提供完整源码。
+- 闭源商业产品中嵌入本项目代码不被允许。
