@@ -282,6 +282,20 @@ export async function fetchOauthUsage(): Promise<OauthUsage> {
   return invoke<OauthUsage>("fetch_oauth_usage")
 }
 
+export interface ProviderModelsRequest {
+  requestUrl: string
+  apiKey: string
+  authField: string
+  inputFormat: string
+  useFullUrl: boolean
+}
+
+export async function fetchProviderModels(
+  args: ProviderModelsRequest
+): Promise<string[]> {
+  return invoke<string[]>("fetch_provider_models", { ...args })
+}
+
 export interface ModelUsageAgg {
   input_tokens: number
   output_tokens: number

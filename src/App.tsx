@@ -26,6 +26,11 @@ import {
 import { buildProxyEnv, loadProxy } from "@/lib/proxy"
 import { loadSettings, recordResultUsage } from "@/lib/settings"
 import { saveSlashCommandsCache } from "@/lib/slashCommands"
+import {
+  buildClaudeEnv,
+  loadThirdPartyApiConfig,
+  trimApiUrl
+} from "@/lib/thirdPartyApi"
 import { reduce, init as reducerInit } from "@/lib/reducer"
 import {
   listProjects,
@@ -246,13 +251,25 @@ export default function App() {
     try {
       const proxyEnv = buildProxyEnv(loadProxy())
       const cfg = loadSettings()
+      const thirdPartyApi = loadThirdPartyApiConfig()
+      const thirdPartyReady =
+        thirdPartyApi.enabled &&
+        !!trimApiUrl(thirdPartyApi.requestUrl) &&
+        !!thirdPartyApi.apiKey.trim()
+      const thirdPartyEnv = thirdPartyReady
+        ? buildClaudeEnv(thirdPartyApi)
+        : {}
+      const env = { ...thirdPartyEnv, ...proxyEnv }
+      const model = thirdPartyReady
+        ? null
+        : cfg.defaultModel.trim() || null
       const id = await spawnSession({
         cwd: project.cwd,
-        model: cfg.defaultModel.trim() || null,
+        model,
         effort: cfg.defaultEffort.trim() || null,
         permissionMode: cfg.defaultPermissionMode || "default",
         resumeSessionId: selectedSessionId,
-        env: Object.keys(proxyEnv).length > 0 ? proxyEnv : null,
+        env: Object.keys(env).length > 0 ? env : null,
         permissionMcpEnabled: cfg.permissionMcpEnabled,
         permissionPromptTool: cfg.permissionPromptTool.trim() || null,
         mcpConfig: cfg.permissionMcpConfig.trim() || null
