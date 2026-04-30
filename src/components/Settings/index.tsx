@@ -34,6 +34,8 @@ import { Personalization } from "./sections/Personalization"
 import { ThirdPartyApi } from "./sections/ThirdPartyApi"
 import { McpServers } from "./sections/McpServers"
 import { Environment } from "./sections/Environment"
+import { Git } from "./sections/Git"
+import { Browser } from "./sections/Browser"
 
 interface Props {
   open: boolean
@@ -85,7 +87,7 @@ const SECTIONS: SectionDef[] = [
     id: "git",
     label: "Git",
     icon: GitBranch,
-    Component: () => <Placeholder title="Git" />
+    Component: Git
   },
   {
     id: "env",
@@ -103,7 +105,7 @@ const SECTIONS: SectionDef[] = [
     id: "browser",
     label: "浏览器使用",
     icon: Globe,
-    Component: () => <Placeholder title="浏览器使用" />
+    Component: Browser
   },
   {
     id: "archive",

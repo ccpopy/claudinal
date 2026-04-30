@@ -12,7 +12,6 @@ import {
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { cn, formatPathForDisplay } from "@/lib/utils"
 import {
@@ -29,6 +28,11 @@ import {
   type AppSettings
 } from "@/lib/settings"
 import { loadSlashCommandsCache } from "@/lib/slashCommands"
+import {
+  SettingsSection,
+  SettingsSectionBody,
+  SettingsSectionHeader
+} from "./layout"
 
 interface Props {
   cwd?: string | null
@@ -183,18 +187,12 @@ export function Personalization({ cwd }: Props) {
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <UserCircle className="size-5" />
-            个性化
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            自定义 CLAUDE.md 与 Composer 的高频命令。
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 mt-6 shrink-0">
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={UserCircle}
+        title="个性化"
+        description="自定义 CLAUDE.md 与 Composer 的高频命令。"
+        actions={
           <Button
             variant="outline"
             size="sm"
@@ -205,11 +203,10 @@ export function Personalization({ cwd }: Props) {
             <ExternalLink className="size-3.5" />
             了解 CLAUDE.md
           </Button>
-        </div>
-      </div>
+        }
+      />
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-8 w-full space-y-8">
+      <SettingsSectionBody>
           {/* —— CLAUDE.md 编辑 —— */}
           <section className="space-y-4">
             <div>
@@ -390,8 +387,7 @@ export function Personalization({ cwd }: Props) {
               )}
             </div>
           </section>
-        </div>
-      </ScrollArea>
-    </div>
+      </SettingsSectionBody>
+    </SettingsSection>
   )
 }

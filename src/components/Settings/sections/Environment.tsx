@@ -34,6 +34,7 @@ import {
 } from "@/lib/projectEnv"
 import { listProjects, type Project } from "@/lib/projects"
 import { cn, formatPathForDisplay } from "@/lib/utils"
+import { SettingsSectionHeader } from "./layout"
 
 interface Props {
   cwd?: string | null
@@ -162,8 +163,12 @@ export function Environment({ cwd }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-8 pb-4 pt-8">
-        {editor ? (
+      <SettingsSectionHeader
+        icon={TerminalSquare}
+        title="环境"
+        description="本地环境用于指示 Claude 如何为项目设置工作树。"
+        eyebrow={
+          editor ? (
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <button
               type="button"
@@ -183,30 +188,21 @@ export function Environment({ cwd }: Props) {
               <BreadcrumbItem current>编辑</BreadcrumbItem>
             </Breadcrumb>
           </div>
-        ) : null}
-        <div className="mt-4 flex items-start justify-between gap-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-xl font-semibold">
-              <TerminalSquare className="size-5" />
-              环境
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              本地环境用于指示 Claude 如何为项目设置工作树。
-            </p>
-          </div>
-          {!editor && (
+          ) : undefined
+        }
+        actions={
+          !editor ? (
             <Button
               type="button"
               size="sm"
-              className="mt-6 shrink-0"
               onClick={() => setAddOpen(true)}
             >
               <FolderPlus />
               添加项目
             </Button>
-          )}
-        </div>
-      </div>
+          ) : undefined
+        }
+      />
 
       {editor ? (
         <EditorView
@@ -251,7 +247,7 @@ function ListView({
 }) {
   return (
     <ScrollArea className="min-h-0 flex-1">
-      <div className="space-y-6 px-8 pb-6">
+      <div className="space-y-6 px-8 pb-6 pt-2">
         <section className="rounded-lg border bg-card p-5">
           {rows.length === 0 ? (
             <div className="flex h-44 flex-col items-center justify-center rounded-lg border border-dashed text-center">
@@ -360,7 +356,7 @@ function EditorView({
   return (
     <>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-6 px-8 pb-6">
+        <div className="space-y-6 px-8 pb-6 pt-2">
           <section className="rounded-lg border bg-card p-5">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               本地环境

@@ -180,11 +180,6 @@ export function ThirdPartyApi() {
     setSelectedProviderId(id)
   }
 
-  const activateProvider = (id: string) => {
-    persistStore({ ...store, activeProviderId: id })
-    setSelectedProviderId(id)
-  }
-
   const editProvider = (id: string) => {
     if (id === OFFICIAL_PROVIDER_ID) return
     const provider = store.providers.find((p) => p.id === id)
@@ -287,11 +282,10 @@ export function ThirdPartyApi() {
     return true
   }
 
-  const applyToClaude = async () => {
-    if (!validate(activeConfig, activeOfficial)) return
+  const applyProviderToClaude = async (providerId: string) => {
     setSaving(true)
     try {
-      if (activeOfficial) {
+      if (providerId === OFFICIAL_PROVIDER_ID) {
         const nextSettings: CliSettings = {
           ...cliSettings,
           env: clearManagedClaudeEnv(cliSettings.env),
@@ -303,13 +297,20 @@ export function ThirdPartyApi() {
         if (appSettings.defaultModel.trim()) {
           saveSettings({ ...appSettings, defaultModel: "" })
         }
-        saveThirdPartyApiStore(store)
+        persistStore({ ...store, activeProviderId: OFFICIAL_PROVIDER_ID })
         setCliSettings(nextSettings)
-        setDirty(false)
-        toast.success("已切换为 Claude Official")
+        toast.success("已恢复官方 Claude，下次启动会话生效")
         return
       }
-      const nextEnv = buildClaudeEnv(activeConfig, cliSettings.env)
+
+      const target = store.providers.find((provider) => provider.id === providerId)
+      if (!target) {
+        toast.error("找不到要应用的供应商")
+        return
+      }
+      if (!validate(target)) return
+
+      const nextEnv = buildClaudeEnv(target, cliSettings.env)
       const nextSettings: CliSettings = {
         ...cliSettings,
         env: nextEnv,
@@ -321,31 +322,12 @@ export function ThirdPartyApi() {
       if (appSettings.defaultModel.trim()) {
         saveSettings({ ...appSettings, defaultModel: "" })
       }
-      saveThirdPartyApiStore(store)
+      persistStore({ ...store, activeProviderId: providerId })
+      setSelectedProviderId(providerId)
       setCliSettings(nextSettings)
-      setDirty(false)
-      toast.success("已应用到 Claude，下次启动会话生效")
+      toast.success("已设为 Claude 使用，下次启动会话生效")
     } catch (e) {
       toast.error(`应用失败: ${String(e)}`)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const clearClaudeMapping = async () => {
-    setSaving(true)
-    try {
-      const nextSettings: CliSettings = {
-        ...cliSettings,
-        env: clearManagedClaudeEnv(cliSettings.env),
-        modelOverrides: clearManagedModelOverrides(cliSettings.modelOverrides)
-      }
-      await writeClaudeSettings("global", nextSettings as Record<string, unknown>)
-      setCliSettings(nextSettings)
-      persistStore({ ...store, activeProviderId: OFFICIAL_PROVIDER_ID })
-      toast.success("已清除 Claude 中的第三方 API 映射")
-    } catch (e) {
-      toast.error(`清除失败: ${String(e)}`)
     } finally {
       setSaving(false)
     }
@@ -470,7 +452,7 @@ export function ThirdPartyApi() {
         </div>
 
         <ScrollArea className="flex-1 min-h-0">
-          <div className="space-y-4 px-8 pb-6">
+          <div className="space-y-4 px-8 pb-6 pt-2">
             <section className="rounded-lg border bg-card p-5 space-y-4">
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <StackField label="供应商名称">
@@ -677,7 +659,7 @@ export function ThirdPartyApi() {
             disabled={!dirty || loading || saving}
           >
             <Save />
-            保存配置
+            保存供应商
           </Button>
           {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
         </div>
@@ -697,7 +679,7 @@ export function ThirdPartyApi() {
             保存供应商参数，并映射到 Claude settings.json 的 env / model。
           </p>
         </div>
-        <div className="flex items-center gap-2 mt-6 shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
           <Button
             variant="outline"
             size="sm"
@@ -722,7 +704,7 @@ export function ThirdPartyApi() {
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 w-full space-y-6">
+        <div className="px-8 pb-6 pt-2 w-full space-y-6">
           <section className="rounded-lg border bg-card p-5 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -736,7 +718,7 @@ export function ThirdPartyApi() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2 text-xs">
               <div className="min-w-0">
-                <span className="text-muted-foreground">当前会话将使用：</span>
+                <span className="text-muted-foreground">Claude 当前映射：</span>
                 <span className="font-medium">{activeTitle}</span>
                 <span className="text-muted-foreground"> · {activeSubtitle}</span>
               </div>
@@ -745,9 +727,10 @@ export function ThirdPartyApi() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => activateProvider(OFFICIAL_PROVIDER_ID)}
+                  onClick={() => applyProviderToClaude(OFFICIAL_PROVIDER_ID)}
+                  disabled={loading || saving}
                 >
-                  使用官方登录
+                  恢复官方 Claude
                 </Button>
               )}
             </div>
@@ -780,7 +763,13 @@ export function ThirdPartyApi() {
                     active={store.activeProviderId === provider.id}
                     selected={selectedProviderId === provider.id}
                     onSelect={() => selectProvider(provider.id)}
-                    onActivate={() => activateProvider(provider.id)}
+                    onApply={() => applyProviderToClaude(provider.id)}
+                    applyLabel={
+                      store.activeProviderId === provider.id
+                        ? "重新写入 Claude"
+                        : "设为 Claude 使用"
+                    }
+                    busy={loading || saving}
                     onEdit={() => editProvider(provider.id)}
                     onRemove={() => removeProvider(provider.id)}
                   />
@@ -795,19 +784,7 @@ export function ThirdPartyApi() {
       <div className="px-8 py-4 shrink-0 flex items-center gap-2">
         <Button onClick={saveLocal} disabled={!dirty || loading || saving}>
           <Save />
-          保存配置
-        </Button>
-        <Button onClick={applyToClaude} disabled={loading || saving}>
-          <Key />
-          应用到 Claude
-        </Button>
-        <Button
-          variant="outline"
-          onClick={clearClaudeMapping}
-          disabled={loading || saving}
-        >
-          <Trash2 />
-          清除 Claude 映射
+          保存供应商配置
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
       </div>
@@ -851,7 +828,9 @@ function ProviderCard({
   active,
   selected,
   onSelect,
-  onActivate,
+  onApply,
+  applyLabel,
+  busy,
   onEdit,
   onRemove
 }: {
@@ -860,7 +839,9 @@ function ProviderCard({
   active: boolean
   selected: boolean
   onSelect: () => void
-  onActivate: () => void
+  onApply: () => void
+  applyLabel: string
+  busy?: boolean
   onEdit?: () => void
   onRemove?: () => void
 }) {
@@ -904,16 +885,16 @@ function ProviderCard({
           </div>
         </div>
       </button>
-      {selected && (
-        <div className="flex shrink-0 items-center gap-2">
-          {active ? (
-            <CurrentBadge />
-          ) : (
-            <Button type="button" size="sm" onClick={onActivate}>
-              <Play className="size-3.5" />
-              启用
-            </Button>
-          )}
+      {active && (
+        <div className="shrink-0 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
+          <CurrentBadge />
+        </div>
+      )}
+      <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 bg-card/95 pl-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <Button type="button" size="sm" onClick={onApply} disabled={busy}>
+            <Play className="size-3.5" />
+            {applyLabel}
+          </Button>
           {onEdit && (
             <Button type="button" variant="outline" size="sm" onClick={onEdit}>
               <Pencil className="size-3.5" />
@@ -932,8 +913,7 @@ function ProviderCard({
               <Trash2 className="size-4" />
             </Button>
           )}
-        </div>
-      )}
+      </div>
     </div>
   )
 }

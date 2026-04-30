@@ -199,16 +199,23 @@ F:\project\claudecli\
 │  ├─ main.tsx
 │  ├─ App.tsx
 │  ├─ components/
-│  │  ├─ Sessions/
-│  │  ├─ MessageStream/
-│  │  ├─ Composer/
-│  │  ├─ ContextPanel/
-│  │  └─ ui/              # shadcn
-│  ├─ hooks/
-│  ├─ stores/             # zustand
+│  │  ├─ AppChrome.tsx           # 自定义无原生 chrome（顶栏/菜单/拖拽）
+│  │  ├─ Composer.tsx            # 输入区主体（Plus 菜单 / Picker / Plan toggle）
+│  │  ├─ composer/
+│  │  │  └─ ModelEffortPicker.tsx
+│  │  ├─ MessageStream/          # 消息流 + 滚底
+│  │  ├─ PluginsView/            # 插件 & 技能全屏视图
+│  │  ├─ Sidebar.tsx
+│  │  ├─ Settings/               # 14 分类设置页
+│  │  └─ ui/                     # shadcn primitives + tabs / breadcrumb
 │  ├─ lib/
-│  │  ├─ ipc.ts           # tauri invoke 封装
-│  │  └─ events.ts        # 事件类型定义
+│  │  ├─ ipc.ts                  # tauri invoke 封装
+│  │  ├─ reducer.ts              # 事件归并
+│  │  ├─ composerPrefs.ts        # auto/default/session 三层偏好
+│  │  ├─ thirdPartyApi.ts        # 多 provider store + buildClaudeEnv
+│  │  ├─ plugins.ts              # plugin / market / skill IPC
+│  │  ├─ oauthUsage.ts           # 5h/7d 圆环 + 文案
+│  │  └─ ...                     # projects / pinned / settings / mcp / slashCommands / ...
 │  └─ types/
 └─ src-tauri/             # Rust
    ├─ Cargo.toml
@@ -217,19 +224,21 @@ F:\project\claudecli\
    └─ src/
       ├─ main.rs
       ├─ lib.rs
-      ├─ commands.rs      # tauri command exports
+      ├─ commands.rs              # tauri command exports（含 OAuth usage / settings / mcp / md）
+      ├─ api_proxy.rs             # 端到端 sidecar 代理（model 重写 + auth 注入）
+      ├─ permission_mcp.rs        # MCP 权限工具桥
+      ├─ plugins.rs               # plugin / marketplace / skill 读取 + claude plugin 子命令
       ├─ proc/
       │  ├─ mod.rs
-      │  ├─ manager.rs    # 子进程池
-      │  ├─ spawn.rs      # claude 启动
-      │  └─ events.rs     # stream-json 解析
+      │  ├─ manager.rs            # 子进程池
+      │  └─ spawn.rs              # claude CLI 路径定位 + spawn options
       ├─ session/
       │  ├─ mod.rs
-      │  ├─ index.rs      # sqlite
-      │  ├─ reader.rs     # jsonl 读取
-      │  └─ watcher.rs    # fs notify
-      └─ config/
-         └─ mod.rs
+      │  ├─ index.rs              # jsonl 元数据扫描（无 sqlite）
+      │  ├─ reader.rs             # jsonl 读取 + sidecar
+      │  ├─ watcher.rs            # notify fs watcher
+      │  └─ stats.rs              # scan_global_usage / scan_activity_heatmap
+      └─ error.rs
 ```
 
 ---
@@ -340,12 +349,13 @@ F:\project\claudecli\
 
 #### P3.3 配置
 
-- [ ] 默认 model（下拉，可标注成本）
-- [ ] 默认 effort（low/medium/high/xhigh/max）
-- [ ] 默认 permission_mode（default/acceptEdits/plan/bypassPermissions）
+- [x] 默认 model（下拉，可标注成本） —— 由 Composer ModelEffortPicker 接管，写 `~/.claude/settings.json::model`
+- [x] 默认 effort（low/medium/high/xhigh） —— ModelEffortPicker 「同步为全局默认」按钮写 `effortLevel`；max 仅本会话不写盘
+- [x] 默认 permission_mode（default/acceptEdits/plan/bypassPermissions） —— Composer Plus 菜单内嵌「计划模式」开关；其余通过 settings.json 直编
 - [ ] 默认 max-budget-usd
-- [ ] CLAUDE_CLI_PATH 覆盖
+- [x] CLAUDE_CLI_PATH 覆盖
 - [ ] 默认 add-dir 列表
+- [x] **`ConfigExportDialog`**：把 `~/.claude/settings.json` 按官方 schema 分组（凭据 / 模型 / Git / 状态栏 / 权限 / MCP / 沙箱 / 杂项）只读展示 + 导出 JSON / 复制 / 隐藏敏感字段；用于排错而非编辑
 
 #### P3.4 个性化（对齐 Claude Code 已有能力，**不照搬 Codex**）
 
@@ -381,9 +391,15 @@ F:\project\claudecli\
 
 #### P3.6 Git
 
-- [ ] 默认 commit signing toggle
-- [ ] 默认 base branch
-- [ ] 自动 fetch 频率
+> Codex 的 Git 设置（分支前缀 / PR 合并方式 / 草稿 PR / 工作树清理）大多是 Codex 自己的 agent 行为；
+> Claude Code 的 Git 行为由 settings.json 4 个字段控制，桌面端只做编辑器。
+
+- [x] **`attribution`**：commit 末尾追加 Generated with Claude Code 注脚（Switch）
+- [x] **`includeCoAuthoredBy`**：commit 末尾 Co-Authored-By: Claude（Switch）
+- [x] **`includeGitInstructions`**：把 Claude Code 内置 Git 工作流指令注入 system prompt（Switch）
+- [x] **`prUrlTemplate`**：无 gh CLI 时构造 PR URL 用（Input）
+- [x] **提交指令** / **拉取请求指令**：本地 store + 显式「保存」按钮，写到 `~/.claude/CLAUDE.md` 的哨兵区段（`<!-- CLAUDINAL:GIT_COMMIT_INSTRUCTIONS --> ... <!-- /... -->`），用户可控；空内容 = 删除该段
+- [x] 视觉对齐 Codex：max-w-3xl 居中 + 三段式行（label/hint 在左，控件在右）+ 分组卡片底部带保存条
 
 #### P3.7 环境（**项目级运行环境，参考 Codex 设计**）
 
@@ -412,8 +428,13 @@ F:\project\claudecli\
 
 #### P3.9 浏览器使用
 
-- [ ] 内置 playwright MCP 默认开关
-- [ ] 默认 viewport 尺寸
+> 取舍：Claude CLI 自己不内嵌浏览器，浏览器自动化通过 MCP（playwright / chrome-devtools）调用；
+> 桌面端只做「检测 + 一键添加 MCP + 检测 playwright 二进制」，不强加 viewport 等假字段。
+
+- [x] **浏览器 MCP 列表**：扫 global+project mcp.json，过滤名字 / command / args 含 `playwright|browser|chromium|chrome|puppeteer|webkit` 的 server，列出 + 状态点（来自 system_init.mcp_servers cache）
+- [x] **一键添加 playwright（用户级）**：写入 `~/.claude/mcp.json::mcpServers.playwright = { type:stdio, command:npx, args:[-y, @playwright/mcp] }`，下次启动会话生效
+- [x] **Playwright 浏览器二进制检测**：Rust `detect_playwright_install` 跨平台检测 `ms-playwright` 缓存目录（Win=`%USERPROFILE%\AppData\Local`、macOS=`~/Library/Caches`、Linux=`~/.cache`，支持 `PLAYWRIGHT_BROWSERS_PATH` 覆盖），返回 chromium/firefox/webkit 三引擎是否已下载；UI 显示路径 + 三个引擎 chip + 「打开缓存目录」按钮 + 未安装时显示并可复制 `npx playwright install chromium`
+- [ ] 默认 viewport 尺寸 —— 不做：Claude CLI 不消费此字段，靠 MCP server 自身配置
 
 #### P3.10 已归档对话
 
@@ -421,13 +442,14 @@ F:\project\claudecli\
 
 #### P3.11 账号 / Usage（顶部独立区）
 
-- [ ] 显示登录方式：API key（环境变量）/ OAuth（Anthropic）/ Bedrock / Vertex / Foundry
-- [ ] 登出 / 重新登录
-- [ ] **Usage 面板**：
-  - 当前 5h / 1h / weekly 限额（来自 `rate_limit_event`）
-  - 累计成本（按 model 拆分）
-  - 当前会话 cost / token
-  - 数据源：result.modelUsage + 累计 localStorage 持久化
+- [x] 显示登录方式：API key（环境变量）/ OAuth（Anthropic）/ Bedrock / Vertex / Foundry —— 来自 `system/init.apiKeySource` 缓存
+- [ ] 登出 / 重新登录（GUI 不接 OAuth flow，仍在 CLI 端完成）
+- [x] **Usage 面板**：
+  - [x] 5h / 周 限额 + 周 Sonnet / 周 Opus 拆分（接入 Anthropic `GET /api/oauth/usage` 真接口；非官方端点静默隐藏）
+  - [x] 累计成本（按 model 拆分） —— `recordResultUsage` 从 result 事件累加；Statistics 页全局扫 sidecar 还原历史
+  - [x] 当前会话 cost / token
+  - [x] 数据源：`result.modelUsage` + sidecar 持久化 + `scan_global_usage` 全局扫
+  - [x] **PlanUsageIndicator**（Composer 内嵌）：5h 圆环 + tooltip（5h / 周 / 周 Sonnet / 周 Opus 四档），仅官方 OAuth 显示，第三方 API 关闭
 
 #### P3.12 网络 / 代理（全局生效）
 
@@ -440,8 +462,28 @@ F:\project\claudecli\
 - [x] 启用 toggle + 保存按钮（仅在 dirty 时启用）
 - [ ] 全应用范围（含 webview）：Tauri 2 暂未公开稳定的 setProxy API，留 P4
 - [ ] PAC URL 支持
-- [ ] 测试连接按钮（spawn `curl --proxy ...` 或 reqwest 验证）—— 留 P4
+- [x] **测试连接按钮**：Rust `test_proxy_connection` 用 reqwest + 当前代理 URL HEAD 一次目标（默认 `https://api.anthropic.com`，可下拉选 Google / GitHub）；返回 `{ ok, status, latency_ms, message }`；UI 在 Network 页加分组卡，结果按 ok/error 着色，可重复执行
 - [ ] 密码 OS keychain 加密存储（`@tauri-apps/plugin-stronghold`）
+
+#### P3.13 插件 & 技能（全屏独立视图，非设置子项）
+
+> 不放在 SettingsWorkspace 里 —— 插件管理是高频动作，需要独立的左侧栏入口（Sidebar `Puzzle` 图标）和 Composer Plus 菜单子菜单。
+> Claude Code 自带原生 plugin 系统（marketplace / installed_plugins / SKILL.md），桌面端只读文件系统 + 调 `claude plugin` 子命令做写入，**不重写 schema**。
+
+- [x] **数据源（直接读文件系统）**：
+  - 已安装：`~/.claude/plugins/installed_plugins.json`
+  - 已添加 marketplace：`~/.claude/plugins/known_marketplaces.json`
+  - marketplace 缓存：`~/.claude/plugins/marketplaces/<name>/.claude-plugin/marketplace.json`
+  - 用户 / 项目 / 插件携带技能：分别扫 `~/.claude/skills/` / `<cwd>/.claude/skills/` / `~/.claude/plugins/cache/<market>/<plugin>/<ver>/skills/` 下的 `SKILL.md`，自实现简易 YAML frontmatter 解析（不引外部 yaml 库）
+- [x] **写操作（spawn `claude plugin` 子命令）**：`add` / `update` / `remove` marketplace；`install` / `uninstall` plugin（`--scope user|project|local`）；同步等待 stdout/stderr 回显到 toast
+- [x] **顶层视图**：双 tab 「插件 / 技能」+ 已安装数 / 技能数 badge
+- [x] **插件 tab**：三 tab「已安装 / 发现 / Marketplace」+ 右侧搜索；
+  - 已安装：scope 标签 / 版本 / 描述 / 主页链接 / 卸载按钮（`ConfirmDialog` 二次确认）
+  - 发现：跨所有 marketplace 聚合未安装项，最多 200 行；点击「安装」开 Dialog 选 scope 后调用
+  - Marketplace：列表 + 「+添加」入口（owner/repo / Git URL / marketplace.json URL）+ 刷新 / 移除（移除会一并卸载该 market 安装的插件）
+- [x] **技能 tab**：按来源分组（用户级 / 项目级 / 插件携带），显示 `/<name>` + description + 「仅手动」/「仅 Claude」badge
+- [x] **Sidebar 入口**：左栏新增「插件」按钮（`Puzzle` 图标，与「新对话」并列），切换到 PluginsView 时高亮
+- [x] **Composer 集成**：「+」菜单加「插件」子菜单（已安装列表 + 「管理插件」跳全屏视图）；列表每行点击也跳全屏视图，避免在 Composer 内做插件操作
 
 ### P4（按需）
 
@@ -468,14 +510,14 @@ F:\project\claudecli\
 
 ## 8. 主要风险与处理
 
-| 风险                    | 处理                                                 |
-| ----------------------- | ---------------------------------------------------- |
-| stream-json schema 漂移 | 适配层 + unknown fallback；锁 CLI minor 版本上限提示 |
-| Windows pipe + UTF-8    | tokio::process + 显式 utf-8 codec；stderr 独立       |
+| 风险                    | 处理                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| stream-json schema 漂移 | 适配层 + unknown fallback；锁 CLI minor 版本上限提示                          |
+| Windows pipe + UTF-8    | tokio::process + 显式 utf-8 codec；stderr 独立                                |
 | 权限请求 GUI 接管       | `--permission-prompt-tool stdio` 控制协议；保留 `permission_denials` 显式兜底 |
-| CLI 可执行路径定位      | which / 注册表 / 用户设置覆盖；首启向导              |
-| 子进程僵死              | 心跳超时 + force kill + 重新 spawn 用 --resume       |
-| jsonl 大文件            | reader 用尾读 + 流式解析，不全量加载                 |
+| CLI 可执行路径定位      | which / 注册表 / 用户设置覆盖；首启向导                                       |
+| 子进程僵死              | 心跳超时 + force kill + 重新 spawn 用 --resume                                |
+| jsonl 大文件            | reader 用尾读 + 流式解析，不全量加载                                          |
 
 ---
 
@@ -500,7 +542,7 @@ F:\project\claudecli\
 - [x] **重命名会话**：`src/lib/sessionTitles.ts`（`localStorage["claudinal.session-titles"]`），`RenameSessionDialog` Dialog；ChatHeader 下拉菜单 onRename 触发；Sidebar `SessionRow` 显示时优先读 `getSessionTitle(session.id)`，留空恢复默认。
 - [x] **删除会话**：Rust `delete_session_jsonl(cwd, sessionId)` + 注册；前端 ipc 包装；ChatHeader 下拉菜单 onDelete `window.confirm` 二次确认 → teardown → 删 jsonl → reset → 刷新 Sidebar。
 - [ ] **派生到新工作树（基于 CLI `--fork-session`）** — 备选项，不一定实现。曾尝试落地（Rust `SpawnOptions.fork_session_id` + 前端 `forkPendingId` + ChatHeader 「分叉会话 / 复制为新会话」菜单），用户反馈命名晦涩、实际场景少，整段移除。
-  若未来重做，命名规范为「**派生到新工作树**」，对齐 git worktree 心智：
+      若未来重做，命名规范为「**派生到新工作树**」，对齐 git worktree 心智：
   - 文案：菜单「派生到新工作树」+ tooltip「以当前会话历史为起点开一支独立分支，不影响本工作树」
   - 触发入口从 ChatHeader 菜单移到 Sidebar 右键，避开主流程误触
   - 跑前预览：sidecar 复制最近一次 result + 自动生成派生工作树名（`<原 cwd basename>-fork-<n>`）
@@ -550,6 +592,45 @@ F:\project\claudecli\
 - [x] P3.11 账号 & Usage：apiKeySource 来自 system_init（写 `claudinal.api-key-source`）+ `recordResultUsage` 在 result 事件累计 modelUsage 到 `claudinal.usage`；Account 页面显示登录方式 + 总成本 / tokens / cache + 按模型拆分表 + 清空 usage 按钮
 - [ ] P3.12 收尾：测试连接按钮（spawn `curl --proxy ... -I https://api.anthropic.com`）+ keychain 加密密码 + PAC URL + 全应用范围（含 webview，等 Tauri 2 setProxy 稳定）
 
+### 9.1.5 Composer / 多 provider / Plugin 视图（2026-05-01 落地）
+
+> 这一节描述今天（2026-05-01）的 commit `e938381` 落地的能力簇。功能跨主区 / 设置 / 后端 sidecar，统一在此节归档；细节快照见 §10。
+
+- [x] **Composer ModelEffortPicker**：模型 + 思考强度二合一气泡下拉
+  - 模型：`""(default)` + `best/sonnet/opus/haiku/sonnet[1m]/opus[1m]/opusplan` 7 个 alias + 第三方 provider 注入的 extraModels
+  - 思考强度：`""(auto)/low/medium/high/xhigh/max`；`max` 标"仅本会话"角标（settings.json 不接受）
+  - source 标记三态：`auto`（CLI 默认） / `default`（与全局默认一致） / `session`（当前会话覆盖），右下角 1.5px primary 圆点指示
+  - 一键「同步为全局默认」按钮 → 写 `~/.claude/settings.json::effortLevel`
+- [x] **会话级 Composer 偏好**（sidecar.composer）：
+  - `lib/composerPrefs.ts` 三函数：`loadGlobalDefault` / `pickComposerFromSidecar` / `syncEffortToGlobal`
+  - 切换会话：`switchSession` 读 sidecar.composer 还原 model/effort；无则用 `globalDefault`
+  - 用户改 Picker：写到 sidecar.composer（仅当 session id 已分配）；`sessionComposer` 状态留作 result 事件落 sidecar 时的兜底
+  - 一次性迁移：旧 `localStorage["claudinal.composer.prefs"]` 读取后立即删除，避免共享污染
+- [x] **Composer Plus 菜单整合**：
+  - 「添加照片和文件」（替代旧 paperclip 直按）
+  - 「计划模式」开关（switch UI，写 `permissionMode=plan`）
+  - 「插件」子菜单：已安装列表 + 「管理插件」跳 PluginsView
+  - 排队按钮 `ListPlus` 图标（替换原 ListPlus / Send 文案切换）
+- [x] **多 provider 第三方 API**：`lib/thirdPartyApi.ts` 重构为 store 模型
+  - `ThirdPartyApiStore = { activeProviderId, providers: ThirdPartyApiProvider[] }`
+  - 隐式 `OFFICIAL_PROVIDER_ID` 占位 = 走 Anthropic 官方 OAuth；切到该 id 时 buildClaudeEnv 返回空（不注入任何 ANTHROPIC\_\* 环境变量）
+  - 每个 provider 独立 ID / 名称 / 备注 / 官网 URL / requestUrl / apiKey / authField (`ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`) / inputFormat (`anthropic` 或 `openai-chat-completions`) / useFullUrl / mainAlias (`sonnet`/`opus`/`haiku`) / availableModels[] / models{ mainModel, haikuModel, sonnetModel, opusModel, subagentModel }
+  - 「选择 provider」+ 「编辑」/「新建」/ 「删除」/「激活」按钮；激活后写 store
+  - **拉取模型**：`fetch_provider_models` 调 `<base>/models`（按 inputFormat 走 x-api-key 或 Bearer），写入 `availableModels`，作为 ModelEffortPicker 的 extraModels 来源
+  - 兼容 OpenAI Chat Completions：自动追加 `/v1` 或 `/models`；`useFullUrl` 时反推剥离 `/chat/completions` / `/messages` 后缀
+- [x] **端到端 sidecar API 代理**（`src-tauri/src/api_proxy.rs`）：解决 CLI 不识别第三方 provider 自定义 model 名 / auth 字段差异的问题
+  - spawn 子进程时若 env 含 `CLAUDINAL_PROXY_TARGET_URL`，先在 `127.0.0.1:0` 起随机端口本地 sidecar；`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` 注入到 CLI；ANTHROPIC_AUTH_TOKEN 占位为 `claudinal-proxy`
+  - sidecar 收到 HTTP 请求 → JSON body 中 `model` 按 haiku/opus/sonnet 关键字映射到 `mapped_model`（用 provider.models 配置）→ 转发到真实 target，按 authField 注入 `x-api-key` 或 `Bearer`
+  - `GET /models` / `GET /v1/models` 直接由 sidecar 返回本地枚举的 `configured_models()` 列表（CLI 用作模型探测）
+  - 转发时剥掉 `host / content-length / connection / authorization / x-api-key / accept-encoding`，避免重复签名 / 编码冲突
+- [x] **AppChrome 自定义无原生 chrome**：
+  - `WindowDecorations` 关闭，自实现顶栏：左侧 sidebar 切换 + 后退键（仅 in-settings 可用）+ 5 个菜单组（文件/编辑/查看/窗口/帮助）+ 中央居中 "Claudinal" 标题 + 右侧最小化/最大化/关闭
+  - `data-tauri-drag-region` 实现窗口拖拽
+  - `Ctrl+N` 新对话 / `Ctrl+O` 添加项目 全局快捷键
+- [x] **Plan 模式 toggle**：Composer Plus 菜单内嵌；写到 `App` 状态 `planMode`，spawn 时 `permissionMode = planMode ? "plan" : cfg.defaultPermissionMode`
+- [x] **MCP 服务器 disabled toggle**：详情页 Switch；spawn 时合并 global + project 两层 mcp.json 后过滤掉 `disabled:true` 的 server，写到临时 `<temp>/claudinal/mcp-config-<pid>-<ts>.json` 喂给 CLI
+- [x] **Sidebar / AppChrome / Settings 一致的页面切换**：`showPlugins` / `showSettings` 互斥；`returnToChat` 一键回主区；新建对话 / 添加项目 时自动退出设置或插件视图
+
 ### 9.1.4 代码 / 渲染细节遗留
 
 - [x] **Result chip 持久化**：Rust `read/write_session_sidecar(cwd, sid)` 命令；前端 result 事件到来时写 `~/.claude/projects/<encoded>/<sid>.claudinal.json`（`{ result: <event> }`）；switchSession 加载 transcript 后合并 sidecar.result 到 events 末尾，让 ResultView chip 在历史会话也显示。
@@ -562,7 +643,7 @@ F:\project\claudecli\
 
 ---
 
-## 10. 当前进度快照（2026-04-30）
+## 10. 当前进度快照（2026-05-01）
 
 - ✅ P0 骨架完成（tsc 无错 / vite build 1852 modules / cargo check 通过）
 - ✅ 事件归并 reducer + 真实样本（`doc/stream-json-1.txt` + `doc/stream-json-2.txt` 含 thinking / Write / Read / structuredPatch）
@@ -663,8 +744,49 @@ F:\project\claudecli\
   - Settings 环境页替换占位：项目列表 + 当前项目/脚本数量标签 + 右侧加号进入编辑；右上角复用 `AddProjectDialog`
   - 项目环境编辑视图：Breadcrumb `← 返回 / 环境 / {项目名} / 编辑`；本地环境只读卡；名称 input；设置脚本 / 清理脚本按 default/macOS/Linux/Windows 独立 tab；变量 hint `$CLAUDINAL_WORKTREE_PATH`
   - 新增 `lib/projectEnv.ts`：读写 `localStorage["claudinal.project-env"]`，结构为 `{ name?, setupScripts, cleanupScripts, actions: [] }`；操作区先按 P4 占位，不执行工作树自动化
+- ✅ **2026-05-01 后续 #12（commit `e938381` · 插件 / Composer / 多 provider）**：
+  - **插件 & 技能管理（全新模块）**：
+    - Rust 新增 `plugins.rs`（4 个 command：`list_installed_plugins` / `list_marketplaces` / `list_skills` / `run_plugin_command`）；直接读 `~/.claude/plugins/{installed,known_marketplaces}.json` + `marketplaces/<name>/.claude-plugin/marketplace.json`；扫 `~/.claude/skills` / `<cwd>/.claude/skills` / `~/.claude/plugins/cache/<m>/<p>/<v>/skills` 三处 `SKILL.md`，自实现 YAML frontmatter 解析
+    - 写操作（add/update/remove market、install/uninstall plugin）→ spawn `claude plugin ...` 子命令并同步等待结果
+    - 前端 `PluginsView`（独立全屏视图，非设置子项）：插件 tab 三栏（已安装 / 发现 / Marketplace） + 技能 tab 按来源分组；`AddMarketplaceDialog` 含三个常用 source quick-pick；`InstallPluginDialog` 选 scope（user/project/local）；卸载 / 移除 market 走 `ConfirmDialog` 二次确认
+    - Sidebar 「+ 新对话」下方加「插件」入口（`Puzzle` 图标）；Composer Plus 菜单加「插件」子菜单（已安装列表 + 「管理插件」跳全屏）
+  - **Composer ModelEffortPicker**：模型 + effort 二合一气泡下拉
+    - `lib/composerPrefs.ts`：`loadGlobalDefault` 读 `~/.claude/settings.json` `model + effortLevel` → 回退 app settings → 一次性消化旧 `claudinal.composer.prefs`；`syncEffortToGlobal` 仅持久化 low/medium/high/xhigh（max 受官方约束不入盘）
+    - `BUILTIN_MODELS`：`best/sonnet/opus/haiku/sonnet[1m]/opus[1m]/opusplan` 7 个 alias；第三方 provider 的 `availableModels` 注入到 extraModels「Provider」分组
+    - effort source 三态（auto / default / session），UI 用 1.5px primary 圆点表示 session 覆盖
+    - 「同步为全局默认」按钮直接写 settings.json；max 标"仅本会话"角标
+    - 会话级偏好持久化到 `sidecar.composer = { model, effort }`，`switchSession` 时 `pickComposerFromSidecar` 还原；新对话回到全局默认
+  - **Composer Plus 菜单整合**：原 paperclip 直按改成下拉「添加照片和文件 / 计划模式（Switch）/ 插件子菜单」；流式时按钮换 `ListPlus`，悬停 tooltip 改「排队发送」
+  - **PlanUsageIndicator**（Composer 右下小圆环）：仅官方 OAuth 显示，conic-gradient 渲染 5h 利用率；tooltip 4 段（5h / 周 全部 / 周 Sonnet / 周 Opus），每段带「<n>后重置」；非官方 API（第三方 provider 启用）静默隐藏
+  - **第三方 API（多 provider 重构）**：
+    - `ThirdPartyApiStore = { activeProviderId, providers[] }`，每个 provider 独立 ID / requestUrl / apiKey / authField (`ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`) / inputFormat (`anthropic` / `openai-chat-completions`) / useFullUrl / mainAlias / availableModels[] / models{ main/haiku/sonnet/opus/subagent }
+    - 隐式 `OFFICIAL_PROVIDER_ID` = Anthropic 官方 OAuth；激活时 buildClaudeEnv 不注入任何 ANTHROPIC\_\* 变量
+    - 编辑视图：新建 / 编辑 / 删除 / 激活；apiKey 显隐切换（明文 localStorage 仍待 keychain 升级）
+    - **拉取模型**：Rust `fetch_provider_models` → `GET <base>/models`（按 inputFormat 走 x-api-key 或 Bearer + `useFullUrl` 反推剥离 chat/completions）→ 写入 `availableModels`
+  - **端到端 sidecar API 代理**（`api_proxy.rs`）：
+    - spawn 时若 env 含 `CLAUDINAL_PROXY_TARGET_URL`，启动 `127.0.0.1:0` 本地 sidecar；CLI 收到 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` + 占位 token
+    - sidecar 解析 JSON body → `model` 按 haiku/opus/sonnet 关键字映射 → 转发到真实 provider；按 `authField` 注入 `x-api-key` 或 `Bearer`；剥掉 host / content-length / connection / authorization / x-api-key / accept-encoding
+    - `GET /models` 由 sidecar 直接回 `configured_models()` 枚举，避免 CLI 探测 404
+    - 解决了「CLI 不识别第三方 provider 自定义 model 名」「auth 字段差异」「OpenAI 返回的 chat/completions 路径不对应」三个老问题
+  - **AppChrome 自定义窗口 chrome**：关闭原生 decorations；顶栏左侧 sidebar 切换 / 后退键 + 5 个菜单组 + 中央 Claudinal 标题 + 右侧最小化/最大化/关闭；`data-tauri-drag-region`；`Ctrl+N` / `Ctrl+O` 全局快捷键
+  - **MCP disabled toggle**：详情页 Switch；spawn 时合并 global + project 两层 mcp.json 后过滤掉 disabled，写到 `<temp>/claudinal/mcp-config-<pid>-<ts>.json`
+  - **新增 UI primitives**：`tabs`（Radix Tabs 包装 + line/segment 两 variant）；`badge` 增量；`dropdown-menu` 增加 `Sub` 嵌套支持 + `Shortcut` slot；`tooltip` 微调
+  - **新增 IPC**：`fetchOauthUsage` / `fetchProviderModels` / `claudeMcpPath` / `readClaudeMcpConfig` / `writeClaudeMcpConfig` / `openExternal` / `writeTextFile`
+  - **ConfigExportDialog**：把 `~/.claude/settings.json` 按官方分组（凭据 / 模型 / Git / 状态栏 / 钩子 / 权限 / MCP / 沙箱）只读展示 + 导出 JSON / 复制 / 隐藏敏感字段（仅排错用，不在 UI 编辑）
+- ✅ **2026-05-01 后续 #13（P3 占位分类落地 · Git / 浏览器 / 网络代理收尾）**：
+  - **P3.6 Git** 落地（`Settings/sections/Git.tsx`）：
+    - settings.json 4 字段（attribution / includeCoAuthoredBy / includeGitInstructions / prUrlTemplate）—— Codex 风三段式行 + 分组卡 + 底部保存条
+    - 新增「提交指令 / 拉取请求指令」两块 textarea：本地 store `claudinal.git-instructions`，「保存」按钮把内容写到 `~/.claude/CLAUDE.md` 的哨兵区段（`<!-- CLAUDINAL:GIT_COMMIT_INSTRUCTIONS --> ... <!-- /... -->`），空内容 = 删除该段；不静默注入 prompt（守 plan.md 不变量）
+  - **P3.9 浏览器使用** 落地（`Settings/sections/Browser.tsx`）：
+    - 浏览器 MCP 列表：扫 global+project mcp.json，关键字 `playwright|browser|chromium|chrome|puppeteer|webkit` 过滤；状态点来自 mcp_servers cache
+    - 一键添加 playwright（用户级）：`{ type:stdio, command:npx, args:[-y, @playwright/mcp] }` 写到 `~/.claude/mcp.json`
+    - Playwright 浏览器二进制检测：Rust `detect_playwright_install` 命令跨平台检测 `ms-playwright` 目录（Win/Mac/Linux 三套路径 + `PLAYWRIGHT_BROWSERS_PATH` 覆盖），UI 显示三引擎 chip + 「打开缓存目录」+ 未安装时复制 `npx playwright install chromium`
+  - **P3.12 测试连接按钮** 落地：Rust `test_proxy_connection` 用 reqwest + 当前代理 URL HEAD 目标（默认 anthropic API，可下拉切 Google / GitHub），返回 `{ ok, status, latency_ms, message }`；Network 页底部新增「测试连接」分组卡，ok/error 双色反馈
+  - **P3.8 工作树**：用户决定暂时跳过
+  - **新增 Rust 命令**：`detect_playwright_install` / `test_proxy_connection`
+  - **新增前端 IPC**：`detectPlaywrightInstall` / `testProxyConnection`
 - ⏳ 待用户实测 `pnpm tauri dev`
-- ⏳ P3 其他分类：Git / 工作树 / 浏览器 / 归档（占位）；P3.12 代理收尾（测试连接 / keychain / PAC / webview）
+- ⏳ P3 剩余：P3.8 工作树（用户暂跳）/ P3.10 归档对话；P3.12 代理收尾剩 keychain / PAC / webview；插件 OAuth flow（needs-auth marketplaces）
 
 ---
 
@@ -683,25 +805,37 @@ F:\project\claudecli\
 
 ### 11.2 关键入口文件
 
-| 路径                                  | 职责                                                |
-| ------------------------------------- | --------------------------------------------------- |
-| `plan.md`                             | 总规划                                              |
-| `doc/events.md`                       | stream-json schema                                  |
-| `doc/stream-json-1.txt`               | 真实事件样本                                        |
-| `src-tauri/src/proc/manager.rs`       | 子进程 spawn / stdin 写入 / stdout 解析 / 事件 emit |
-| `src-tauri/src/proc/spawn.rs`         | claude CLI 路径定位（支持 `CLAUDE_CLI_PATH` 覆盖）  |
-| `src-tauri/src/commands.rs`           | Tauri command 暴露给前端                            |
-| `src-tauri/src/error.rs`              | 统一 Error + serde 序列化                           |
-| `src-tauri/tauri.conf.json`           | 窗口 / bundle / identifier                          |
-| `src-tauri/capabilities/default.json` | Tauri 2 权限                                        |
-| `src/lib/ipc.ts`                      | Tauri command typed wrapper                         |
-| `src/lib/reducer.ts`                  | 原始事件 → UI 模型归并                              |
-| `src/types/events.ts`                 | 原始 ClaudeEvent 宽松类型                           |
-| `src/types/ui.ts`                     | UI 模型（`UIEntry` discriminated union by `kind`）  |
-| `src/components/MessageCard.tsx`      | 按 `entry.kind` / `block.type` 分发渲染             |
-| `src/components/MessageStream.tsx`    | 自动滚底 + 空状态                                   |
-| `src/components/Composer.tsx`         | 文本 / 图片 / Esc / Send-Stop                       |
-| `src/App.tsx`                         | useReducer + 会话生命周期                           |
+| 路径                                                  | 职责                                                               |
+| ----------------------------------------------------- | ------------------------------------------------------------------ |
+| `plan.md`                                             | 总规划                                                             |
+| `doc/events.md`                                       | stream-json schema                                                 |
+| `doc/stream-json-1.txt`                               | 真实事件样本                                                       |
+| `src-tauri/src/proc/manager.rs`                       | 子进程 spawn / stdin 写入 / stdout 解析 / 事件 emit                |
+| `src-tauri/src/proc/spawn.rs`                         | claude CLI 路径定位（支持 `CLAUDE_CLI_PATH` 覆盖）                 |
+| `src-tauri/src/commands.rs`                           | Tauri command 暴露给前端                                           |
+| `src-tauri/src/api_proxy.rs`                          | 端到端 sidecar API 代理（model 重写 / auth 注入 / `/models` 拦截） |
+| `src-tauri/src/permission_mcp.rs`                     | MCP 权限工具桥（`--permission-mcp-server` 走 stdio MCP）           |
+| `src-tauri/src/plugins.rs`                            | 插件 / 技能列表 + `claude plugin` 子命令包装                       |
+| `src-tauri/src/session/{mod,index,reader,watcher}.rs` | 历史 jsonl 索引 / 读取 / fs notify watcher / 全局 usage 扫描       |
+| `src-tauri/src/error.rs`                              | 统一 Error + serde 序列化                                          |
+| `src-tauri/tauri.conf.json`                           | 窗口 / bundle / identifier（`decorations:false` 走 AppChrome）     |
+| `src-tauri/capabilities/default.json`                 | Tauri 2 权限                                                       |
+| `src/lib/ipc.ts`                                      | Tauri command typed wrapper                                        |
+| `src/lib/reducer.ts`                                  | 原始事件 → UI 模型归并                                             |
+| `src/lib/composerPrefs.ts`                            | 全局默认 / 会话覆盖 / auto 三层 model+effort 偏好                  |
+| `src/lib/thirdPartyApi.ts`                            | 多 provider store + buildClaudeEnv 注入 + provider 模型拉取胶水    |
+| `src/lib/plugins.ts`                                  | plugins / marketplace / skills IPC 包装                            |
+| `src/lib/oauthUsage.ts`                               | OAuth usage tooltip 文案 / 圆环百分比换算                          |
+| `src/types/events.ts`                                 | 原始 ClaudeEvent 宽松类型                                          |
+| `src/types/ui.ts`                                     | UI 模型（`UIEntry` discriminated union by `kind`）                 |
+| `src/components/MessageCard.tsx`                      | 按 `entry.kind` / `block.type` 分发渲染                            |
+| `src/components/MessageStream.tsx`                    | 自动滚底 + 空状态                                                  |
+| `src/components/Composer.tsx`                         | 文本 / 图片 / Esc / Send-Stop / Plus 菜单 / Picker / Plan toggle   |
+| `src/components/composer/ModelEffortPicker.tsx`       | 模型 + effort 二合一气泡下拉                                       |
+| `src/components/PluginsView/index.tsx`                | 插件 & 技能全屏视图（双 tab + 三 tab + Add/Install Dialog）        |
+| `src/components/AppChrome.tsx`                        | 自定义无原生窗口 chrome（顶栏 / 菜单 / 拖拽 / 最小化最大化关闭）   |
+| `src/components/Settings/index.tsx`                   | 设置 14 分类左导航 + 内容区                                        |
+| `src/App.tsx`                                         | useReducer + 会话生命周期 + showSettings/showPlugins 切换          |
 
 ### 11.3 Tauri 事件协议
 
@@ -766,13 +900,13 @@ pnpm tauri build               # 打包安装包（首次较慢）
 
 ### 11.11 已知风险与处理（要点）
 
-| 风险                    | 当前处理                             | 待加强                                      |
-| ----------------------- | ------------------------------------ | ------------------------------------------- |
-| stream-json schema 漂移 | reducer fallback + UIUnknown         | P3 加 schema 版本告警                       |
+| 风险                    | 当前处理                                          | 待加强                                 |
+| ----------------------- | ------------------------------------------------- | -------------------------------------- |
+| stream-json schema 漂移 | reducer fallback + UIUnknown                      | P3 加 schema 版本告警                  |
 | 权限请求 GUI 接管       | `--permission-prompt-tool stdio` + Tauri 权限弹窗 | 补充真实 control/MCP 样本并记录 schema |
-| 子进程僵死              | `kill_on_drop = true` + `start_kill` | P3 加心跳超时                               |
-| Windows 字符编码        | tokio + utf8 默认                    | 遇问题加 explicit decoder                   |
-| jsonl 大文件（P1）      | —                                    | reader 用尾读 + 增量                        |
+| 子进程僵死              | `kill_on_drop = true` + `start_kill`              | P3 加心跳超时                          |
+| Windows 字符编码        | tokio + utf8 默认                                 | 遇问题加 explicit decoder              |
+| jsonl 大文件（P1）      | —                                                 | reader 用尾读 + 增量                   |
 
 ### 11.12 shadcn/ui + Tailwind v4 集成约定
 
@@ -843,6 +977,58 @@ pnpm tauri build               # 打包安装包（首次较慢）
 - **Sidebar 加载**：项目展开时（`toggleExpand`）懒加载 sessions；`selectedProjectId` 变化时自动展开 + 加载。
 - **不实现的**：fork（`--fork-session`）/ 删 jsonl 文件 —— P1 内可补，未做。
 
+### 11.20 端到端 sidecar API 代理（多 provider 模型映射的关键基础设施）
+
+> 解决「Claude Code CLI 无法识别第三方 provider 自定义 model 名 / authField 差异 / OpenAI Chat Completions 路径不对应」三个问题。CLI 看到的永远是 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`，sidecar 在中间做模型重写 + 认证替换 + `/models` 短路。
+
+- **触发条件**：`spawn_session` 时若 env 含 `CLAUDINAL_PROXY_TARGET_URL`，`commands::take_proxy_config` 把 7 个 `CLAUDINAL_PROXY_*` 抽出来并清掉；启动 `api_proxy::start(config)` 拿到 `http://127.0.0.1:<random>`；env 改成 `ANTHROPIC_BASE_URL=<local>` + `ANTHROPIC_AUTH_TOKEN=claudinal-proxy`，并删除 `ANTHROPIC_API_KEY`（避免 CLI 用了占位 token）。
+- **数据流**：`Composer / App` 选中第三方 provider → `buildClaudeEnv(thirdPartyApi)` 把 provider 字段编码成 `CLAUDINAL_PROXY_*` env → 传给 `spawn_session`。Rust 不感知 provider 模型，只是搬运 env。
+- **请求处理**：sidecar 接收 HTTP，先看 path：`/models` / `/v1/models` 直接返回 `configured_models()` 枚举（CLI 探测专用，不转发）；其他路径解析 JSON body，按 `mapped_model` 重写 `model` 字段（haiku/opus/sonnet 关键字 → provider.models 配置，无关键字时回 `main_model`）；按 `authField` 注入 `x-api-key` 或 `Bearer`；剥掉 `host / content-length / connection / authorization / x-api-key / accept-encoding` 后转发到 `target_url`。
+- **流式响应**：当前实现一次性 `bytes()` 读完再回写（非流式 SSE 转发）；适合 `claude -p stream-json` 流（CLI 自己拆包），但若未来支持 `--print --json-out`（非 stream-json）需改 reader → writer 持续转发。
+- **不做的**：sidecar 不做 token 计费 / cache 优化 / hook 注入；不做请求重试；不做 OpenAI ↔ Anthropic schema 双向转换（CLI 已在源头按 `inputFormat` 选好 endpoint，sidecar 透传）。
+
+### 11.21 插件 & 技能架构（来自 Claude Code 原生插件系统）
+
+> 桌面端是 plugin 的「视图层 + 命令包装层」，**不重写 plugin schema**。所有写动作走 `claude plugin <action>` 子命令，所有读动作直接读文件系统（避免每次都 spawn CLI）。
+
+- **数据布局**（与 CLI 完全一致）：
+  - `~/.claude/plugins/installed_plugins.json`：已装插件清单，key = `<name>@<marketplace>`，每条带 scope/version/installPath/projectPath/installedAt/lastUpdated
+  - `~/.claude/plugins/known_marketplaces.json`：已添加的 marketplace 元数据（source.repo / source.url / installLocation / lastUpdated）
+  - `~/.claude/plugins/marketplaces/<name>/.claude-plugin/marketplace.json`：marketplace 内插件目录
+  - `~/.claude/plugins/cache/<market>/<plugin>/<ver>/`：marketplace 拉到本地的实际产物
+  - 用户技能：`~/.claude/skills/<name>/SKILL.md`
+  - 项目技能：`<cwd>/.claude/skills/<name>/SKILL.md`
+  - 插件技能：从 cache 路径下进一步扫 `skills/<name>/SKILL.md`
+- **SKILL.md frontmatter 解析**：`parse_skill_md` 自实现（不引 yaml crate），只取 `name` / `description` / `disable-model-invocation` / `user-invocable` 四个字段；description 支持折叠续行；缺 frontmatter 时回退用目录名当 skill name。
+- **写动作（spawn `claude plugin ...`）**：
+  - `marketplace add|update|remove|list <target>`
+  - `<action> <plugin@marketplace> [--scope user|project|local]`
+  - 同步等待 stdout/stderr，exit_code 非 0 则把 stderr 拋到前端 toast
+- **scope 语义**：user = `~/.claude`（所有项目可见）；project = 写到 `<cwd>/.claude`，会被 git 跟踪供协作者共享；local = `<cwd>/.claude` 的 `*.local.json` 类（仅自己）
+- **GUI 集成点**：
+  - Sidebar 「+ 新对话」下方「插件」按钮 → 切换 `showPlugins=true`，覆盖主区
+  - Composer Plus 菜单「插件」子菜单：`useEffect([plusOpen])` 拉一次 `listInstalledPlugins`，列前 N 条 + 「管理插件」跳全屏
+  - 安装后需 CLI 重启（CLI 进程内的 plugin registry 不会热加载）；GUI 不强制重启会话，下次 spawn 自动生效
+- **不做的**：不解析 plugin 的 `command/agent/hook/output_style`（这部分由 CLI 自己执行）；不做 plugin enable/disable 持久化（claude 暂未公开稳定 toggle 路径，先用 install/uninstall 替代）；不做 OAuth flow 接管（needs-auth marketplace 留 P4）
+
+### 11.22 Composer 偏好的三层数据流（auto / default / session）
+
+> 解决「全局默认 vs 会话覆盖 vs CLI 默认」三种语义来源的混淆，避免一处改全局影响所有历史会话。
+
+- **三层来源**：
+  - **CLI 默认**（auto）：Composer 不传 `--effort`，CLI 自行决定。UI 上效果是 `effort = ""`，Picker 标"Auto · 跟随 CLI 默认"。
+  - **全局默认**（default）：来自 `~/.claude/settings.json::effortLevel` + `model`，回退到 app settings。`loadGlobalDefault` 启动时一次性读取，存 `globalDefault` state 用于「新对话」起点 + Picker 显示「默认」标签。
+  - **会话覆盖**（session）：用户在某会话改了 Picker → 写到 `<sid>.claudinal.json::composer = { model, effort }`；`switchSession` 时优先读 sidecar.composer，缺失则回到 globalDefault；新对话清掉 sessionComposer。
+- **写盘约束**：
+  - effort=`max` 受官方约束不能写 settings.json（Picker 显示"仅本会话"角标）；其他 4 档（low/medium/high/xhigh）可走「同步为全局默认」按钮 → `syncEffortToGlobal` 写盘
+  - sidecar.composer 由 `App.tsx::handleModelEffortChange` 在用户点 Picker 时写；`result` 事件到来时也会兜底落一次（用于 sid 第一次出现的场景）
+- **状态判定（`effortSource`）**：
+  - 当前 effort=`""` → "auto"
+  - 当前 effort 与 sessionComposer.effort 一致 → "session"
+  - 当前 effort 与 globalDefault.effort 一致 → "default"
+  - 否则 → "session"（默认未匹配视为隐式覆盖）
+- **迁移策略**：旧 `localStorage["claudinal.composer.prefs"]`（曾是全局共享）一次性读取后立即删除；不再向该 key 写新值，避免历史会话被串改。
+
 ### 11.19 Breadcrumb 组件（P3.5 MCP / P3.7 环境共用）
 
 > 设置页内的多级页面导航（`MCP 服务器 > playwright > 编辑`、`环境 > {项目名} > 编辑`）需要一个轻量 Breadcrumb，**不引入 shadcn breadcrumb registry**，自己写一个 50 行内组件即可。
@@ -899,18 +1085,19 @@ pnpm tauri build               # 打包安装包（首次较慢）
 
 `vite.config.ts` 加 `build.rollupOptions.output.manualChunks`，按 node_modules 路径分桶：
 
-| chunk 名 | 命中规则 |
-| --- | --- |
-| `markdown` | `react-markdown` / `remark-*` / `rehype-*` / `micromark` / `mdast` / `hast` / `unified` / `unist-*` |
-| `highlight` | `highlight.js` / `lowlight` |
-| `radix` | `@radix-ui/*` |
-| `icons` | `lucide-react` |
-| `react` | `react` / `react-dom` / `scheduler` |
-| `vendor` | 其余 node_modules |
+| chunk 名    | 命中规则                                                                                            |
+| ----------- | --------------------------------------------------------------------------------------------------- |
+| `markdown`  | `react-markdown` / `remark-*` / `rehype-*` / `micromark` / `mdast` / `hast` / `unified` / `unist-*` |
+| `highlight` | `highlight.js` / `lowlight`                                                                         |
+| `radix`     | `@radix-ui/*`                                                                                       |
+| `icons`     | `lucide-react`                                                                                      |
+| `react`     | `react` / `react-dom` / `scheduler`                                                                 |
+| `vendor`    | 其余 node_modules                                                                                   |
 
 同时 `build.target = "es2022"`、`chunkSizeWarningLimit = 800`，避免误报。
 
 后续优化备选（按需）：
+
 - `react-markdown` / `rehype-highlight` 改成动态 import（仅 MessageStream 用到，进一步减小首屏 JS）
 - 设置页 12 个 sections 改成 `React.lazy` + `<Suspense>`，仅在打开 Settings 时加载
 
@@ -924,42 +1111,43 @@ pnpm tauri build               # 打包安装包（首次较慢）
 
 #### 通用
 
-| 命令 | 说明 |
-| --- | --- |
-| `pnpm tauri:dev` | 开发模式 |
+| 命令                                | 说明                                                        |
+| ----------------------------------- | ----------------------------------------------------------- |
+| `pnpm tauri:dev`                    | 开发模式                                                    |
 | `pnpm tauri:build` / `pnpm package` | 打当前平台 `tauri.conf.json::bundle.targets` 列出的全部目标 |
 
 #### Windows（在 Windows 上跑）
 
-| 命令 | 产物路径 |
-| --- | --- |
+| 命令               | 产物路径                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
 | `pnpm package:exe` | `src-tauri/target/release/bundle/nsis/Claudinal_<ver>_x64-setup.exe`（NSIS 安装器，**双击即装，currentUser 不要管理员**） |
-| `pnpm package:msi` | `src-tauri/target/release/bundle/msi/Claudinal_<ver>_x64_en-US.msi` |
-| `pnpm package:win` | NSIS + MSI 双产物 |
+| `pnpm package:msi` | `src-tauri/target/release/bundle/msi/Claudinal_<ver>_x64_en-US.msi`                                                       |
+| `pnpm package:win` | NSIS + MSI 双产物                                                                                                         |
 
 单文件主程序（无安装器）：`src-tauri/target/release/claudecli-desktop.exe`，可直接拷贝运行（Tauri 无内置 portable bundler，单文件即视为绿色版）。
 
 #### macOS（在 macOS 上跑）
 
-| 命令 | 产物 |
-| --- | --- |
-| `pnpm package:mac-app` | `src-tauri/target/release/bundle/macos/Claudinal.app`（.app 包） |
-| `pnpm package:dmg` | `src-tauri/target/release/bundle/dmg/Claudinal_<ver>_<arch>.dmg`（拖拽安装镜像） |
-| `pnpm package:mac` | .app + dmg 双产物 |
+| 命令                         | 产物                                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `pnpm package:mac-app`       | `src-tauri/target/release/bundle/macos/Claudinal.app`（.app 包）                                       |
+| `pnpm package:dmg`           | `src-tauri/target/release/bundle/dmg/Claudinal_<ver>_<arch>.dmg`（拖拽安装镜像）                       |
+| `pnpm package:mac`           | .app + dmg 双产物                                                                                      |
 | `pnpm package:mac-universal` | 通用二进制（Intel + Apple Silicon），需先 `rustup target add x86_64-apple-darwin aarch64-apple-darwin` |
 
 注意：默认未配置代码签名 / 公证，分发时 macOS 会触发 Gatekeeper 提示「应用已损坏」，需用户右键打开或在「系统设置 > 隐私与安全性」放行。生产分发需配置 Apple 开发者证书（留 P4）。
 
 #### Linux（在 Linux 上跑）
 
-| 命令 | 产物 |
-| --- | --- |
-| `pnpm package:deb` | `src-tauri/target/release/bundle/deb/claudinal_<ver>_amd64.deb`（Debian / Ubuntu） |
-| `pnpm package:rpm` | `src-tauri/target/release/bundle/rpm/claudinal-<ver>-1.x86_64.rpm`（Fedora / RHEL，需要安装 `rpm` 工具链） |
-| `pnpm package:appimage` | `src-tauri/target/release/bundle/appimage/claudinal_<ver>_amd64.AppImage`（绿色版，跨发行版） |
-| `pnpm package:linux` | deb + rpm + appimage 三产物 |
+| 命令                    | 产物                                                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `pnpm package:deb`      | `src-tauri/target/release/bundle/deb/claudinal_<ver>_amd64.deb`（Debian / Ubuntu）                         |
+| `pnpm package:rpm`      | `src-tauri/target/release/bundle/rpm/claudinal-<ver>-1.x86_64.rpm`（Fedora / RHEL，需要安装 `rpm` 工具链） |
+| `pnpm package:appimage` | `src-tauri/target/release/bundle/appimage/claudinal_<ver>_amd64.AppImage`（绿色版，跨发行版）              |
+| `pnpm package:linux`    | deb + rpm + appimage 三产物                                                                                |
 
 Linux 系统依赖（首次需安装）：
+
 ```bash
 sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
 ```
@@ -993,18 +1181,19 @@ strategy:
 
 `scripts/package-release.mjs` 把上面两个产物分别打成 zip，输出到 `dist/` 同级的 `release/`：
 
-| 命令 | 产物 |
-| --- | --- |
-| `pnpm package:zip-portable` | `release/Claudinal-<ver>-portable.zip`（含 `Claudinal.exe` + `README.txt`） |
-| `pnpm package:zip-installer` | `release/Claudinal-<ver>-setup.zip`（含 `Claudinal_<ver>_x64-setup.exe`） |
-| `pnpm package:zip` | 同时输出两个 zip（缺哪个 skip 哪个，配合 `pnpm package:exe` 使用） |
-| `pnpm release:exe` | 一条龙：`tauri build --bundles nsis` + `package:zip` |
+| 命令                         | 产物                                                                        |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| `pnpm package:zip-portable`  | `release/Claudinal-<ver>-portable.zip`（含 `Claudinal.exe` + `README.txt`） |
+| `pnpm package:zip-installer` | `release/Claudinal-<ver>-setup.zip`（含 `Claudinal_<ver>_x64-setup.exe`）   |
+| `pnpm package:zip`           | 同时输出两个 zip（缺哪个 skip 哪个，配合 `pnpm package:exe` 使用）          |
+| `pnpm release:exe`           | 一条龙：`tauri build --bundles nsis` + `package:zip`                        |
 
 `release/` 已加入 `.gitignore`。zip 命令在 Windows 用 PowerShell `Compress-Archive`，在 macOS / Linux 用 `zip -r -9` 命令。
 
 ### 12.5 NSIS 离线引导（中国大陆网络环境）
 
 `tauri build --bundles nsis` 首次构建会从 GitHub releases 下载两个文件：
+
 - `nsis-3.11.zip`（NSIS 工具链本体，约 2.3 MB）
 - `nsis_tauri_utils.dll`（Tauri 自定义 NSIS 插件，约 30 KB，版本随 tauri-bundler 升级，**当前 tauri 2.10.x 用 v0.5.3**）
 
@@ -1069,9 +1258,7 @@ MIRROR= pnpm bootstrap:nsis
     "tool_name": "Write",
     "display_name": "Write",
     "input": { "file_path": "…", "content": "…" },
-    "permission_suggestions": [
-      { "type": "setMode", "mode": "acceptEdits", "destination": "session" }
-    ]
+    "permission_suggestions": [{ "type": "setMode", "mode": "acceptEdits", "destination": "session" }]
   }
 }
 ```
@@ -1090,20 +1277,20 @@ Rust 后端处理链路：
   "response": {
     "subtype": "success",
     "request_id": "…",
-    "response": { "behavior": "allow", "updatedInput": { } }
+    "response": { "behavior": "allow", "updatedInput": {} }
   }
 }
 ```
 
 用户选择映射：
 
-| GUI 选项 | control response 内层 `response` |
-| --- | --- |
-| 是 | `behavior:"allow"` + `updatedInput:<原 tool input>` |
-| 否 | `behavior:"deny"`，`message` 告诉 Claude 用户拒绝及原因 |
-| 本次会话允许所有编辑 | `behavior:"allow"` + `updatedPermissions:[{type:"setMode", mode:"acceptEdits", destination:"session"}]` |
-| 本次会话允许此类工具 | `behavior:"allow"` + `updatedPermissions:[{type:"addRules", rules:[...], behavior:"allow", destination:"session"}]` |
-| 写入项目本地规则 | `behavior:"allow"` + `updatedPermissions:[{type:"addRules", rules:[...], behavior:"allow", destination:"localSettings"}]`，仅用户明确选择时写 `.claude/settings.local.json` |
+| GUI 选项             | control response 内层 `response`                                                                                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 是                   | `behavior:"allow"` + `updatedInput:<原 tool input>`                                                                                                                         |
+| 否                   | `behavior:"deny"`，`message` 告诉 Claude 用户拒绝及原因                                                                                                                     |
+| 本次会话允许所有编辑 | `behavior:"allow"` + `updatedPermissions:[{type:"setMode", mode:"acceptEdits", destination:"session"}]`                                                                     |
+| 本次会话允许此类工具 | `behavior:"allow"` + `updatedPermissions:[{type:"addRules", rules:[...], behavior:"allow", destination:"session"}]`                                                         |
+| 写入项目本地规则     | `behavior:"allow"` + `updatedPermissions:[{type:"addRules", rules:[...], behavior:"allow", destination:"localSettings"}]`，仅用户明确选择时写 `.claude/settings.local.json` |
 
 ### 13.3 MCP 增强定位
 

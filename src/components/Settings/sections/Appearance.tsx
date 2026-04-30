@@ -1,9 +1,8 @@
 import { useState } from "react"
-import { Monitor, Moon, RotateCcw, Sun } from "lucide-react"
+import { Monitor, Moon, RotateCcw, Sliders, Sun } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { useTheme, type Theme } from "@/lib/theme-context"
@@ -18,6 +17,11 @@ import {
   type Appearance,
   type AppearanceConfig
 } from "@/lib/appearance"
+import {
+  SettingsSection,
+  SettingsSectionBody,
+  SettingsSectionHeader
+} from "./layout"
 
 const themeOptions: Array<{
   value: Theme
@@ -69,15 +73,13 @@ export function Appearance() {
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0">
-        <h2 className="text-xl font-semibold">外观</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          浅色与深色独立配置，实时生效。
-        </p>
-      </div>
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-8 w-full space-y-8">
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={Sliders}
+        title="外观"
+        description="浅色与深色独立配置，实时生效。"
+      />
+      <SettingsSectionBody>
 
       <section className="space-y-3">
         <Label>主题</Label>
@@ -174,9 +176,8 @@ export function Appearance() {
           onReset={() => resetMode(mode)}
         />
       ))}
-        </div>
-      </ScrollArea>
-    </div>
+      </SettingsSectionBody>
+    </SettingsSection>
   )
 }
 

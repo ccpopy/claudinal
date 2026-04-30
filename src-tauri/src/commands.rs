@@ -836,6 +836,150 @@ pub async fn open_path(path: String) -> Result<()> {
     Ok(())
 }
 
+/// Playwright 浏览器二进制存放目录（含 chromium/firefox/webkit 子目录）。
+/// 标准路径见 https://playwright.dev/docs/browsers#managing-browser-binaries：
+/// - Windows: `%USERPROFILE%\AppData\Local\ms-playwright`
+/// - macOS:   `~/Library/Caches/ms-playwright`
+/// - Linux:   `~/.cache/ms-playwright`
+/// 用户可通过 `PLAYWRIGHT_BROWSERS_PATH` 覆盖；返回路径不保证存在。
+fn playwright_browsers_default_path() -> Result<std::path::PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
+    #[cfg(target_os = "windows")]
+    {
+        Ok(home.join("AppData").join("Local").join("ms-playwright"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Ok(home.join("Library").join("Caches").join("ms-playwright"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Ok(home.join(".cache").join("ms-playwright"))
+    }
+}
+
+#[derive(Serialize)]
+pub struct PlaywrightInstallState {
+    pub root_path: String,
+    pub root_exists: bool,
+    pub env_override: Option<String>,
+    pub chromium: bool,
+    pub firefox: bool,
+    pub webkit: bool,
+}
+
+fn dir_has_prefix(root: &std::path::Path, prefix: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyTestRequest {
+    pub url: String,
+    pub target: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct ProxyTestResult {
+    pub ok: bool,
+    pub status: Option<u16>,
+    pub latency_ms: u64,
+    pub message: String,
+}
+
+/// 通过指定 proxy_url 直连一次目标 URL，返回耗时与 HTTP 状态。
+/// proxy_url 形如 `http://user:pass@host:7890` / `socks5h://host:1080`。
+/// target 留空走 https://api.anthropic.com（HEAD 请求，不消耗配额）。
+#[tauri::command]
+pub async fn test_proxy_connection(req: ProxyTestRequest) -> Result<ProxyTestResult> {
+    let target = req
+        .target
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("https://api.anthropic.com")
+        .to_string();
+    let timeout = std::time::Duration::from_millis(req.timeout_ms.unwrap_or(8_000));
+    let proxy = reqwest::Proxy::all(&req.url)
+        .map_err(|e| Error::Other(format!("invalid proxy url: {e}")))?;
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(timeout)
+        .danger_accept_invalid_certs(false)
+        .build()
+        .map_err(|e| Error::Other(format!("http client: {e}")))?;
+    let start = std::time::Instant::now();
+    match client
+        .head(&target)
+        .header("User-Agent", "Claudinal/0.1 proxy-test")
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let latency = start.elapsed().as_millis() as u64;
+            let status = resp.status();
+            let ok = status.is_success() || status.is_redirection() || status.as_u16() == 401;
+            Ok(ProxyTestResult {
+                ok,
+                status: Some(status.as_u16()),
+                latency_ms: latency,
+                message: if ok {
+                    format!("连接成功 · HTTP {}", status.as_u16())
+                } else {
+                    format!("代理可达，但目标返回 HTTP {}", status.as_u16())
+                },
+            })
+        }
+        Err(e) => {
+            let latency = start.elapsed().as_millis() as u64;
+            Ok(ProxyTestResult {
+                ok: false,
+                status: None,
+                latency_ms: latency,
+                message: format!("失败：{e}"),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn detect_playwright_install() -> Result<PlaywrightInstallState> {
+    let env_override = std::env::var("PLAYWRIGHT_BROWSERS_PATH").ok();
+    let root = if let Some(path) = env_override.as_deref().filter(|s| !s.is_empty()) {
+        std::path::PathBuf::from(path)
+    } else {
+        playwright_browsers_default_path()?
+    };
+    let root_exists = root.is_dir();
+    let (chromium, firefox, webkit) = if root_exists {
+        (
+            dir_has_prefix(&root, "chromium"),
+            dir_has_prefix(&root, "firefox"),
+            dir_has_prefix(&root, "webkit"),
+        )
+    } else {
+        (false, false, false)
+    };
+    Ok(PlaywrightInstallState {
+        root_path: root.display().to_string(),
+        root_exists,
+        env_override,
+        chromium,
+        firefox,
+        webkit,
+    })
+}
+
 #[tauri::command]
 pub async fn open_external(url: String) -> Result<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {

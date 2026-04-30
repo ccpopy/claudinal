@@ -56,7 +56,6 @@ const GROUPS: GroupDef[] = [
     label: "Git 提交",
     keys: [
       "attribution",
-      "includeCoAuthoredBy",
       "includeGitInstructions",
       "prUrlTemplate"
     ]
@@ -127,6 +126,7 @@ const SENSITIVE_TOP_KEYS = new Set([
   "awsAuthRefresh",
   "awsCredentialExport"
 ])
+const DEPRECATED_TOP_KEYS = new Set(["includeCoAuthoredBy"])
 
 // env 下默认勾选的字段（其余默认不勾选）
 const DEFAULT_ENV_KEYS = new Set(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"])
@@ -176,7 +176,7 @@ function previewOf(v: unknown): string {
 
 export function ConfigExportPage({ settings, onBack }: Props) {
   const settingsKeys = useMemo(
-    () => Object.keys(settings).sort(),
+    () => Object.keys(settings).filter((k) => !DEPRECATED_TOP_KEYS.has(k)).sort(),
     [settings]
   )
 

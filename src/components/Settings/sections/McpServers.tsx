@@ -36,6 +36,7 @@ import {
   type McpServerConfig
 } from "@/lib/mcp"
 import { cn } from "@/lib/utils"
+import { SettingsSectionHeader } from "./layout"
 
 const SCOPE_OPTIONS: Array<{ value: McpScope; label: string }> = [
   { value: "global", label: "用户级" },
@@ -453,8 +454,12 @@ export function McpServers({ cwd }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-8 pb-4 pt-8">
-        {editor ? (
+      <SettingsSectionHeader
+        icon={Server}
+        title="MCP 服务器"
+        description="连接外部工具和数据源，写入 Claude Code 原生 mcp.json。"
+        eyebrow={
+          editor ? (
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <button
               type="button"
@@ -472,18 +477,10 @@ export function McpServers({ cwd }: Props) {
               <BreadcrumbItem current>{editor.name || "新服务器"}</BreadcrumbItem>
             </Breadcrumb>
           </div>
-        ) : null}
-        <div className="mt-4 flex items-start justify-between gap-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-xl font-semibold">
-              <PlugIcon />
-              MCP 服务器
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              连接外部工具和数据源，写入 Claude Code 原生 mcp.json。
-            </p>
-          </div>
-          <div className="mt-6 flex shrink-0 items-center gap-2">
+          ) : undefined
+        }
+        actions={
+          <>
             <Button
               type="button"
               variant="outline"
@@ -518,9 +515,9 @@ export function McpServers({ cwd }: Props) {
                 卸载
               </Button>
             )}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {editor ? (
         <EditorView
@@ -594,7 +591,7 @@ function ListView({
   return (
     <>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-6 px-8 pb-6">
+        <div className="space-y-6 px-8 pb-6 pt-2">
           <section className="rounded-lg border bg-card p-5">
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <Button
@@ -744,7 +741,7 @@ function EditorView({
   return (
     <>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-6 px-8 pb-6">
+        <div className="space-y-6 px-8 pb-6 pt-2">
           <section className="space-y-4 rounded-lg border bg-card p-5">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               基本信息
@@ -1123,8 +1120,4 @@ function StatusDot({ status }: { status: string }) {
 
 function scopeLabel(scope: McpScope) {
   return scope === "global" ? "用户级" : "项目级"
-}
-
-function PlugIcon() {
-  return <Server className="size-5" />
 }

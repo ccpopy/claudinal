@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import {
   ArrowLeft,
+  Download,
   ExternalLink,
+  FolderOpen,
   Loader2,
   Package,
   Plus,
@@ -9,6 +12,7 @@ import {
   RefreshCw,
   Sparkles,
   Store,
+  Terminal,
   Trash2
 } from "lucide-react"
 import { toast } from "sonner"
@@ -18,6 +22,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import {
   Tabs,
   TabsContent,
@@ -36,7 +41,9 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { openExternal } from "@/lib/ipc"
 import {
   addMarketplace,
+  installBuiltinSkill,
   installPlugin,
+  installSkillFromPath,
   listInstalledPlugins,
   listMarketplaces,
   listSkills,
@@ -47,7 +54,8 @@ import {
   type Marketplace,
   type MarketplacePlugin,
   type PluginScope,
-  type Skill
+  type Skill,
+  type SkillScope
 } from "@/lib/plugins"
 
 type TopTab = "plugins" | "skills"
@@ -64,6 +72,28 @@ const SCOPE_OPTIONS: Array<{ value: PluginScope; label: string }> = [
   { value: "local", label: "本地（仅自己）" }
 ]
 
+const SKILL_SCOPE_OPTIONS: Array<{ value: SkillScope; label: string }> = [
+  { value: "user", label: "用户级（所有项目）" },
+  { value: "project", label: "项目级（当前项目）" }
+]
+
+interface BuiltinSkillInstaller {
+  id: string
+  name: string
+  description: string
+  command: string
+}
+
+const BUILTIN_SKILL_INSTALLERS: BuiltinSkillInstaller[] = [
+  {
+    id: "playwright-cli",
+    name: "playwright-cli",
+    description: "浏览器自动化、页面快照、交互调试和 Playwright 测试辅助技能。",
+    command:
+      "npx --yes --package @playwright/cli@latest playwright-cli install --skills"
+  }
+]
+
 export function PluginsView({ cwd, onBack }: Props) {
   const [tab, setTab] = useState<TopTab>("plugins")
   const [pluginsTab, setPluginsTab] = useState<PluginsTab>("installed")
@@ -76,6 +106,7 @@ export function PluginsView({ cwd, onBack }: Props) {
   const [filter, setFilter] = useState("")
 
   const [showAddMarket, setShowAddMarket] = useState(false)
+  const [showInstallSkill, setShowInstallSkill] = useState(false)
   const [pendingUninstall, setPendingUninstall] =
     useState<InstalledPlugin | null>(null)
   const [pendingRemoveMarket, setPendingRemoveMarket] =
@@ -126,8 +157,24 @@ export function PluginsView({ cwd, onBack }: Props) {
       (s) =>
         s.name.toLowerCase().includes(q) ||
         (s.description ?? "").toLowerCase().includes(q)
-    )
+      )
   }, [skills, filter])
+
+  const installedSkillNames = useMemo(
+    () => new Set(skills.map((s) => s.name.toLowerCase())),
+    [skills]
+  )
+
+  const skillInstallersFiltered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return BUILTIN_SKILL_INSTALLERS
+    return BUILTIN_SKILL_INSTALLERS.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        s.command.toLowerCase().includes(q)
+    )
+  }, [filter])
 
   const discoverList = useMemo(() => {
     const installedKeys = new Set(installed.map((p) => p.id))
@@ -164,6 +211,42 @@ export function PluginsView({ cwd, onBack }: Props) {
         await refresh()
       } catch (e) {
         toast.error(`安装失败: ${String(e)}`)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [cwd, refresh]
+  )
+
+  const onInstallBuiltinSkill = useCallback(
+    async (id: string) => {
+      setBusy(true)
+      try {
+        const r = await installBuiltinSkill(id, cwd ?? null)
+        if (r.exit_code !== 0) {
+          throw new Error(r.stderr || r.stdout || `exit ${r.exit_code}`)
+        }
+        toast.success(`已安装技能：${id}`)
+        await refresh()
+      } catch (e) {
+        toast.error(`安装技能失败: ${String(e)}`)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [cwd, refresh]
+  )
+
+  const onInstallSkillFromPath = useCallback(
+    async (path: string, scope: SkillScope, overwrite: boolean) => {
+      setBusy(true)
+      try {
+        const r = await installSkillFromPath(path, scope, cwd ?? null, overwrite)
+        toast.success(`已导入 ${r.installed.length} 个技能`)
+        setShowInstallSkill(false)
+        await refresh()
+      } catch (e) {
+        toast.error(`导入技能失败: ${String(e)}`)
       } finally {
         setBusy(false)
       }
@@ -301,6 +384,17 @@ export function PluginsView({ cwd, onBack }: Props) {
                 添加 Marketplace
               </Button>
             )}
+            {tab === "skills" && (
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy}
+                onClick={() => setShowInstallSkill(true)}
+              >
+                <Plus />
+                导入技能
+              </Button>
+            )}
           </div>
         </div>
 
@@ -421,7 +515,13 @@ export function PluginsView({ cwd, onBack }: Props) {
               </TabsContent>
             </Tabs>
           ) : (
-            <SkillList rows={skillsFiltered} />
+            <SkillsContent
+              skills={skillsFiltered}
+              installers={skillInstallersFiltered}
+              installedSkillNames={installedSkillNames}
+              busy={busy}
+              onInstallBuiltin={onInstallBuiltinSkill}
+            />
           )}
         </div>
       </ScrollArea>
@@ -439,6 +539,14 @@ export function PluginsView({ cwd, onBack }: Props) {
         hasProject={!!cwd}
         onCancel={() => setInstallTarget(null)}
         onConfirm={onInstall}
+      />
+
+      <InstallSkillDialog
+        open={showInstallSkill}
+        onOpenChange={setShowInstallSkill}
+        busy={busy}
+        hasProject={!!cwd}
+        onSubmit={onInstallSkillFromPath}
       />
 
       <ConfirmDialog
@@ -722,13 +830,107 @@ function MarketplaceList({
   )
 }
 
+function SkillsContent({
+  skills,
+  installers,
+  installedSkillNames,
+  busy,
+  onInstallBuiltin
+}: {
+  skills: Skill[]
+  installers: BuiltinSkillInstaller[]
+  installedSkillNames: Set<string>
+  busy: boolean
+  onInstallBuiltin: (id: string) => Promise<void>
+}) {
+  return (
+    <section className="space-y-4">
+      <SkillInstallCatalog
+        rows={installers}
+        installedSkillNames={installedSkillNames}
+        busy={busy}
+        onInstall={onInstallBuiltin}
+      />
+      <SkillList rows={skills} />
+    </section>
+  )
+}
+
+function SkillInstallCatalog({
+  rows,
+  installedSkillNames,
+  busy,
+  onInstall
+}: {
+  rows: BuiltinSkillInstaller[]
+  installedSkillNames: Set<string>
+  busy: boolean
+  onInstall: (id: string) => Promise<void>
+}) {
+  if (rows.length === 0) return null
+  return (
+    <section className="rounded-lg border bg-card p-5">
+      <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+        可安装技能
+        <span className="rounded-sm bg-muted px-1.5 tabular-nums">
+          {rows.length}
+        </span>
+      </div>
+      <div className="space-y-3">
+        {rows.map((s) => {
+          const installed = installedSkillNames.has(s.id.toLowerCase())
+          return (
+            <div
+              key={s.id}
+              className="flex min-h-[76px] items-center gap-3 rounded-lg border bg-background p-3 transition-colors hover:bg-accent/35"
+            >
+              <div className="grid size-10 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
+                <Download className="size-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-semibold">
+                    /{s.name}
+                  </span>
+                  <Badge variant={installed ? "primary" : "outline"}>
+                    {installed ? "已安装" : "内置来源"}
+                  </Badge>
+                </div>
+                <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                  {s.description}
+                </div>
+                <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                  {s.command}
+                </div>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy}
+                onClick={() => onInstall(s.id)}
+              >
+                {busy ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Download className="size-3.5" />
+                )}
+                {installed ? "重新安装" : "安装"}
+              </Button>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function SkillList({ rows }: { rows: Skill[] }) {
   if (rows.length === 0) {
     return (
       <EmptyHint
         icon={<Sparkles />}
         title="还没有可用的技能"
-        hint="技能存放在 ~/.claude/skills 或随插件一起安装。"
+        hint="可以导入本地技能目录，也可以安装带技能的插件。"
       />
     )
   }
@@ -907,6 +1109,144 @@ function AddMarketplaceDialog({
           >
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Plus />}
             添加
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function InstallSkillDialog({
+  open,
+  onOpenChange,
+  busy,
+  hasProject,
+  onSubmit
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  busy: boolean
+  hasProject: boolean
+  onSubmit: (path: string, scope: SkillScope, overwrite: boolean) => Promise<void>
+}) {
+  const [path, setPath] = useState("")
+  const [scope, setScope] = useState<SkillScope>("user")
+  const [overwrite, setOverwrite] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setPath("")
+    setScope("user")
+    setOverwrite(false)
+  }, [open])
+
+  const browse = async () => {
+    try {
+      const sel = await openDialog({ directory: true, multiple: false })
+      if (typeof sel === "string") setPath(sel.replace(/\\/g, "/"))
+    } catch (e) {
+      toast.error(String(e))
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FolderOpen className="size-4" />
+            导入技能
+          </DialogTitle>
+          <DialogDescription>
+            选择包含 SKILL.md 的技能目录，或包含多个技能子目录的父目录。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label className="text-xs">技能目录</Label>
+            <div className="flex gap-2">
+              <Input
+                autoFocus
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="C:/Users/you/Downloads/my-skill"
+                className="font-mono text-xs"
+                disabled={busy}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={browse}
+                disabled={busy}
+              >
+                <FolderOpen />
+                浏览
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">安装范围</Label>
+            <Select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as SkillScope)}
+              options={
+                hasProject
+                  ? SKILL_SCOPE_OPTIONS
+                  : SKILL_SCOPE_OPTIONS.filter((o) => o.value !== "project")
+              }
+              disabled={busy}
+              triggerClassName="max-w-full"
+            />
+          </div>
+
+          <div className="flex items-center justify-between rounded-md border bg-muted/35 px-3 py-2">
+            <div>
+              <div className="text-sm font-medium">覆盖同名技能</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                关闭时遇到同名技能会直接报错，不会替换现有目录。
+              </div>
+            </div>
+            <Switch
+              checked={overwrite}
+              onCheckedChange={setOverwrite}
+              disabled={busy}
+              aria-label="覆盖同名技能"
+            />
+          </div>
+
+          <div className="rounded-md border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 font-medium text-foreground">
+              <Terminal className="size-3.5" />
+              安装位置
+            </div>
+            <div className="mt-1">
+              用户级写入 <code className="font-mono">~/.claude/skills</code>
+              ；项目级写入当前项目的{" "}
+              <code className="font-mono">.claude/skills</code>。
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            取消
+          </Button>
+          <Button
+            type="button"
+            disabled={busy || !path.trim()}
+            onClick={() => onSubmit(path.trim(), scope, overwrite)}
+          >
+            {busy ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Download className="size-3.5" />
+            )}
+            导入
           </Button>
         </DialogFooter>
       </DialogContent>

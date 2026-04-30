@@ -48,6 +48,15 @@ export interface PluginCommandResult {
   exit_code: number
 }
 
+export interface SkillInstallEntry {
+  name: string
+  path: string
+}
+
+export interface SkillInstallResult {
+  installed: SkillInstallEntry[]
+}
+
 export type PluginAction =
   | "install"
   | "uninstall"
@@ -57,6 +66,7 @@ export type PluginAction =
 export type MarketplaceAction = "add" | "remove" | "update" | "list"
 
 export type PluginScope = "user" | "project" | "local"
+export type SkillScope = "user" | "project"
 
 export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
   return invoke<InstalledPlugin[]>("list_installed_plugins")
@@ -68,6 +78,31 @@ export async function listMarketplaces(): Promise<Marketplace[]> {
 
 export async function listSkills(cwd?: string | null): Promise<Skill[]> {
   return invoke<Skill[]>("list_skills", { cwd: cwd ?? null })
+}
+
+export async function installSkillFromPath(
+  path: string,
+  scope: SkillScope = "user",
+  cwd?: string | null,
+  overwrite = false
+): Promise<SkillInstallResult> {
+  return invoke<SkillInstallResult>("install_skill_from_path", {
+    args: {
+      path,
+      scope,
+      cwd: cwd ?? null,
+      overwrite
+    }
+  })
+}
+
+export async function installBuiltinSkill(
+  id: string,
+  cwd?: string | null
+): Promise<PluginCommandResult> {
+  return invoke<PluginCommandResult>("install_builtin_skill", {
+    args: { id, cwd: cwd ?? null }
+  })
 }
 
 interface RunPluginCommandArgs {

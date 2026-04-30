@@ -167,6 +167,40 @@ export async function openExternal(url: string): Promise<void> {
   return invoke("open_external", { url })
 }
 
+export interface PlaywrightInstallState {
+  root_path: string
+  root_exists: boolean
+  env_override: string | null
+  chromium: boolean
+  firefox: boolean
+  webkit: boolean
+}
+
+export async function detectPlaywrightInstall(): Promise<PlaywrightInstallState> {
+  return invoke<PlaywrightInstallState>("detect_playwright_install")
+}
+
+export interface ProxyTestResult {
+  ok: boolean
+  status: number | null
+  latency_ms: number
+  message: string
+}
+
+export async function testProxyConnection(args: {
+  url: string
+  target?: string
+  timeoutMs?: number
+}): Promise<ProxyTestResult> {
+  return invoke<ProxyTestResult>("test_proxy_connection", {
+    req: {
+      url: args.url,
+      target: args.target ?? null,
+      timeoutMs: args.timeoutMs ?? null
+    }
+  })
+}
+
 export async function writeTextFile(path: string, contents: string): Promise<void> {
   return invoke("write_text_file", { path, contents })
 }

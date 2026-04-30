@@ -4,12 +4,17 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings"
+import {
+  SettingsSection,
+  SettingsSectionBody,
+  SettingsSectionFooter,
+  SettingsSectionHeader
+} from "./layout"
 
 const PERMISSION_OPTIONS = [
   { value: "default", label: "default" },
@@ -34,19 +39,14 @@ export function General() {
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <Cog className="size-5" />
-          常规
-        </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          应用启动行为与更新检查。
-        </p>
-      </div>
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={Cog}
+        title="常规"
+        description="应用启动行为与更新检查。"
+      />
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 w-full space-y-6">
+      <SettingsSectionBody>
           <section className="space-y-4 rounded-lg border bg-card p-5">
             <div className="flex items-center justify-between">
               <div>
@@ -130,16 +130,15 @@ export function General() {
               </div>
             </div>
           </section>
-        </div>
-      </ScrollArea>
+      </SettingsSectionBody>
 
-      <div className="px-8 py-4 shrink-0 flex items-center gap-2">
+      <SettingsSectionFooter>
         <Button onClick={save} disabled={!dirty}>
           <Save />
           保存
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
-      </div>
-    </div>
+      </SettingsSectionFooter>
+    </SettingsSection>
   )
 }

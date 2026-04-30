@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { AlertTriangle, BarChart3, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import {
   Tooltip,
@@ -16,6 +15,11 @@ import {
   type ActivityCell,
   type GlobalUsage
 } from "@/lib/ipc"
+import {
+  SettingsSection,
+  SettingsSectionBody,
+  SettingsSectionHeader
+} from "./layout"
 
 const HEATMAP_DAYS = 30
 
@@ -66,31 +70,29 @@ export function Statistics() {
   }, [usage])
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <BarChart3 className="size-5" />
-            统计
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1">
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={BarChart3}
+        title="统计"
+        description={
+          <>
             全部会话累计来源于 <code className="font-mono text-xs">~/.claude/projects/</code> 目录，此处只统计 gui 端 result 的数据；活跃度按本地时区聚合最近 {HEATMAP_DAYS} 天。
-          </p>
-        </div>
+          </>
+        }
+        actions={
         <Button
           variant="outline"
           size="sm"
-          className="mt-6 shrink-0"
           onClick={refresh}
           disabled={loading}
         >
           <RefreshCw className={loading ? "animate-spin" : ""} />
           刷新
         </Button>
-      </div>
+        }
+      />
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 w-full space-y-6">
+      <SettingsSectionBody>
           <section className="rounded-lg border bg-card p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -213,9 +215,8 @@ export function Statistics() {
             </div>
             <ActivityHeatmap cells={cells} days={HEATMAP_DAYS} />
           </section>
-        </div>
-      </ScrollArea>
-    </div>
+      </SettingsSectionBody>
+    </SettingsSection>
   )
 }
 

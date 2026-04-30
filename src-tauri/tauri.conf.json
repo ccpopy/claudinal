@@ -30,7 +30,8 @@
     "active": true,
     "targets": ["nsis", "app", "dmg", "deb", "appimage"],
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ],
     "category": "DeveloperTool",
     "shortDescription": "Claude Code 桌面外壳",

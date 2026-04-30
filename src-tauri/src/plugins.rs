@@ -67,6 +67,17 @@ pub struct Skill {
     pub user_invocable: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillInstallEntry {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillInstallResult {
+    pub installed: Vec<SkillInstallEntry>,
+}
+
 fn home() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))
 }
@@ -103,14 +114,23 @@ fn read_marketplace_plugins(name: &str) -> Vec<MarketplacePlugin> {
     arr.iter()
         .filter_map(|p| {
             let name = p.get("name")?.as_str()?.to_string();
-            let description = p.get("description").and_then(Value::as_str).map(str::to_string);
+            let description = p
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let author = p
                 .get("author")
                 .and_then(|a| a.get("name"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let homepage = p.get("homepage").and_then(Value::as_str).map(str::to_string);
-            let category = p.get("category").and_then(Value::as_str).map(str::to_string);
+            let homepage = p
+                .get("homepage")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let category = p
+                .get("category")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             Some(MarketplacePlugin {
                 name,
                 description,
@@ -158,7 +178,10 @@ pub async fn list_installed_plugins() -> Result<Vec<InstalledPlugin>> {
                 .and_then(Value::as_str)
                 .unwrap_or("user")
                 .to_string();
-            let version = entry.get("version").and_then(Value::as_str).map(str::to_string);
+            let version = entry
+                .get("version")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let install_path = entry
                 .get("installPath")
                 .and_then(Value::as_str)
@@ -277,12 +300,8 @@ fn parse_skill_md(path: &Path, source: String) -> Option<Skill> {
             match key.as_str() {
                 "name" => name = Some(value),
                 "description" => description = Some(value),
-                "disable-model-invocation" => {
-                    disable_invoke = value == "true"
-                }
-                "user-invocable" => {
-                    user_invocable = value != "false"
-                }
+                "disable-model-invocation" => disable_invoke = value == "true",
+                "user-invocable" => user_invocable = value != "false",
                 _ => {}
             }
         } else if let Some(k) = current_key.as_deref() {
@@ -335,6 +354,85 @@ fn scan_skill_dir(root: &Path, source: String, out: &mut Vec<Skill>) {
     }
 }
 
+fn is_valid_skill_dir_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty()
+        && trimmed != "."
+        && trimmed != ".."
+        && !trimmed.contains(['/', '\\'])
+        && !trimmed
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+}
+
+fn skill_install_root(scope: &str, cwd: Option<&str>) -> Result<PathBuf> {
+    match scope {
+        "user" => Ok(home()?.join(".claude").join("skills")),
+        "project" => {
+            let cwd = cwd
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| Error::Other("project scope requires cwd".into()))?;
+            Ok(Path::new(cwd).join(".claude").join("skills"))
+        }
+        other => Err(Error::Other(format!("invalid skill scope: {other}"))),
+    }
+}
+
+fn collect_skill_source_dirs(source: &Path) -> Result<Vec<PathBuf>> {
+    if !source.is_dir() {
+        return Err(Error::Other(format!(
+            "skill source is not a directory: {}",
+            source.display()
+        )));
+    }
+    if source.join("SKILL.md").is_file() {
+        return Ok(vec![source.to_path_buf()]);
+    }
+
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let p = entry.path();
+        if p.is_dir() && p.join("SKILL.md").is_file() {
+            out.push(p);
+        }
+    }
+    out.sort_by(|a, b| {
+        a.file_name()
+            .unwrap_or_default()
+            .cmp(b.file_name().unwrap_or_default())
+    });
+    if out.is_empty() {
+        return Err(Error::Other(format!(
+            "no SKILL.md found in {} or its direct child directories",
+            source.display()
+        )));
+    }
+    Ok(out)
+}
+
+fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
+    std::fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src = entry.path();
+        let dst = target.join(entry.file_name());
+        if file_type.is_symlink() {
+            return Err(Error::Other(format!(
+                "symbolic links are not supported in skill imports: {}",
+                src.display()
+            )));
+        }
+        if file_type.is_dir() {
+            copy_dir_all(&src, &dst)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_skills(cwd: Option<String>) -> Result<Vec<Skill>> {
     let mut out = Vec::new();
@@ -379,6 +477,145 @@ pub async fn list_skills(cwd: Option<String>) -> Result<Vec<Skill>> {
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInstallFromPathArgs {
+    pub path: String,
+    pub scope: String,
+    pub cwd: Option<String>,
+    pub overwrite: bool,
+}
+
+#[tauri::command]
+pub async fn install_skill_from_path(args: SkillInstallFromPathArgs) -> Result<SkillInstallResult> {
+    let source = std::fs::canonicalize(args.path.trim())?;
+    let target_root = skill_install_root(&args.scope, args.cwd.as_deref())?;
+    let source_dirs = collect_skill_source_dirs(&source)?;
+
+    let mut planned: Vec<(String, PathBuf, PathBuf)> = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for dir in source_dirs {
+        let skill_md = dir.join("SKILL.md");
+        let parsed = parse_skill_md(&skill_md, "import".to_string())
+            .ok_or_else(|| Error::Other(format!("invalid SKILL.md: {}", skill_md.display())))?;
+        let name = parsed.name.trim().to_string();
+        if !is_valid_skill_dir_name(&name) {
+            return Err(Error::Other(format!(
+                "invalid skill name in {}: {}",
+                skill_md.display(),
+                name
+            )));
+        }
+        if !names.insert(name.clone()) {
+            return Err(Error::Other(format!(
+                "duplicate skill name in source directory: {name}"
+            )));
+        }
+        let dest = target_root.join(&name);
+        if dest.exists() && !args.overwrite {
+            return Err(Error::Other(format!(
+                "skill already exists: {}. Enable overwrite to replace it.",
+                dest.display()
+            )));
+        }
+        planned.push((name, dir, dest));
+    }
+
+    std::fs::create_dir_all(&target_root)?;
+    let mut installed = Vec::new();
+    for (name, source_dir, dest) in planned {
+        if dest.exists() {
+            std::fs::remove_dir_all(&dest)?;
+        }
+        copy_dir_all(&source_dir, &dest)?;
+        installed.push(SkillInstallEntry {
+            name,
+            path: dest.display().to_string(),
+        });
+    }
+
+    Ok(SkillInstallResult { installed })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinSkillInstallArgs {
+    pub id: String,
+    pub cwd: Option<String>,
+}
+
+#[tauri::command]
+pub async fn install_builtin_skill(args: BuiltinSkillInstallArgs) -> Result<PluginCommandResult> {
+    let command = if cfg!(windows) { "npx.cmd" } else { "npx" };
+    let install_cwd = match args.cwd.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(cwd) => PathBuf::from(cwd),
+        None => home()?,
+    };
+    if !install_cwd.is_dir() {
+        return Err(Error::Other(format!(
+            "skill install cwd is not a directory: {}",
+            install_cwd.display()
+        )));
+    }
+
+    let (cmd_args, expected_skill_md): (Vec<String>, Option<PathBuf>) = match args.id.as_str() {
+        "playwright-cli" => (
+            vec![
+                "--yes".into(),
+                "--package".into(),
+                "@playwright/cli@latest".into(),
+                "playwright-cli".into(),
+                "install".into(),
+                "--skills".into(),
+            ],
+            Some(
+                install_cwd
+                    .join(".claude")
+                    .join("skills")
+                    .join("playwright-cli")
+                    .join("SKILL.md"),
+            ),
+        ),
+        other => {
+            return Err(Error::Other(format!(
+                "unknown built-in skill installer: {other}"
+            )))
+        }
+    };
+
+    let output = tokio::process::Command::new(command)
+        .args(&cmd_args)
+        .current_dir(&install_cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| Error::Other(format!("spawn {command}: {e}")))?;
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if exit_code == 0 {
+        if let Some(expected) = expected_skill_md.as_deref() {
+            if !expected.is_file() {
+                return Ok(PluginCommandResult {
+                    stdout,
+                    stderr: format!(
+                        "installer exited successfully, but expected skill was not found: {}",
+                        expected.display()
+                    ),
+                    exit_code: -1,
+                });
+            }
+        }
+    }
+    Ok(PluginCommandResult {
+        stdout,
+        stderr,
+        exit_code,
+    })
 }
 
 #[derive(Debug, Deserialize)]

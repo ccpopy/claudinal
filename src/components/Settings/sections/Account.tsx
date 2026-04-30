@@ -10,7 +10,6 @@ import {
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import {
@@ -19,6 +18,11 @@ import {
   type OauthUsage,
   type OauthUsageWindow
 } from "@/lib/ipc"
+import {
+  SettingsSection,
+  SettingsSectionBody,
+  SettingsSectionHeader
+} from "./layout"
 
 interface CliSettings {
   env?: Record<string, string>
@@ -146,31 +150,25 @@ export function Account() {
   const showPlanUsage = auth.kind === "oauth"
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <Monitor className="size-5" />
-            Usage
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            登录来自 settings.json env；计划用量调 Anthropic OAuth API。
-          </p>
-        </div>
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={Monitor}
+        title="Usage"
+        description="登录来自 settings.json env；计划用量调 Anthropic OAuth API。"
+        actions={
         <Button
           variant="outline"
           size="sm"
-          className="mt-6 shrink-0"
           onClick={refresh}
           disabled={loading || oauthLoading}
         >
           <RefreshCw className={oauthLoading ? "animate-spin" : ""} />
           刷新
         </Button>
-      </div>
+        }
+      />
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 w-full space-y-6">
+      <SettingsSectionBody>
           <section className="rounded-lg border bg-card p-5 space-y-3">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               登录
@@ -186,9 +184,8 @@ export function Account() {
               fetchedAt={oauthFetchedAt}
             />
           )}
-        </div>
-      </ScrollArea>
-    </div>
+      </SettingsSectionBody>
+    </SettingsSection>
   )
 }
 

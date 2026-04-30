@@ -1,15 +1,22 @@
 import { useEffect, useState } from "react"
-import { AlertTriangle, Network as NetworkIcon, Save } from "lucide-react"
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+  Network as NetworkIcon,
+  PlugZap,
+  Save,
+  XCircle
+} from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { readClaudeSettings } from "@/lib/ipc"
+import { readClaudeSettings, testProxyConnection } from "@/lib/ipc"
 import {
   describeProxy,
   formatProxyUrl,
@@ -19,12 +26,37 @@ import {
   type ProxyConfig,
   type ProxyProtocol
 } from "@/lib/proxy"
+import {
+  SettingsSection,
+  SettingsSectionBody,
+  SettingsSectionFooter,
+  SettingsSectionHeader
+} from "./layout"
 
 const PROTOCOL_OPTIONS: Array<{ value: ProxyProtocol; label: string }> = [
   { value: "http", label: "HTTP" },
   { value: "https", label: "HTTPS" },
   { value: "socks5", label: "SOCKS5" },
   { value: "socks5h", label: "SOCKS5h" }
+]
+
+type TestState =
+  | { kind: "idle" }
+  | { kind: "running"; target: string }
+  | {
+      kind: "done"
+      ok: boolean
+      status: number | null
+      latency: number
+      message: string
+      target: string
+      ts: number
+    }
+
+const TEST_TARGETS = [
+  { value: "https://api.anthropic.com", label: "Anthropic API" },
+  { value: "https://www.google.com", label: "Google" },
+  { value: "https://github.com", label: "GitHub" }
 ]
 
 export function Network() {
@@ -34,6 +66,8 @@ export function Network() {
     https?: string
     http?: string
   } | null>(null)
+  const [test, setTest] = useState<TestState>({ kind: "idle" })
+  const [target, setTarget] = useState<string>(TEST_TARGETS[0].value)
 
   useEffect(() => {
     // 检测 settings.json env 是否已设代理 —— CLI 会优先合并 env 覆盖 spawn 注入
@@ -62,20 +96,46 @@ export function Network() {
   const previewUrl =
     config.host && config.port ? formatProxyUrl(config) : "—"
 
-  return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <NetworkIcon className="size-5" />
-          网络代理
-        </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          给 Claude CLI 设置网络代理，修改后下次启动会话后生效。
-        </p>
-      </div>
+  const canTest =
+    config.enabled && !!config.host && !!config.port && test.kind !== "running"
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 w-full space-y-6">
+  const runTest = async () => {
+    if (!canTest) return
+    const url = formatProxyUrl(config)
+    setTest({ kind: "running", target })
+    try {
+      const r = await testProxyConnection({ url, target })
+      setTest({
+        kind: "done",
+        ok: r.ok,
+        status: r.status,
+        latency: r.latency_ms,
+        message: r.message,
+        target,
+        ts: Date.now()
+      })
+    } catch (e) {
+      setTest({
+        kind: "done",
+        ok: false,
+        status: null,
+        latency: 0,
+        message: String(e),
+        target,
+        ts: Date.now()
+      })
+    }
+  }
+
+  return (
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={NetworkIcon}
+        title="网络代理"
+        description="给 Claude CLI 设置网络代理，修改后下次启动会话后生效。"
+      />
+
+      <SettingsSectionBody>
           {conflict && (
             <section className="rounded-lg border border-warn/40 bg-warn/10 p-4 flex items-start gap-2">
               <AlertTriangle className="size-4 text-warn shrink-0 mt-0.5" />
@@ -194,17 +254,74 @@ export function Network() {
               状态：{describeProxy(config)}
             </div>
           </section>
-        </div>
-      </ScrollArea>
 
-      <div className="px-8 py-4 shrink-0 flex items-center gap-2">
+          <section className="rounded-lg border bg-card p-5 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <Label className="text-sm">测试连接</Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  通过当前代理 HEAD 一次目标 URL，验证能否访问 Claude / 外网。不影响保存。
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={runTest}
+                disabled={!canTest}
+                title={!canTest ? "需先启用代理并填写主机/端口" : undefined}
+              >
+                {test.kind === "running" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <PlugZap className="size-3.5" />
+                )}
+                测试
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Label className="text-xs text-muted-foreground">目标</Label>
+              <Select
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                options={TEST_TARGETS}
+                disabled={test.kind === "running"}
+                triggerClassName="max-w-[260px]"
+              />
+            </div>
+            {test.kind === "done" && (
+              <div
+                className={
+                  test.ok
+                    ? "flex items-start gap-2 rounded-md border border-connected/30 bg-connected/10 p-3 text-xs"
+                    : "flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs"
+                }
+              >
+                {test.ok ? (
+                  <CheckCircle2 className="size-4 shrink-0 text-connected" />
+                ) : (
+                  <XCircle className="size-4 shrink-0 text-destructive" />
+                )}
+                <div className="min-w-0 space-y-0.5">
+                  <div className={test.ok ? "text-connected" : "text-destructive"}>
+                    {test.message}
+                  </div>
+                  <div className="font-mono text-[11px] text-muted-foreground">
+                    {test.target} · {test.latency} ms
+                    {test.status !== null && ` · HTTP ${test.status}`}
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+      </SettingsSectionBody>
+
+      <SettingsSectionFooter>
         <Button onClick={save} disabled={!dirty}>
           <Save />
           保存
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
-      </div>
-    </div>
+      </SettingsSectionFooter>
+    </SettingsSection>
   )
 }
 

@@ -4,7 +4,6 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -14,6 +13,12 @@ import {
   writeClaudeSettings
 } from "@/lib/ipc"
 import { ConfigExportPage } from "./ConfigExportDialog"
+import {
+  SettingsSection,
+  SettingsSectionBody,
+  SettingsSectionFooter,
+  SettingsSectionHeader
+} from "./layout"
 
 // 官方 settings.json 字段（来自 https://code.claude.com/docs/en/settings）
 // effortLevel 取值：low / medium / high / xhigh / max / auto
@@ -88,18 +93,16 @@ export function Config() {
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <Settings2 className="size-5" />
-            配置
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1">
+    <SettingsSection>
+      <SettingsSectionHeader
+        icon={Settings2}
+        title="配置"
+        description={
+          <>
             直接读写 <code className="font-mono text-xs">~/.claude/settings.json</code>，环境变量 / 鉴权请直接编辑文件。
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 mt-6 shrink-0">
+          </>
+        }
+        actions={
           <Button
             variant="outline"
             size="sm"
@@ -111,11 +114,10 @@ export function Config() {
             <ExternalLink className="size-3.5" />
             打开 settings.json
           </Button>
-        </div>
-      </div>
+        }
+      />
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="px-8 pb-6 w-full space-y-6">
+      <SettingsSectionBody>
           <section className="rounded-lg border bg-card p-5 space-y-4">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               CLI 行为
@@ -166,17 +168,16 @@ export function Config() {
               </Button>
             </Row>
           </section>
-        </div>
-      </ScrollArea>
+      </SettingsSectionBody>
 
-      <div className="px-8 py-4 shrink-0 flex items-center gap-2">
+      <SettingsSectionFooter>
         <Button onClick={save} disabled={!dirty || loading}>
           <Save />
           保存到 settings.json
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
-      </div>
-    </div>
+      </SettingsSectionFooter>
+    </SettingsSection>
   )
 }
 

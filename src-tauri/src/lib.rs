@@ -60,10 +60,14 @@ pub fn run() {
             commands::scan_activity_heatmap,
             commands::open_path,
             commands::open_external,
+            commands::detect_playwright_install,
+            commands::test_proxy_connection,
             commands::write_text_file,
             plugins::list_installed_plugins,
             plugins::list_marketplaces,
             plugins::list_skills,
+            plugins::install_builtin_skill,
+            plugins::install_skill_from_path,
             plugins::run_plugin_command,
         ])
         .run(tauri::generate_context!())
