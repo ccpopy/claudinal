@@ -1,3 +1,4 @@
+mod api_proxy;
 mod commands;
 mod error;
 mod permission_mcp;
@@ -50,6 +51,7 @@ pub fn run() {
             commands::write_claude_md,
             commands::read_claude_oauth_token,
             commands::fetch_oauth_usage,
+            commands::fetch_provider_models,
             commands::scan_global_usage,
             commands::scan_activity_heatmap,
             commands::open_path,

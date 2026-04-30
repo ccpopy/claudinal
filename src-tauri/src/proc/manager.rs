@@ -21,6 +21,7 @@ pub struct SpawnOptions {
     pub permission_mode: Option<String>,
     pub resume_session_id: Option<String>,
     pub env: Option<std::collections::HashMap<String, String>>,
+    pub env_remove: Vec<String>,
     pub permission_prompt_tool: Option<String>,
     pub mcp_config: Option<String>,
 }
@@ -83,6 +84,9 @@ impl Manager {
             for (k, v) in env {
                 cmd.env(k, v);
             }
+        }
+        for key in &opts.env_remove {
+            cmd.env_remove(key);
         }
 
         cmd.current_dir(&opts.cwd)

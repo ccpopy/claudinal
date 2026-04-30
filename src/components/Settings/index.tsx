@@ -5,6 +5,7 @@ import {
   Cog,
   GitBranch,
   Globe,
+  Key,
   Monitor,
   Network as NetworkIcon,
   Plug,
@@ -30,6 +31,7 @@ import { Account } from "./sections/Account"
 import { Statistics } from "./sections/Statistics"
 import { Placeholder } from "./sections/Placeholder"
 import { Personalization } from "./sections/Personalization"
+import { ThirdPartyApi } from "./sections/ThirdPartyApi"
 
 interface Props {
   open: boolean
@@ -52,6 +54,12 @@ const SECTIONS: SectionDef[] = [
     label: "配置",
     icon: Settings2,
     Component: Config
+  },
+  {
+    id: "third-party-api",
+    label: "第三方 API",
+    icon: Key,
+    Component: ThirdPartyApi
   },
   {
     id: "personalization",
