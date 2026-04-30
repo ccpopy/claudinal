@@ -24,6 +24,11 @@ export interface UIBlock {
   endedAt?: number
 }
 
+export interface ImagePayload {
+  data: string
+  mime: string
+}
+
 export interface UIMessage {
   kind: "message"
   id: string

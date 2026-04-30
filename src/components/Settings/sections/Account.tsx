@@ -108,20 +108,32 @@ export function Account() {
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    let nextEnv: Record<string, string> = {}
+    let nextApiKeySource: string | null = null
     try {
       const raw = (await readClaudeSettings("global")) as CliSettings | null
-      setEnv(raw?.env ?? {})
+      nextEnv = raw?.env ?? {}
+      setEnv(nextEnv)
     } catch (e) {
       toast.error(`读取 settings.json 失败: ${String(e)}`)
     } finally {
       setLoading(false)
     }
     try {
-      setApiKeySource(localStorage.getItem("claudinal.api-key-source"))
+      nextApiKeySource = localStorage.getItem("claudinal.api-key-source")
+      setApiKeySource(nextApiKeySource)
     } catch {
       // ignore
     }
-    refreshOauth().catch(() => undefined)
+    const nextAuth = detectAuth(nextEnv, nextApiKeySource)
+    if (nextAuth.kind === "oauth") {
+      refreshOauth().catch(() => undefined)
+    } else {
+      setOauth(null)
+      setOauthError(null)
+      setOauthFetchedAt(0)
+      setOauthLoading(false)
+    }
   }, [refreshOauth])
 
   useEffect(() => {
@@ -131,7 +143,7 @@ export function Account() {
 
   const auth = useMemo(() => detectAuth(env, apiKeySource), [env, apiKeySource])
 
-  const showPlanUsage = auth.kind === "oauth" || auth.kind === "official-key"
+  const showPlanUsage = auth.kind === "oauth"
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">

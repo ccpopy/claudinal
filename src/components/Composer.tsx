@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { listFiles } from "@/lib/ipc"
+import type { ImagePayload } from "@/types/ui"
 import {
   SuggestionPanel,
   type SuggestionItem
@@ -20,7 +21,7 @@ import {
 import { ImageLightbox } from "./ImageLightbox"
 
 interface Props {
-  onSend: (text: string, images: string[]) => void | Promise<void>
+  onSend: (text: string, images: ImagePayload[]) => void | Promise<void>
   onStop: () => void | Promise<void>
   streaming: boolean
   disabled?: boolean
@@ -60,10 +61,7 @@ function parseTrigger(text: string, caret: number): TriggerInfo | null {
   return null
 }
 
-interface Thumb {
-  data: string
-  mime: string
-}
+type Thumb = ImagePayload
 
 export function Composer({
   onSend,
@@ -179,7 +177,7 @@ export function Composer({
     if (!t && images.length === 0) return
     onSend(
       t,
-      images.map((i) => i.data)
+      images.map((i) => ({ data: i.data, mime: i.mime }))
     )
     setText("")
     setImages([])

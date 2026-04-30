@@ -10,8 +10,8 @@ use crate::error::{Error, Result};
 
 #[derive(Serialize)]
 pub struct ActivityCell {
-    pub date: String,  // "2026-04-15"（按本地时区）
-    pub hour: u32,     // 0–23
+    pub date: String, // "2026-04-15"（按本地时区）
+    pub hour: u32,    // 0–23
     pub count: u32,
 }
 
@@ -22,6 +22,12 @@ pub struct ModelUsageAgg {
     pub cache_read_input_tokens: u64,
     pub cache_creation_input_tokens: u64,
     pub cost_usd: f64,
+}
+
+#[derive(Serialize)]
+pub struct UsageScanError {
+    pub path: String,
+    pub reason: String,
 }
 
 #[derive(Default, Serialize)]
@@ -35,6 +41,8 @@ pub struct GlobalUsage {
     pub session_count: u32,
     /// 含 sidecar 的会话数 —— cost/tokens 仅来自这些会话（GUI 端写过 result）
     pub with_sidecar_count: u32,
+    pub skipped_sidecar_count: u32,
+    pub scan_errors: Vec<UsageScanError>,
     pub by_model: HashMap<String, ModelUsageAgg>,
     pub last_updated: i64,
 }
@@ -80,6 +88,14 @@ fn merge_model_usage(agg: &mut GlobalUsage, model_usage: &Value) {
     }
 }
 
+fn record_sidecar_error(agg: &mut GlobalUsage, path: &std::path::Path, reason: impl Into<String>) {
+    agg.skipped_sidecar_count += 1;
+    agg.scan_errors.push(UsageScanError {
+        path: path.display().to_string(),
+        reason: reason.into(),
+    });
+}
+
 /// 扫描 ~/.claude/projects/<encoded>/* 同时统计：
 ///   - jsonl 文件总数 → session_count（真实会话数，含 CLI 直接发起的）
 ///   - claudinal.json sidecar → cost/tokens/by_model 累加（仅 GUI 端写过 result）
@@ -115,15 +131,24 @@ pub fn scan_all_usage_sidecars() -> Result<GlobalUsage> {
             }
             let raw = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) => {
+                    record_sidecar_error(&mut agg, &path, format!("read failed: {e}"));
+                    continue;
+                }
             };
             let v: Value = match serde_json::from_str(&raw) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(e) => {
+                    record_sidecar_error(&mut agg, &path, format!("json parse failed: {e}"));
+                    continue;
+                }
             };
             let result = match v.get("result") {
                 Some(r) => r,
-                None => continue,
+                None => {
+                    record_sidecar_error(&mut agg, &path, "missing result");
+                    continue;
+                }
             };
             agg.with_sidecar_count += 1;
             if let Some(cost) = result.get("total_cost_usd").and_then(|x| x.as_f64()) {

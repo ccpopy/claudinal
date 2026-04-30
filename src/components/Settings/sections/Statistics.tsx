@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { BarChart3, RefreshCw } from "lucide-react"
+import { AlertTriangle, BarChart3, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -134,6 +134,29 @@ export function Statistics() {
                 value={fmt(usage?.total_cache_write ?? 0)}
               />
             </div>
+            {usage && usage.scan_errors.length > 0 && (
+              <div className="rounded-md border border-warn/40 bg-warn/10 p-3 text-xs space-y-1.5">
+                <div className="flex items-center gap-1.5 font-medium text-warn">
+                  <AlertTriangle className="size-3.5" />
+                  有 {usage.skipped_sidecar_count} 个 sidecar 未纳入统计
+                </div>
+                <div className="space-y-1">
+                  {usage.scan_errors.slice(0, 5).map((err) => (
+                    <div
+                      key={`${err.path}:${err.reason}`}
+                      className="font-mono break-all text-muted-foreground"
+                    >
+                      {err.path}: {err.reason}
+                    </div>
+                  ))}
+                </div>
+                {usage.scan_errors.length > 5 && (
+                  <div className="text-muted-foreground">
+                    其余 {usage.scan_errors.length - 5} 个错误已省略。
+                  </div>
+                )}
+              </div>
+            )}
             <Separator />
             <div className="space-y-2">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">
