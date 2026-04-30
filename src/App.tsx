@@ -20,28 +20,39 @@ import {
   readSessionSidecar,
   writeSessionSidecar,
   deleteSessionJsonl,
+  fetchOauthUsage,
+  type OauthUsage,
   type PermissionRequestPayload,
   type SessionMeta
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxy } from "@/lib/proxy"
 import { loadSettings, recordResultUsage } from "@/lib/settings"
+import {
+  EMPTY_COMPOSER_PREFS,
+  loadGlobalDefault,
+  pickComposerFromSidecar,
+  type ComposerPrefs
+} from "@/lib/composerPrefs"
 import { saveMcpStatusCache } from "@/lib/mcp"
 import { saveSlashCommandsCache } from "@/lib/slashCommands"
 import {
   buildClaudeEnv,
   loadThirdPartyApiConfig,
+  providerModelOptions,
   trimApiUrl
 } from "@/lib/thirdPartyApi"
+import { isOfficialApi } from "@/lib/oauthUsage"
 import { reduce, init as reducerInit } from "@/lib/reducer"
 import {
   listProjects,
   removeProject as removeProjectStore,
   type Project
 } from "@/lib/projects"
-import type { ContextUsage, ImagePayload, UIBlock } from "@/types/ui"
+import type { ImagePayload, UIBlock } from "@/types/ui"
 import type { ClaudeEvent } from "@/types/events"
 import { Composer } from "@/components/Composer"
 import { MessageStream } from "@/components/MessageStream"
+import { PluginsView } from "@/components/PluginsView"
 import { Sidebar } from "@/components/Sidebar"
 import { Welcome } from "@/components/Welcome"
 import { ProjectPicker } from "@/components/ProjectPicker"
@@ -132,53 +143,6 @@ function countDiffFiles(
   return set.size
 }
 
-function numberField(obj: Record<string, unknown>, key: string) {
-  const value = obj[key]
-  return typeof value === "number" && Number.isFinite(value) ? value : 0
-}
-
-function findContextUsage(
-  entries: ReturnType<typeof reducerInit>["entries"]
-): ContextUsage | null {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i]
-    if (entry.kind !== "result" || !entry.modelUsage) continue
-    let best: ContextUsage | null = null
-    for (const [model, raw] of Object.entries(entry.modelUsage)) {
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
-      const usage = raw as Record<string, unknown>
-      const inputTokens = numberField(usage, "inputTokens")
-      const cacheReadInputTokens = numberField(usage, "cacheReadInputTokens")
-      const cacheCreationInputTokens = numberField(
-        usage,
-        "cacheCreationInputTokens"
-      )
-      const outputTokens = numberField(usage, "outputTokens")
-      const contextWindow = numberField(usage, "contextWindow")
-      const usedTokens =
-        inputTokens + cacheReadInputTokens + cacheCreationInputTokens
-      if (usedTokens <= 0 && contextWindow <= 0) continue
-      const percent =
-        contextWindow > 0
-          ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))
-          : undefined
-      const candidate: ContextUsage = {
-        model,
-        usedTokens,
-        contextWindow: contextWindow || undefined,
-        percent,
-        inputTokens,
-        cacheReadInputTokens,
-        cacheCreationInputTokens,
-        outputTokens
-      }
-      if (!best || candidate.usedTokens > best.usedTokens) best = candidate
-    }
-    if (best) return best
-  }
-  return null
-}
-
 export default function App() {
   const [state, dispatch] = useReducer(reduce, undefined, reducerInit)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -189,9 +153,25 @@ export default function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showPlugins, setShowPlugins] = useState(false)
   const [sidebarVisible, setSidebarVisible] = useState(true)
   const [settingsSection, setSettingsSection] = useState("general")
   const [planMode, setPlanMode] = useState(false)
+  const [composerPrefs, setComposerPrefs] = useState<ComposerPrefs>({
+    model: "",
+    effort: ""
+  })
+  // 启动时一次性读到的全局默认（settings.json + app settings），用于：
+  // 1) 新会话的初始值
+  // 2) Picker 显示"默认值"提示
+  const [globalDefault, setGlobalDefault] = useState<ComposerPrefs>(
+    EMPTY_COMPOSER_PREFS
+  )
+  // 当前会话的"已显式覆盖" composer prefs（来自 sidecar），用于 effortSource 判定
+  const [sessionComposer, setSessionComposer] = useState<ComposerPrefs | null>(
+    null
+  )
+  const [oauthUsage, setOauthUsage] = useState<OauthUsage | null>(null)
   const [draft, setDraft] = useState("")
   const [pinTick, setPinTick] = useState(0)
   const [titleTick, setTitleTick] = useState(0)
@@ -217,6 +197,20 @@ export default function App() {
     detectClaudeCli()
       .then(setCliPath)
       .catch((e) => toast.error(`未找到 claude CLI: ${String(e)}`))
+    loadGlobalDefault()
+      .then((p) => {
+        setGlobalDefault(p)
+        // 启动时 Composer 显示全局默认，作为新对话的起点
+        setComposerPrefs(p)
+      })
+      .catch(() => {
+        // 读 settings.json 失败不致命；保持默认 auto
+      })
+    if (isOfficialApi()) {
+      fetchOauthUsage()
+        .then((u) => setOauthUsage(u))
+        .catch(() => setOauthUsage(null))
+    }
     const list = listProjects()
     setProjects(list)
     if (list.length > 0) setProject((cur) => cur ?? list[0])
@@ -313,13 +307,13 @@ export default function App() {
         ? buildClaudeEnv(thirdPartyApi)
         : {}
       const env = { ...thirdPartyEnv, ...proxyEnv }
-      const model = thirdPartyReady
-        ? null
-        : cfg.defaultModel.trim() || null
+      const uiModel = composerPrefs.model.trim()
+      const uiEffort = composerPrefs.effort.trim()
+      const model = uiModel || cfg.defaultModel.trim() || null
       const id = await spawnSession({
         cwd: project.cwd,
         model,
-        effort: cfg.defaultEffort.trim() || null,
+        effort: uiEffort || cfg.defaultEffort.trim() || null,
         permissionMode: planMode ? "plan" : cfg.defaultPermissionMode || "default",
         resumeSessionId: selectedSessionId,
         env: Object.keys(env).length > 0 ? env : null,
@@ -363,6 +357,13 @@ export default function App() {
         if (t === "result") {
           setStreaming(false)
           setSidebarRefreshKey((k) => k + 1)
+          if (isOfficialApi()) {
+            fetchOauthUsage()
+              .then((u) => setOauthUsage(u))
+              .catch(() => {
+                // OAuth 拉取失败保留旧值
+              })
+          }
           recordResultUsage(
             ev as {
               total_cost_usd?: number
@@ -372,9 +373,20 @@ export default function App() {
           const sid =
             (ev as { session_id?: string }).session_id ?? null
           if (project && sid) {
-            writeSessionSidecar(project.cwd, sid, { result: ev }).catch((e) =>
-              console.warn("sidecar write failed:", e)
-            )
+            // 保留 sidecar 已有字段，更新 result；如果用户在 session id 分配前就
+            // 改过 composer，这里把 sessionComposer 一并落地。
+            readSessionSidecar(project.cwd, sid)
+              .then((existing) => {
+                const base = (existing && typeof existing === "object"
+                  ? existing
+                  : {}) as Record<string, unknown>
+                const next: Record<string, unknown> = { ...base, result: ev }
+                if (sessionComposer && !base.composer) {
+                  next.composer = sessionComposer
+                }
+                return writeSessionSidecar(project.cwd, sid, next)
+              })
+              .catch((e) => console.warn("sidecar write failed:", e))
           }
         }
       })
@@ -389,7 +401,7 @@ export default function App() {
       toast.error(`启动会话失败: ${String(e)}`)
       return null
     }
-  }, [planMode, project, sessionId, selectedSessionId])
+  }, [planMode, project, sessionId, selectedSessionId, composerPrefs])
 
   const send = useCallback(
     async (text: string, images: ImagePayload[]) => {
@@ -477,18 +489,22 @@ export default function App() {
         const events = (await readSessionTranscript(p.cwd, s.id)) as ClaudeEvent[]
         // sidecar 里持久化的 result 事件追加到末尾，恢复 ✓ 完成 chip
         const sidecar = (await readSessionSidecar(p.cwd, s.id)) as
-          | { result?: ClaudeEvent }
+          | { result?: ClaudeEvent; composer?: { model?: string; effort?: string } }
           | null
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
         dispatch({ kind: "load_transcript", events: merged })
+        // 还原会话级 composer 偏好；没有 sidecar.composer 就用全局默认
+        const sessionPrefs = pickComposerFromSidecar(sidecar)
+        setSessionComposer(sessionPrefs)
+        setComposerPrefs(sessionPrefs ?? globalDefault)
       } catch (e) {
         toast.error(`加载会话失败: ${String(e)}`)
       } finally {
         setLoadingSession(false)
       }
     },
-    [teardown]
+    [teardown, globalDefault]
   )
 
   const onProjectAdded = useCallback(
@@ -535,25 +551,38 @@ export default function App() {
     await teardown()
     dispatch({ kind: "reset" })
     setSelectedSessionId(null)
-  }, [teardown])
+    // 新对话清掉会话级覆盖，回到全局默认
+    setSessionComposer(null)
+    setComposerPrefs(globalDefault)
+  }, [teardown, globalDefault])
 
   const openSettings = useCallback((section = "general") => {
     setSidebarVisible(true)
+    setShowPlugins(false)
     setSettingsSection(section)
     setShowSettings(true)
   }, [])
 
+  const openPlugins = useCallback(() => {
+    setSidebarVisible(true)
+    setShowSettings(false)
+    setShowPlugins(true)
+  }, [])
+
   const returnToChat = useCallback(() => {
     setShowSettings(false)
+    setShowPlugins(false)
   }, [])
 
   const newConversationFromChrome = useCallback(() => {
     setShowSettings(false)
+    setShowPlugins(false)
     void newConversation()
   }, [newConversation])
 
   const addProjectFromChrome = useCallback(() => {
     setShowSettings(false)
+    setShowPlugins(false)
     setShowAdd(true)
   }, [])
 
@@ -606,12 +635,46 @@ export default function App() {
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const diffCount = countDiffFiles(state.entries)
   const slashCommands = findSlashCommands(state)
-  const contextUsage = useMemo(
-    () => findContextUsage(state.entries),
-    [state.entries]
-  )
   const activePermissionRequest = permissionRequests[0] ?? null
   void titleTick
+
+  const handleModelEffortChange = useCallback(
+    (next: { model?: string; effort?: string }) => {
+      setComposerPrefs((cur) => {
+        const updated: ComposerPrefs = {
+          model: next.model !== undefined ? next.model : cur.model,
+          effort: next.effort !== undefined ? next.effort : cur.effort
+        }
+        // 用户已显式覆盖：标记到 sessionComposer，并尝试写入当前会话的 sidecar。
+        // sid 优先级：select 的会话 → reducer init 拿到的 jsonl id（spawn 后第一时间可用）。
+        setSessionComposer(updated)
+        const sid = selectedSessionId ?? findInitSessionId(state)
+        if (project && sid) {
+          // 读 sidecar → merge composer → 写回，保留其它字段（如 result）
+          readSessionSidecar(project.cwd, sid)
+            .then((existing) => {
+              const base = (existing && typeof existing === "object"
+                ? existing
+                : {}) as Record<string, unknown>
+              const merged = { ...base, composer: updated }
+              return writeSessionSidecar(project.cwd, sid, merged)
+            })
+            .catch((e) => console.warn("sidecar composer write failed:", e))
+        }
+        return updated
+      })
+    },
+    [project, selectedSessionId, state]
+  )
+
+  const extraModels = useMemo(() => {
+    const cfg = loadThirdPartyApiConfig()
+    if (!cfg.enabled) return [] as { value: string; label?: string }[]
+    return providerModelOptions(cfg).map((model) => ({
+      value: model,
+      label: cfg.providerName ? `${cfg.providerName} · ${model}` : model
+    }))
+  }, [showSettings])
 
   return (
     <TooltipProvider>
@@ -619,7 +682,7 @@ export default function App() {
         <div className="flex h-screen flex-col bg-background text-foreground">
           <AppChrome
             sidebarVisible={sidebarVisible}
-            inSettings={showSettings}
+            inSettings={showSettings || showPlugins}
             onToggleSidebar={() => setSidebarVisible((v) => !v)}
             onBack={returnToChat}
             onNewConversation={newConversationFromChrome}
@@ -641,17 +704,35 @@ export default function App() {
                 selectedSessionId={selectedSessionId}
                 streamingProjectId={streaming ? project?.id ?? null : null}
                 streamingSessionId={streamingJsonlId}
-                onSelectProject={switchProject}
-                onSelectSession={switchSession}
+                inPlugins={showPlugins}
+                onSelectProject={(p) => {
+                  setShowPlugins(false)
+                  switchProject(p)
+                }}
+                onSelectSession={(p, s) => {
+                  setShowPlugins(false)
+                  switchSession(p, s)
+                }}
                 onAdd={() => setShowAdd(true)}
                 onRemove={handleRemove}
-                onNewConversation={newConversation}
+                onNewConversation={() => {
+                  setShowPlugins(false)
+                  void newConversation()
+                }}
                 onOpenSettings={openSettings}
+                onOpenPlugins={openPlugins}
                 refreshKey={sidebarRefreshKey}
               />
             )}
 
             <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background rounded-lg border overflow-hidden">
+            {showPlugins ? (
+              <PluginsView
+                cwd={project?.cwd ?? null}
+                onBack={returnToChat}
+              />
+            ) : (
+              <>
             {project && !empty && (
               <ChatHeader
                 key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}-${titleTick}`}
@@ -698,8 +779,14 @@ export default function App() {
                         slashCommands={slashCommands}
                         planMode={planMode}
                         onPlanModeChange={setPlanMode}
-                        onOpenPlugins={() => openSettings("mcp")}
-                        contextUsage={contextUsage}
+                        onOpenPlugins={openPlugins}
+                        oauthUsage={oauthUsage}
+                        model={composerPrefs.model}
+                        effort={composerPrefs.effort}
+                        onModelEffortChange={handleModelEffortChange}
+                        extraModels={extraModels}
+                        globalDefault={globalDefault}
+                        sessionPrefs={sessionComposer}
                       />
                       <div className="flex justify-start">
                         <ProjectPicker
@@ -734,9 +821,17 @@ export default function App() {
                   slashCommands={slashCommands}
                   planMode={planMode}
                   onPlanModeChange={setPlanMode}
-                  onOpenPlugins={() => openSettings("mcp")}
-                  contextUsage={contextUsage}
+                  onOpenPlugins={openPlugins}
+                  oauthUsage={oauthUsage}
+                  model={composerPrefs.model}
+                  effort={composerPrefs.effort}
+                  onModelEffortChange={handleModelEffortChange}
+                  extraModels={extraModels}
+                  globalDefault={globalDefault}
+                  sessionPrefs={sessionComposer}
                 />
+              </>
+            )}
               </>
             )}
             </div>

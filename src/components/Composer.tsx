@@ -12,14 +12,14 @@ import {
 import {
   ArrowUp,
   Blocks,
-  ChevronRight,
   FileText,
-  Gauge,
   Image as ImageIcon,
   ListPlus,
   ListTodo,
+  Package,
   Paperclip,
   Plus,
+  Settings as SettingsIcon,
   Square,
   X
 } from "lucide-react"
@@ -30,6 +30,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
 import { Textarea } from "@/components/ui/textarea"
@@ -39,14 +42,18 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { listFiles } from "@/lib/ipc"
+import { listFiles, type OauthUsage, type OauthUsageWindow } from "@/lib/ipc"
+import type { ComposerPrefs } from "@/lib/composerPrefs"
+import { listInstalledPlugins, type InstalledPlugin } from "@/lib/plugins"
 import { loadSettings } from "@/lib/settings"
-import type { ContextUsage, ImagePayload } from "@/types/ui"
+import { shortResets, fiveHourPercent } from "@/lib/oauthUsage"
+import type { ImagePayload } from "@/types/ui"
 import {
   SuggestionPanel,
   type SuggestionItem
 } from "./SuggestionPanel"
 import { ImageLightbox } from "./ImageLightbox"
+import { ModelEffortPicker } from "./composer/ModelEffortPicker"
 
 interface Props {
   onSend: (text: string, images: ImagePayload[]) => void | Promise<void>
@@ -61,7 +68,13 @@ interface Props {
   planMode?: boolean
   onPlanModeChange?: (enabled: boolean) => void
   onOpenPlugins?: () => void
-  contextUsage?: ContextUsage | null
+  oauthUsage?: OauthUsage | null
+  model?: string
+  effort?: string
+  onModelEffortChange?: (next: { model?: string; effort?: string }) => void
+  extraModels?: { value: string; label?: string }[]
+  globalDefault?: ComposerPrefs
+  sessionPrefs?: ComposerPrefs | null
 }
 
 interface TriggerInfo {
@@ -141,14 +154,6 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-function formatTokens(tokens: number) {
-  if (tokens >= 1_000_000) {
-    return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}m`
-  }
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`
-  return String(tokens)
-}
-
 function isTextFile(file: File) {
   if (file.type.startsWith("text/")) return true
   if (
@@ -217,12 +222,20 @@ export function Composer({
   planMode = false,
   onPlanModeChange,
   onOpenPlugins,
-  contextUsage
+  oauthUsage,
+  model = "",
+  effort = "",
+  onModelEffortChange,
+  extraModels,
+  globalDefault,
+  sessionPrefs
 }: Props) {
   const [text, setText] = useState("")
   const [images, setImages] = useState<Thumb[]>([])
   const [textFiles, setTextFiles] = useState<TextAttachment[]>([])
   const [dragOver, setDragOver] = useState(false)
+  const [plusOpen, setPlusOpen] = useState(false)
+  const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([])
   const ref = useRef<HTMLTextAreaElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [trigger, setTrigger] = useState<TriggerInfo | null>(null)
@@ -336,6 +349,14 @@ export function Composer({
       requestAnimationFrame(() => ref.current?.focus())
     }
   }, [externalText, onExternalTextConsumed])
+
+  // 打开 + 菜单时再拉一次已安装插件，避免 GUI 启动时阻塞
+  useEffect(() => {
+    if (!plusOpen) return
+    listInstalledPlugins()
+      .then(setInstalledPlugins)
+      .catch(() => setInstalledPlugins([]))
+  }, [plusOpen])
 
   const send = () => {
     const t = text.trim()
@@ -562,7 +583,7 @@ export function Composer({
           />
 
           <div className="mt-3 flex items-center justify-between gap-3">
-            <DropdownMenu>
+            <DropdownMenu open={plusOpen} onOpenChange={setPlusOpen}>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
@@ -612,19 +633,79 @@ export function Composer({
                   </span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="h-10 rounded-xl"
-                  onSelect={() => onOpenPlugins?.()}
-                >
-                  <Blocks className="size-4" />
-                  <span className="flex-1">插件</span>
-                  <ChevronRight className="size-4 text-muted-foreground" />
-                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="h-10 rounded-xl">
+                    <Blocks className="size-4" />
+                    <span className="flex-1">插件</span>
+                    {installedPlugins.length > 0 && (
+                      <span className="text-[10px] text-muted-foreground tabular-nums">
+                        {installedPlugins.length}
+                      </span>
+                    )}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className="w-60 rounded-xl p-1"
+                    sideOffset={6}
+                  >
+                    <div className="px-2 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
+                      {installedPlugins.length > 0
+                        ? `${installedPlugins.length} 个已安装插件`
+                        : "未安装插件"}
+                    </div>
+                    {installedPlugins.length === 0 ? (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">
+                        点击「管理插件」浏览 Marketplace
+                      </div>
+                    ) : (
+                      <div className="max-h-72 overflow-y-auto">
+                        {installedPlugins.map((p) => (
+                          <DropdownMenuItem
+                            key={`${p.id}-${p.scope}-${p.project_path ?? ""}`}
+                            className="h-9 rounded-lg"
+                            onSelect={(e) => {
+                              e.preventDefault()
+                              onOpenPlugins?.()
+                            }}
+                          >
+                            <Package className="size-4 text-muted-foreground" />
+                            <span className="flex-1 truncate">{p.name}</span>
+                            <span className="text-[10px] text-muted-foreground">
+                              {p.scope === "user"
+                                ? ""
+                                : p.scope === "project"
+                                  ? "项目"
+                                  : "本地"}
+                            </span>
+                          </DropdownMenuItem>
+                        ))}
+                      </div>
+                    )}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="h-9 rounded-lg"
+                      onSelect={() => onOpenPlugins?.()}
+                    >
+                      <SettingsIcon className="size-4" />
+                      <span>管理插件</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
               </DropdownMenuContent>
             </DropdownMenu>
 
             <div className="flex items-center gap-1">
-              <ContextUsageIndicator usage={contextUsage ?? null} />
+              {onModelEffortChange && (
+                <ModelEffortPicker
+                  model={model}
+                  effort={effort}
+                  onChange={onModelEffortChange}
+                  extraModels={extraModels}
+                  disabled={disabled}
+                  globalDefault={globalDefault}
+                  sessionPrefs={sessionPrefs}
+                />
+              )}
+              <PlanUsageIndicator usage={oauthUsage ?? null} />
               {streaming && (
                 <Button
                   onClick={() => onStop()}
@@ -633,7 +714,7 @@ export function Composer({
                   disabled={disabled}
                   aria-label="中断当前回合"
                   title="中断当前回合 (Esc)"
-                  className="rounded-full"
+                  className="size-8 rounded-lg"
                 >
                   <Square fill="currentColor" className="size-3" />
                 </Button>
@@ -645,12 +726,12 @@ export function Composer({
                 size="icon"
                 aria-label={streaming ? "排队发送" : "发送"}
                 title={streaming ? "排队发送" : "发送"}
-                className="rounded-full"
+                className="size-8 rounded-lg shadow-sm"
               >
                 {streaming ? (
                   <ListPlus className="size-4" />
                 ) : (
-                  <ArrowUp className="size-5" />
+                  <ArrowUp className="size-4" />
                 )}
               </Button>
             </div>
@@ -726,82 +807,115 @@ function AttachmentChip({
   )
 }
 
-function ContextUsageIndicator({ usage }: { usage: ContextUsage | null }) {
-  const percent = usage?.percent
-  const used = usage?.usedTokens ?? 0
-  const total = usage?.contextWindow
-  const label =
-    usage && total
-      ? `${percent ?? 0}% 上下文`
-      : usage
-        ? `${formatTokens(used)} tokens`
-        : "暂无上下文数据"
-  const progress =
-    typeof percent === "number" ? Math.max(0, Math.min(100, percent)) : 0
+function PlanUsageIndicator({ usage }: { usage: OauthUsage | null }) {
+  // 仅 Anthropic OAuth 登录用户能拿到 plan usage；第三方 API / 未登录返回 null。
+  // 该控件的存在本身="官方账号已登录"。
+  if (!usage) return null
+  const percent = fiveHourPercent(usage)
+  if (percent === null) return null
+
+  const fiveHour = usage.five_hour
+  const sevenDay = usage.seven_day
+  const sevenDayOpus = usage.seven_day_opus ?? undefined
+  const sevenDaySonnet = usage.seven_day_sonnet ?? undefined
+
+  const fmtReset = (resetsAt: string | undefined) => {
+    const t = shortResets(resetsAt)
+    if (!t) return ""
+    return t === "已重置" ? "已重置" : `${t}后重置`
+  }
+
+  const ringStyle = {
+    background: `conic-gradient(var(--primary) ${percent}%, var(--border) 0)`
+  }
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-full px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-            !usage && "opacity-60"
-          )}
-          aria-label={label}
+          className="inline-flex size-7 items-center justify-center rounded-full transition-opacity hover:opacity-80"
+          aria-label={`Plan ${percent}%`}
         >
           <span
             className="grid size-4 place-items-center rounded-full"
-            style={
-              usage && total
-                ? {
-                    background: `conic-gradient(var(--primary) ${progress}%, var(--border) 0)`
-                  }
-                : undefined
-            }
+            style={ringStyle}
           >
-            <span className="grid size-3 place-items-center rounded-full bg-card">
-              <Gauge className="size-3" />
-            </span>
+            <span className="block size-2.5 rounded-full bg-card" />
           </span>
-          {usage && total && <span>{progress}%</span>}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-64 rounded-xl px-4 py-3">
-        <div className="space-y-1.5 text-center">
-          <div className="text-xs text-muted-foreground">背景信息窗口：</div>
-          {usage ? (
-            <>
-              {total ? (
-                <>
-                  <div className="text-sm font-semibold">
-                    {progress}% 已用
-                  </div>
-                  <div className="text-xs">
-                    已用 {formatTokens(used)} 标记，共 {formatTokens(total)}
-                  </div>
-                </>
-              ) : (
-                <div className="text-xs">
-                  已用 {formatTokens(used)} 标记
-                </div>
-              )}
-              <div className="pt-1 text-xs font-semibold">
-                Claude 会在需要时自动压缩背景信息
-              </div>
-              {usage.model && (
-                <div className="truncate pt-1 font-mono text-[10px] text-muted-foreground">
-                  {usage.model}
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="text-xs text-muted-foreground">
-              首轮回复结束后显示上下文使用量。
-            </div>
+      <TooltipContent
+        side="top"
+        align="end"
+        sideOffset={8}
+        collisionPadding={12}
+        className="w-72 max-w-[calc(100vw-24px)] rounded-xl px-4 py-3"
+      >
+        <div className="space-y-2 text-left">
+          <div className="text-xs font-medium text-muted-foreground">
+            计划用量
+          </div>
+          {fiveHour && (
+            <UsageRow
+              label="5 小时限额"
+              window={fiveHour}
+              suffix={fmtReset(fiveHour.resets_at)}
+            />
+          )}
+          {sevenDay && (
+            <UsageRow
+              label="每周 · 全部模型"
+              window={sevenDay}
+              suffix={fmtReset(sevenDay.resets_at)}
+            />
+          )}
+          {sevenDaySonnet && (
+            <UsageRow
+              label="每周 · Sonnet"
+              window={sevenDaySonnet}
+              suffix={fmtReset(sevenDaySonnet.resets_at)}
+            />
+          )}
+          {sevenDayOpus && (
+            <UsageRow
+              label="每周 · 仅 Opus"
+              window={sevenDayOpus}
+              suffix={fmtReset(sevenDayOpus.resets_at)}
+            />
           )}
         </div>
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+function UsageRow({
+  label,
+  window: w,
+  suffix
+}: {
+  label: string
+  window: OauthUsageWindow
+  suffix?: string
+}) {
+  const pct = Math.max(0, Math.min(100, Math.round(w.utilization)))
+  const tone =
+    pct >= 90 ? "bg-destructive" : pct >= 60 ? "bg-warn" : "bg-primary"
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="truncate">{label}</span>
+        <span className="shrink-0 tabular-nums text-muted-foreground">
+          {pct}%{suffix ? ` · ${suffix}` : ""}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn("h-full transition-[width]", tone)}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
   )
 }

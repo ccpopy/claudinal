@@ -12,12 +12,12 @@ import {
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
-import { cn } from "@/lib/utils"
+import { cn, formatPathForDisplay } from "@/lib/utils"
 import {
   claudeMdPath,
+  openExternal,
   openPath,
   readClaudeMd,
   writeClaudeMd,
@@ -46,28 +46,27 @@ const SCOPES: ScopeDef[] = [
   {
     id: "global",
     label: "全局",
-    hint: "~/.claude/CLAUDE.md，对所有项目生效",
+    hint: "对所有项目生效",
     needsCwd: false,
     icon: Folder
   },
   {
     id: "project",
     label: "项目",
-    hint: "<cwd>/CLAUDE.md，会被 git 跟踪，团队共享",
+    hint: "随项目入库，团队共享",
     needsCwd: true,
     icon: FileText
   },
   {
     id: "project-local",
     label: "项目（本地）",
-    hint: "<cwd>/.claude/CLAUDE.local.md，应被 git 忽略，仅本机生效",
+    hint: "仅本机生效，应加入 .gitignore",
     needsCwd: true,
     icon: FolderLock
   }
 ]
 
-const DOC_URL =
-  "https://docs.claude.com/en/docs/claude-code/memory"
+const DOC_URL = "https://code.claude.com/docs/en/memory"
 
 // 兜底常用 slash，避免设置页第一次打开时空白
 const FALLBACK_SLASH = [
@@ -192,26 +191,32 @@ export function Personalization({ cwd }: Props) {
             个性化
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            通过 CLAUDE.md 给 Claude 长期上下文，并把高频斜杠命令置顶到 Composer。
+            自定义 CLAUDE.md 与 Composer 的高频命令。
           </p>
         </div>
-        <a
-          href={DOC_URL}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-        >
-          <ExternalLink className="size-3" />
-          了解 CLAUDE.md
-        </a>
+        <div className="flex flex-col gap-2 mt-6 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              openExternal(DOC_URL).catch((e) => toast.error(String(e)))
+            }
+          >
+            <ExternalLink className="size-3.5" />
+            了解 CLAUDE.md
+          </Button>
+        </div>
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
         <div className="px-8 pb-8 w-full space-y-8">
           {/* —— CLAUDE.md 编辑 —— */}
-          <section className="space-y-3">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              自定义指令（CLAUDE.md）
+          <section className="space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold">自定义指令</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                通过 CLAUDE.md 给 Claude 长期上下文。
+              </p>
             </div>
 
             <div className="flex items-center gap-1 border-b border-border">
@@ -223,6 +228,7 @@ export function Personalization({ cwd }: Props) {
                     key={s.id}
                     type="button"
                     onClick={() => setScope(s.id)}
+                    title={s.hint}
                     className={cn(
                       "px-3 py-2 text-sm flex items-center gap-1.5 border-b-2 transition-colors -mb-px cursor-pointer",
                       active
@@ -237,37 +243,31 @@ export function Personalization({ cwd }: Props) {
               })}
             </div>
 
-            <div className="text-xs text-muted-foreground">
-              {cur.hint}
-            </div>
-
             {disabled ? (
               <div className="rounded-md border border-dashed bg-muted/40 p-6 text-sm text-muted-foreground">
                 请先在侧边栏选择一个项目，才能编辑项目级 CLAUDE.md。
               </div>
             ) : (
               <>
-                <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <div className="flex items-center justify-between gap-3">
                   <code
-                    className="font-mono truncate"
-                    title={filePath}
+                    className="font-mono text-xs text-muted-foreground truncate"
+                    title={formatPathForDisplay(filePath)}
                   >
-                    {filePath || "（路径解析中…）"}
+                    {formatPathForDisplay(filePath) || "（路径解析中…）"}
                   </code>
-                  {filePath && (
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1 hover:text-foreground"
-                      onClick={() =>
-                        openPath(filePath).catch((e) =>
-                          toast.error(String(e))
-                        )
-                      }
-                    >
-                      <ExternalLink className="size-3" />
-                      在系统中打开
-                    </button>
-                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      filePath &&
+                      openPath(filePath).catch((e) => toast.error(String(e)))
+                    }
+                    disabled={!filePath}
+                  >
+                    <ExternalLink className="size-3.5" />
+                    在系统中打开
+                  </Button>
                 </div>
 
                 <Textarea
@@ -311,24 +311,25 @@ export function Personalization({ cwd }: Props) {
           </section>
 
           {/* —— Pinned slash —— */}
-          <section className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                高频命令置顶
+          <section className="space-y-4">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold">高频命令置顶</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  勾选的命令会在 Composer 输入 <code className="font-mono">/</code> 时排在最前。
+                </p>
               </div>
               {settings.pinnedSlash.length > 0 && (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={clearPins}
-                  className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                  className="text-muted-foreground"
                 >
-                  <PinOff className="size-3" />
+                  <PinOff className="size-3.5" />
                   全部取消
-                </button>
+                </Button>
               )}
-            </div>
-            <div className="text-xs text-muted-foreground">
-              勾选的斜杠命令会在 Composer 输入 <code className="font-mono">/</code> 时排在最前。
             </div>
 
             {settings.pinnedSlash.length > 0 && (
@@ -348,7 +349,6 @@ export function Personalization({ cwd }: Props) {
               </div>
             )}
 
-            <Label className="text-xs text-muted-foreground">候选命令</Label>
             <Input
               type="text"
               value={slashSearch}

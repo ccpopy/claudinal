@@ -8,6 +8,7 @@ import {
   MessageSquarePlus,
   Pin,
   PinOff,
+  Puzzle,
   Search,
   Settings,
   Trash2
@@ -40,12 +41,14 @@ interface Props {
   selectedSessionId: string | null
   streamingProjectId: string | null
   streamingSessionId: string | null
+  inPlugins?: boolean
   onSelectProject: (p: Project) => void
   onSelectSession: (p: Project, s: SessionMeta) => void
   onAdd: () => void
   onRemove: (id: string) => void
   onNewConversation: () => void
   onOpenSettings: () => void
+  onOpenPlugins: () => void
   refreshKey?: number
 }
 
@@ -66,18 +69,32 @@ function fmtRelative(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString()
 }
 
+function fmtCompactRelative(ts: number): string {
+  if (!ts) return ""
+  const now = Math.floor(Date.now() / 1000)
+  const diff = now - ts
+  if (diff < 60) return "刚刚"
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分`
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时`
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天`
+  const d = new Date(ts * 1000)
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
 export function Sidebar({
   projects,
   selectedProjectId,
   selectedSessionId,
   streamingProjectId,
   streamingSessionId,
+  inPlugins = false,
   onSelectProject,
   onSelectSession,
   onAdd,
   onRemove,
   onNewConversation,
   onOpenSettings,
+  onOpenPlugins,
   refreshKey = 0
 }: Props) {
   const [filter, setFilter] = useState("")
@@ -236,6 +253,17 @@ export function Sidebar({
             className="w-full h-8 pl-8 pr-2 rounded-md text-sm bg-transparent border border-transparent hover:border-sidebar-border focus:border-sidebar-border focus:bg-card outline-none transition-colors"
           />
         </div>
+        <Button
+          variant="ghost"
+          className={cn(
+            "justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent",
+            inPlugins && "bg-sidebar-accent text-sidebar-foreground"
+          )}
+          onClick={onOpenPlugins}
+        >
+          <Puzzle />
+          插件
+        </Button>
       </div>
 
       <ScrollArea className="flex-1 min-h-0 min-w-0 mt-2">
@@ -479,60 +507,54 @@ function SessionRow({
     session.ai_title ||
     session.first_user_text ||
     session.id.slice(0, 8)
+  const compactTime = fmtCompactRelative(session.modified_ts)
+  const fullTime = fmtRelative(session.modified_ts)
   return (
     <div
       onClick={onSelect}
       className={cn(
-        "group/session relative flex items-center gap-1.5 py-1 rounded-md text-xs cursor-pointer transition-colors min-w-0 max-w-full overflow-hidden",
-        indented ? "pl-6 pr-1" : "pl-2 pr-1",
+        "group/session relative flex h-7 items-center gap-1.5 rounded-md text-xs cursor-pointer transition-colors min-w-0 max-w-full overflow-hidden",
+        indented ? "pl-7 pr-2" : "pl-2 pr-2",
         active
-          ? "bg-primary/15 text-primary"
+          ? "bg-sidebar-accent text-sidebar-foreground"
           : "hover:bg-sidebar-accent/60 text-sidebar-foreground/90"
       )}
-      title={`${title}\n${project.name} · ${session.id}`}
+      title={`${title}\n${project.name} · ${session.msg_count} msg · ${fullTime}\n${session.id}`}
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onTogglePin()
-            }}
-            className={cn(
-              "size-5 inline-flex items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground shrink-0",
-              pinned ? "opacity-100" : "opacity-0 group-hover/session:opacity-100"
-            )}
-            aria-label={pinned ? "取消置顶" : "置顶会话"}
-          >
-            {pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="right">
-          {pinned ? "取消置顶" : "置顶会话"}
-        </TooltipContent>
-      </Tooltip>
-      <div className="flex-1 min-w-0 max-w-full overflow-hidden flex flex-col gap-1">
-        <div className="max-w-full truncate leading-tight">{title}</div>
-        <div className="flex items-center justify-between gap-2 text-[10px] text-sidebar-muted opacity-80">
-          <span className="truncate">{session.msg_count} msg</span>
-          <span className="shrink-0">{fmtRelative(session.modified_ts)}</span>
-        </div>
-      </div>
-      <div className="relative size-5 shrink-0">
-        {streaming && (
-          <span
-            aria-label="运行中"
-            className="absolute inset-0 inline-flex items-center justify-center text-sidebar-muted group-hover/session:opacity-0 transition-opacity"
-          >
-            <Loader2 className="size-3 animate-spin" />
-          </span>
-        )}
+      {streaming && (
+        <Loader2
+          aria-label="运行中"
+          className="size-3 shrink-0 animate-spin text-sidebar-muted"
+        />
+      )}
+      <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
+      <span className="ml-1 w-12 shrink-0 text-right text-[11px] tabular-nums text-sidebar-muted transition-opacity group-hover/session:opacity-0">
+        {compactTime}
+      </span>
+      <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/session:opacity-100">
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
-              className="absolute inset-0 inline-flex items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground opacity-0 group-hover/session:opacity-100"
+              onClick={(e) => {
+                e.stopPropagation()
+                onTogglePin()
+              }}
+              className="inline-flex size-5 items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
+              aria-label={pinned ? "取消置顶" : "置顶会话"}
+            >
+              {pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {pinned ? "取消置顶" : "置顶会话"}
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex size-5 items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
               aria-label="复制会话 ID"
               onClick={(e) => {
                 e.stopPropagation()

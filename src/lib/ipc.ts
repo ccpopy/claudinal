@@ -163,6 +163,10 @@ export async function openPath(path: string): Promise<void> {
   return invoke("open_path", { path })
 }
 
+export async function openExternal(url: string): Promise<void> {
+  return invoke("open_external", { url })
+}
+
 export async function writeTextFile(path: string, contents: string): Promise<void> {
   return invoke("write_text_file", { path, contents })
 }

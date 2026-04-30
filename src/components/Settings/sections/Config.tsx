@@ -13,7 +13,7 @@ import {
   readClaudeSettings,
   writeClaudeSettings
 } from "@/lib/ipc"
-import { ConfigExportDialog } from "./ConfigExportDialog"
+import { ConfigExportPage } from "./ConfigExportDialog"
 
 // 官方 settings.json 字段（来自 https://code.claude.com/docs/en/settings）
 // effortLevel 取值：low / medium / high / xhigh / max / auto
@@ -42,7 +42,7 @@ export function Config() {
   const [filePath, setFilePath] = useState<string>("")
   const [loading, setLoading] = useState(false)
   const [dirty, setDirty] = useState(false)
-  const [exportOpen, setExportOpen] = useState(false)
+  const [showExport, setShowExport] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -76,6 +76,15 @@ export function Config() {
     } catch (e) {
       toast.error(`保存失败: ${String(e)}`)
     }
+  }
+
+  if (showExport) {
+    return (
+      <ConfigExportPage
+        settings={cliSettings as Record<string, unknown>}
+        onBack={() => setShowExport(false)}
+      />
+    )
   }
 
   return (
@@ -115,7 +124,7 @@ export function Config() {
               <Input
                 value={(cliSettings.model as string) ?? ""}
                 onChange={(e) => update({ model: e.target.value })}
-                placeholder="如 claude-sonnet-4-6 / opus[1m]"
+                placeholder="如 sonnet / opusplan / 完整模型名"
                 className="font-mono text-xs flex-1"
                 disabled={loading}
               />
@@ -149,7 +158,7 @@ export function Config() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setExportOpen(true)}
+                onClick={() => setShowExport(true)}
                 disabled={loading}
               >
                 <Download className="size-3.5" />
@@ -167,12 +176,6 @@ export function Config() {
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
       </div>
-
-      <ConfigExportDialog
-        open={exportOpen}
-        onOpenChange={setExportOpen}
-        settings={cliSettings as Record<string, unknown>}
-      />
     </div>
   )
 }

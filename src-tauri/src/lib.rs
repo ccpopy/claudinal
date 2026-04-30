@@ -2,6 +2,7 @@ mod api_proxy;
 mod commands;
 mod error;
 mod permission_mcp;
+mod plugins;
 mod proc;
 mod session;
 
@@ -58,7 +59,12 @@ pub fn run() {
             commands::scan_global_usage,
             commands::scan_activity_heatmap,
             commands::open_path,
+            commands::open_external,
             commands::write_text_file,
+            plugins::list_installed_plugins,
+            plugins::list_marketplaces,
+            plugins::list_skills,
+            plugins::run_plugin_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

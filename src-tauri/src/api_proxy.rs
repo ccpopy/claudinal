@@ -13,6 +13,9 @@ pub struct ProxyConfig {
     pub auth_field: String,
     pub use_full_url: bool,
     pub main_model: String,
+    pub haiku_model: String,
+    pub sonnet_model: String,
+    pub opus_model: String,
 }
 
 pub async fn start(config: ProxyConfig) -> Result<String> {
@@ -97,7 +100,7 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
     }
 
     if method.eq_ignore_ascii_case("GET") && is_models_path(path) {
-        let bytes = models_response();
+        let bytes = models_response(&config);
         write_response(
             &mut stream,
             200,
@@ -108,8 +111,11 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
         return Ok(());
     }
 
-    if content_type.to_ascii_lowercase().contains("application/json") {
-        body = rewrite_model(&body, &config);
+    if content_type
+        .to_ascii_lowercase()
+        .contains("application/json")
+    {
+        body = rewrite_model(&body, &config)?;
     }
 
     let method = reqwest::Method::from_bytes(method.as_bytes())
@@ -210,39 +216,92 @@ fn is_models_path(path: &str) -> bool {
     path == "/models" || path == "/v1/models"
 }
 
-fn models_response() -> Vec<u8> {
+fn models_response(config: &ProxyConfig) -> Vec<u8> {
+    let mut ids = configured_models(config);
+    ids.sort();
+    ids.dedup();
+    let data: Vec<Value> = ids
+        .into_iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "type": "model",
+                "display_name": id
+            })
+        })
+        .collect();
     serde_json::json!({
         "object": "list",
-        "data": [
-            {"id": "claude-sonnet-4-6", "type": "model", "display_name": "Sonnet via Claudinal"},
-            {"id": "claude-opus-4-7", "type": "model", "display_name": "Opus via Claudinal"},
-            {"id": "claude-haiku-4-5-20251001", "type": "model", "display_name": "Haiku via Claudinal"}
-        ]
+        "data": data
     })
     .to_string()
     .into_bytes()
 }
 
-fn rewrite_model(body: &[u8], config: &ProxyConfig) -> Vec<u8> {
-    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
-        return body.to_vec();
-    };
-    let Some(obj) = value.as_object_mut() else {
-        return body.to_vec();
-    };
+fn rewrite_model(body: &[u8], config: &ProxyConfig) -> Result<Vec<u8>> {
+    let mut value = serde_json::from_slice::<Value>(body)
+        .map_err(|e| Error::Other(format!("proxy json parse: {e}")))?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| Error::Other("proxy json body must be an object".into()))?;
     let source = obj.get("model").and_then(Value::as_str).unwrap_or_default();
     let target = mapped_model(source, config);
     if !target.is_empty() {
         obj.insert("model".into(), Value::String(target));
     }
-    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
+    serde_json::to_vec(&value).map_err(Error::from)
 }
 
 fn mapped_model(source: &str, config: &ProxyConfig) -> String {
+    let source = source.trim();
+    if source.is_empty() {
+        return config.main_model.trim().to_string();
+    }
+    if configured_models(config)
+        .iter()
+        .any(|model| model.as_str() == source)
+    {
+        return source.to_string();
+    }
+    if !looks_like_claude_model(source) {
+        return source.to_string();
+    }
+    let source_lower = source.to_ascii_lowercase();
+    if source_lower.contains("haiku") && !config.haiku_model.trim().is_empty() {
+        return config.haiku_model.trim().to_string();
+    }
+    if source_lower.contains("opus") && !config.opus_model.trim().is_empty() {
+        return config.opus_model.trim().to_string();
+    }
+    if source_lower.contains("sonnet") && !config.sonnet_model.trim().is_empty() {
+        return config.sonnet_model.trim().to_string();
+    }
     if !config.main_model.trim().is_empty() {
         return config.main_model.trim().to_string();
     }
     source.to_string()
+}
+
+fn configured_models(config: &ProxyConfig) -> Vec<String> {
+    [
+        config.main_model.as_str(),
+        config.haiku_model.as_str(),
+        config.sonnet_model.as_str(),
+        config.opus_model.as_str(),
+    ]
+    .into_iter()
+    .map(str::trim)
+    .filter(|model| !model.is_empty())
+    .map(str::to_string)
+    .collect()
+}
+
+fn looks_like_claude_model(model: &str) -> bool {
+    matches!(
+        model,
+        "default" | "best" | "sonnet" | "opus" | "haiku" | "opusplan" | "sonnet[1m]" | "opus[1m]"
+    ) || model.starts_with("claude-")
+        || model.starts_with("anthropic.")
 }
 
 fn forward_url(target_url: &str, incoming_path: &str, use_full_url: bool) -> Result<String> {

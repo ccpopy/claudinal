@@ -1,5 +1,6 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react"
 import {
+  ArrowLeft,
   Folder,
   FolderPlus,
   Plus,
@@ -32,7 +33,7 @@ import {
   type ProjectEnvConfig
 } from "@/lib/projectEnv"
 import { listProjects, type Project } from "@/lib/projects"
-import { cn } from "@/lib/utils"
+import { cn, formatPathForDisplay } from "@/lib/utils"
 
 interface Props {
   cwd?: string | null
@@ -163,17 +164,25 @@ export function Environment({ cwd }: Props) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 px-8 pb-4 pt-8">
         {editor ? (
-          <Breadcrumb>
-            <BreadcrumbItem onClick={() => setEditor(null)}>← 返回</BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem onClick={() => setEditor(null)}>环境</BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem onClick={() => setEditor(null)}>
-              {editor.project.name}
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem current>编辑</BreadcrumbItem>
-          </Breadcrumb>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <button
+              type="button"
+              onClick={() => setEditor(null)}
+              className="inline-flex items-center gap-1 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <ArrowLeft className="size-3.5" />
+              返回
+            </button>
+            <Breadcrumb>
+              <BreadcrumbItem onClick={() => setEditor(null)}>环境</BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem onClick={() => setEditor(null)}>
+                {editor.project.name}
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem current>编辑</BreadcrumbItem>
+            </Breadcrumb>
+          </div>
         ) : null}
         <div className="mt-4 flex items-start justify-between gap-3">
           <div>
@@ -297,7 +306,7 @@ function ProjectEnvironmentCard({
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-semibold">{label}</span>
           {current && (
-            <Badge variant="success" className="font-sans">
+            <Badge variant="primary" className="font-sans">
               当前项目
             </Badge>
           )}
@@ -312,7 +321,7 @@ function ProjectEnvironmentCard({
           )}
         </div>
         <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
-          {project.cwd}
+          {formatPathForDisplay(project.cwd)}
         </div>
       </button>
       <Button
@@ -357,13 +366,17 @@ function EditorView({
               本地环境
             </div>
             <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,0.38fr)_minmax(0,1fr)]">
-              <div className="rounded-lg border bg-background p-4">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <Folder className="size-4 text-muted-foreground" />
-                  {editor.project.name}
+              <div className="flex items-center gap-3 rounded-lg border bg-background p-3">
+                <div className="grid size-10 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
+                  <Folder className="size-4" />
                 </div>
-                <div className="mt-2 break-all font-mono text-xs text-muted-foreground">
-                  {editor.project.cwd}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold">
+                    {editor.project.name}
+                  </div>
+                  <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
+                    {formatPathForDisplay(editor.project.cwd)}
+                  </div>
                 </div>
               </div>
               <div className="space-y-2">

@@ -145,9 +145,9 @@ export function SettingsWorkspace({
   }, [initialSection])
 
   return (
-    <div className="flex h-full min-h-0 flex-1 bg-sidebar">
+    <div className="flex h-full min-h-0 flex-1 gap-1.5 bg-sidebar p-1.5 pt-1.5">
       {sidebarVisible && (
-        <aside className="w-[374px] min-w-[260px] max-w-[32vw] shrink-0 bg-sidebar text-sidebar-foreground">
+        <aside className="w-64 shrink-0 overflow-hidden rounded-lg bg-sidebar text-sidebar-foreground">
           <ScrollArea className="h-full">
             <nav className="flex flex-col gap-0.5 px-2 py-3">
               {SECTIONS.map((s) => {
@@ -174,7 +174,7 @@ export function SettingsWorkspace({
           </ScrollArea>
         </aside>
       )}
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-xl border-l border-t bg-background">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background">
         <Cur cwd={currentCwd ?? null} />
       </main>
     </div>

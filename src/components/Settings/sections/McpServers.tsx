@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
+  ArrowLeft,
   ExternalLink,
   Loader2,
   Plus,
@@ -454,15 +455,23 @@ export function McpServers({ cwd }: Props) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 px-8 pb-4 pt-8">
         {editor ? (
-          <Breadcrumb>
-            <BreadcrumbItem onClick={() => setEditor(null)}>← 返回</BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem onClick={() => setEditor(null)}>
-              MCP 服务器
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem current>{editor.name || "新服务器"}</BreadcrumbItem>
-          </Breadcrumb>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <button
+              type="button"
+              onClick={() => setEditor(null)}
+              className="inline-flex items-center gap-1 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <ArrowLeft className="size-3.5" />
+              返回
+            </button>
+            <Breadcrumb>
+              <BreadcrumbItem onClick={() => setEditor(null)}>
+                MCP 服务器
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem current>{editor.name || "新服务器"}</BreadcrumbItem>
+            </Breadcrumb>
+          </div>
         ) : null}
         <div className="mt-4 flex items-start justify-between gap-3">
           <div>
@@ -868,7 +877,7 @@ function StdioEditor({
         <Input
           value={editor.cwd}
           onChange={(e) => onUpdate({ cwd: e.target.value })}
-          placeholder="D:\\project\\example"
+          placeholder="/path/to/project"
           className="font-mono text-xs"
           disabled={disabled}
         />

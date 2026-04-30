@@ -38,7 +38,17 @@
       "Bash(tasklist)",
       "Bash(pkill -f 'codex exec')",
       "Bash(pkill -f codex.js)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(npx -y tsc -p tsconfig.json --noEmit)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(npx vite *)",
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(xargs -I {} sh -c 'echo \"==FILE: {}==\"; head -100 \"{}\"')",
+      "Bash(pnpm dlx *)",
+      "Bash(pnpm tsc *)",
+      "Bash(pnpm vite *)"
     ]
   }
 }

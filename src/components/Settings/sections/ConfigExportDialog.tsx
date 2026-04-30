@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
-import { Clipboard, Download, EyeOff } from "lucide-react"
+import { ArrowLeft, Clipboard, Download, EyeOff } from "lucide-react"
 import { save as saveDialog } from "@tauri-apps/plugin-dialog"
 import { toast } from "sonner"
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle
-} from "@/components/ui/dialog"
+import { Breadcrumb, BreadcrumbItem, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -15,9 +11,8 @@ import { Switch } from "@/components/ui/switch"
 import { writeTextFile } from "@/lib/ipc"
 
 interface Props {
-  open: boolean
-  onOpenChange: (v: boolean) => void
   settings: Record<string, unknown>
+  onBack: () => void
 }
 
 interface GroupDef {
@@ -179,7 +174,7 @@ function previewOf(v: unknown): string {
   }
 }
 
-export function ConfigExportDialog({ open, onOpenChange, settings }: Props) {
+export function ConfigExportPage({ settings, onBack }: Props) {
   const settingsKeys = useMemo(
     () => Object.keys(settings).sort(),
     [settings]
@@ -199,9 +194,8 @@ export function ConfigExportDialog({ open, onOpenChange, settings }: Props) {
   const [envSelected, setEnvSelected] = useState<Record<string, boolean>>({})
   const [maskSensitive, setMaskSensitive] = useState(true)
 
-  // 每次打开重新按规则初始化默认勾选
+  // 进入导出页时按规则初始化默认勾选
   useEffect(() => {
-    if (!open) return
     const next: Record<string, boolean> = {}
     for (const k of settingsKeys) {
       next[k] = !SENSITIVE_TOP_KEYS.has(k)
@@ -213,7 +207,7 @@ export function ConfigExportDialog({ open, onOpenChange, settings }: Props) {
     }
     setEnvSelected(envNext)
     setMaskSensitive(true)
-  }, [open, settingsKeys, envKeys])
+  }, [settingsKeys, envKeys])
 
   // 已知字段按分组归类，未识别的统一放「其他」分组
   const groupedKeys = useMemo(() => {
@@ -297,13 +291,28 @@ export function ConfigExportDialog({ open, onOpenChange, settings }: Props) {
     Object.values(envSelected).filter(Boolean).length
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl w-[calc(100vw-2rem)] sm:w-[90vw] h-[80vh] p-0 gap-0 grid grid-rows-[auto_1fr_auto] overflow-hidden">
-        <div className="min-w-0 px-6 pt-6 pb-3 border-b">
-          <DialogTitle className="text-lg font-semibold flex items-center gap-2">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 px-8 pb-4 pt-8">
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-1 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            返回
+          </button>
+          <Breadcrumb>
+            <BreadcrumbItem onClick={onBack}>配置</BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem current>导出配置</BreadcrumbItem>
+          </Breadcrumb>
+        </div>
+        <div className="mt-4 min-w-0">
+          <h2 className="text-xl font-semibold flex items-center gap-2">
             <Download className="size-4" />
             导出配置
-          </DialogTitle>
+          </h2>
           <p className="text-xs text-muted-foreground mt-1">
             勾选要分享的字段。敏感字段（base url / token / 密钥助手）默认脱敏处理。
           </p>
@@ -326,77 +335,74 @@ export function ConfigExportDialog({ open, onOpenChange, settings }: Props) {
             </label>
           </div>
         </div>
+      </div>
 
-        <ScrollArea className="min-h-0 min-w-0">
-          <div className="min-w-0 px-6 py-4 space-y-4">
-            {groupedKeys.length === 0 && (
-              <div className="text-xs text-muted-foreground text-center py-8">
-                settings.json 中没有任何字段。
+      <ScrollArea className="min-h-0 min-w-0 flex-1">
+        <div className="min-w-0 px-8 pb-6 space-y-4">
+          {groupedKeys.length === 0 && (
+            <div className="text-xs text-muted-foreground text-center py-8">
+              settings.json 中没有任何字段。
+            </div>
+          )}
+          {groupedKeys.map((g) => (
+            <section
+              key={g.id}
+              className="min-w-0 overflow-hidden rounded-lg border bg-card p-4 space-y-3"
+            >
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                {g.label}
               </div>
-            )}
-            {groupedKeys.map((g) => (
-              <section
-                key={g.id}
-                className="min-w-0 overflow-hidden rounded-lg border bg-card p-4 space-y-3"
-              >
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                  {g.label}
-                </div>
-                <div className="space-y-2">
-                  {g.keys.map((k) =>
-                    k === "env" && envObj ? (
-                      <EnvBlock
-                        key={k}
-                        envObj={envObj}
-                        envKeys={envKeys}
-                        envSelected={envSelected}
-                        setEnvSelected={setEnvSelected}
-                        topSelected={!!selected.env}
-                        setTopSelected={(v) =>
-                          setSelected((s) => ({ ...s, env: v }))
-                        }
-                        maskSensitive={maskSensitive}
-                      />
-                    ) : (
-                      <FieldRow
-                        key={k}
-                        name={k}
-                        value={(settings as Record<string, unknown>)[k]}
-                        checked={!!selected[k]}
-                        onCheckedChange={(v) =>
-                          setSelected((s) => ({ ...s, [k]: v }))
-                        }
-                        sensitive={MASK_TOP_KEYS.has(k)}
-                        masked={maskSensitive && MASK_TOP_KEYS.has(k)}
-                      />
-                    )
-                  )}
-                </div>
-              </section>
-            ))}
-          </div>
-        </ScrollArea>
-
-        <div className="min-w-0 px-6 py-4 border-t flex items-center justify-between gap-2 flex-wrap">
-          <span className="text-xs text-muted-foreground">
-            已选 {totalSelected} 项
-          </span>
-          <div className="flex items-center justify-end gap-2 flex-wrap">
-            <Button variant="ghost" onClick={() => onOpenChange(false)}>
-              取消
-            </Button>
-            <Button variant="outline" onClick={copyToClipboard}>
-              <Clipboard className="size-3.5" />
-              复制到剪贴板
-            </Button>
-            <Button onClick={exportToFile}>
-              <Download className="size-3.5" />
-              导出为 JSON
-            </Button>
-          </div>
+              <div className="space-y-2">
+                {g.keys.map((k) =>
+                  k === "env" && envObj ? (
+                    <EnvBlock
+                      key={k}
+                      envObj={envObj}
+                      envKeys={envKeys}
+                      envSelected={envSelected}
+                      setEnvSelected={setEnvSelected}
+                      topSelected={!!selected.env}
+                      setTopSelected={(v) =>
+                        setSelected((s) => ({ ...s, env: v }))
+                      }
+                      maskSensitive={maskSensitive}
+                    />
+                  ) : (
+                    <FieldRow
+                      key={k}
+                      name={k}
+                      value={(settings as Record<string, unknown>)[k]}
+                      checked={!!selected[k]}
+                      onCheckedChange={(v) =>
+                        setSelected((s) => ({ ...s, [k]: v }))
+                      }
+                      sensitive={MASK_TOP_KEYS.has(k)}
+                      masked={maskSensitive && MASK_TOP_KEYS.has(k)}
+                    />
+                  )
+                )}
+              </div>
+            </section>
+          ))}
         </div>
-      </DialogContent>
-    </Dialog>
+      </ScrollArea>
+
+      <div className="min-w-0 px-8 py-4 border-t flex items-center justify-between gap-2 flex-wrap">
+        <span className="text-xs text-muted-foreground">
+          已选 {totalSelected} 项
+        </span>
+        <div className="flex items-center justify-end gap-2 flex-wrap">
+          <Button variant="outline" onClick={copyToClipboard}>
+            <Clipboard className="size-3.5" />
+            复制到剪贴板
+          </Button>
+          <Button onClick={exportToFile}>
+            <Download className="size-3.5" />
+            导出为 JSON
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
 

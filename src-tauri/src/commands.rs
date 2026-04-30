@@ -41,16 +41,12 @@ pub async fn spawn_session(
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
     let mut env = env.unwrap_or_default();
-    let mut model = model;
-    let mut env_remove = Vec::new();
+    let env_remove = Vec::new();
     if let Some(proxy_config) = take_proxy_config(&mut env) {
         let local_base_url = start_api_proxy(proxy_config).await?;
         env.insert("ANTHROPIC_BASE_URL".into(), local_base_url);
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
         env.remove("ANTHROPIC_API_KEY");
-        env.remove("ANTHROPIC_MODEL");
-        env_remove.push("ANTHROPIC_MODEL".into());
-        model = None;
     }
     if let Some(model) = model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let is_claude_builtin = model == "default"
@@ -75,7 +71,8 @@ pub async fn spawn_session(
                 });
         }
     }
-    let (permission_prompt_tool, permission_mcp_config) = if permission_mcp_enabled.unwrap_or(false) {
+    let (permission_prompt_tool, permission_mcp_config) = if permission_mcp_enabled.unwrap_or(false)
+    {
         env.extend(permission_bridge.env(app.clone()).await?);
         let tool = permission_prompt_tool
             .as_deref()
@@ -193,10 +190,7 @@ fn write_runtime_mcp_config_file(config: &Value) -> Result<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| Error::Other(format!("system clock before UNIX_EPOCH: {e}")))?
         .as_millis();
-    let path = dir.join(format!(
-        "mcp-config-{}-{stamp}.json",
-        std::process::id()
-    ));
+    let path = dir.join(format!("mcp-config-{}-{stamp}.json", std::process::id()));
     let text = serde_json::to_string_pretty(config)?;
     std::fs::write(&path, text).map_err(Error::from)?;
     Ok(path.display().to_string())
@@ -212,12 +206,22 @@ fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Opt
         .remove("CLAUDINAL_PROXY_USE_FULL_URL")
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     let main_model = env.remove("CLAUDINAL_PROXY_MAIN_MODEL").unwrap_or_default();
+    let haiku_model = env
+        .remove("CLAUDINAL_PROXY_HAIKU_MODEL")
+        .unwrap_or_default();
+    let sonnet_model = env
+        .remove("CLAUDINAL_PROXY_SONNET_MODEL")
+        .unwrap_or_default();
+    let opus_model = env.remove("CLAUDINAL_PROXY_OPUS_MODEL").unwrap_or_default();
     Some(ProxyConfig {
         target_url,
         api_key,
         auth_field,
         use_full_url,
         main_model,
+        haiku_model,
+        sonnet_model,
+        opus_model,
     })
 }
 
@@ -677,7 +681,11 @@ pub async fn write_text_file(path: String, contents: String) -> Result<()> {
     Ok(())
 }
 
-fn provider_models_url(request_url: &str, use_full_url: bool) -> Result<String> {
+fn provider_models_url(
+    request_url: &str,
+    input_format: &str,
+    use_full_url: bool,
+) -> Result<String> {
     let mut url = request_url.trim().trim_end_matches('/').to_string();
     if url.is_empty() {
         return Err(Error::Other("requestUrl required".into()));
@@ -693,6 +701,9 @@ fn provider_models_url(request_url: &str, use_full_url: bool) -> Result<String> 
         }
     }
     if !url.to_lowercase().ends_with("/models") {
+        if input_format == "anthropic" && !url.to_lowercase().ends_with("/v1") {
+            url.push_str("/v1");
+        }
         url.push_str("/models");
     }
     Ok(url)
@@ -734,9 +745,13 @@ fn extract_provider_models(body: &Value) -> Vec<String> {
             collect_model_ids(item, &mut out);
         }
     }
-    out.sort();
-    out.dedup();
-    out
+    let mut unique = Vec::new();
+    for id in out {
+        if !unique.iter().any(|seen| seen == &id) {
+            unique.push(id);
+        }
+    }
+    unique
 }
 
 #[tauri::command]
@@ -747,7 +762,7 @@ pub async fn fetch_provider_models(
     input_format: String,
     use_full_url: bool,
 ) -> Result<Vec<String>> {
-    let url = provider_models_url(&request_url, use_full_url)?;
+    let url = provider_models_url(&request_url, &input_format, use_full_url)?;
     let token = api_key.trim();
     if token.is_empty() {
         return Err(Error::Other("apiKey required".into()));
@@ -815,6 +830,35 @@ pub async fn open_path(path: String) -> Result<()> {
     {
         std::process::Command::new("xdg-open")
             .arg(&p)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_external(url: String) -> Result<()> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(Error::Other(format!("invalid url: {url}")));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
             .spawn()
             .map_err(Error::from)?;
     }

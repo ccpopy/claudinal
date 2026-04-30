@@ -6,10 +6,10 @@ export type ClaudeModelAlias = "sonnet" | "opus" | "haiku"
 
 export interface ModelMapping {
   mainModel: string
-  thinkingModel: string
   haikuModel: string
   sonnetModel: string
   opusModel: string
+  subagentModel: string
 }
 
 export interface ThirdPartyApiConfig {
@@ -23,6 +23,7 @@ export interface ThirdPartyApiConfig {
   inputFormat: ProviderInputFormat
   authField: ProviderAuthField
   mainAlias: ClaudeModelAlias
+  availableModels: string[]
   models: ModelMapping
 }
 
@@ -37,24 +38,6 @@ export interface ThirdPartyApiStore {
 
 export const OFFICIAL_PROVIDER_ID = "official"
 
-const CLAUDE_MODEL_OVERRIDE_KEYS: Record<ClaudeModelAlias, string[]> = {
-  opus: [
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-opus-4-5-20251101",
-    "claude-opus-4-1-20250805",
-    "claude-opus-4-20250514"
-  ],
-  sonnet: [
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-5-20250929",
-    "claude-sonnet-4-20250514",
-    "claude-3-7-sonnet-20250219"
-  ],
-  haiku: ["claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022"]
-}
-
 export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
   enabled: true,
   providerName: "",
@@ -62,16 +45,17 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
   officialUrl: "",
   apiKey: "",
   requestUrl: "",
-  useFullUrl: true,
+  useFullUrl: false,
   inputFormat: "anthropic",
   authField: "ANTHROPIC_AUTH_TOKEN",
   mainAlias: "sonnet",
+  availableModels: [],
   models: {
     mainModel: "",
-    thinkingModel: "",
     haikuModel: "",
     sonnetModel: "",
-    opusModel: ""
+    opusModel: "",
+    subagentModel: ""
   }
 }
 
@@ -85,6 +69,10 @@ const MANAGED_ENV_KEYS = [
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
   "ANTHROPIC_CUSTOM_MODEL_OPTION",
   "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
   "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
@@ -120,11 +108,28 @@ function cleanString(value: unknown): string {
   return typeof value === "string" ? value : ""
 }
 
+function cleanStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+  return Array.from(new Set(out))
+}
+
 function inferMainAlias(models: Partial<ModelMapping>): ClaudeModelAlias {
   const mainModel = cleanString(models.mainModel).trim()
   if (mainModel && mainModel === cleanString(models.opusModel).trim()) return "opus"
   if (mainModel && mainModel === cleanString(models.haikuModel).trim()) return "haiku"
   return "sonnet"
+}
+
+function hasProviderContent(provider: ThirdPartyApiProvider): boolean {
+  const requestUrl = provider.requestUrl.trim()
+  return Boolean(
+    provider.apiKey.trim() ||
+      (requestUrl && provider.models.mainModel.trim())
+  )
 }
 
 export function normalizeThirdPartyApiConfig(
@@ -142,12 +147,13 @@ export function normalizeThirdPartyApiConfig(
     inputFormat: asInputFormat(raw?.inputFormat),
     authField: asAuthField(raw?.authField),
     mainAlias: asClaudeModelAlias(raw?.mainAlias) ?? inferMainAlias(models),
+    availableModels: cleanStringArray(raw?.availableModels),
     models: {
       mainModel: cleanString(models.mainModel),
-      thinkingModel: cleanString(models.thinkingModel),
       haikuModel: cleanString(models.haikuModel),
       sonnetModel: cleanString(models.sonnetModel),
-      opusModel: cleanString(models.opusModel)
+      opusModel: cleanString(models.opusModel),
+      subagentModel: cleanString(models.subagentModel)
     }
   }
 }
@@ -187,10 +193,16 @@ export function loadThirdPartyApiStore(): ThirdPartyApiStore {
             return !!p && typeof p === "object" && !Array.isArray(p)
           })
           .map((p) => createThirdPartyApiProvider(p))
-        const activeProviderId =
+          .filter(hasProviderContent)
+        const storedActiveId =
           typeof obj.activeProviderId === "string"
             ? obj.activeProviderId
-            : providers[0]?.id ?? OFFICIAL_PROVIDER_ID
+            : OFFICIAL_PROVIDER_ID
+        const activeProviderId =
+          storedActiveId === OFFICIAL_PROVIDER_ID ||
+          providers.some((provider) => provider.id === storedActiveId)
+            ? storedActiveId
+            : OFFICIAL_PROVIDER_ID
         return {
           activeProviderId,
           providers
@@ -199,11 +211,7 @@ export function loadThirdPartyApiStore(): ThirdPartyApiStore {
       const migrated = createThirdPartyApiProvider(
         parsed as Partial<ThirdPartyApiProvider>
       )
-      const hasProvider =
-        migrated.providerName.trim() ||
-        migrated.requestUrl.trim() ||
-        migrated.apiKey.trim() ||
-        migrated.models.mainModel.trim()
+      const hasProvider = hasProviderContent(migrated)
       return {
         activeProviderId: hasProvider ? migrated.id : OFFICIAL_PROVIDER_ID,
         providers: hasProvider ? [migrated] : []
@@ -266,11 +274,7 @@ export function clearManagedClaudeEnv(
 export function clearManagedModelOverrides(
   overrides: Record<string, string> | undefined
 ): Record<string, string> {
-  const next = { ...(overrides ?? {}) }
-  for (const keys of Object.values(CLAUDE_MODEL_OVERRIDE_KEYS)) {
-    for (const key of keys) delete next[key]
-  }
-  return next
+  return { ...(overrides ?? {}) }
 }
 
 export function buildModelOverrides(
@@ -291,15 +295,51 @@ export function buildClaudeEnv(
   const baseUrl = trimApiUrl(config.requestUrl)
   const apiKey = config.apiKey.trim()
   const mainModel = config.models.mainModel.trim()
+  const haikuModel = config.models.haikuModel.trim()
+  const sonnetModel = config.models.sonnetModel.trim()
+  const opusModel = config.models.opusModel.trim()
+  const subagentModel = config.models.subagentModel.trim()
 
   next.ANTHROPIC_AUTH_TOKEN = "claudinal-proxy"
   if (baseUrl) next.CLAUDINAL_PROXY_TARGET_URL = baseUrl
   if (apiKey) next.CLAUDINAL_PROXY_API_KEY = apiKey
   next.CLAUDINAL_PROXY_AUTH_FIELD = config.authField
   next.CLAUDINAL_PROXY_USE_FULL_URL = config.useFullUrl ? "1" : "0"
-  if (mainModel) next.CLAUDINAL_PROXY_MAIN_MODEL = mainModel
+  if (mainModel) {
+    next.ANTHROPIC_MODEL = mainModel
+    next.CLAUDINAL_PROXY_MAIN_MODEL = mainModel
+  }
+  if (haikuModel) {
+    next.ANTHROPIC_DEFAULT_HAIKU_MODEL = haikuModel
+    next.CLAUDINAL_PROXY_HAIKU_MODEL = haikuModel
+  }
+  if (sonnetModel) {
+    next.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnetModel
+    next.CLAUDINAL_PROXY_SONNET_MODEL = sonnetModel
+  }
+  if (opusModel) {
+    next.ANTHROPIC_DEFAULT_OPUS_MODEL = opusModel
+    next.CLAUDINAL_PROXY_OPUS_MODEL = opusModel
+  }
+  if (subagentModel) next.CLAUDE_CODE_SUBAGENT_MODEL = subagentModel
 
   return next
+}
+
+export function providerModelOptions(
+  provider: Pick<ThirdPartyApiConfig, "availableModels" | "models">
+): string[] {
+  const values = [
+    ...provider.availableModels,
+    provider.models.mainModel,
+    provider.models.haikuModel,
+    provider.models.sonnetModel,
+    provider.models.opusModel,
+    provider.models.subagentModel
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean)
+  return Array.from(new Set(values))
 }
 
 export function selectClaudeModelAlias(

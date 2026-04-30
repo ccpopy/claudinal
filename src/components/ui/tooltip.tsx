@@ -34,6 +34,9 @@ function TooltipTrigger({
 function TooltipContent({
   className,
   sideOffset = 4,
+  collisionPadding = 8,
+  avoidCollisions = true,
+  sticky = "always",
   children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
@@ -42,8 +45,11 @@ function TooltipContent({
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
+        avoidCollisions={avoidCollisions}
+        sticky={sticky}
         className={cn(
-          "bg-card text-card-foreground border z-50 w-fit rounded-md px-2 py-1 text-xs shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+          "bg-card text-card-foreground border z-50 w-fit max-w-[calc(100vw-16px)] rounded-md px-2 py-1 text-xs shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
           className
         )}
         {...props}
