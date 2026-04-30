@@ -33,9 +33,9 @@ impl WatcherState {
         let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
         let dir: PathBuf = home.join(".claude").join("projects").join(encode_cwd(&cwd));
         if !dir.is_dir() {
-            // 目录还不存在；先记一下空 watcher 占位避免反复尝试
-            debug!(cwd = %cwd, "watch target not yet created: {}", dir.display());
-            return Ok(());
+            debug!(cwd = %cwd, "creating watch target: {}", dir.display());
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| Error::Other(format!("watch target create: {e}")))?;
         }
 
         let cwd_for_event = cwd.clone();

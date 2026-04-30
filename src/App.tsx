@@ -29,7 +29,7 @@ import {
   removeProject as removeProjectStore,
   type Project
 } from "@/lib/projects"
-import type { UIBlock } from "@/types/ui"
+import type { ImagePayload, UIBlock } from "@/types/ui"
 import type { ClaudeEvent } from "@/types/events"
 import { Composer } from "@/components/Composer"
 import { MessageStream } from "@/components/MessageStream"
@@ -142,7 +142,7 @@ export default function App() {
   >(null)
   const [loadingSession, setLoadingSession] = useState(false)
   const [pending, setPending] = useState<
-    Array<{ localId: string; text: string; images: string[] }>
+    Array<{ localId: string; text: string; images: ImagePayload[] }>
   >([])
   // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
   const unlistenRef = useRef<UnlistenFn[]>([])
@@ -178,10 +178,10 @@ export default function App() {
     dispatch({ kind: "unqueue_local", localId: head.localId })
     const blocks: Array<Record<string, unknown>> = []
     if (head.text) blocks.push({ type: "text", text: head.text })
-    for (const data of head.images) {
+    for (const image of head.images) {
       blocks.push({
         type: "image",
-        source: { type: "base64", media_type: "image/png", data }
+        source: { type: "base64", media_type: image.mime, data: image.data }
       })
     }
     setStreaming(true)
@@ -273,7 +273,7 @@ export default function App() {
   }, [project, sessionId, selectedSessionId])
 
   const send = useCallback(
-    async (text: string, images: string[]) => {
+    async (text: string, images: ImagePayload[]) => {
       // 客户端可处理的斜杠命令直接拦截，不投递给 CLI
       const trimmed = text.trim()
       if (trimmed === "/clear" || trimmed === "/reset") {
@@ -290,11 +290,11 @@ export default function App() {
       }
       const uiBlocks: UIBlock[] = []
       if (text) uiBlocks.push({ type: "text", text })
-      for (const data of images) {
+      for (const image of images) {
         uiBlocks.push({
           type: "image",
-          imageMediaType: "image/png",
-          imageData: data
+          imageMediaType: image.mime,
+          imageData: image.data
         })
       }
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -314,10 +314,10 @@ export default function App() {
       if (!id) return
       const blocks: Array<Record<string, unknown>> = []
       if (text) blocks.push({ type: "text", text })
-      for (const data of images) {
+      for (const image of images) {
         blocks.push({
           type: "image",
-          source: { type: "base64", media_type: "image/png", data }
+          source: { type: "base64", media_type: image.mime, data: image.data }
         })
       }
       dispatch({ kind: "user_local", blocks: uiBlocks, localId })

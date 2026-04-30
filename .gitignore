@@ -1,8 +1,12 @@
 node_modules/
 dist/
 .vite/
+tsconfig.tsbuildinfo
 *.log
 .DS_Store
+
+# local Claude settings
+.claude/settings.local.json
 
 # rust / tauri
 src-tauri/target/

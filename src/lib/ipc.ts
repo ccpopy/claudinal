@@ -203,6 +203,8 @@ export interface GlobalUsage {
   total_cache_write: number
   session_count: number
   with_sidecar_count: number
+  skipped_sidecar_count: number
+  scan_errors: Array<{ path: string; reason: string }>
   by_model: Record<string, ModelUsageAgg>
   last_updated: number
 }
