@@ -23,6 +23,20 @@
 
 </div>
 
+## 界面预览
+
+### 主界面
+
+<p align="center">
+  <img src="img/main.png" alt="Claudinal 主界面" width="920" />
+</p>
+
+### 权限确认
+
+<p align="center">
+  <img src="img/permission.png" alt="Claudinal 权限确认弹窗" width="920" />
+</p>
+
 ## ✨ 核心特性
 
 - **极致的流式渲染**：沉浸式的 Markdown 对话体验，逐字渲染，平滑过渡。
