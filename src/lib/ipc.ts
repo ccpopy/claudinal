@@ -226,6 +226,37 @@ export async function writeClaudeSettings(
   })
 }
 
+export type McpScope = "global" | "project"
+
+export async function claudeMcpPath(
+  scope: McpScope,
+  cwd?: string
+): Promise<string> {
+  return invoke<string>("claude_mcp_path_for", { scope, cwd: cwd ?? null })
+}
+
+export async function readClaudeMcpConfig(
+  scope: McpScope,
+  cwd?: string
+): Promise<Record<string, unknown> | null> {
+  return invoke<Record<string, unknown> | null>("read_claude_mcp_config", {
+    scope,
+    cwd: cwd ?? null
+  })
+}
+
+export async function writeClaudeMcpConfig(
+  scope: McpScope,
+  data: Record<string, unknown>,
+  cwd?: string
+): Promise<void> {
+  return invoke("write_claude_mcp_config", {
+    scope,
+    cwd: cwd ?? null,
+    data
+  })
+}
+
 /** CLAUDE.md 三 scope：global = ~/.claude/CLAUDE.md，project = <cwd>/CLAUDE.md，project-local = <cwd>/.claude/CLAUDE.local.md */
 export async function claudeMdPath(
   scope: SettingsScope,

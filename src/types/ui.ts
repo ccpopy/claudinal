@@ -29,6 +29,17 @@ export interface ImagePayload {
   mime: string
 }
 
+export interface ContextUsage {
+  model?: string
+  usedTokens: number
+  contextWindow?: number
+  percent?: number
+  inputTokens?: number
+  cacheReadInputTokens?: number
+  cacheCreationInputTokens?: number
+  outputTokens?: number
+}
+
 export interface UIMessage {
   kind: "message"
   id: string

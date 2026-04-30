@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Archive,
   BarChart3,
@@ -32,11 +32,19 @@ import { Statistics } from "./sections/Statistics"
 import { Placeholder } from "./sections/Placeholder"
 import { Personalization } from "./sections/Personalization"
 import { ThirdPartyApi } from "./sections/ThirdPartyApi"
+import { McpServers } from "./sections/McpServers"
+import { Environment } from "./sections/Environment"
 
 interface Props {
   open: boolean
   onOpenChange: (v: boolean) => void
   currentCwd?: string | null
+}
+
+interface SettingsWorkspaceProps {
+  currentCwd?: string | null
+  sidebarVisible?: boolean
+  initialSection?: string
 }
 
 interface SectionDef {
@@ -71,7 +79,7 @@ const SECTIONS: SectionDef[] = [
     id: "mcp",
     label: "MCP 服务器",
     icon: Plug,
-    Component: () => <Placeholder title="MCP 服务器" />
+    Component: McpServers
   },
   {
     id: "git",
@@ -83,7 +91,7 @@ const SECTIONS: SectionDef[] = [
     id: "env",
     label: "环境",
     icon: SlidersHorizontal,
-    Component: () => <Placeholder title="环境" />
+    Component: Environment
   },
   {
     id: "worktree",
@@ -105,7 +113,7 @@ const SECTIONS: SectionDef[] = [
   },
   {
     id: "account",
-    label: "Usage",
+    label: "使用情况",
     icon: Monitor,
     Component: Account
   },
@@ -123,22 +131,25 @@ const SECTIONS: SectionDef[] = [
   }
 ]
 
-export function Settings({ open, onOpenChange, currentCwd }: Props) {
-  const [section, setSection] = useState<string>("appearance")
+export function SettingsWorkspace({
+  currentCwd,
+  sidebarVisible = true,
+  initialSection = "general"
+}: SettingsWorkspaceProps) {
+  const [section, setSection] = useState<string>(initialSection)
   const cur = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
   const Cur = cur.Component
+
+  useEffect(() => {
+    setSection(initialSection)
+  }, [initialSection])
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl w-[90vw] h-[85vh] p-0 gap-0 grid grid-rows-1 grid-cols-[220px_1fr] overflow-hidden">
-        <DialogTitle className="sr-only">设置</DialogTitle>
-        <aside className="bg-sidebar border-r border-sidebar-border flex flex-col">
-          <div className="px-4 py-3 flex items-center">
-            <span className="text-xs uppercase tracking-wider text-sidebar-muted">
-              设置
-            </span>
-          </div>
-          <ScrollArea className="flex-1">
-            <div className="px-2 pb-3 flex flex-col gap-0.5">
+    <div className="flex h-full min-h-0 flex-1 bg-sidebar">
+      {sidebarVisible && (
+        <aside className="w-[374px] min-w-[260px] max-w-[32vw] shrink-0 bg-sidebar text-sidebar-foreground">
+          <ScrollArea className="h-full">
+            <nav className="flex flex-col gap-0.5 px-2 py-3">
               {SECTIONS.map((s) => {
                 const Icon = s.icon
                 const active = s.id === section
@@ -148,10 +159,10 @@ export function Settings({ open, onOpenChange, currentCwd }: Props) {
                     type="button"
                     onClick={() => setSection(s.id)}
                     className={cn(
-                      "flex cursor-pointer items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors text-left",
+                      "flex h-9 cursor-pointer items-center gap-3 rounded-md px-3 text-left text-sm font-medium transition-colors",
                       active
                         ? "bg-sidebar-accent text-sidebar-foreground"
-                        : "hover:bg-sidebar-accent/60 text-sidebar-foreground/80"
+                        : "text-sidebar-foreground/85 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
                     )}
                   >
                     <Icon className="size-4 shrink-0" />
@@ -159,12 +170,23 @@ export function Settings({ open, onOpenChange, currentCwd }: Props) {
                   </button>
                 )
               })}
-            </div>
+            </nav>
           </ScrollArea>
         </aside>
-        <div className="bg-background h-full min-h-0 overflow-hidden flex flex-col">
-          <Cur cwd={currentCwd ?? null} />
-        </div>
+      )}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-xl border-l border-t bg-background">
+        <Cur cwd={currentCwd ?? null} />
+      </main>
+    </div>
+  )
+}
+
+export function Settings({ open, onOpenChange, currentCwd }: Props) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-6xl w-[92vw] h-[86vh] p-0 gap-0 overflow-hidden rounded-xl border bg-background shadow-2xl">
+        <DialogTitle className="sr-only">设置</DialogTitle>
+        <SettingsWorkspace currentCwd={currentCwd} />
       </DialogContent>
     </Dialog>
   )

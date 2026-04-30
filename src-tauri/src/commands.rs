@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tauri::{AppHandle, State};
 
 use crate::api_proxy::{start as start_api_proxy, ProxyConfig};
@@ -75,7 +75,7 @@ pub async fn spawn_session(
                 });
         }
     }
-    let (permission_prompt_tool, mcp_config) = if permission_mcp_enabled.unwrap_or(false) {
+    let (permission_prompt_tool, permission_mcp_config) = if permission_mcp_enabled.unwrap_or(false) {
         env.extend(permission_bridge.env(app.clone()).await?);
         let tool = permission_prompt_tool
             .as_deref()
@@ -84,10 +84,18 @@ pub async fn spawn_session(
             .unwrap_or(DEFAULT_PERMISSION_MCP_TOOL)
             .to_string();
         let config = render_default_mcp_config(mcp_config.as_deref())?;
-        (Some(tool), Some(config))
+        (Some(tool), Some(serde_json::from_str::<Value>(&config)?))
     } else {
         (None, None)
     };
+    let mut merged_mcp_config = load_native_mcp_config(&cwd)?;
+    if let Some(config) = permission_mcp_config {
+        merge_mcp_config(&mut merged_mcp_config, config);
+    }
+    let mcp_config = merged_mcp_config
+        .and_then(runtime_mcp_config)
+        .map(|config| write_runtime_mcp_config_file(&config))
+        .transpose()?;
     let opts = SpawnOptions {
         cwd: cwd.into(),
         model,
@@ -100,6 +108,98 @@ pub async fn spawn_session(
         mcp_config,
     };
     manager.spawn(app, opts).await
+}
+
+fn read_json_file_if_exists(path: &std::path::Path) -> Result<Option<Value>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)?;
+    let value: Value = serde_json::from_str(&raw)?;
+    Ok(Some(value))
+}
+
+fn load_native_mcp_config(cwd: &str) -> Result<Option<Value>> {
+    let mut merged = None;
+    let global_path = claude_mcp_path("global", None)?;
+    if let Some(config) = read_json_file_if_exists(&global_path)? {
+        merge_mcp_config(&mut merged, config);
+    }
+    let project_path = claude_mcp_path("project", Some(cwd))?;
+    if let Some(config) = read_json_file_if_exists(&project_path)? {
+        merge_mcp_config(&mut merged, config);
+    }
+    Ok(merged)
+}
+
+fn merge_mcp_config(target: &mut Option<Value>, source: Value) {
+    if target.is_none() {
+        *target = Some(Value::Object(Map::new()));
+    }
+    let Some(target_value) = target.as_mut() else {
+        return;
+    };
+    if !target_value.is_object() {
+        *target_value = Value::Object(Map::new());
+    }
+    let Some(target_obj) = target_value.as_object_mut() else {
+        return;
+    };
+    let Value::Object(source_obj) = source else {
+        return;
+    };
+
+    for (key, value) in source_obj {
+        if key != "mcpServers" {
+            target_obj.insert(key, value);
+            continue;
+        }
+        let Value::Object(source_servers) = value else {
+            continue;
+        };
+        let target_servers = target_obj
+            .entry("mcpServers")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !target_servers.is_object() {
+            *target_servers = Value::Object(Map::new());
+        }
+        if let Some(target_servers) = target_servers.as_object_mut() {
+            for (name, config) in source_servers {
+                target_servers.insert(name, config);
+            }
+        }
+    }
+}
+
+fn runtime_mcp_config(mut config: Value) -> Option<Value> {
+    let servers = config.get_mut("mcpServers")?.as_object_mut()?;
+    servers.retain(|_, server| {
+        server
+            .get("disabled")
+            .and_then(Value::as_bool)
+            .is_some_and(|disabled| disabled)
+            == false
+    });
+    if servers.is_empty() {
+        return None;
+    }
+    Some(config)
+}
+
+fn write_runtime_mcp_config_file(config: &Value) -> Result<String> {
+    let dir = std::env::temp_dir().join("claudinal");
+    std::fs::create_dir_all(&dir).map_err(Error::from)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| Error::Other(format!("system clock before UNIX_EPOCH: {e}")))?
+        .as_millis();
+    let path = dir.join(format!(
+        "mcp-config-{}-{stamp}.json",
+        std::process::id()
+    ));
+    let text = serde_json::to_string_pretty(config)?;
+    std::fs::write(&path, text).map_err(Error::from)?;
+    Ok(path.display().to_string())
 }
 
 fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Option<ProxyConfig> {
@@ -366,6 +466,56 @@ fn claude_settings_path(scope: &str, cwd: Option<&str>) -> Result<std::path::Pat
         }
         _ => Err(Error::Other(format!("invalid scope: {scope}"))),
     }
+}
+
+fn claude_mcp_path(scope: &str, cwd: Option<&str>) -> Result<std::path::PathBuf> {
+    match scope {
+        "global" => {
+            let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
+            Ok(home.join(".claude").join("mcp.json"))
+        }
+        "project" => {
+            let cwd = cwd.ok_or_else(|| Error::Other("cwd required for project scope".into()))?;
+            Ok(std::path::PathBuf::from(cwd).join(".mcp.json"))
+        }
+        _ => Err(Error::Other(format!("invalid mcp scope: {scope}"))),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_mcp_path_for(scope: String, cwd: Option<String>) -> Result<String> {
+    let p = claude_mcp_path(&scope, cwd.as_deref())?;
+    Ok(p.display().to_string())
+}
+
+#[tauri::command]
+pub async fn read_claude_mcp_config(scope: String, cwd: Option<String>) -> Result<Option<Value>> {
+    let path = claude_mcp_path(&scope, cwd.as_deref())?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let v: Value = serde_json::from_str(&raw)?;
+    Ok(Some(v))
+}
+
+#[tauri::command]
+pub async fn write_claude_mcp_config(
+    scope: String,
+    cwd: Option<String>,
+    data: Value,
+) -> Result<()> {
+    let path = claude_mcp_path(&scope, cwd.as_deref())?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+    let text = serde_json::to_string_pretty(&data)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(Error::from)?;
+    std::fs::rename(&tmp, &path).map_err(Error::from)?;
+    Ok(())
 }
 
 #[tauri::command]

@@ -25,6 +25,7 @@ import {
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxy } from "@/lib/proxy"
 import { loadSettings, recordResultUsage } from "@/lib/settings"
+import { saveMcpStatusCache } from "@/lib/mcp"
 import { saveSlashCommandsCache } from "@/lib/slashCommands"
 import {
   buildClaudeEnv,
@@ -37,7 +38,7 @@ import {
   removeProject as removeProjectStore,
   type Project
 } from "@/lib/projects"
-import type { ImagePayload, UIBlock } from "@/types/ui"
+import type { ContextUsage, ImagePayload, UIBlock } from "@/types/ui"
 import type { ClaudeEvent } from "@/types/events"
 import { Composer } from "@/components/Composer"
 import { MessageStream } from "@/components/MessageStream"
@@ -49,8 +50,9 @@ import { RenameSessionDialog } from "@/components/RenameSessionDialog"
 import { DiffOverview } from "@/components/DiffOverview"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { BuddyLoader } from "@/components/BuddyLoader"
-import { Settings } from "@/components/Settings"
+import { SettingsWorkspace } from "@/components/Settings"
 import { ChatHeader } from "@/components/ChatHeader"
+import { AppChrome } from "@/components/AppChrome"
 import { PermissionDialog } from "@/components/PermissionDialog"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
@@ -130,6 +132,53 @@ function countDiffFiles(
   return set.size
 }
 
+function numberField(obj: Record<string, unknown>, key: string) {
+  const value = obj[key]
+  return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
+
+function findContextUsage(
+  entries: ReturnType<typeof reducerInit>["entries"]
+): ContextUsage | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (entry.kind !== "result" || !entry.modelUsage) continue
+    let best: ContextUsage | null = null
+    for (const [model, raw] of Object.entries(entry.modelUsage)) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
+      const usage = raw as Record<string, unknown>
+      const inputTokens = numberField(usage, "inputTokens")
+      const cacheReadInputTokens = numberField(usage, "cacheReadInputTokens")
+      const cacheCreationInputTokens = numberField(
+        usage,
+        "cacheCreationInputTokens"
+      )
+      const outputTokens = numberField(usage, "outputTokens")
+      const contextWindow = numberField(usage, "contextWindow")
+      const usedTokens =
+        inputTokens + cacheReadInputTokens + cacheCreationInputTokens
+      if (usedTokens <= 0 && contextWindow <= 0) continue
+      const percent =
+        contextWindow > 0
+          ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))
+          : undefined
+      const candidate: ContextUsage = {
+        model,
+        usedTokens,
+        contextWindow: contextWindow || undefined,
+        percent,
+        inputTokens,
+        cacheReadInputTokens,
+        cacheCreationInputTokens,
+        outputTokens
+      }
+      if (!best || candidate.usedTokens > best.usedTokens) best = candidate
+    }
+    if (best) return best
+  }
+  return null
+}
+
 export default function App() {
   const [state, dispatch] = useReducer(reduce, undefined, reducerInit)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -140,6 +189,9 @@ export default function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [sidebarVisible, setSidebarVisible] = useState(true)
+  const [settingsSection, setSettingsSection] = useState("general")
+  const [planMode, setPlanMode] = useState(false)
   const [draft, setDraft] = useState("")
   const [pinTick, setPinTick] = useState(0)
   const [titleTick, setTitleTick] = useState(0)
@@ -191,6 +243,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
         e.preventDefault()
+        setShowSettings(false)
         setShowAdd(true)
       }
     }
@@ -267,7 +320,7 @@ export default function App() {
         cwd: project.cwd,
         model,
         effort: cfg.defaultEffort.trim() || null,
-        permissionMode: cfg.defaultPermissionMode || "default",
+        permissionMode: planMode ? "plan" : cfg.defaultPermissionMode || "default",
         resumeSessionId: selectedSessionId,
         env: Object.keys(env).length > 0 ? env : null,
         permissionMcpEnabled: cfg.permissionMcpEnabled,
@@ -291,6 +344,18 @@ export default function App() {
             saveSlashCommandsCache(
               (slash as unknown[]).filter(
                 (s): s is string => typeof s === "string"
+              )
+            )
+          }
+          const mcpServers = (ev as { mcp_servers?: unknown }).mcp_servers
+          if (Array.isArray(mcpServers)) {
+            saveMcpStatusCache(
+              mcpServers.filter(
+                (server): server is { name: string; status: string } =>
+                  server &&
+                  typeof server === "object" &&
+                  typeof (server as { name?: unknown }).name === "string" &&
+                  typeof (server as { status?: unknown }).status === "string"
               )
             )
           }
@@ -324,7 +389,7 @@ export default function App() {
       toast.error(`启动会话失败: ${String(e)}`)
       return null
     }
-  }, [project, sessionId, selectedSessionId])
+  }, [planMode, project, sessionId, selectedSessionId])
 
   const send = useCallback(
     async (text: string, images: ImagePayload[]) => {
@@ -433,6 +498,7 @@ export default function App() {
       setProject(p)
       setSelectedSessionId(null)
       setProjects(listProjects())
+      setShowSettings(false)
       toast.success(`项目「${p.name}」已添加`)
     },
     [teardown]
@@ -470,6 +536,37 @@ export default function App() {
     dispatch({ kind: "reset" })
     setSelectedSessionId(null)
   }, [teardown])
+
+  const openSettings = useCallback((section = "general") => {
+    setSidebarVisible(true)
+    setSettingsSection(section)
+    setShowSettings(true)
+  }, [])
+
+  const returnToChat = useCallback(() => {
+    setShowSettings(false)
+  }, [])
+
+  const newConversationFromChrome = useCallback(() => {
+    setShowSettings(false)
+    void newConversation()
+  }, [newConversation])
+
+  const addProjectFromChrome = useCallback(() => {
+    setShowSettings(false)
+    setShowAdd(true)
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        e.preventDefault()
+        newConversationFromChrome()
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [newConversationFromChrome])
 
   const clearProject = useCallback(async () => {
     await teardown()
@@ -509,29 +606,52 @@ export default function App() {
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const diffCount = countDiffFiles(state.entries)
   const slashCommands = findSlashCommands(state)
+  const contextUsage = useMemo(
+    () => findContextUsage(state.entries),
+    [state.entries]
+  )
   const activePermissionRequest = permissionRequests[0] ?? null
   void titleTick
 
   return (
     <TooltipProvider>
       <>
-        <div className="flex h-screen bg-sidebar text-foreground gap-1.5 p-1.5">
-          <Sidebar
-            projects={projects}
-            selectedProjectId={project?.id ?? null}
-            selectedSessionId={selectedSessionId}
-            streamingProjectId={streaming ? project?.id ?? null : null}
-            streamingSessionId={streamingJsonlId}
-            onSelectProject={switchProject}
-            onSelectSession={switchSession}
-            onAdd={() => setShowAdd(true)}
-            onRemove={handleRemove}
-            onNewConversation={newConversation}
-            onOpenSettings={() => setShowSettings(true)}
-            refreshKey={sidebarRefreshKey}
+        <div className="flex h-screen flex-col bg-background text-foreground">
+          <AppChrome
+            sidebarVisible={sidebarVisible}
+            inSettings={showSettings}
+            onToggleSidebar={() => setSidebarVisible((v) => !v)}
+            onBack={returnToChat}
+            onNewConversation={newConversationFromChrome}
+            onAddProject={addProjectFromChrome}
+            onOpenSettings={openSettings}
           />
+          {showSettings ? (
+            <SettingsWorkspace
+              currentCwd={project?.cwd ?? null}
+              sidebarVisible={sidebarVisible}
+              initialSection={settingsSection}
+            />
+          ) : (
+          <div className="flex min-h-0 flex-1 gap-1.5 bg-sidebar p-1.5 pt-1.5">
+            {sidebarVisible && (
+              <Sidebar
+                projects={projects}
+                selectedProjectId={project?.id ?? null}
+                selectedSessionId={selectedSessionId}
+                streamingProjectId={streaming ? project?.id ?? null : null}
+                streamingSessionId={streamingJsonlId}
+                onSelectProject={switchProject}
+                onSelectSession={switchSession}
+                onAdd={() => setShowAdd(true)}
+                onRemove={handleRemove}
+                onNewConversation={newConversation}
+                onOpenSettings={openSettings}
+                refreshKey={sidebarRefreshKey}
+              />
+            )}
 
-          <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background rounded-lg border overflow-hidden">
+            <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background rounded-lg border overflow-hidden">
             {project && !empty && (
               <ChatHeader
                 key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}-${titleTick}`}
@@ -554,16 +674,18 @@ export default function App() {
                 <BuddyLoader />
               </div>
             ) : empty ? (
-              <div className="flex-1 min-h-0 overflow-y-auto flex items-center justify-center px-6 py-10">
-                <div className="w-full max-w-2xl flex flex-col items-center gap-6">
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 py-10">
                   <Welcome
                     project={project}
                     onAddProject={() => setShowAdd(true)}
                     suggestions={project ? SUGGESTIONS : undefined}
                     onPickSuggestion={(s) => setDraft(s)}
                   />
-                  {project && (
-                    <div className="w-full space-y-2">
+                </div>
+                {project && (
+                  <div className="shrink-0 px-6 pb-6">
+                    <div className="mx-auto max-w-4xl space-y-2">
                       <Composer
                         onSend={send}
                         onStop={stop}
@@ -574,6 +696,10 @@ export default function App() {
                         onExternalTextConsumed={() => setDraft("")}
                         cwd={project.cwd}
                         slashCommands={slashCommands}
+                        planMode={planMode}
+                        onPlanModeChange={setPlanMode}
+                        onOpenPlugins={() => openSettings("mcp")}
+                        contextUsage={contextUsage}
                       />
                       <div className="flex justify-start">
                         <ProjectPicker
@@ -587,8 +713,8 @@ export default function App() {
                         />
                       </div>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             ) : (
               <>
@@ -606,10 +732,16 @@ export default function App() {
                   onExternalTextConsumed={() => setDraft("")}
                   cwd={project?.cwd ?? null}
                   slashCommands={slashCommands}
+                  planMode={planMode}
+                  onPlanModeChange={setPlanMode}
+                  onOpenPlugins={() => openSettings("mcp")}
+                  contextUsage={contextUsage}
                 />
               </>
             )}
+            </div>
           </div>
+          )}
         </div>
 
         <AddProjectDialog
@@ -668,11 +800,6 @@ export default function App() {
           open={showDiff}
           onOpenChange={setShowDiff}
           entries={state.entries}
-        />
-        <Settings
-          open={showSettings}
-          onOpenChange={setShowSettings}
-          currentCwd={project?.cwd ?? null}
         />
         <PermissionDialog
           request={activePermissionRequest}
