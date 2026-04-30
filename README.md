@@ -5,6 +5,24 @@
 **核心理念：不重造 Agent，只造一个比 TUI 更好用的外壳。**
 本项目通过 Tauri 2 包装本地的 `claude` CLI headless stream-json 接口，将底层的 Prompt、工具调度和 Hook 执行完全交由原生的 Claude CLI 负责。CLI 升级，桌面端即刻自动获得新能力。
 
+## 特别感谢
+
+<div align="center">
+
+### [Linux.do](https://linux.do/)
+
+**LinuxDo 社区**
+
+真诚、友善、团结、专业，共建你我引以为荣之社区。
+
+### [Trellis](https://github.com/mindfold-ai/trellis)
+
+**The best agent harness**
+
+让团队规模下的 AI 编码更可靠：围绕渐进式规格、任务上下文、自定义工作流和跨 Agent 记忆构建的 Agent harness。
+
+</div>
+
 ## ✨ 核心特性
 
 - **极致的流式渲染**：沉浸式的 Markdown 对话体验，逐字渲染，平滑过渡。
@@ -22,6 +40,7 @@
 ## 🚀 快速开始
 
 ### 前置要求
+
 1. 本机已安装并配置好官方的 `claude` CLI（≥ 2.1.x）。
 2. Node.js 及 `pnpm` 包管理器。
 3. Rust 编译环境。
