@@ -3,14 +3,18 @@ use tauri::{
     AppHandle, Manager,
 };
 
+use crate::buddy;
+
 pub const PROTOCOL: &str = "claudinal-startup";
 
 const HTML: &str = include_str!("../../public/startup.html");
+const BONES_PLACEHOLDER: &str = "/*__BUDDY_BONES__*/null";
 
 pub fn response() -> http::Response<Vec<u8>> {
+    let html = HTML.replacen(BONES_PLACEHOLDER, &buddy::current_json(), 1);
     http::Response::builder()
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(HTML.as_bytes().to_vec())
+        .body(html.into_bytes())
         .expect("failed to build startup screen response")
 }
 

@@ -11,6 +11,8 @@
         --muted: #6b6961;
         --primary: #cc7d5e;
         --border: #e2ded3;
+        --connected: #6f9c6f;
+        --warn: #c89a4d;
       }
       html,
       body {
@@ -42,11 +44,32 @@
       }
       pre {
         margin: 0;
-        color: var(--primary);
+        color: var(--foreground);
         font-family: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
         font-size: 14px;
         line-height: 1.15;
-        animation: bob 1s steps(2, end) infinite;
+        white-space: pre;
+        transition: transform 150ms ease;
+      }
+      pre[data-rarity="uncommon"] { color: var(--connected); }
+      pre[data-rarity="rare"] { color: var(--primary); }
+      pre[data-rarity="epic"] { color: var(--warn); }
+      pre[data-rarity="legendary"] {
+        color: var(--primary);
+        text-shadow: 0 0 8px var(--primary);
+      }
+      pre[data-shiny="true"] {
+        animation: shiny 1.6s ease-in-out infinite;
+      }
+      @keyframes shiny {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
+      }
+      .startup[data-lift="up"] pre {
+        transform: translateY(-1px);
+      }
+      .startup[data-lift="down"] pre {
+        transform: translateY(1px);
       }
       .heart {
         height: 16px;
@@ -54,6 +77,12 @@
         font-family: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
         font-size: 12px;
         line-height: 1;
+        opacity: 0;
+        transition: opacity 150ms ease;
+        white-space: pre;
+      }
+      .heart[data-visible="true"] {
+        opacity: 0.95;
       }
       .label {
         display: inline-flex;
@@ -73,15 +102,6 @@
         background: var(--primary);
         animation: pulse 1s ease-in-out infinite;
       }
-      @keyframes bob {
-        0%,
-        100% {
-          transform: translateY(0);
-        }
-        50% {
-          transform: translateY(-1px);
-        }
-      }
       @keyframes pulse {
         0%,
         100% {
@@ -89,6 +109,16 @@
         }
         50% {
           opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        pre,
+        .heart {
+          transition: none;
+        }
+        pre[data-shiny="true"],
+        .dot {
+          animation: none;
         }
       }
     </style>
@@ -101,43 +131,152 @@
       title="点击抚摸"
       aria-label="Claudinal 正在启动，点击抚摸 Buddy"
     >
-      <pre aria-hidden="true">  /\_/\
- ( o   o )
- (   ω   )
- (")_(")</pre>
-      <div class="heart" aria-hidden="true">♥    ♥</div>
+      <pre aria-hidden="true"></pre>
+      <div class="heart" aria-hidden="true"></div>
       <div class="label">
         <span class="dot" aria-hidden="true"></span>
         <span>正在唤醒会话</span>
       </div>
     </main>
     <script>
-      const heart = document.querySelector(".heart");
-      const startup = document.querySelector(".startup");
-      const frames = ["♥    ♥", "  ♥  ♥   ♥", " ♥   ♥  ♥", "♥  ♥      ♥", "·    ·   ·"];
-      let timer = 0;
-      function pet() {
-        window.clearInterval(timer);
-        let i = 0;
-        heart.textContent = frames[0];
-        timer = window.setInterval(() => {
-          i += 1;
-          if (i >= frames.length) {
-            window.clearInterval(timer);
-            timer = 0;
-            heart.textContent = "♥    ♥";
+      // splash 与 main 共享同一只 bones：Rust 端 OnceLock 在启动时 roll 一只，
+      // splash 协议响应把 JSON 注入到下方占位符；main 通过 invoke 拉取同一只。
+      // 模板/帧序仍内嵌（splash 不能加载相对资源），与 src/lib/buddyBones.ts 同步。
+      (function () {
+        var INJECTED_BONES = /*__BUDDY_BONES__*/null;
+        var FALLBACK_BONES = { species: "cat", eye: "dot", rarity: "common", shiny: false, hat: "none" };
+        var bones = INJECTED_BONES || FALLBACK_BONES;
+        var HAT_LINES = {
+          none: "            ",
+          cap: "   ____     ",
+          halo: "   ====     ",
+          tophat: "   _==_     ",
+          wizard: "   /\\       ",
+          crown: "   /^^\\     "
+        };
+        var EYES = {
+          dot: { open: "·   ·", closed: "-   -" },
+          round: { open: "o   o", closed: "-   -" },
+          happy: { open: "^   ^", closed: "-   -" },
+          star: { open: "✦   ✦", closed: "-   -" },
+          sleepy: { open: "°   °", closed: "-   -" },
+          sharp: { open: "×   ×", closed: "-   -" }
+        };
+        var TEMPLATES = {
+          cat: {
+            idle: ["            ", "   /\\_/\\    ", "  ( {EYE})  ", "  (   ω  )  ", '  (")_(")   '],
+            alt1: ["            ", "   /\\_/\\    ", "  ( {EYE})  ", "  (   ω  )  ", '  (")_(")~  '],
+            alt2: ["            ", "   /\\-/\\    ", "  ( {EYE})  ", "  (   ω  )  ", '  (")_(")   ']
+          },
+          duck: {
+            idle: ["            ", "    __      ", "  <({EYE})  ", "   (___)    ", '    " "     '],
+            alt1: ["            ", "    __      ", "  <({EYE})~ ", "   (___)    ", '    " "     '],
+            alt2: ["            ", "    __>     ", "  <({EYE})  ", "   (___)    ", '    " "     ']
+          },
+          owl: {
+            idle: ["            ", "   ,___,    ", "  ({EYE})   ", "  /)__(\\    ", '    ""      '],
+            alt1: ["            ", "   ,___,    ", "  ({EYE})   ", "  /)__(\\~   ", '    ""      '],
+            alt2: ["            ", "   ,_-_,    ", "  ({EYE})   ", "  /)__(\\    ", '    ""      ']
+          },
+          dragon: {
+            idle: ["            ", "   /\\__/\\   ", " <( {EYE})> ", "   /~~~~\\   ", "  _/    \\_  "],
+            alt1: ["            ", "   /\\__/\\   ", " <( {EYE})> ", "   /~~~~\\   ", "  _/    \\_~ "],
+            alt2: ["            ", "   /\\--/\\   ", " <( {EYE})> ", "   /~~~~\\   ", "  _/    \\_  "]
+          },
+          robot: {
+            idle: ["            ", "  [-----]   ", "  | {EYE}|  ", "  |  _  |   ", "  /|___|\\   "],
+            alt1: ["            ", "  [--^--]   ", "  | {EYE}|  ", "  |  _  |   ", "  /|___|\\   "],
+            alt2: ["            ", "  [-----]   ", "  | {EYE}|  ", "  |  o  |   ", "  /|___|\\   "]
+          },
+          blob: {
+            idle: ["            ", "   .----.   ", "  ( {EYE})  ", "  (  ~  )   ", "   '----'   "],
+            alt1: ["            ", "   .----.   ", "  ( {EYE})  ", "  (  v  )   ", "   '----'   "],
+            alt2: ["            ", "   .-~~.    ", "  ( {EYE})  ", "  (  ~  )   ", "   '----'   "]
+          }
+        };
+        var IDLE_SEQUENCE = [0, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 2, 0, 0, 0];
+        var HEART_FRAMES = ["♥    ♥", "  ♥  ♥   ♥", " ♥   ♥  ♥", "♥  ♥      ♥", "·    ·   ·"];
+
+        function applyEye(template, eyes, blink) {
+          var glyph = blink ? eyes.closed : eyes.open;
+          return template.map(function (line) { return line.replace("{EYE}", glyph); });
+        }
+
+        function renderFrame(bones, frame) {
+          var template = TEMPLATES[bones.species] || TEMPLATES.cat;
+          var base = frame === 1 ? template.alt1 : frame === 2 ? template.alt2 : template.idle;
+          var lines = applyEye(base, EYES[bones.eye] || EYES.dot, frame === -1);
+          if (bones.hat !== "none") lines[0] = HAT_LINES[bones.hat] || HAT_LINES.none;
+          return lines;
+        }
+
+        var startup = document.querySelector(".startup");
+        var pre = document.querySelector("pre");
+        var heart = document.querySelector(".heart");
+        var motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+        var tick = 0;
+        var idleTimer = 0;
+        var heartTimer = 0;
+
+        pre.dataset.rarity = bones.rarity;
+        if (bones.shiny) pre.dataset.shiny = "true";
+
+        function paint() {
+          var value = motionQuery.matches ? 0 : IDLE_SEQUENCE[tick % IDLE_SEQUENCE.length];
+          pre.textContent = renderFrame(bones, value).join("\n");
+          startup.dataset.lift = value === 1 ? "up" : value === 2 ? "down" : "";
+          tick += 1;
+        }
+
+        function startIdle() {
+          window.clearInterval(idleTimer);
+          idleTimer = 0;
+          paint();
+          if (!motionQuery.matches) {
+            idleTimer = window.setInterval(paint, 500);
+          }
+        }
+
+        function clearHeart() {
+          heart.textContent = "";
+          heart.removeAttribute("data-visible");
+        }
+
+        function pet() {
+          window.clearTimeout(heartTimer);
+          var index = 0;
+          heart.textContent = HEART_FRAMES[0];
+          heart.dataset.visible = "true";
+
+          if (motionQuery.matches) {
+            heartTimer = window.setTimeout(clearHeart, 900);
             return;
           }
-          heart.textContent = frames[i];
-        }, 140);
-      }
-      startup.addEventListener("click", pet);
-      startup.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
+
+          function step() {
+            index += 1;
+            if (index >= HEART_FRAMES.length) {
+              clearHeart();
+              heartTimer = 0;
+              return;
+            }
+            heart.textContent = HEART_FRAMES[index];
+            heartTimer = window.setTimeout(step, 140);
+          }
+
+          heartTimer = window.setTimeout(step, 140);
+        }
+
+        startup.addEventListener("click", pet);
+        startup.addEventListener("keydown", function (event) {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          pet();
+        });
+        motionQuery.addEventListener("change", startIdle);
+        startIdle();
         pet();
-      });
-      pet();
+      })();
     </script>
   </body>
 </html>

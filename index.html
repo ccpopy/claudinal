@@ -12,6 +12,8 @@
         --startup-muted: #6b6961;
         --startup-primary: #cc7d5e;
         --startup-border: #e9e4d7;
+        --startup-connected: #6f9c6f;
+        --startup-warn: #c89a4d;
       }
       .dark {
         --startup-background: #2d2d2b;
@@ -19,6 +21,8 @@
         --startup-muted: #a09e9b;
         --startup-primary: #cc7d5e;
         --startup-border: #3a3835;
+        --startup-connected: #93c193;
+        --startup-warn: #d9b06b;
       }
       html,
       body,
@@ -43,13 +47,39 @@
         gap: 10px;
         user-select: none;
       }
+      .startup-buddy:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--startup-primary) 55%, transparent);
+        outline-offset: 10px;
+        border-radius: 12px;
+      }
       .startup-buddy pre {
         margin: 0;
-        color: var(--startup-primary);
+        color: var(--startup-foreground);
         font-family: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
         font-size: 14px;
         line-height: 1.15;
-        animation: startup-buddy-bob 1s steps(2, end) infinite;
+        white-space: pre;
+        transition: transform 150ms ease;
+      }
+      .startup-buddy pre[data-rarity="uncommon"] { color: var(--startup-connected); }
+      .startup-buddy pre[data-rarity="rare"] { color: var(--startup-primary); }
+      .startup-buddy pre[data-rarity="epic"] { color: var(--startup-warn); }
+      .startup-buddy pre[data-rarity="legendary"] {
+        color: var(--startup-primary);
+        text-shadow: 0 0 8px var(--startup-primary);
+      }
+      .startup-buddy pre[data-shiny="true"] {
+        animation: startup-shiny 1.6s ease-in-out infinite;
+      }
+      @keyframes startup-shiny {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
+      }
+      .startup-buddy[data-lift="up"] pre {
+        transform: translateY(-1px);
+      }
+      .startup-buddy[data-lift="down"] pre {
+        transform: translateY(1px);
       }
       .startup-heart {
         height: 16px;
@@ -57,8 +87,12 @@
         font-family: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
         font-size: 12px;
         line-height: 1;
-        opacity: 0.9;
-        animation: startup-heart-fade 1.4s ease-in-out infinite;
+        opacity: 0;
+        transition: opacity 150ms ease;
+        white-space: pre;
+      }
+      .startup-heart[data-visible="true"] {
+        opacity: 0.95;
       }
       .startup-label {
         display: inline-flex;
@@ -78,26 +112,6 @@
         background: var(--startup-primary);
         animation: startup-dot-pulse 1s ease-in-out infinite;
       }
-      @keyframes startup-buddy-bob {
-        0%,
-        100% {
-          transform: translateY(0);
-        }
-        50% {
-          transform: translateY(-1px);
-        }
-      }
-      @keyframes startup-heart-fade {
-        0%,
-        100% {
-          opacity: 0.25;
-          transform: translateY(1px);
-        }
-        45% {
-          opacity: 1;
-          transform: translateY(-1px);
-        }
-      }
       @keyframes startup-dot-pulse {
         0%,
         100% {
@@ -105,6 +119,16 @@
         }
         50% {
           opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .startup-buddy pre,
+        .startup-heart {
+          transition: none;
+        }
+        .startup-buddy pre[data-shiny="true"],
+        .startup-dot {
+          animation: none;
         }
       }
     </style>
@@ -126,12 +150,15 @@
   <body>
     <div id="root">
       <div class="startup-shell" aria-label="Claudinal 正在启动">
-        <div class="startup-buddy">
-          <pre aria-hidden="true">  /\_/\
- ( o   o )
- (   ω   )
- (")_(")</pre>
-          <div class="startup-heart" aria-hidden="true">♥    ♥</div>
+        <div
+          class="startup-buddy"
+          role="button"
+          tabindex="0"
+          title="点击抚摸"
+          aria-label="Claudinal 正在启动，点击抚摸 Buddy"
+        >
+          <pre aria-hidden="true"></pre>
+          <div class="startup-heart" aria-hidden="true"></div>
           <div class="startup-label">
             <span class="startup-dot" aria-hidden="true"></span>
             <span>正在唤醒会话</span>
@@ -139,6 +166,186 @@
         </div>
       </div>
     </div>
+    <script>
+      // 内联 buddy 渲染。bones 由 Rust 后端进程级 OnceLock 持有，
+      // splash 通过协议响应注入、main 通过 invoke('get_buddy_bones') 拉取，
+      // 三处（splash、vite html 内联、React BuddyLoader）渲染同一只。
+      // 模板/帧序必须与 src/lib/buddyBones.ts 同步。
+      (function () {
+        var FALLBACK_BONES = { species: "cat", eye: "dot", rarity: "common", shiny: false, hat: "none" };
+        var HAT_LINES = {
+          none: "            ",
+          cap: "   ____     ",
+          halo: "   ====     ",
+          tophat: "   _==_     ",
+          wizard: "   /\\       ",
+          crown: "   /^^\\     "
+        };
+        var EYES = {
+          dot: { open: "·   ·", closed: "-   -" },
+          round: { open: "o   o", closed: "-   -" },
+          happy: { open: "^   ^", closed: "-   -" },
+          star: { open: "✦   ✦", closed: "-   -" },
+          sleepy: { open: "°   °", closed: "-   -" },
+          sharp: { open: "×   ×", closed: "-   -" }
+        };
+        var TEMPLATES = {
+          cat: {
+            idle: ["            ", "   /\\_/\\    ", "  ( {EYE})  ", "  (   ω  )  ", '  (")_(")   '],
+            alt1: ["            ", "   /\\_/\\    ", "  ( {EYE})  ", "  (   ω  )  ", '  (")_(")~  '],
+            alt2: ["            ", "   /\\-/\\    ", "  ( {EYE})  ", "  (   ω  )  ", '  (")_(")   ']
+          },
+          duck: {
+            idle: ["            ", "    __      ", "  <({EYE})  ", "   (___)    ", '    " "     '],
+            alt1: ["            ", "    __      ", "  <({EYE})~ ", "   (___)    ", '    " "     '],
+            alt2: ["            ", "    __>     ", "  <({EYE})  ", "   (___)    ", '    " "     ']
+          },
+          owl: {
+            idle: ["            ", "   ,___,    ", "  ({EYE})   ", "  /)__(\\    ", '    ""      '],
+            alt1: ["            ", "   ,___,    ", "  ({EYE})   ", "  /)__(\\~   ", '    ""      '],
+            alt2: ["            ", "   ,_-_,    ", "  ({EYE})   ", "  /)__(\\    ", '    ""      ']
+          },
+          dragon: {
+            idle: ["            ", "   /\\__/\\   ", " <( {EYE})> ", "   /~~~~\\   ", "  _/    \\_  "],
+            alt1: ["            ", "   /\\__/\\   ", " <( {EYE})> ", "   /~~~~\\   ", "  _/    \\_~ "],
+            alt2: ["            ", "   /\\--/\\   ", " <( {EYE})> ", "   /~~~~\\   ", "  _/    \\_  "]
+          },
+          robot: {
+            idle: ["            ", "  [-----]   ", "  | {EYE}|  ", "  |  _  |   ", "  /|___|\\   "],
+            alt1: ["            ", "  [--^--]   ", "  | {EYE}|  ", "  |  _  |   ", "  /|___|\\   "],
+            alt2: ["            ", "  [-----]   ", "  | {EYE}|  ", "  |  o  |   ", "  /|___|\\   "]
+          },
+          blob: {
+            idle: ["            ", "   .----.   ", "  ( {EYE})  ", "  (  ~  )   ", "   '----'   "],
+            alt1: ["            ", "   .----.   ", "  ( {EYE})  ", "  (  v  )   ", "   '----'   "],
+            alt2: ["            ", "   .-~~.    ", "  ( {EYE})  ", "  (  ~  )   ", "   '----'   "]
+          }
+        };
+        var IDLE_SEQUENCE = [0, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 2, 0, 0, 0];
+        var HEART_FRAMES = ["♥    ♥", "  ♥  ♥   ♥", " ♥   ♥  ♥", "♥  ♥      ♥", "·    ·   ·"];
+
+        function applyEye(template, eyes, blink) {
+          var glyph = blink ? eyes.closed : eyes.open;
+          return template.map(function (line) { return line.replace("{EYE}", glyph); });
+        }
+
+        function renderFrame(bones, frame) {
+          var template = TEMPLATES[bones.species] || TEMPLATES.cat;
+          var base = frame === 1 ? template.alt1 : frame === 2 ? template.alt2 : template.idle;
+          var lines = applyEye(base, EYES[bones.eye] || EYES.dot, frame === -1);
+          if (bones.hat !== "none") lines[0] = HAT_LINES[bones.hat] || HAT_LINES.none;
+          return lines;
+        }
+
+        var startup = document.querySelector(".startup-buddy");
+        var pre = startup && startup.querySelector("pre");
+        var heart = document.querySelector(".startup-heart");
+        if (!startup || !pre || !heart) return;
+
+        var motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+        var bones = FALLBACK_BONES;
+        var tick = 0;
+        var idleTimer = 0;
+        var heartTimer = 0;
+        var disposed = false;
+
+        function applyBonesAttributes() {
+          pre.dataset.rarity = bones.rarity;
+          if (bones.shiny) pre.dataset.shiny = "true";
+          else pre.removeAttribute("data-shiny");
+        }
+        applyBonesAttributes();
+
+        function paint() {
+          var value = motionQuery.matches ? 0 : IDLE_SEQUENCE[tick % IDLE_SEQUENCE.length];
+          pre.textContent = renderFrame(bones, value).join("\n");
+          startup.dataset.lift = value === 1 ? "up" : value === 2 ? "down" : "";
+          if (window.__buddyHandoff) window.__buddyHandoff.tick = tick;
+          tick += 1;
+        }
+
+        function startIdle() {
+          if (disposed) return;
+          window.clearInterval(idleTimer);
+          idleTimer = 0;
+          paint();
+          if (!motionQuery.matches) {
+            idleTimer = window.setInterval(paint, 500);
+          }
+        }
+
+        function clearHeart() {
+          heart.textContent = "";
+          heart.removeAttribute("data-visible");
+        }
+
+        function pet() {
+          if (disposed) return;
+          window.clearTimeout(heartTimer);
+          var index = 0;
+          heart.textContent = HEART_FRAMES[0];
+          heart.dataset.visible = "true";
+
+          if (motionQuery.matches) {
+            heartTimer = window.setTimeout(clearHeart, 900);
+            return;
+          }
+
+          function step() {
+            index += 1;
+            if (index >= HEART_FRAMES.length) {
+              clearHeart();
+              heartTimer = 0;
+              return;
+            }
+            heart.textContent = HEART_FRAMES[index];
+            heartTimer = window.setTimeout(step, 140);
+          }
+
+          heartTimer = window.setTimeout(step, 140);
+        }
+
+        function dispose() {
+          disposed = true;
+          window.clearInterval(idleTimer);
+          window.clearTimeout(heartTimer);
+          idleTimer = 0;
+          heartTimer = 0;
+        }
+
+        window.__buddyHandoff = {
+          bones: bones,
+          tick: tick,
+          cleanup: dispose
+        };
+
+        startup.addEventListener("click", pet);
+        startup.addEventListener("keydown", function (event) {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          pet();
+        });
+        motionQuery.addEventListener("change", startIdle);
+        startIdle();
+
+        // 拉取 Rust 端权威 bones：拿到后切换并把 handoff 同步为同一只，
+        // 让 BuddyLoader 接管时与 splash 显示完全一致。dev/无 Tauri 环境下静默失败。
+        function adoptBones(authoritative) {
+          if (disposed || !authoritative || typeof authoritative !== "object") return;
+          bones = authoritative;
+          applyBonesAttributes();
+          if (window.__buddyHandoff) window.__buddyHandoff.bones = authoritative;
+          paint();
+        }
+        try {
+          var tauri = window.__TAURI__;
+          var invoke = tauri && tauri.core && tauri.core.invoke;
+          if (typeof invoke === "function") {
+            invoke("get_buddy_bones").then(adoptBones).catch(function () {});
+          }
+        } catch (_) {}
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

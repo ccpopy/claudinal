@@ -1,5 +1,6 @@
 mod api_proxy;
 mod auth;
+mod buddy;
 mod commands;
 mod error;
 mod keychain;
@@ -79,6 +80,7 @@ pub fn run() {
         .setup(|_app| Ok(()))
         .invoke_handler(tauri::generate_handler![
             startup::frontend_ready,
+            buddy::get_buddy_bones,
             commands::detect_claude_cli,
             commands::spawn_session,
             commands::resolve_permission_request,
