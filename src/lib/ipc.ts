@@ -255,6 +255,19 @@ export async function openPath(path: string): Promise<void> {
   return invoke("open_path", { path })
 }
 
+export interface ProjectActionResult {
+  stdout: string
+  stderr: string
+  exit_code: number
+}
+
+export async function runProjectAction(args: {
+  cwd: string
+  command: string
+}): Promise<ProjectActionResult> {
+  return invoke<ProjectActionResult>("run_project_action", args)
+}
+
 export async function openExternal(url: string): Promise<void> {
   return invoke("open_external", { url })
 }

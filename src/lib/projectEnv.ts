@@ -50,13 +50,20 @@ function normalizeScripts(value: unknown): PlatformScripts {
 function normalizeConfig(value: unknown): ProjectEnvConfig {
   if (!isObject(value)) return { actions: [] }
   const actions = Array.isArray(value.actions)
-    ? value.actions.filter(
-        (action): action is ProjectEnvAction =>
-          isObject(action) &&
-          typeof action.id === "string" &&
-          typeof action.label === "string" &&
-          typeof action.command === "string"
-      )
+    ? value.actions
+        .filter(
+          (action): action is ProjectEnvAction =>
+            isObject(action) &&
+            typeof action.id === "string" &&
+            typeof action.label === "string" &&
+            typeof action.command === "string"
+        )
+        .map((action) => ({
+          id: action.id.trim(),
+          label: action.label.trim(),
+          command: action.command.trim()
+        }))
+        .filter((action) => action.id && action.label && action.command)
     : []
   const config: ProjectEnvConfig = {
     setupScripts: normalizeScripts(value.setupScripts),

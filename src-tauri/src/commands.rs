@@ -1727,6 +1727,54 @@ pub async fn open_path(path: String) -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct ProjectActionResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+#[tauri::command]
+pub async fn run_project_action(cwd: String, command: String) -> Result<ProjectActionResult> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(Error::Other("project action command is empty".into()));
+    }
+    let root = std::path::Path::new(&cwd);
+    if !root.is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.arg("/C").arg(command);
+        cmd
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-lc").arg(command);
+        cmd
+    };
+
+    cmd.current_dir(root)
+        .env("CLAUDINAL_WORKTREE_PATH", &cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| Error::Other(format!("run project action: {e}")))?;
+    Ok(ProjectActionResult {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
 /// Playwright 浏览器二进制存放目录（含 chromium/firefox/webkit 子目录）。
 /// 标准路径见 https://playwright.dev/docs/browsers#managing-browser-binaries：
 /// - Windows: `%USERPROFILE%\AppData\Local\ms-playwright`

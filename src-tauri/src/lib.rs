@@ -117,6 +117,7 @@ pub fn run() {
             commands::scan_global_usage,
             commands::scan_activity_heatmap,
             commands::open_path,
+            commands::run_project_action,
             commands::open_external,
             commands::detect_playwright_install,
             commands::test_proxy_connection,

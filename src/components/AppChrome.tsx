@@ -180,7 +180,7 @@ function ChromeMenu({
           <>
             {inSettings && (
               <>
-                <DropdownMenuItem onSelect={() => onBack?.()}>
+                <DropdownMenuItem onClick={() => onBack?.()}>
                   <ArrowLeft />
                   <span>返回对话</span>
                 </DropdownMenuItem>
@@ -198,7 +198,7 @@ function ChromeMenu({
               <DropdownMenuShortcut>Ctrl O</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={onOpenSettings}>
+            <DropdownMenuItem onSelect={() => onOpenSettings()}>
               <Settings />
               <span>设置</span>
             </DropdownMenuItem>

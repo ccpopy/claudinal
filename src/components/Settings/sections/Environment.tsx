@@ -6,6 +6,7 @@ import {
   Plus,
   Save,
   TerminalSquare,
+  Trash2,
   WandSparkles
 } from "lucide-react"
 import { toast } from "sonner"
@@ -58,6 +59,10 @@ const PLATFORM_OPTIONS: Array<{ value: EnvPlatform; label: string }> = [
   { value: "windows", label: "Windows" }
 ]
 
+function createAction(): ProjectEnvAction {
+  return { id: crypto.randomUUID(), label: "", command: "" }
+}
+
 function basename(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path
 }
@@ -84,7 +89,11 @@ function editorToConfig(editor: EditorState): ProjectEnvConfig {
     ...(name && name !== editor.project.name ? { name } : {}),
     setupScripts: compactScripts(editor.setupScripts),
     cleanupScripts: compactScripts(editor.cleanupScripts),
-    actions: editor.actions
+    actions: editor.actions.map((action) => ({
+      id: action.id,
+      label: action.label.trim(),
+      command: action.command.trim()
+    }))
   }
 }
 
@@ -135,6 +144,10 @@ export function Environment({ cwd, onSelectProject }: Props) {
     const name = editor.name.trim()
     if (!name) {
       toast.error("请填写环境名称")
+      return
+    }
+    if (editor.actions.some((action) => !action.label.trim() || !action.command.trim())) {
+      toast.error("请填写每个操作的名称和命令")
       return
     }
     const config = editorToConfig({ ...editor, name })
@@ -294,6 +307,7 @@ function ProjectEnvironmentCard({
   onEdit: () => void
 }) {
   const scriptCount = configuredScriptCount(config)
+  const actionCount = config.actions?.length ?? 0
   const label = config.name || project.name
   return (
     <div className="flex min-h-[76px] items-center gap-3 rounded-lg border bg-background p-3 transition-colors hover:bg-accent/35">
@@ -315,6 +329,11 @@ function ProjectEnvironmentCard({
           ) : (
             <Badge variant="secondary" className="font-sans">
               未配置
+            </Badge>
+          )}
+          {actionCount > 0 && (
+            <Badge variant="outline" className="font-sans">
+              {actionCount} 个操作
             </Badge>
           )}
         </div>
@@ -363,7 +382,7 @@ function EditorView({
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               本地环境
             </div>
-            <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,0.38fr)_minmax(0,1fr)]">
+            <div className="mt-4 flex flex-col gap-4">
               <div className="flex items-center gap-3 rounded-lg border bg-background p-3">
                 <div className="grid size-10 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
                   <Folder className="size-4" />
@@ -422,29 +441,36 @@ function EditorView({
             }
           />
 
-          <section className="rounded-lg border bg-card p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold">操作</div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  可以把常用命令挂到项目工具栏，后续版本会接入执行入口。
-                </p>
-              </div>
-              <Button type="button" variant="outline" size="sm" disabled>
-                <Plus className="size-3.5" />
-                添加操作
-              </Button>
-            </div>
-            <div className="mt-4 rounded-lg border border-dashed bg-background p-4 text-sm text-muted-foreground">
-              <div className="flex items-center gap-2 font-medium text-foreground">
-                <WandSparkles className="size-4 text-muted-foreground" />
-                操作工具栏留作 P4
-              </div>
-              <p className="mt-1 text-xs">
-                当前只保存脚本配置，不创建、不清理、不派生工作树。
-              </p>
-            </div>
-          </section>
+          <ActionSection
+            actions={editor.actions}
+            onAdd={() =>
+              onChange((cur) =>
+                cur ? { ...cur, actions: [...cur.actions, createAction()] } : cur
+              )
+            }
+            onUpdate={(id, patch) =>
+              onChange((cur) =>
+                cur
+                  ? {
+                      ...cur,
+                      actions: cur.actions.map((action) =>
+                        action.id === id ? { ...action, ...patch } : action
+                      )
+                    }
+                  : cur
+              )
+            }
+            onRemove={(id) =>
+              onChange((cur) =>
+                cur
+                  ? {
+                      ...cur,
+                      actions: cur.actions.filter((action) => action.id !== id)
+                    }
+                  : cur
+              )
+            }
+          />
         </div>
       </ScrollArea>
 
@@ -505,6 +531,95 @@ function ScriptSection({
         className="min-h-44 font-mono text-xs leading-5"
         spellCheck={false}
       />
+    </section>
+  )
+}
+
+function ActionSection({
+  actions,
+  onAdd,
+  onUpdate,
+  onRemove
+}: {
+  actions: ProjectEnvAction[]
+  onAdd: () => void
+  onUpdate: (id: string, patch: Partial<ProjectEnvAction>) => void
+  onRemove: (id: string) => void
+}) {
+  return (
+    <section className="rounded-lg border bg-card p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold">操作</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            保存后会显示在项目工具栏，点击即可在项目目录下运行命令。
+          </p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onAdd}>
+          <Plus className="size-3.5" />
+          添加操作
+        </Button>
+      </div>
+
+      {actions.length === 0 ? (
+        <div className="mt-4 rounded-lg border border-dashed bg-background p-4 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 font-medium text-foreground">
+            <WandSparkles className="size-4 text-muted-foreground" />
+            还没有项目操作
+          </div>
+          <p className="mt-1 text-xs">
+            例如添加“安装依赖”对应 <code className="font-mono">pnpm install</code>。
+          </p>
+        </div>
+      ) : (
+        <div className="mt-4 space-y-3">
+          {actions.map((action, index) => (
+            <div key={action.id} className="rounded-lg border bg-background p-3">
+              <div className="flex items-start gap-3">
+                <div className="grid size-8 shrink-0 place-items-center rounded-md border bg-muted text-xs font-medium text-muted-foreground">
+                  {index + 1}
+                </div>
+                <div className="min-w-0 flex-1 space-y-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`action-label-${action.id}`}>名称</Label>
+                    <Input
+                      id={`action-label-${action.id}`}
+                      value={action.label}
+                      onChange={(event) =>
+                        onUpdate(action.id, { label: event.target.value })
+                      }
+                      placeholder="安装依赖"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`action-command-${action.id}`}>命令</Label>
+                    <Textarea
+                      id={`action-command-${action.id}`}
+                      value={action.command}
+                      onChange={(event) =>
+                        onUpdate(action.id, { command: event.target.value })
+                      }
+                      placeholder="pnpm install"
+                      className="min-h-20 font-mono text-xs leading-5"
+                      spellCheck={false}
+                    />
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={() => onRemove(action.id)}
+                  aria-label="删除操作"
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   )
 }

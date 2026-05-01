@@ -44,6 +44,7 @@ import {
   pickComposerFromSidecar,
   type ComposerPrefs
 } from "@/lib/composerPrefs"
+import { getProjectEnv, loadProjectEnvStore } from "@/lib/projectEnv"
 import { saveMcpStatusCache } from "@/lib/mcp"
 import { saveSlashCommandsCache } from "@/lib/slashCommands"
 import {
@@ -126,6 +127,11 @@ const PermissionDialog = lazy(() =>
 const ProjectPicker = lazy(() =>
   import("@/components/ProjectPicker").then((m) => ({
     default: m.ProjectPicker
+  }))
+)
+const ProjectActionsBar = lazy(() =>
+  import("@/components/ProjectActionsBar").then((m) => ({
+    default: m.ProjectActionsBar
   }))
 )
 const RenameSessionDialog = lazy(() =>
@@ -786,11 +792,11 @@ export default function App() {
     setComposerPrefs(globalDefault)
   }, [teardown, globalDefault])
 
-  const openSettings = useCallback((section = "general") => {
+  const openSettings = useCallback((section: string = "general") => {
     setChatReturnTarget(null)
     setSidebarVisible(true)
     setShowPlugins(false)
-    setSettingsSection(section)
+    setSettingsSection(typeof section === "string" ? section : "general")
     setShowSettings(true)
   }, [])
 
@@ -964,6 +970,11 @@ export default function App() {
     }))
   }, [showSettings])
 
+  const projectActions = useMemo(() => {
+    if (!project) return []
+    return getProjectEnv(loadProjectEnvStore(), project.id).actions ?? []
+  }, [project?.id, showSettings])
+
   return (
     <TooltipProvider>
       <>
@@ -1012,7 +1023,7 @@ export default function App() {
                     setShowPlugins(false)
                     void newConversation()
                   }}
-                  onOpenSettings={openSettings}
+                  onOpenSettings={() => openSettings()}
                   onOpenPlugins={openPlugins}
                   refreshKey={sidebarRefreshKey}
                 />
@@ -1074,10 +1085,18 @@ export default function App() {
                   />
                 </div>
                 {project && (
-                  <div className="shrink-0 px-6 pb-6">
-                    <div className="mx-auto max-w-3xl space-y-2">
-	                      <Suspense fallback={<ComposerLoader />}>
-	                        <Composer
+	                  <div className="shrink-0 px-6 pb-6">
+	                    <div className="mx-auto max-w-3xl space-y-2">
+                        {projectActions.length > 0 && (
+                          <Suspense fallback={null}>
+                            <ProjectActionsBar
+                              cwd={project.cwd}
+                              actions={projectActions}
+                            />
+                          </Suspense>
+                        )}
+		                      <Suspense fallback={<ComposerLoader />}>
+		                        <Composer
 	                          onSend={send}
 	                          onStop={stop}
 	                          streaming={streaming}
@@ -1121,16 +1140,28 @@ export default function App() {
                 )}
               </div>
             ) : (
-              <>
-                <Suspense fallback={<PaneLoader label="正在加载会话…" />}>
-                  <MessageStream
-                    key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
-                    entries={state.entries}
-                    streaming={streaming}
-                  />
-                </Suspense>
-                <Suspense fallback={<ComposerLoader />}>
-                  <Composer
+	              <>
+	                <Suspense fallback={<PaneLoader label="正在加载会话…" />}>
+	                  <MessageStream
+	                    key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
+	                    entries={state.entries}
+	                    streaming={streaming}
+	                  />
+	                </Suspense>
+                {project && projectActions.length > 0 && (
+                  <div className="shrink-0 bg-background px-6 pt-2">
+                    <div className="mx-auto max-w-3xl">
+                      <Suspense fallback={null}>
+                        <ProjectActionsBar
+                          cwd={project.cwd}
+                          actions={projectActions}
+                        />
+                      </Suspense>
+                    </div>
+                  </div>
+                )}
+	                <Suspense fallback={<ComposerLoader />}>
+	                  <Composer
                     onSend={send}
                     onStop={stop}
                     streaming={streaming}
