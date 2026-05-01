@@ -590,6 +590,26 @@ export async function scanActivityHeatmap(days: number): Promise<ActivityCell[]>
   return invoke<ActivityCell[]>("scan_activity_heatmap", { days })
 }
 
+export interface SessionSearchHit {
+  sessionId: string
+  cwd: string
+  role: string
+  ts: string | null
+  snippet: string
+  filePath: string | null
+  modifiedTs: number | null
+  aiTitle: string | null
+  firstUserText: string | null
+  dirLabel: string | null
+}
+
+export async function searchSessions(
+  query: string,
+  limit = 50
+): Promise<SessionSearchHit[]> {
+  return invoke<SessionSearchHit[]>("search_sessions", { query, limit })
+}
+
 export async function listenSessionEvents(
   sessionId: string,
   handler: (ev: ClaudeEvent) => void

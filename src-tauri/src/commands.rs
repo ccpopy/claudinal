@@ -11,10 +11,10 @@ use crate::proc::{Manager, SpawnOptions};
 use crate::session::{
     delete_session_jsonl as delete_jsonl_inner, list_project_sessions as list_sessions_inner,
     list_recent_sessions_all as list_all_inner, read_session_sidecar as read_sidecar_inner,
-    read_session_transcript as read_transcript_inner,
-    scan_activity_heatmap as scan_heatmap_inner, scan_all_usage_sidecars as scan_usage_inner,
+    read_session_transcript as read_transcript_inner, scan_activity_heatmap as scan_heatmap_inner,
+    scan_all_usage_sidecars as scan_usage_inner, search_sessions as search_sessions_inner,
     write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalSessionMeta, GlobalUsage,
-    SessionMeta, WatcherState,
+    SessionMeta, SessionSearchHit, WatcherState,
 };
 
 #[tauri::command]
@@ -1246,6 +1246,11 @@ pub async fn scan_global_usage() -> Result<GlobalUsage> {
 #[tauri::command]
 pub async fn scan_activity_heatmap(days: u32) -> Result<Vec<ActivityCell>> {
     scan_heatmap_inner(days)
+}
+
+#[tauri::command]
+pub async fn search_sessions(query: String, limit: Option<usize>) -> Result<Vec<SessionSearchHit>> {
+    search_sessions_inner(&query, limit.unwrap_or(50))
 }
 
 #[tauri::command]

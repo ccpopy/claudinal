@@ -93,6 +93,14 @@ export function ChatHeader({
         >
           {title}
         </span>
+        {archived && (
+          <span
+            title="此会话已归档；可在侧边栏「设置 - 已归档对话」中恢复"
+            className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+          >
+            已归档
+          </span>
+        )}
         <span className="text-xs text-muted-foreground/70 shrink-0">·</span>
         <span
           className="text-xs text-muted-foreground truncate min-w-0 max-w-[16ch] font-mono"

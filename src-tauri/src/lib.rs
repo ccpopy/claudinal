@@ -120,6 +120,7 @@ pub fn run() {
             commands::fetch_provider_models,
             commands::scan_global_usage,
             commands::scan_activity_heatmap,
+            commands::search_sessions,
             commands::open_path,
             commands::run_project_action,
             commands::open_external,

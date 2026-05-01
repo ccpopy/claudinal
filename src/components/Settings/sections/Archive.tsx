@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Archive as ArchiveIcon,
   ArchiveRestore,
+  Eye,
   FolderOpen,
   Loader2,
   RefreshCw,
   Trash2
 } from "lucide-react"
 import { toast } from "sonner"
+import { ArchivedSessionPreview } from "@/components/ArchivedSessionPreview"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -71,6 +73,7 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
   const [rows, setRows] = useState<ArchivedRow[]>([])
   const [loading, setLoading] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ArchivedRow | null>(null)
+  const [previewRow, setPreviewRow] = useState<ArchivedRow | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -148,6 +151,15 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
     },
     [onSelectProject, onSelectSession, refresh]
   )
+
+  const handleView = useCallback((row: ArchivedRow) => {
+    if (!row.meta) return
+    setPreviewRow(row)
+  }, [])
+
+  const handlePreviewUnarchived = useCallback(() => {
+    refresh()
+  }, [refresh])
 
   const handleDelete = useCallback(async () => {
     if (!pendingDelete) return
@@ -228,6 +240,7 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
                     key={`${row.project.id}:${row.ref.sessionId}`}
                     row={row}
                     isLast={idx === group.items.length - 1}
+                    onView={() => handleView(row)}
                     onRestore={() => handleRestore(row)}
                     onDelete={() => setPendingDelete(row)}
                   />
@@ -259,6 +272,18 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
         }
         onConfirm={handleDelete}
       />
+
+      <ArchivedSessionPreview
+        target={
+          previewRow && previewRow.meta
+            ? { project: previewRow.project, session: previewRow.meta }
+            : null
+        }
+        onOpenChange={(open) => {
+          if (!open) setPreviewRow(null)
+        }}
+        onUnarchived={handlePreviewUnarchived}
+      />
     </SettingsSection>
   )
 }
@@ -266,11 +291,13 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
 function ArchivedListItem({
   row,
   isLast,
+  onView,
   onRestore,
   onDelete
 }: {
   row: ArchivedRow
   isLast: boolean
+  onView: () => void
   onRestore: () => void
   onDelete: () => void
 }) {
@@ -311,6 +338,25 @@ function ArchivedListItem({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {!orphan && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                onClick={onView}
+                aria-label="查看会话内容"
+              >
+                <Eye className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              查看会话内容（保持归档）
+            </TooltipContent>
+          </Tooltip>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

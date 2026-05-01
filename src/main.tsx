@@ -16,8 +16,16 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   </React.StrictMode>
 )
 
+declare global {
+  interface Window {
+    __claudinalFrontendReadySent?: boolean
+  }
+}
+
 window.requestAnimationFrame(() => {
   window.requestAnimationFrame(() => {
+    if (window.__claudinalFrontendReadySent) return
+    window.__claudinalFrontendReadySent = true
     invoke("frontend_ready").catch((e) => {
       console.error("frontend_ready failed:", e)
     })

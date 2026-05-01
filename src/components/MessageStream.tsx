@@ -8,6 +8,9 @@ import { RunGroup, type RunStep } from "./RunGroup"
 interface Props {
   entries: UIEntry[]
   streaming: boolean
+  /** 默认 true：每次 entries / streaming 变化把 viewport 滚到底部（直播会话用）。
+   *  传 false 表示纯只读预览（如归档预览），从顶部开始让用户自行下滚。 */
+  autoScroll?: boolean
 }
 
 interface MsgGroup {
@@ -153,17 +156,22 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
   return groups
 }
 
-export function MessageStream({ entries, streaming }: Props) {
+export function MessageStream({
+  entries,
+  streaming,
+  autoScroll = true
+}: Props) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (!autoScroll) return
     const el = ref.current
     if (!el) return
     const viewport = el.querySelector(
       "[data-slot='scroll-area-viewport']"
     ) as HTMLElement | null
     if (viewport) viewport.scrollTop = viewport.scrollHeight
-  }, [entries, streaming])
+  }, [entries, streaming, autoScroll])
 
   const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
 

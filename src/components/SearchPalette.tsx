@@ -8,9 +8,15 @@ import {
   Settings
 } from "lucide-react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
-import { listRecentSessionsAll, type SessionMeta } from "@/lib/ipc"
+import {
+  listRecentSessionsAll,
+  searchSessions,
+  type SessionMeta,
+  type SessionSearchHit
+} from "@/lib/ipc"
 import type { Project } from "@/lib/projects"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
+import { isArchived } from "@/lib/archivedSessions"
 import { Kbd, KbdGroup } from "@/components/ui/kbd"
 import { cn } from "@/lib/utils"
 
@@ -21,6 +27,17 @@ type IndexedSession = {
   haystack: string
   /** 用于显示的项目标签（注册项目则用 name，否则用 cwd 的最后一级） */
   projectLabel: string
+  archived: boolean
+}
+
+type BodyHit = {
+  project: Project
+  session: SessionMeta
+  title: string
+  projectLabel: string
+  snippet: string
+  role: string
+  archived: boolean
 }
 
 interface Props {
@@ -69,6 +86,8 @@ export function SearchPalette({
 }: Props) {
   const [query, setQuery] = useState("")
   const [index, setIndex] = useState<IndexedSession[]>([])
+  const [bodyHits, setBodyHits] = useState<BodyHit[]>([])
+  const [bodySearching, setBodySearching] = useState(false)
   const [loading, setLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const projectsRef = useRef(projects)
@@ -133,7 +152,14 @@ export function SearchPalette({
           ]
             .join("\n")
             .toLowerCase()
-          built.push({ project, session, title, haystack, projectLabel })
+          built.push({
+            project,
+            session,
+            title,
+            haystack,
+            projectLabel,
+            archived: isArchived(project.id, session.id)
+          })
         }
         built.sort((a, b) => b.session.modified_ts - a.session.modified_ts)
         setIndex(built)
@@ -152,6 +178,40 @@ export function SearchPalette({
 
   const trimmedQuery = query.trim()
   const lowerQuery = trimmedQuery.toLowerCase()
+
+  useEffect(() => {
+    if (!open) return
+    if (trimmedQuery.length < 2) {
+      setBodyHits([])
+      setBodySearching(false)
+      return
+    }
+    const projByCwd = new Map<string, Project>()
+    for (const p of projectsRef.current) {
+      projByCwd.set(normalizeCwd(p.cwd), p)
+    }
+    let cancelled = false
+    setBodySearching(true)
+    const handle = window.setTimeout(() => {
+      searchSessions(trimmedQuery, 30)
+        .then((hits) => {
+          if (cancelled) return
+          const built = mapBodyHits(hits, projByCwd)
+          setBodyHits(built)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setBodyHits([])
+        })
+        .finally(() => {
+          if (!cancelled) setBodySearching(false)
+        })
+    }, 220)
+    return () => {
+      cancelled = true
+      window.clearTimeout(handle)
+    }
+  }, [open, trimmedQuery])
 
   const sessionMatches = useMemo(() => {
     if (!trimmedQuery) return index.slice(0, RECENT_LIMIT)
@@ -249,9 +309,26 @@ export function SearchPalette({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sessionMatches])
 
+  const dedupedBodyHits = useMemo(() => {
+    if (bodyHits.length === 0) return [] as BodyHit[]
+    const titleIds = new Set(sessionMatches.map((m) => m.session.id))
+    const seen = new Set<string>()
+    const out: BodyHit[] = []
+    for (const hit of bodyHits) {
+      if (titleIds.has(hit.session.id)) continue
+      if (seen.has(hit.session.id)) continue
+      seen.add(hit.session.id)
+      out.push(hit)
+      if (out.length >= 8) break
+    }
+    return out
+  }, [bodyHits, sessionMatches])
+
   const showEmpty =
     !loading &&
+    !bodySearching &&
     sessionMatches.length === 0 &&
+    dedupedBodyHits.length === 0 &&
     projectMatches.length === 0 &&
     actionMatches.length === 0
 
@@ -285,7 +362,7 @@ export function SearchPalette({
               </div>
             ) : (
               <>
-                <PaletteSection title={trimmedQuery ? "命中" : "近期对话"}>
+                <PaletteSection title="近期对话">
                   {sessionMatches.length === 0 ? (
                     <PaletteEmpty text="无对话匹配" />
                   ) : (
@@ -301,10 +378,37 @@ export function SearchPalette({
                         }
                         onSelect={() => handleRunSession(entry)}
                         highlight={lowerQuery}
+                        badge={entry.archived ? "已归档" : undefined}
                       />
                     ))
                   )}
                 </PaletteSection>
+
+                {dedupedBodyHits.length > 0 && (
+                  <PaletteSection title="正文命中">
+                    {dedupedBodyHits.map((hit) => (
+                      <PaletteRow
+                        key={`body-${hit.session.id}`}
+                        icon={MessageSquare}
+                        label={hit.title}
+                        meta={renderSnippet(hit.snippet)}
+                        metaTitle={hit.snippet}
+                        onSelect={() =>
+                          handleRunSession({
+                            project: hit.project,
+                            session: hit.session,
+                            title: hit.title,
+                            haystack: "",
+                            projectLabel: hit.projectLabel,
+                            archived: hit.archived
+                          })
+                        }
+                        highlight={lowerQuery}
+                        badge={hit.archived ? "已归档" : undefined}
+                      />
+                    ))}
+                  </PaletteSection>
+                )}
 
                 {projectMatches.length > 0 && (
                   <PaletteSection title="文件目录">
@@ -380,7 +484,8 @@ function PaletteRow({
   metaTitle,
   shortcut,
   onSelect,
-  highlight
+  highlight,
+  badge
 }: {
   icon: React.ComponentType<{ className?: string }>
   label: string
@@ -389,6 +494,7 @@ function PaletteRow({
   shortcut?: string
   onSelect: () => void
   highlight?: string
+  badge?: string
 }) {
   return (
     <button
@@ -404,6 +510,11 @@ function PaletteRow({
       <span className="min-w-0 flex-1 truncate text-left">
         <Highlighted text={label} query={highlight ?? ""} />
       </span>
+      {badge && (
+        <span className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+          {badge}
+        </span>
+      )}
       {meta && (
         <span className="hidden min-w-0 max-w-[35%] shrink truncate text-xs text-muted-foreground sm:inline">
           {meta}
@@ -418,6 +529,58 @@ function PaletteRow({
       )}
     </button>
   )
+}
+
+function mapBodyHits(
+  hits: SessionSearchHit[],
+  projByCwd: Map<string, Project>
+): BodyHit[] {
+  const out: BodyHit[] = []
+  for (const hit of hits) {
+    if (!hit.filePath || hit.modifiedTs == null) continue
+    const cwdNorm = hit.cwd ? normalizeCwd(hit.cwd) : null
+    let project: Project | null = null
+    let projectLabel = hit.dirLabel ?? ""
+    if (cwdNorm) {
+      const reg = projByCwd.get(cwdNorm)
+      if (reg) {
+        project = reg
+        projectLabel = reg.name
+      } else {
+        project = {
+          id: `global::${cwdNorm}`,
+          cwd: cwdNorm,
+          name: basename(cwdNorm) || cwdNorm,
+          lastUsedAt: 0
+        }
+        projectLabel = project.name
+      }
+    }
+    if (!project) continue
+    const session: SessionMeta = {
+      id: hit.sessionId,
+      file_path: hit.filePath,
+      modified_ts: hit.modifiedTs,
+      size_bytes: 0,
+      msg_count: 0,
+      ai_title: hit.aiTitle,
+      first_user_text: hit.firstUserText
+    }
+    out.push({
+      project,
+      session,
+      title: sessionDisplayTitle(session),
+      projectLabel,
+      snippet: hit.snippet,
+      role: hit.role,
+      archived: isArchived(project.id, session.id)
+    })
+  }
+  return out
+}
+
+function renderSnippet(snippet: string): string {
+  return snippet.replace(/<<<|>>>/g, "").replace(/\s+/g, " ").trim()
 }
 
 function Highlighted({ text, query }: { text: string; query: string }) {
