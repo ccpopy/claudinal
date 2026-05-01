@@ -29,6 +29,7 @@ import {
 import { unpin } from "@/lib/pinned"
 import { listProjects, type Project } from "@/lib/projects"
 import { getSessionTitle } from "@/lib/sessionTitles"
+import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
 import {
   SettingsSection,
   SettingsSectionBody,
@@ -57,17 +58,16 @@ function fmtRelative(ts: number): string {
 function rowTitle(row: ArchivedRow): string {
   const customTitle = getSessionTitle(row.ref.sessionId)
   if (customTitle) return customTitle
-  if (row.meta) {
-    return (
-      row.meta.ai_title ||
-      row.meta.first_user_text ||
-      row.ref.sessionId.slice(0, 8)
-    )
-  }
+  if (row.meta) return sessionDisplayTitle(row.meta)
   return row.ref.sessionId.slice(0, 8)
 }
 
-export function Archive() {
+interface Props {
+  onSelectProject?: (project: Project) => void
+  onSelectSession?: (project: Project, session: SessionMeta) => void
+}
+
+export function Archive({ onSelectProject, onSelectSession }: Props) {
   const [rows, setRows] = useState<ArchivedRow[]>([])
   const [loading, setLoading] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ArchivedRow | null>(null)
@@ -138,10 +138,15 @@ export function Archive() {
   const handleRestore = useCallback(
     (row: ArchivedRow) => {
       unarchive(row.project.id, row.ref.sessionId)
-      toast.success("已恢复，可在侧边栏的项目下找到")
+      if (row.meta) {
+        onSelectSession?.(row.project, row.meta)
+      } else {
+        onSelectProject?.(row.project)
+      }
+      toast.success("已恢复，可在返回对话后查看")
       refresh()
     },
-    [refresh]
+    [onSelectProject, onSelectSession, refresh]
   )
 
   const handleDelete = useCallback(async () => {

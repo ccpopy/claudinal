@@ -15,6 +15,8 @@ pub enum Error {
     Which(#[from] which::Error),
     #[error("tauri: {0}")]
     Tauri(#[from] tauri::Error),
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error("{0}")]
     Other(String),
 }

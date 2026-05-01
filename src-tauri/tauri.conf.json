@@ -12,14 +12,33 @@
   "app": {
     "windows": [
       {
-        "label": "main",
+        "label": "splash",
         "title": "Claudinal",
+        "url": "claudinal-startup://localhost/",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
         "minHeight": 600,
         "decorations": false,
-        "resizable": true
+        "resizable": false,
+        "center": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "backgroundColor": "#f5f2e9"
+      },
+      {
+        "label": "main",
+        "title": "Claudinal",
+        "create": false,
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "resizable": true,
+        "focus": false,
+        "center": true,
+        "backgroundColor": "#f5f2e9"
       }
     ],
     "security": {

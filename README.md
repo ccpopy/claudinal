@@ -40,15 +40,15 @@
 ## ✨ 核心特性
 
 - **极致的流式渲染**：沉浸式的 Markdown 对话体验，逐字渲染，平滑过渡。
-- **Codex 风格会话管理**：清晰的本地项目分组、历史对话检索与状态追踪。
-- **参数可视化面板**：可视化调节 Model / Effort / Permission Mode 以及预算成本，并实时生效。
+- **Codex 风格会话管理**：清晰的本地项目分组、历史对话恢复、置顶、归档、删除与 SQLite 元数据缓存。
+- **参数可视化控制**：在 Composer 中调节 Model / Effort / Permission Mode，并按会话保存偏好。
 - **结构化消息卡片**：告别杂乱的终端输出，思考过程 (Thinking)、工具调用 (Bash/Edit/Read) 均采用独立优雅的折叠卡片与 Diff 视图展示。
 - **原生能力加持**：无缝支持系统文件拖拽粘贴、本地代理设置及深浅色主题自由切换。
 
 ## 🛠️ 技术栈
 
-- **外壳与后端**：Tauri 2 + Rust (子进程管理 + SQLite 会话索引)
-- **前端界面**：React 19 + TypeScript + Zustand
+- **外壳与后端**：Tauri 2 + Rust (子进程管理 + jsonl 读取 + SQLite 元数据缓存)
+- **前端界面**：React 19 + TypeScript + useReducer
 - **UI 框架**：shadcn/ui + Tailwind CSS v4 + lucide-react
 
 ## 🚀 快速开始

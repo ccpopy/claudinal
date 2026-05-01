@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent
+} from "react"
 import { cn } from "@/lib/utils"
 
 // 简化复刻 buddy.md：3 物种 × 3 眼睛 × 5 稀有度 × 1% 闪光
@@ -174,32 +181,55 @@ export function BuddyLoader({ label = "正在召回会话…", className }: Prop
   const bones = useMemo(rollBones, [])
   const [tick, setTick] = useState(0)
   const [heartIdx, setHeartIdx] = useState<number | null>(null)
+  const heartTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     const id = window.setInterval(() => setTick((t) => (t + 1) % 1000), 500)
     return () => window.clearInterval(id)
   }, [])
 
-  // 自动每 5 秒触发一次抚摸特效（loading 期间总能看到）
-  useEffect(() => {
-    let raf = 0
-    const trigger = () => {
-      let i = 0
-      setHeartIdx(0)
-      const id = window.setInterval(() => {
-        i++
-        if (i > 4) {
-          window.clearInterval(id)
-          setHeartIdx(null)
-        } else {
-          setHeartIdx(i)
-        }
-      }, 140)
+  const triggerHeart = useCallback(() => {
+    if (heartTimerRef.current !== null) {
+      window.clearInterval(heartTimerRef.current)
+      heartTimerRef.current = null
     }
-    trigger()
-    raf = window.setInterval(trigger, 5000)
-    return () => window.clearInterval(raf)
+    let i = 0
+    setHeartIdx(0)
+    heartTimerRef.current = window.setInterval(() => {
+      i++
+      if (i > 4) {
+        if (heartTimerRef.current !== null) {
+          window.clearInterval(heartTimerRef.current)
+          heartTimerRef.current = null
+        }
+        setHeartIdx(null)
+      } else {
+        setHeartIdx(i)
+      }
+    }, 140)
   }, [])
+
+  // 自动每 5 秒触发一次抚摸特效；用户点击也能立即触发。
+  useEffect(() => {
+    triggerHeart()
+    const id = window.setInterval(triggerHeart, 5000)
+    return () => {
+      window.clearInterval(id)
+      if (heartTimerRef.current !== null) {
+        window.clearInterval(heartTimerRef.current)
+        heartTimerRef.current = null
+      }
+    }
+  }, [triggerHeart])
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") return
+      event.preventDefault()
+      triggerHeart()
+    },
+    [triggerHeart]
+  )
 
   const seqVal = IDLE_SEQUENCE[tick % IDLE_SEQUENCE.length]
   const tpl = SPECIES_TEMPLATES[bones.species]
@@ -213,8 +243,13 @@ export function BuddyLoader({ label = "正在召回会话…", className }: Prop
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      title="点击抚摸"
+      onClick={triggerHeart}
+      onKeyDown={handleKeyDown}
       className={cn(
-        "flex flex-col items-center justify-center gap-3 select-none",
+        "flex flex-col items-center justify-center gap-3 select-none rounded-lg px-4 py-3 outline-none transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/50",
         className
       )}
     >

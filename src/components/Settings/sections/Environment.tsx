@@ -38,6 +38,7 @@ import { SettingsSectionHeader } from "./layout"
 
 interface Props {
   cwd?: string | null
+  onSelectProject?: (project: Project) => void
 }
 
 interface EditorState {
@@ -91,7 +92,7 @@ function configFingerprint(config: ProjectEnvConfig) {
   return JSON.stringify(config)
 }
 
-export function Environment({ cwd }: Props) {
+export function Environment({ cwd, onSelectProject }: Props) {
   const [projects, setProjects] = useState(() => listProjects())
   const [envStore, setEnvStore] = useState(() => loadProjectEnvStore())
   const [addOpen, setAddOpen] = useState(false)
@@ -114,6 +115,7 @@ export function Environment({ cwd }: Props) {
   )
 
   const openEditor = (project: Project) => {
+    onSelectProject?.(project)
     const next = makeEditor(project, getProjectEnv(envStore, project.id))
     setEditor(next)
     setInitialConfig(configFingerprint(editorToConfig(next)))

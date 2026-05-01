@@ -1,10 +1,12 @@
 import {
   useEffect,
+  lazy,
   useMemo,
   useReducer,
   useRef,
   useState,
-  useCallback
+  useCallback,
+  Suspense
 } from "react"
 import type { UnlistenFn } from "@tauri-apps/api/event"
 import { toast } from "sonner"
@@ -59,24 +61,16 @@ import {
 } from "@/lib/projects"
 import type { ImagePayload, UIBlock } from "@/types/ui"
 import type { ClaudeEvent } from "@/types/events"
-import { Composer } from "@/components/Composer"
-import { MessageStream } from "@/components/MessageStream"
-import { PluginsView } from "@/components/PluginsView"
-import { Sidebar } from "@/components/Sidebar"
 import { Welcome } from "@/components/Welcome"
-import { ProjectPicker } from "@/components/ProjectPicker"
-import { AddProjectDialog } from "@/components/AddProjectDialog"
-import { RenameSessionDialog } from "@/components/RenameSessionDialog"
-import { DiffOverview } from "@/components/DiffOverview"
-import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { BuddyLoader } from "@/components/BuddyLoader"
-import { SettingsWorkspace } from "@/components/Settings"
-import { ChatHeader } from "@/components/ChatHeader"
 import { AppChrome } from "@/components/AppChrome"
-import { PermissionDialog } from "@/components/PermissionDialog"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 import { getSessionTitle, setSessionTitle } from "@/lib/sessionTitles"
+import {
+  cleanSessionTitleText,
+  sessionGeneratedTitle
+} from "@/lib/sessionDisplayTitle"
 import {
   isArchived,
   toggleArchive,
@@ -90,7 +84,95 @@ const SUGGESTIONS = [
   "扫一遍代码，列出潜在的 bug 与改进点"
 ]
 
+const AddProjectDialog = lazy(() =>
+  import("@/components/AddProjectDialog").then((m) => ({
+    default: m.AddProjectDialog
+  }))
+)
+const ChatHeader = lazy(() =>
+  import("@/components/ChatHeader").then((m) => ({ default: m.ChatHeader }))
+)
+const Composer = lazy(() =>
+  import("@/components/Composer").then((m) => ({ default: m.Composer }))
+)
+const ConfirmDialog = lazy(() =>
+  import("@/components/ConfirmDialog").then((m) => ({
+    default: m.ConfirmDialog
+  }))
+)
+const MessageStream = lazy(() =>
+  import("@/components/MessageStream").then((m) => ({
+    default: m.MessageStream
+  }))
+)
+const PluginsView = lazy(() =>
+  import("@/components/PluginsView").then((m) => ({ default: m.PluginsView }))
+)
+const SettingsWorkspace = lazy(() =>
+  import("@/components/Settings").then((m) => ({
+    default: m.SettingsWorkspace
+  }))
+)
+const DiffOverview = lazy(() =>
+  import("@/components/DiffOverview").then((m) => ({
+    default: m.DiffOverview
+  }))
+)
+const PermissionDialog = lazy(() =>
+  import("@/components/PermissionDialog").then((m) => ({
+    default: m.PermissionDialog
+  }))
+)
+const ProjectPicker = lazy(() =>
+  import("@/components/ProjectPicker").then((m) => ({
+    default: m.ProjectPicker
+  }))
+)
+const RenameSessionDialog = lazy(() =>
+  import("@/components/RenameSessionDialog").then((m) => ({
+    default: m.RenameSessionDialog
+  }))
+)
+const Sidebar = lazy(() =>
+  import("@/components/Sidebar").then((m) => ({ default: m.Sidebar }))
+)
+
+function PaneLoader({ label = "正在加载界面…" }: { label?: string }) {
+  return (
+    <div className="flex-1 min-h-0 grid place-items-center">
+      <BuddyLoader label={label} />
+    </div>
+  )
+}
+
+function ComposerLoader() {
+  return (
+    <div className="shrink-0 px-6 pb-6">
+      <div className="mx-auto max-w-3xl rounded-[24px] border bg-card p-4 shadow-sm">
+        <div className="h-14 rounded-2xl bg-muted/60" />
+      </div>
+    </div>
+  )
+}
+
+function SidebarLoader() {
+  return (
+    <aside className="w-64 shrink-0 overflow-hidden rounded-lg bg-sidebar p-3">
+      <div className="mb-3 h-8 rounded-md bg-sidebar-accent/70" />
+      <div className="mb-3 h-8 rounded-md border border-sidebar-border/60" />
+      <div className="space-y-2">
+        <div className="h-3 w-16 rounded bg-sidebar-accent/70" />
+        <div className="h-8 rounded-md bg-sidebar-accent/50" />
+        <div className="h-8 rounded-md bg-sidebar-accent/40" />
+      </div>
+    </aside>
+  )
+}
+
 type QueuedInput = { localId: string }
+type ChatReturnTarget =
+  | { kind: "project"; project: Project }
+  | { kind: "session"; project: Project; session: SessionMeta }
 
 function buildCliBlocks(
   text: string,
@@ -110,16 +192,23 @@ function buildCliBlocks(
 function chatTitle(
   state: ReturnType<typeof reducerInit>,
   project: Project,
-  jsonlSessionId: string | null
+  jsonlSessionId: string | null,
+  sessionMeta: SessionMeta | null
 ): string {
   if (jsonlSessionId) {
     const custom = getSessionTitle(jsonlSessionId)
     if (custom) return custom
+    if (sessionMeta?.id === jsonlSessionId) {
+      const generated = sessionGeneratedTitle(sessionMeta)
+      if (generated) return generated
+    }
   }
   for (const e of state.entries) {
     if (e.kind === "message" && e.role === "user") {
       for (const b of e.blocks) {
-        if (b.type === "text" && b.text) return b.text.split("\n")[0].slice(0, 80)
+        if (b.type !== "text") continue
+        const title = cleanSessionTitleText(b.text, 80)
+        if (title) return title
       }
     }
   }
@@ -183,9 +272,13 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [project, setProject] = useState<Project | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [selectedSessionMeta, setSelectedSessionMeta] =
+    useState<SessionMeta | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showPlugins, setShowPlugins] = useState(false)
+  const [chatReturnTarget, setChatReturnTarget] =
+    useState<ChatReturnTarget | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(true)
   const [settingsSection, setSettingsSection] = useState("general")
   const [planMode, setPlanMode] = useState(false)
@@ -518,6 +611,7 @@ export default function App() {
         await teardown()
         dispatch({ kind: "reset" })
         setSelectedSessionId(null)
+        setSelectedSessionMeta(null)
         toast.success("已清空当前会话")
         return
       }
@@ -605,6 +699,7 @@ export default function App() {
       dispatch({ kind: "reset" })
       setProject(next)
       setSelectedSessionId(null)
+      setSelectedSessionMeta(null)
     },
     [teardown]
   )
@@ -616,6 +711,7 @@ export default function App() {
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(s.id)
+      setSelectedSessionMeta(s)
       try {
         const events = (await readSessionTranscript(p.cwd, s.id)) as ClaudeEvent[]
         // sidecar 里持久化的 result 事件追加到末尾，恢复 ✓ 完成 chip
@@ -644,6 +740,7 @@ export default function App() {
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(null)
+      setSelectedSessionMeta(null)
       setProjects(listProjects())
       setShowSettings(false)
       toast.success(`项目「${p.name}」已添加`)
@@ -664,6 +761,7 @@ export default function App() {
       await teardown()
       setProject(null)
       setSelectedSessionId(null)
+      setSelectedSessionMeta(null)
       dispatch({ kind: "reset" })
     }
     setPendingRemoveProjectId(null)
@@ -682,12 +780,14 @@ export default function App() {
     await teardown()
     dispatch({ kind: "reset" })
     setSelectedSessionId(null)
+    setSelectedSessionMeta(null)
     // 新对话清掉会话级覆盖，回到全局默认
     setSessionComposer(null)
     setComposerPrefs(globalDefault)
   }, [teardown, globalDefault])
 
   const openSettings = useCallback((section = "general") => {
+    setChatReturnTarget(null)
     setSidebarVisible(true)
     setShowPlugins(false)
     setSettingsSection(section)
@@ -695,6 +795,7 @@ export default function App() {
   }, [])
 
   const openPlugins = useCallback(() => {
+    setChatReturnTarget(null)
     setSidebarVisible(true)
     setShowSettings(false)
     setShowPlugins(true)
@@ -703,15 +804,38 @@ export default function App() {
   const returnToChat = useCallback(() => {
     setShowSettings(false)
     setShowPlugins(false)
-  }, [])
+    const target = chatReturnTarget
+    setChatReturnTarget(null)
+    if (target?.kind === "session") {
+      void switchSession(target.project, target.session)
+    } else if (target?.kind === "project") {
+      void switchProject(target.project)
+    }
+  }, [chatReturnTarget, switchProject, switchSession])
+
+  const selectProjectFromSettings = useCallback(
+    (p: Project) => {
+      setChatReturnTarget({ kind: "project", project: p })
+    },
+    []
+  )
+
+  const selectSessionFromSettings = useCallback(
+    (p: Project, s: SessionMeta) => {
+      setChatReturnTarget({ kind: "session", project: p, session: s })
+    },
+    []
+  )
 
   const newConversationFromChrome = useCallback(() => {
+    setChatReturnTarget(null)
     setShowSettings(false)
     setShowPlugins(false)
     void newConversation()
   }, [newConversation])
 
   const addProjectFromChrome = useCallback(() => {
+    setChatReturnTarget(null)
     setShowSettings(false)
     setShowPlugins(false)
     setShowAdd(true)
@@ -733,6 +857,7 @@ export default function App() {
     dispatch({ kind: "reset" })
     setProject(null)
     setSelectedSessionId(null)
+    setSelectedSessionMeta(null)
   }, [teardown])
 
   const deleteCurrentSession = useCallback(() => {
@@ -757,6 +882,7 @@ export default function App() {
       unarchive(project.id, target)
       dispatch({ kind: "reset" })
       setSelectedSessionId(null)
+      setSelectedSessionMeta(null)
       setSidebarRefreshKey((k) => k + 1)
       toast.success("会话已删除")
     } catch (e) {
@@ -779,6 +905,7 @@ export default function App() {
       await teardown()
       dispatch({ kind: "reset" })
       setSelectedSessionId(null)
+      setSelectedSessionMeta(null)
       toast.success("会话已归档")
     } else {
       toast.success("已取消归档")
@@ -851,70 +978,85 @@ export default function App() {
             onOpenSettings={openSettings}
           />
           {showSettings ? (
-            <SettingsWorkspace
-              currentCwd={project?.cwd ?? null}
-              sidebarVisible={sidebarVisible}
-              initialSection={settingsSection}
-            />
+            <Suspense fallback={<PaneLoader label="正在加载设置…" />}>
+              <SettingsWorkspace
+	                currentCwd={project?.cwd ?? null}
+	                sidebarVisible={sidebarVisible}
+	                initialSection={settingsSection}
+                  onSelectProject={selectProjectFromSettings}
+                  onSelectSession={selectSessionFromSettings}
+	              />
+            </Suspense>
           ) : (
           <div className="flex min-h-0 flex-1 gap-1.5 bg-sidebar p-1.5 pt-1.5">
             {sidebarVisible && (
-              <Sidebar
-                projects={projects}
-                selectedProjectId={project?.id ?? null}
-                selectedSessionId={selectedSessionId}
-                streamingProjectId={streaming ? project?.id ?? null : null}
-                streamingSessionId={streamingJsonlId}
-                inPlugins={showPlugins}
-                onSelectProject={(p) => {
-                  setShowPlugins(false)
-                  switchProject(p)
-                }}
-                onSelectSession={(p, s) => {
-                  setShowPlugins(false)
-                  switchSession(p, s)
-                }}
-                onAdd={() => setShowAdd(true)}
-                onRemove={handleRemove}
-                onNewConversation={() => {
-                  setShowPlugins(false)
-                  void newConversation()
-                }}
-                onOpenSettings={openSettings}
-                onOpenPlugins={openPlugins}
-                refreshKey={sidebarRefreshKey}
-              />
+              <Suspense fallback={<SidebarLoader />}>
+                <Sidebar
+                  projects={projects}
+                  selectedProjectId={project?.id ?? null}
+                  selectedSessionId={selectedSessionId}
+                  streamingProjectId={streaming ? project?.id ?? null : null}
+                  streamingSessionId={streamingJsonlId}
+                  inPlugins={showPlugins}
+                  onSelectProject={(p) => {
+                    setShowPlugins(false)
+                    switchProject(p)
+                  }}
+                  onSelectSession={(p, s) => {
+                    setShowPlugins(false)
+                    switchSession(p, s)
+                  }}
+                  onAdd={() => setShowAdd(true)}
+                  onRemove={handleRemove}
+                  onNewConversation={() => {
+                    setShowPlugins(false)
+                    void newConversation()
+                  }}
+                  onOpenSettings={openSettings}
+                  onOpenPlugins={openPlugins}
+                  refreshKey={sidebarRefreshKey}
+                />
+              </Suspense>
             )}
 
             <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background rounded-lg border overflow-hidden">
             {showPlugins ? (
-              <PluginsView
-                cwd={project?.cwd ?? null}
-                onBack={returnToChat}
-              />
+              <Suspense fallback={<PaneLoader label="正在加载插件…" />}>
+                <PluginsView
+                  cwd={project?.cwd ?? null}
+                  onBack={returnToChat}
+                />
+              </Suspense>
             ) : (
               <>
             {project && !empty && (
-              <ChatHeader
-                key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}-${titleTick}`}
-                project={project}
-                resumeSessionId={selectedSessionId}
-                jsonlSessionId={jsonlSessionId}
-                title={chatTitle(state, project, jsonlSessionId)}
-                archived={
-                  !!jsonlSessionId && isArchived(project.id, jsonlSessionId)
-                }
-                onPinChange={() => setPinTick((t) => t + 1)}
-                onRename={
-                  jsonlSessionId ? () => setShowRename(true) : undefined
-                }
-                onArchive={
-                  jsonlSessionId ? archiveCurrentSession : undefined
-                }
-                onDelete={deleteCurrentSession}
-                onShowDiff={() => setShowDiff(true)}
-                diffCount={visibleDiffCount}
-              />
+              <Suspense fallback={null}>
+                <ChatHeader
+                  key={`hdr-${selectedSessionId ?? sessionId ?? "new"}-${pinTick}-${titleTick}`}
+                  project={project}
+                  resumeSessionId={selectedSessionId}
+                  jsonlSessionId={jsonlSessionId}
+                  title={chatTitle(
+                    state,
+                    project,
+                    jsonlSessionId,
+                    selectedSessionMeta
+                  )}
+                  archived={
+                    !!jsonlSessionId && isArchived(project.id, jsonlSessionId)
+                  }
+                  onPinChange={() => setPinTick((t) => t + 1)}
+                  onRename={
+                    jsonlSessionId ? () => setShowRename(true) : undefined
+                  }
+                  onArchive={
+                    jsonlSessionId ? archiveCurrentSession : undefined
+                  }
+                  onDelete={deleteCurrentSession}
+                  onShowDiff={() => setShowDiff(true)}
+                  diffCount={visibleDiffCount}
+                />
+              </Suspense>
             )}
 
             {loadingSession ? (
@@ -934,77 +1076,85 @@ export default function App() {
                 {project && (
                   <div className="shrink-0 px-6 pb-6">
                     <div className="mx-auto max-w-3xl space-y-2">
-                      <Composer
-                        onSend={send}
-                        onStop={stop}
-                        streaming={streaming}
-                        disabled={!cliPath}
-                        centered
-                        externalText={draft}
-                        onExternalTextConsumed={() => setDraft("")}
-                        cwd={project.cwd}
-                        slashCommands={slashCommands}
-                        planMode={planMode}
-                        onPlanModeChange={handlePlanModeChange}
-                        permissionMode={sessionPermissionMode}
-                        onPermissionModeChange={handlePermissionModeChange}
-                        gitStatus={gitStatus}
-                        onGitStatusRefresh={refreshGitStatus}
-                        onOpenPlugins={openPlugins}
-                        oauthUsage={oauthUsage}
-                        model={composerPrefs.model}
-                        effort={composerPrefs.effort}
-                        onModelEffortChange={handleModelEffortChange}
-                        extraModels={extraModels}
-                        globalDefault={globalDefault}
-                        sessionPrefs={sessionComposer}
-                      />
-                      <div className="flex justify-start">
-                        <ProjectPicker
-                          projects={projects}
-                          current={project}
-                          onSelect={(p) => {
-                            if (p.id !== project.id) switchProject(p)
-                          }}
-                          onAdd={() => setShowAdd(true)}
-                          onClear={clearProject}
-                        />
-                      </div>
+	                      <Suspense fallback={<ComposerLoader />}>
+	                        <Composer
+	                          onSend={send}
+	                          onStop={stop}
+	                          streaming={streaming}
+	                          disabled={!cliPath}
+	                          centered
+	                          externalText={draft}
+	                          onExternalTextConsumed={() => setDraft("")}
+	                          cwd={project.cwd}
+	                          slashCommands={slashCommands}
+	                          planMode={planMode}
+	                          onPlanModeChange={handlePlanModeChange}
+	                          permissionMode={sessionPermissionMode}
+	                          onPermissionModeChange={handlePermissionModeChange}
+	                          gitStatus={gitStatus}
+	                          onGitStatusRefresh={refreshGitStatus}
+	                          onOpenPlugins={openPlugins}
+	                          oauthUsage={oauthUsage}
+	                          model={composerPrefs.model}
+	                          effort={composerPrefs.effort}
+	                          onModelEffortChange={handleModelEffortChange}
+	                          extraModels={extraModels}
+	                          globalDefault={globalDefault}
+	                          sessionPrefs={sessionComposer}
+	                        />
+	                      </Suspense>
+	                      <div className="flex justify-start">
+	                        <Suspense fallback={null}>
+	                          <ProjectPicker
+	                            projects={projects}
+	                            current={project}
+	                            onSelect={(p) => {
+	                              if (p.id !== project.id) switchProject(p)
+	                            }}
+	                            onAdd={() => setShowAdd(true)}
+	                            onClear={clearProject}
+	                          />
+	                        </Suspense>
+	                      </div>
                     </div>
                   </div>
                 )}
               </div>
             ) : (
               <>
-                <MessageStream
-                  key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
-                  entries={state.entries}
-                  streaming={streaming}
-                />
-                <Composer
-                  onSend={send}
-                  onStop={stop}
-                  streaming={streaming}
-                  disabled={!cliPath || !project}
-                  externalText={draft}
-                  onExternalTextConsumed={() => setDraft("")}
-                  cwd={project?.cwd ?? null}
-                  slashCommands={slashCommands}
-                  planMode={planMode}
-                  onPlanModeChange={handlePlanModeChange}
-                  permissionMode={sessionPermissionMode}
-                  onPermissionModeChange={handlePermissionModeChange}
-                  gitStatus={gitStatus}
-                  onGitStatusRefresh={refreshGitStatus}
-                  onOpenPlugins={openPlugins}
-                  oauthUsage={oauthUsage}
-                  model={composerPrefs.model}
-                  effort={composerPrefs.effort}
-                  onModelEffortChange={handleModelEffortChange}
-                  extraModels={extraModels}
-                  globalDefault={globalDefault}
-                  sessionPrefs={sessionComposer}
-                />
+                <Suspense fallback={<PaneLoader label="正在加载会话…" />}>
+                  <MessageStream
+                    key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
+                    entries={state.entries}
+                    streaming={streaming}
+                  />
+                </Suspense>
+                <Suspense fallback={<ComposerLoader />}>
+                  <Composer
+                    onSend={send}
+                    onStop={stop}
+                    streaming={streaming}
+                    disabled={!cliPath || !project}
+                    externalText={draft}
+                    onExternalTextConsumed={() => setDraft("")}
+                    cwd={project?.cwd ?? null}
+                    slashCommands={slashCommands}
+                    planMode={planMode}
+                    onPlanModeChange={handlePlanModeChange}
+                    permissionMode={sessionPermissionMode}
+                    onPermissionModeChange={handlePermissionModeChange}
+                    gitStatus={gitStatus}
+                    onGitStatusRefresh={refreshGitStatus}
+                    onOpenPlugins={openPlugins}
+                    oauthUsage={oauthUsage}
+                    model={composerPrefs.model}
+                    effort={composerPrefs.effort}
+                    onModelEffortChange={handleModelEffortChange}
+                    extraModels={extraModels}
+                    globalDefault={globalDefault}
+                    sessionPrefs={sessionComposer}
+                  />
+                </Suspense>
               </>
             )}
               </>
@@ -1014,76 +1164,98 @@ export default function App() {
           )}
         </div>
 
-        <AddProjectDialog
-          open={showAdd}
-          onOpenChange={setShowAdd}
-          onAdded={onProjectAdded}
-        />
-        {jsonlSessionId && (
-          <RenameSessionDialog
-            open={showRename}
-            onOpenChange={setShowRename}
-            initial={getSessionTitle(jsonlSessionId) ?? ""}
-            onSubmit={(t) => {
-              setSessionTitle(jsonlSessionId, t)
-              setTitleTick((n) => n + 1)
-              setSidebarRefreshKey((n) => n + 1)
-              toast.success(t.trim() ? "标题已保存" : "已恢复默认标题")
-            }}
-          />
+        {showAdd && (
+          <Suspense fallback={null}>
+            <AddProjectDialog
+              open={showAdd}
+              onOpenChange={setShowAdd}
+              onAdded={onProjectAdded}
+            />
+          </Suspense>
         )}
-        <ConfirmDialog
-          open={showDeleteConfirm}
-          onOpenChange={setShowDeleteConfirm}
-          title="删除会话"
-          destructive
-          confirmText="删除"
-          description={
-            <span>
-              将永久删除会话{" "}
-              <code className="font-mono text-xs">
-                {(jsonlSessionId ?? "").slice(0, 8)}
-              </code>{" "}
-              的 jsonl 文件，此操作不可恢复。
-            </span>
-          }
-          onConfirm={performDelete}
-        />
-        <ConfirmDialog
-          open={!!pendingRemoveProjectId}
-          onOpenChange={(v) => !v && setPendingRemoveProjectId(null)}
-          title="从列表移除项目"
-          destructive
-          confirmText="移除"
-          description={
-            pendingRemoveProject ? (
-              <span>
-                项目「
-                <span className="font-medium">{pendingRemoveProject.name}</span>
-                」会从侧边栏移除，但磁盘文件与历史会话不会删除。
-              </span>
-            ) : null
-          }
-          onConfirm={performRemoveProject}
-        />
-        <DiffOverview
-          open={showDiff}
-          onOpenChange={setShowDiff}
-          entries={state.entries}
-          gitStatus={gitStatus}
-          worktreeDiff={diffPatch}
-          worktreeDiffLoading={diffPatchLoading}
-          worktreeDiffError={diffPatchError}
-          cwd={project?.cwd ?? null}
-        />
-        <PermissionDialog
-          request={activePermissionRequest}
-          onSettled={(requestId) =>
-            setPermissionRequests((cur) =>
-              cur.filter((p) => p.request_id !== requestId)
-            )
-          }
-        />
+        {jsonlSessionId && (
+          <Suspense fallback={null}>
+            <RenameSessionDialog
+              open={showRename}
+              onOpenChange={setShowRename}
+              initial={getSessionTitle(jsonlSessionId) ?? ""}
+              onSubmit={(t) => {
+                setSessionTitle(jsonlSessionId, t)
+                setTitleTick((n) => n + 1)
+                setSidebarRefreshKey((n) => n + 1)
+                toast.success(t.trim() ? "标题已保存" : "已恢复默认标题")
+              }}
+            />
+          </Suspense>
+        )}
+        {showDeleteConfirm && (
+          <Suspense fallback={null}>
+            <ConfirmDialog
+              open={showDeleteConfirm}
+              onOpenChange={setShowDeleteConfirm}
+              title="删除会话"
+              destructive
+              confirmText="删除"
+              description={
+                <span>
+                  将永久删除会话{" "}
+                  <code className="font-mono text-xs">
+                    {(jsonlSessionId ?? "").slice(0, 8)}
+                  </code>{" "}
+                  的 jsonl 文件，此操作不可恢复。
+                </span>
+              }
+              onConfirm={performDelete}
+            />
+          </Suspense>
+        )}
+        {pendingRemoveProjectId && (
+          <Suspense fallback={null}>
+            <ConfirmDialog
+              open={!!pendingRemoveProjectId}
+              onOpenChange={(v) => !v && setPendingRemoveProjectId(null)}
+              title="从列表移除项目"
+              destructive
+              confirmText="移除"
+              description={
+                pendingRemoveProject ? (
+                  <span>
+                    项目「
+                    <span className="font-medium">{pendingRemoveProject.name}</span>
+                    」会从侧边栏移除，但磁盘文件与历史会话不会删除。
+                  </span>
+                ) : null
+              }
+              onConfirm={performRemoveProject}
+            />
+          </Suspense>
+        )}
+        {showDiff && (
+          <Suspense fallback={null}>
+            <DiffOverview
+              open={showDiff}
+              onOpenChange={setShowDiff}
+              entries={state.entries}
+              gitStatus={gitStatus}
+              worktreeDiff={diffPatch}
+              worktreeDiffLoading={diffPatchLoading}
+              worktreeDiffError={diffPatchError}
+              cwd={project?.cwd ?? null}
+            />
+          </Suspense>
+        )}
+        {activePermissionRequest && (
+          <Suspense fallback={null}>
+            <PermissionDialog
+              request={activePermissionRequest}
+              onSettled={(requestId) =>
+                setPermissionRequests((cur) =>
+                  cur.filter((p) => p.request_id !== requestId)
+                )
+              }
+            />
+          </Suspense>
+        )}
         <Toaster />
       </>
     </TooltipProvider>

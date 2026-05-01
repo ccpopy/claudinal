@@ -226,9 +226,7 @@ fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Opt
     })
 }
 
-async fn bridge_socks_proxy_env(
-    env: &mut std::collections::HashMap<String, String>,
-) -> Result<()> {
+async fn bridge_socks_proxy_env(env: &mut std::collections::HashMap<String, String>) -> Result<()> {
     let proxy_url = [
         "HTTPS_PROXY",
         "https_proxy",
@@ -446,10 +444,12 @@ pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
-    if !command_success(
-        std::process::Command::new("git")
-            .args(["-C", &cwd, "rev-parse", "--is-inside-work-tree"]),
-    ) {
+    if !command_success(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "rev-parse",
+        "--is-inside-work-tree",
+    ])) {
         return Ok(GitWorktreeStatus {
             is_repo: false,
             branch: None,
@@ -463,46 +463,49 @@ pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
         });
     }
 
-    let branch = command_stdout(
-        std::process::Command::new("git").args(["-C", &cwd, "branch", "--show-current"]),
-    )?
+    let branch = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "branch",
+        "--show-current",
+    ]))?
     .trim()
     .to_string();
     let branch = if branch.is_empty() {
-        command_stdout(
-            std::process::Command::new("git").args(["-C", &cwd, "rev-parse", "--short", "HEAD"]),
-        )
+        command_stdout(std::process::Command::new("git").args([
+            "-C",
+            &cwd,
+            "rev-parse",
+            "--short",
+            "HEAD",
+        ]))
         .ok()
         .map(|s| format!("detached:{}", s.trim()))
     } else {
         Some(branch)
     };
 
-    let upstream = command_stdout(
-        std::process::Command::new("git").args([
-            "-C",
-            &cwd,
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{u}",
-        ]),
-    )
+    let upstream = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{u}",
+    ]))
     .ok()
     .map(|s| s.trim().to_string())
     .filter(|s| !s.is_empty());
 
     let (behind, ahead) = if upstream.is_some() {
-        command_stdout(
-            std::process::Command::new("git").args([
-                "-C",
-                &cwd,
-                "rev-list",
-                "--left-right",
-                "--count",
-                "@{u}...HEAD",
-            ]),
-        )
+        command_stdout(std::process::Command::new("git").args([
+            "-C",
+            &cwd,
+            "rev-list",
+            "--left-right",
+            "--count",
+            "@{u}...HEAD",
+        ]))
         .ok()
         .and_then(|s| {
             let mut parts = s.split_whitespace();
@@ -515,14 +518,23 @@ pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
         (0, 0)
     };
 
-    let numstat_raw = command_stdout(
-        std::process::Command::new("git").args(["-C", &cwd, "diff", "--numstat", "HEAD", "--"]),
-    )
+    let numstat_raw = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "diff",
+        "--numstat",
+        "HEAD",
+        "--",
+    ]))
     .unwrap_or_default();
     let numstat = parse_git_numstat(&numstat_raw);
-    let status_raw = command_stdout(
-        std::process::Command::new("git").args(["-C", &cwd, "status", "--porcelain=v1", "-z"]),
-    )?;
+    let status_raw = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "status",
+        "--porcelain=v1",
+        "-z",
+    ]))?;
     let mut files = Vec::new();
     let mut entries = status_raw.split('\0').filter(|s| !s.is_empty()).peekable();
     while let Some(entry) = entries.next() {
@@ -565,10 +577,12 @@ pub async fn worktree_diff(cwd: String) -> Result<WorktreeDiff> {
     if !root.is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
-    if !command_success(
-        std::process::Command::new("git")
-            .args(["-C", &cwd, "rev-parse", "--is-inside-work-tree"]),
-    ) {
+    if !command_success(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "rev-parse",
+        "--is-inside-work-tree",
+    ])) {
         return Ok(WorktreeDiff {
             is_repo: false,
             files: vec![],
@@ -655,19 +669,24 @@ pub async fn git_branch_list(cwd: String) -> Result<GitBranchList> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
-    if !command_success(
-        std::process::Command::new("git")
-            .args(["-C", &cwd, "rev-parse", "--is-inside-work-tree"]),
-    ) {
+    if !command_success(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "rev-parse",
+        "--is-inside-work-tree",
+    ])) {
         return Ok(GitBranchList {
             is_repo: false,
             current: None,
             branches: vec![],
         });
     }
-    let current = command_stdout(
-        std::process::Command::new("git").args(["-C", &cwd, "branch", "--show-current"]),
-    )
+    let current = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "branch",
+        "--show-current",
+    ]))
     .ok()
     .map(|s| s.trim().to_string())
     .filter(|s| !s.is_empty());
@@ -747,7 +766,9 @@ pub async fn github_cli_status() -> Result<GithubCliStatus> {
     let version = command_stdout(std::process::Command::new(&path).arg("--version"))
         .ok()
         .and_then(|s| s.lines().next().map(str::to_string));
-    let auth = std::process::Command::new(&path).args(["auth", "status"]).output();
+    let auth = std::process::Command::new(&path)
+        .args(["auth", "status"])
+        .output();
     let authenticated = auth.as_ref().is_ok_and(|out| out.status.success());
     let auth_text = auth
         .ok()
@@ -799,8 +820,14 @@ fn parse_git_numstat(raw: &str) -> std::collections::HashMap<String, (u32, u32)>
     let mut out = std::collections::HashMap::new();
     for line in raw.lines() {
         let mut parts = line.splitn(3, '\t');
-        let additions = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        let deletions = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let additions = parts
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        let deletions = parts
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
         let Some(path) = parts.next() else {
             continue;
         };

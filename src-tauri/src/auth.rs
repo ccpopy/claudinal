@@ -136,7 +136,10 @@ pub async fn auth_status() -> Result<AuthStatus> {
     let mut child = cmd
         .spawn()
         .map_err(|e| Error::Other(format!("spawn auth status: {e}")))?;
-    let mut stdout = child.stdout.take().ok_or_else(|| Error::Other("no stdout".into()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Other("no stdout".into()))?;
     let mut buf = Vec::new();
     let read = async { stdout.read_to_end(&mut buf).await };
     timeout(Duration::from_secs(4), read)
@@ -211,9 +214,8 @@ pub fn open_login_terminal(use_console: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         // AppleScript 让 Terminal.app 跑命令
-        let script = format!(
-            "tell application \"Terminal\" to do script \"{exe} auth login{extra}; exit\""
-        );
+        let script =
+            format!("tell application \"Terminal\" to do script \"{exe} auth login{extra}; exit\"");
         std::process::Command::new("osascript")
             .arg("-e")
             .arg(&script)

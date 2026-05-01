@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useMemo, useState, useCallback } from "react"
 import {
   ChevronRight,
   Copy,
@@ -34,7 +34,7 @@ import {
 import type { Project } from "@/lib/projects"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
 import { listArchived, type ArchivedRef } from "@/lib/archivedSessions"
-import { getSessionTitle } from "@/lib/sessionTitles"
+import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
 
 interface Props {
   projects: Project[]
@@ -105,6 +105,10 @@ export function Sidebar({
   >({})
   const [pinned, setPinned] = useState<PinnedRef[]>(() => listPinned())
   const [archived, setArchived] = useState<ArchivedRef[]>(() => listArchived())
+  const pinnedProjectIds = useMemo(
+    () => new Set(pinned.map((p) => p.projectId)),
+    [pinned]
+  )
 
   const refreshPinned = useCallback(() => setPinned(listPinned()), [])
   const refreshArchived = useCallback(() => setArchived(listArchived()), [])
@@ -173,25 +177,34 @@ export function Sidebar({
       next.add(selectedProjectId)
       return next
     })
-    const proj = projects.find((p) => p.id === selectedProjectId)
-    if (proj && !sessionsByProject[proj.id]) {
-      loadSessions(proj)
+    const selected = projects.find((p) => p.id === selectedProjectId)
+    if (selected && !sessionsByProject[selected.id]) {
+      loadSessions(selected)
     }
-  }, [selectedProjectId, projects, sessionsByProject, loadSessions])
-
-  // 提前加载所有项目的 sessions —— 置顶展示需要数据
-  useEffect(() => {
     for (const p of projects) {
-      if (!sessionsByProject[p.id]) loadSessions(p)
+      if (pinnedProjectIds.has(p.id) && !sessionsByProject[p.id]) {
+        loadSessions(p)
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects])
+  }, [
+    selectedProjectId,
+    projects,
+    sessionsByProject,
+    loadSessions,
+    pinnedProjectIds
+  ])
 
-  // notify watcher：监听 ~/.claude/projects/<cwd>/ 变化触发增量刷新
+  // notify watcher：只监听当前可见 / 置顶相关项目，避免启动时扫描所有项目。
   useEffect(() => {
     const cleanups: Array<() => void> = []
-    const cwds = projects.map((p) => p.cwd)
-    for (const p of projects) {
+    const watched = projects.filter(
+      (p) =>
+        p.id === selectedProjectId ||
+        expanded.has(p.id) ||
+        pinnedProjectIds.has(p.id)
+    )
+    const cwds = watched.map((p) => p.cwd)
+    for (const p of watched) {
       watchSessions(p.cwd).catch(() => undefined)
       listenSessionsChanged(p.cwd, () => {
         loadSessions(p)
@@ -203,18 +216,33 @@ export function Sidebar({
       cleanups.forEach((u) => u())
       for (const cwd of cwds) unwatchSessions(cwd).catch(() => undefined)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects])
+  }, [projects, selectedProjectId, expanded, pinnedProjectIds, loadSessions])
 
-  // 主区触发的刷新（如发送消息后），把所有项目 sessions 重新拉一遍；
+  // 主区触发的刷新（如发送消息后），只刷新当前可见 / 置顶相关项目；
   // 同时把 pinned / archived 重新读一次，确保 ChatHeader 改动后侧栏立即同步
   useEffect(() => {
     if (refreshKey === 0) return
-    for (const p of projects) loadSessions(p)
+    for (const p of projects) {
+      if (
+        p.id === selectedProjectId ||
+        expanded.has(p.id) ||
+        pinnedProjectIds.has(p.id)
+      ) {
+        loadSessions(p)
+      }
+    }
     refreshPinned()
     refreshArchived()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey])
+  }, [
+    refreshKey,
+    projects,
+    selectedProjectId,
+    expanded,
+    pinnedProjectIds,
+    loadSessions,
+    refreshPinned,
+    refreshArchived
+  ])
 
   // 计算置顶 + 过滤后的项目列表（项目里非置顶 session 数 > 0 才显示）
   const archivedSet = new Set(
@@ -519,11 +547,7 @@ function SessionRow({
   onCopyId: () => void
   onTogglePin: () => void
 }) {
-  const title =
-    getSessionTitle(session.id) ||
-    session.ai_title ||
-    session.first_user_text ||
-    session.id.slice(0, 8)
+  const title = sessionDisplayTitle(session)
   const compactTime = fmtCompactRelative(session.modified_ts)
   const fullTime = fmtRelative(session.modified_ts)
   return (

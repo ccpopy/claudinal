@@ -4,6 +4,110 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Claudinal</title>
+    <style>
+      :root,
+      .light {
+        --startup-background: #f9f9f7;
+        --startup-foreground: #2d2d2b;
+        --startup-muted: #6b6961;
+        --startup-primary: #cc7d5e;
+        --startup-border: #e9e4d7;
+      }
+      .dark {
+        --startup-background: #2d2d2b;
+        --startup-foreground: #f9f9f7;
+        --startup-muted: #a09e9b;
+        --startup-primary: #cc7d5e;
+        --startup-border: #3a3835;
+      }
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        margin: 0;
+        background: var(--startup-background);
+        color: var(--startup-foreground);
+      }
+      .startup-shell {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "Anthropic Serif", ui-serif, Georgia, "Times New Roman", serif;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      .startup-buddy {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        user-select: none;
+      }
+      .startup-buddy pre {
+        margin: 0;
+        color: var(--startup-primary);
+        font-family: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
+        font-size: 14px;
+        line-height: 1.15;
+        animation: startup-buddy-bob 1s steps(2, end) infinite;
+      }
+      .startup-heart {
+        height: 16px;
+        color: var(--startup-primary);
+        font-family: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1;
+        opacity: 0.9;
+        animation: startup-heart-fade 1.4s ease-in-out infinite;
+      }
+      .startup-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--startup-border);
+        border-radius: 999px;
+        padding: 6px 12px;
+        color: var(--startup-muted);
+        font-size: 12px;
+        background: color-mix(in srgb, var(--startup-background) 88%, white 12%);
+      }
+      .startup-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--startup-primary);
+        animation: startup-dot-pulse 1s ease-in-out infinite;
+      }
+      @keyframes startup-buddy-bob {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-1px);
+        }
+      }
+      @keyframes startup-heart-fade {
+        0%,
+        100% {
+          opacity: 0.25;
+          transform: translateY(1px);
+        }
+        45% {
+          opacity: 1;
+          transform: translateY(-1px);
+        }
+      }
+      @keyframes startup-dot-pulse {
+        0%,
+        100% {
+          opacity: 0.35;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+    </style>
     <script>
       (function () {
         try {
@@ -20,7 +124,21 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="startup-shell" aria-label="Claudinal 正在启动">
+        <div class="startup-buddy">
+          <pre aria-hidden="true">  /\_/\
+ ( o   o )
+ (   ω   )
+ (")_(")</pre>
+          <div class="startup-heart" aria-hidden="true">♥    ♥</div>
+          <div class="startup-label">
+            <span class="startup-dot" aria-hidden="true"></span>
+            <span>正在唤醒会话</span>
+          </div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

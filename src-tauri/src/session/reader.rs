@@ -1,5 +1,4 @@
 use serde::Serialize;
-use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +13,15 @@ pub struct SessionMeta {
     pub msg_count: usize,
     pub ai_title: Option<String>,
     pub first_user_text: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SessionFileMeta {
+    pub id: String,
+    pub file_path: String,
+    pub modified_ts: u64,
+    pub modified_millis: u64,
+    pub size_bytes: u64,
 }
 
 /// Claude CLI 的 cwd 编码规则（导出给 watcher 用）：
@@ -111,72 +119,72 @@ fn sidecar_paths(cwd: &str, session_id: &str) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-pub fn list_project_sessions(cwd: &str) -> Result<Vec<SessionMeta>> {
-    let dirs = project_dirs(cwd)?;
-    if !dirs.iter().any(|dir| dir.is_dir()) {
-        return Ok(vec![]);
+pub(crate) fn session_file_meta(path: &Path) -> Result<Option<SessionFileMeta>> {
+    if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+        return Ok(None);
     }
-    let mut by_id: HashMap<String, SessionMeta> = HashMap::new();
-    for dir in dirs {
-        if !dir.is_dir() {
-            continue;
-        }
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let file_stem = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            if file_stem.is_empty() {
-                continue;
-            }
-            let meta = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let modified_ts = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let size_bytes = meta.len();
-            let replace_existing = by_id
-                .get(&file_stem)
-                .map(|existing| modified_ts > existing.modified_ts)
-                .unwrap_or(true);
-            if !replace_existing {
-                continue;
-            }
-            let (msg_count, ai_title, first_user_text) = scan_jsonl(&path);
-            by_id.insert(
-                file_stem.clone(),
-                SessionMeta {
-                    id: file_stem,
-                    file_path: path.display().to_string(),
-                    modified_ts,
-                    size_bytes,
-                    msg_count,
-                    ai_title,
-                    first_user_text,
-                },
-            );
-        }
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return Ok(None);
+    };
+    let id = stem.to_string();
+    if id.is_empty() {
+        return Ok(None);
     }
-    let mut out = by_id.into_values().collect::<Vec<_>>();
-    out.sort_by(|a, b| b.modified_ts.cmp(&a.modified_ts));
-    Ok(out)
+    let meta = std::fs::metadata(path)?;
+    let modified = meta
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| {
+            Error::Other(format!(
+                "file mtime before UNIX_EPOCH: {}: {e}",
+                path.display()
+            ))
+        })?;
+    let modified_millis = modified
+        .as_secs()
+        .checked_mul(1000)
+        .and_then(|v| v.checked_add(u64::from(modified.subsec_millis())))
+        .ok_or_else(|| Error::Other(format!("file mtime out of range: {}", path.display())))?;
+    Ok(Some(SessionFileMeta {
+        id,
+        file_path: path.display().to_string(),
+        modified_ts: modified.as_secs(),
+        modified_millis,
+        size_bytes: meta.len(),
+    }))
+}
+
+pub(crate) fn scan_session_meta(file: &SessionFileMeta) -> SessionMeta {
+    let (msg_count, ai_title, first_user_text) = scan_jsonl(Path::new(&file.file_path));
+    SessionMeta {
+        id: file.id.clone(),
+        file_path: file.file_path.clone(),
+        modified_ts: file.modified_ts,
+        size_bytes: file.size_bytes,
+        msg_count,
+        ai_title,
+        first_user_text,
+    }
 }
 
 fn truncate_chars(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect::<String>()
 }
 
-fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>) {
+fn is_internal_command_text(s: &str) -> bool {
+    let trimmed = s.trim_start();
+    trimmed.starts_with("<command-name>") && trimmed.contains("</command-name>")
+}
+
+fn title_candidate(s: &str, max_chars: usize) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || is_internal_command_text(trimmed) {
+        return None;
+    }
+    Some(truncate_chars(trimmed, max_chars))
+}
+
+pub(crate) fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>) {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return (0, None, None),
@@ -206,7 +214,7 @@ fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>) {
         }
         if ai_title.is_none() && t == "ai-title" {
             if let Some(s) = v.get("aiTitle").and_then(|x| x.as_str()) {
-                ai_title = Some(truncate_chars(s, 120));
+                ai_title = title_candidate(s, 120);
             }
         }
         if first_user_text.is_none() && t == "user" {
@@ -215,13 +223,15 @@ fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>) {
                     for c in arr {
                         if c.get("type").and_then(|x| x.as_str()) == Some("text") {
                             if let Some(text) = c.get("text").and_then(|x| x.as_str()) {
-                                first_user_text = Some(truncate_chars(text, 120));
-                                break;
+                                if let Some(title) = title_candidate(text, 120) {
+                                    first_user_text = Some(title);
+                                    break;
+                                }
                             }
                         }
                     }
                 } else if let Some(s) = content.as_str() {
-                    first_user_text = Some(truncate_chars(s, 120));
+                    first_user_text = title_candidate(s, 120);
                 }
             }
         }
@@ -299,4 +309,22 @@ pub fn read_session_transcript(cwd: &str, session_id: &str) -> Result<Vec<serde_
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_candidate_rejects_internal_command_payload() {
+        let raw = "<command-name>/effort</command-name>\n\
+            <command-message>effort</command-message>\n\
+            <command-args>max</command-args>";
+
+        assert_eq!(title_candidate(raw, 120), None);
+        assert_eq!(
+            title_candidate(" 更新 plan.md 和项目事件 ", 120),
+            Some("更新 plan.md 和项目事件".to_string())
+        );
+    }
 }

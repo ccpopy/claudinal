@@ -12,7 +12,7 @@ const components: Components = {
   p: ({ className, ...props }) => (
     <p
       className={cn(
-        "text-sm leading-relaxed text-foreground my-2 first:mt-0 last:mb-0",
+        "my-2 text-sm leading-normal text-foreground first:mt-0 last:mb-0",
         className
       )}
       {...props}
@@ -21,7 +21,7 @@ const components: Components = {
   h1: ({ className, ...props }) => (
     <h1
       className={cn(
-        "text-lg font-semibold text-foreground mt-4 mb-2",
+        "mb-2 mt-4 text-xl font-semibold leading-[1.3] text-foreground [font-variation-settings:'opsz'_28]",
         className
       )}
       {...props}
@@ -30,7 +30,7 @@ const components: Components = {
   h2: ({ className, ...props }) => (
     <h2
       className={cn(
-        "text-base font-semibold text-foreground mt-3 mb-2",
+        "mb-2 mt-3 text-base font-semibold leading-normal text-foreground",
         className
       )}
       {...props}
@@ -39,7 +39,7 @@ const components: Components = {
   h3: ({ className, ...props }) => (
     <h3
       className={cn(
-        "text-sm font-semibold text-foreground mt-3 mb-1",
+        "mb-1.5 mt-3 text-sm font-semibold leading-normal text-foreground",
         className
       )}
       {...props}
@@ -47,18 +47,30 @@ const components: Components = {
   ),
   ul: ({ className, ...props }) => (
     <ul
-      className={cn("list-disc pl-5 my-2 space-y-1 text-sm", className)}
+      className={cn(
+        "my-2 list-disc space-y-1 pl-5 text-sm leading-normal marker:text-muted-foreground",
+        className
+      )}
       {...props}
     />
   ),
   ol: ({ className, ...props }) => (
     <ol
-      className={cn("list-decimal pl-5 my-2 space-y-1 text-sm", className)}
+      className={cn(
+        "my-2 list-decimal space-y-1 pl-5 text-sm leading-normal marker:text-muted-foreground",
+        className
+      )}
       {...props}
     />
   ),
   li: ({ className, ...props }) => (
-    <li className={cn("leading-relaxed", className)} {...props} />
+    <li
+      className={cn(
+        "pl-1 leading-normal [&>ol]:my-1 [&>p]:my-0 [&>ul]:my-1",
+        className
+      )}
+      {...props}
+    />
   ),
   a: ({ className, ...props }) => (
     <a
@@ -71,14 +83,14 @@ const components: Components = {
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(
-        "border-l-2 border-primary/40 pl-3 my-2 text-muted-foreground italic",
+        "my-3 border-l-2 border-border pl-4 text-muted-foreground",
         className
       )}
       {...props}
     />
   ),
   hr: ({ className, ...props }) => (
-    <hr className={cn("border-border my-3", className)} {...props} />
+    <hr className={cn("my-4 border-border", className)} {...props} />
   ),
   table: ({ className, ...props }) => (
     <div className="my-2 overflow-auto scrollbar-thin">
@@ -112,7 +124,7 @@ const components: Components = {
       return (
         <code
           className={cn(
-            "px-1 py-0.5 rounded bg-muted text-foreground/90 font-mono text-[12px]",
+            "rounded-[5px] bg-muted/70 px-1.5 py-0.5 align-baseline font-mono text-[0.86em] leading-normal text-foreground/90 [overflow-wrap:anywhere]",
             className
           )}
           {...props}
@@ -123,7 +135,7 @@ const components: Components = {
     }
     return (
       <code
-        className={cn("font-mono text-[12px] text-foreground/90", className)}
+        className={cn("font-mono text-[12.5px] leading-normal text-foreground/90", className)}
         {...props}
       >
         {children}
@@ -133,7 +145,7 @@ const components: Components = {
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
-        "p-3 my-2 rounded-md bg-muted/60 border text-[12px] font-mono whitespace-pre-wrap break-words overflow-auto scrollbar-thin text-foreground/90 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-foreground/90",
+        "my-3 overflow-x-auto rounded-lg border bg-muted/55 p-3.5 font-mono text-[12.5px] leading-normal text-foreground/90 scrollbar-thin [tab-size:2] [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-foreground/90",
         className
       )}
       {...props}
@@ -194,7 +206,7 @@ export function AssistantMarkdown({ text, partial }: Props) {
   const throttled = useThrottledText(text, !!partial)
   const deferred = useDeferredValue(throttled)
   return (
-    <div className="text-sm leading-relaxed text-foreground break-words">
+    <div className="max-w-none text-left text-sm font-normal leading-normal text-foreground [line-break:auto] [overflow-wrap:break-word] [text-align:start] [text-wrap:pretty] [word-break:normal]">
       <MarkdownInner text={deferred} />
       {partial && <span className="caret">▍</span>}
     </div>

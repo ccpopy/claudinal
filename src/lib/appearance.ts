@@ -16,20 +16,31 @@ export interface Appearance {
 const KEY = "claudecli.appearance"
 
 export const CLAUDE_FONT_UI =
+  '"Anthropic Serif", ui-serif, Georgia, Cambria, "Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif'
+export const CLAUDE_FONT_MONO =
+  '"Anthropic Mono", ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace'
+
+const SANS_CLAUDE_FONT_UI =
   '"Anthropic Sans", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
+const UI_FALLBACK =
+  'ui-serif, Georgia, Cambria, "Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif'
+const MONO_FALLBACK =
+  'ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace'
 
 const CLAUDE_DEFAULT: Appearance = {
   light: {
     accent: "#cc7d5e",
     background: "#f9f9f7",
     foreground: "#2d2d2b",
-    fontUI: CLAUDE_FONT_UI
+    fontUI: CLAUDE_FONT_UI,
+    fontMono: CLAUDE_FONT_MONO
   },
   dark: {
     accent: "#cc7d5e",
     background: "#2d2d2b",
     foreground: "#f9f9f7",
-    fontUI: CLAUDE_FONT_UI
+    fontUI: CLAUDE_FONT_UI,
+    fontMono: CLAUDE_FONT_MONO
   }
 }
 
@@ -124,6 +135,20 @@ export function loadAppearance(): Appearance {
       !merged.dark.background &&
       !merged.dark.foreground
     if (allEmpty) return cloneClaudeDefault()
+    let migrated = false
+    const presetId = matchPreset(merged)
+    for (const mode of ["light", "dark"] as const) {
+      const fontUI = merged[mode].fontUI
+      if (!fontUI || (presetId === "claude" && fontUI === SANS_CLAUDE_FONT_UI)) {
+        merged[mode].fontUI = CLAUDE_FONT_UI
+        migrated = true
+      }
+      if (!merged[mode].fontMono && presetId === "claude") {
+        merged[mode].fontMono = CLAUDE_FONT_MONO
+        migrated = true
+      }
+    }
+    if (migrated) saveAppearance(merged)
     return merged
   } catch {
     return cloneClaudeDefault()
@@ -143,6 +168,7 @@ const DYNAMIC_VARS = [
   "--ring",
   "--background",
   "--foreground",
+  "--font-sans",
   "--font-mono",
   "--sidebar"
 ] as const
@@ -150,6 +176,18 @@ const DYNAMIC_VARS = [
 function clearDynamic(root: HTMLElement) {
   for (const v of DYNAMIC_VARS) root.style.removeProperty(v)
   root.style.removeProperty("font-family")
+}
+
+function hasGenericFontFamily(stack: string): boolean {
+  return /(^|,)\s*(serif|sans-serif|monospace|ui-sans-serif|ui-serif|ui-monospace|system-ui)\s*($|,)/i.test(
+    stack
+  )
+}
+
+function withFallback(stack: string, fallback: string): string {
+  const trimmed = stack.trim()
+  if (!trimmed) return fallback
+  return hasGenericFontFamily(trimmed) ? trimmed : `${trimmed}, ${fallback}`
 }
 
 export function applyAppearance(theme: "light" | "dark", a: Appearance) {
@@ -167,10 +205,12 @@ export function applyAppearance(theme: "light" | "dark", a: Appearance) {
     root.style.setProperty("--foreground", cfg.foreground)
   }
   if (cfg.fontUI) {
-    root.style.setProperty("font-family", cfg.fontUI)
+    const fontUI = withFallback(cfg.fontUI, UI_FALLBACK)
+    root.style.setProperty("--font-sans", fontUI)
+    root.style.setProperty("font-family", fontUI)
   }
   if (cfg.fontMono) {
-    root.style.setProperty("--font-mono", cfg.fontMono)
+    root.style.setProperty("--font-mono", withFallback(cfg.fontMono, MONO_FALLBACK))
   }
   if (cfg.translucentSidebar) {
     root.style.setProperty("--sidebar", "transparent")

@@ -244,7 +244,9 @@ async fn read_socks5_connect_response(stream: &mut TcpStream) -> Result<()> {
     let mut head = [0u8; 4];
     stream.read_exact(&mut head).await?;
     if head[0] != 0x05 {
-        return Err(Error::Other("invalid socks version in connect response".into()));
+        return Err(Error::Other(
+            "invalid socks version in connect response".into(),
+        ));
     }
     if head[1] != 0x00 {
         return Err(Error::Other(format!(

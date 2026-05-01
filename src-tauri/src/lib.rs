@@ -8,6 +8,12 @@ mod permission_mcp;
 mod plugins;
 mod proc;
 mod session;
+mod startup;
+
+use tauri::{
+    webview::{PageLoadEvent, WebviewWindowBuilder},
+    Manager,
+};
 
 pub fn run_permission_mcp_server() -> error::Result<()> {
     permission_mcp::run_stdio_mcp_server()
@@ -24,13 +30,55 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol(startup::PROTOCOL, |_ctx, _request| startup::response())
         .plugin(tauri_plugin_dialog::init())
         .manage(proc::Manager::new())
         .manage(auth::AuthLoginState::new())
         .manage(permission_mcp::PermissionMcpBridge::new())
         .manage(session::WatcherState::new())
+        .on_page_load(|webview, payload| {
+            if webview.label() != "splash" || payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+
+            tracing::info!("startup splash loaded; scheduling main window creation");
+            let app = webview.app_handle().clone();
+            if app.get_webview_window("main").is_some() {
+                tracing::debug!("main window already exists");
+                return;
+            }
+
+            let Some(config) = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .cloned()
+            else {
+                tracing::error!("main window config not found");
+                return;
+            };
+
+            tauri::async_runtime::spawn(async move {
+                tokio::task::yield_now().await;
+                let app_for_main_thread = app.clone();
+                if let Err(err) = app.run_on_main_thread(move || {
+                    tracing::info!("creating main window");
+                    match WebviewWindowBuilder::from_config(&app_for_main_thread, &config)
+                        .and_then(|builder| builder.build())
+                    {
+                        Ok(_) => tracing::info!("main window created"),
+                        Err(err) => tracing::error!("failed to create main window: {err}"),
+                    }
+                }) {
+                    tracing::error!("failed to schedule main window creation: {err}");
+                }
+            });
+        })
         .setup(|_app| Ok(()))
         .invoke_handler(tauri::generate_handler![
+            startup::frontend_ready,
             commands::detect_claude_cli,
             commands::spawn_session,
             commands::resolve_permission_request,

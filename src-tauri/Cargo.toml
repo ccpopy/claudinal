@@ -29,6 +29,7 @@ notify = "6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 
 [profile.dev]
 incremental = true

@@ -11,8 +11,7 @@ use crate::error::{Error, Result};
 const SERVICE: &str = "claudinal";
 
 fn entry(account: &str) -> Result<keyring::Entry> {
-    keyring::Entry::new(SERVICE, account)
-        .map_err(|e| Error::Other(format!("keyring entry: {e}")))
+    keyring::Entry::new(SERVICE, account).map_err(|e| Error::Other(format!("keyring entry: {e}")))
 }
 
 /// 写入 / 覆盖一条密钥条目。空字符串视作删除。
@@ -52,8 +51,5 @@ pub fn is_available() -> bool {
         Ok(e) => e,
         Err(_) => return false,
     };
-    matches!(
-        probe.get_password(),
-        Ok(_) | Err(keyring::Error::NoEntry)
-    )
+    matches!(probe.get_password(), Ok(_) | Err(keyring::Error::NoEntry))
 }

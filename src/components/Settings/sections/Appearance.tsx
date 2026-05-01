@@ -9,6 +9,7 @@ import { useTheme, type Theme } from "@/lib/theme-context"
 import {
   applyAppearance,
   CLAUDE_FONT_UI,
+  CLAUDE_FONT_MONO,
   defaultAppearance,
   loadAppearance,
   matchPreset,
@@ -235,7 +236,7 @@ function ModeSection({
       <FontRow
         label="代码字体"
         value={cfg.fontMono}
-        placeholder='ui-monospace, "Cascadia Code", Menlo'
+        placeholder={CLAUDE_FONT_MONO}
         onChange={(v) => onUpdate({ fontMono: v })}
       />
       <ToggleRow

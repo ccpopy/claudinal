@@ -1,4 +1,11 @@
-import { useEffect, useState } from "react"
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useState,
+  type ComponentType,
+  type LazyExoticComponent
+} from "react"
 import {
   Archive,
   BarChart3,
@@ -22,21 +29,10 @@ import {
   DialogTitle
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import type { SessionMeta } from "@/lib/ipc"
+import type { Project } from "@/lib/projects"
 import { cn } from "@/lib/utils"
-import { General } from "./sections/General"
-import { Appearance } from "./sections/Appearance"
-import { Network } from "./sections/Network"
-import { Config } from "./sections/Config"
-import { Account } from "./sections/Account"
-import { Statistics } from "./sections/Statistics"
 import { Placeholder } from "./sections/Placeholder"
-import { Personalization } from "./sections/Personalization"
-import { ThirdPartyApi } from "./sections/ThirdPartyApi"
-import { McpServers } from "./sections/McpServers"
-import { Environment } from "./sections/Environment"
-import { Git } from "./sections/Git"
-import { Browser } from "./sections/Browser"
-import { Archive as ArchiveSection } from "./sections/Archive"
 
 interface Props {
   open: boolean
@@ -48,53 +44,124 @@ interface SettingsWorkspaceProps {
   currentCwd?: string | null
   sidebarVisible?: boolean
   initialSection?: string
+  onSelectProject?: (project: Project) => void
+  onSelectSession?: (project: Project, session: SessionMeta) => void
+}
+
+interface SectionProps {
+  cwd?: string | null
+  onSelectProject?: (project: Project) => void
+  onSelectSession?: (project: Project, session: SessionMeta) => void
 }
 
 interface SectionDef {
   id: string
   label: string
   icon: LucideIcon
-  Component: React.ComponentType<{ cwd?: string | null }>
+  Component:
+    | ComponentType<SectionProps>
+    | LazyExoticComponent<ComponentType<SectionProps>>
+  load?: () => Promise<unknown>
 }
 
+const loadGeneral = () => import("./sections/General")
+const loadAppearance = () => import("./sections/Appearance")
+const loadConfig = () => import("./sections/Config")
+const loadThirdPartyApi = () => import("./sections/ThirdPartyApi")
+const loadPersonalization = () => import("./sections/Personalization")
+const loadMcpServers = () => import("./sections/McpServers")
+const loadGit = () => import("./sections/Git")
+const loadEnvironment = () => import("./sections/Environment")
+const loadBrowser = () => import("./sections/Browser")
+const loadArchive = () => import("./sections/Archive")
+const loadAccount = () => import("./sections/Account")
+const loadStatistics = () => import("./sections/Statistics")
+const loadNetwork = () => import("./sections/Network")
+
+const General = lazy(() => loadGeneral().then((m) => ({ default: m.General })))
+const Appearance = lazy(() =>
+  loadAppearance().then((m) => ({ default: m.Appearance }))
+)
+const Config = lazy(() => loadConfig().then((m) => ({ default: m.Config })))
+const ThirdPartyApi = lazy(() =>
+  loadThirdPartyApi().then((m) => ({ default: m.ThirdPartyApi }))
+)
+const Personalization = lazy(() =>
+  loadPersonalization().then((m) => ({ default: m.Personalization }))
+)
+const McpServers = lazy(() =>
+  loadMcpServers().then((m) => ({ default: m.McpServers }))
+)
+const Git = lazy(() => loadGit().then((m) => ({ default: m.Git })))
+const Environment = lazy(() =>
+  loadEnvironment().then((m) => ({ default: m.Environment }))
+)
+const Browser = lazy(() => loadBrowser().then((m) => ({ default: m.Browser })))
+const ArchiveSection = lazy(() =>
+  loadArchive().then((m) => ({ default: m.Archive }))
+)
+const Account = lazy(() => loadAccount().then((m) => ({ default: m.Account })))
+const Statistics = lazy(() =>
+  loadStatistics().then((m) => ({ default: m.Statistics }))
+)
+const Network = lazy(() => loadNetwork().then((m) => ({ default: m.Network })))
+
 const SECTIONS: SectionDef[] = [
-  { id: "general", label: "常规", icon: Cog, Component: General },
-  { id: "appearance", label: "外观", icon: Sliders, Component: Appearance },
+  {
+    id: "general",
+    label: "常规",
+    icon: Cog,
+    Component: General,
+    load: loadGeneral
+  },
+  {
+    id: "appearance",
+    label: "外观",
+    icon: Sliders,
+    Component: Appearance,
+    load: loadAppearance
+  },
   {
     id: "config",
     label: "配置",
     icon: Settings2,
-    Component: Config
+    Component: Config,
+    load: loadConfig
   },
   {
     id: "third-party-api",
     label: "第三方 API",
     icon: Key,
-    Component: ThirdPartyApi
+    Component: ThirdPartyApi,
+    load: loadThirdPartyApi
   },
   {
     id: "personalization",
     label: "个性化",
     icon: UserCircle,
-    Component: Personalization
+    Component: Personalization,
+    load: loadPersonalization
   },
   {
     id: "mcp",
     label: "MCP 服务器",
     icon: Plug,
-    Component: McpServers
+    Component: McpServers,
+    load: loadMcpServers
   },
   {
     id: "git",
     label: "Git",
     icon: GitBranch,
-    Component: Git
+    Component: Git,
+    load: loadGit
   },
   {
     id: "env",
     label: "环境",
     icon: SlidersHorizontal,
-    Component: Environment
+    Component: Environment,
+    load: loadEnvironment
   },
   {
     id: "worktree",
@@ -106,38 +173,58 @@ const SECTIONS: SectionDef[] = [
     id: "browser",
     label: "浏览器使用",
     icon: Globe,
-    Component: Browser
+    Component: Browser,
+    load: loadBrowser
   },
   {
     id: "archive",
     label: "已归档对话",
     icon: Archive,
-    Component: ArchiveSection
+    Component: ArchiveSection,
+    load: loadArchive
   },
   {
     id: "account",
     label: "账户和使用情况",
     icon: Monitor,
-    Component: Account
+    Component: Account,
+    load: loadAccount
   },
   {
     id: "statistics",
     label: "统计",
     icon: BarChart3,
-    Component: Statistics
+    Component: Statistics,
+    load: loadStatistics
   },
   {
     id: "network",
     label: "网络代理",
     icon: NetworkIcon,
-    Component: Network
+    Component: Network,
+    load: loadNetwork
   }
 ]
+
+function SectionLoader() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 p-6">
+      <div className="h-7 w-40 rounded-md bg-muted" />
+      <div className="grid gap-3">
+        <div className="h-24 rounded-lg border bg-card" />
+        <div className="h-24 rounded-lg border bg-card" />
+        <div className="h-16 rounded-lg border bg-card" />
+      </div>
+    </div>
+  )
+}
 
 export function SettingsWorkspace({
   currentCwd,
   sidebarVisible = true,
-  initialSection = "general"
+  initialSection = "general",
+  onSelectProject,
+  onSelectSession
 }: SettingsWorkspaceProps) {
   const [section, setSection] = useState<string>(initialSection)
   const cur = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
@@ -157,10 +244,12 @@ export function SettingsWorkspace({
                 const Icon = s.icon
                 const active = s.id === section
                 return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => setSection(s.id)}
+	                  <button
+	                    key={s.id}
+	                    type="button"
+	                    onMouseEnter={() => void s.load?.()}
+	                    onFocus={() => void s.load?.()}
+	                    onClick={() => setSection(s.id)}
                     className={cn(
                       "flex h-9 cursor-pointer items-center gap-3 rounded-md px-3 text-left text-sm font-medium transition-colors",
                       active
@@ -177,9 +266,15 @@ export function SettingsWorkspace({
           </ScrollArea>
         </aside>
       )}
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background">
-        <Cur cwd={currentCwd ?? null} />
-      </main>
+	      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background">
+	        <Suspense fallback={<SectionLoader />}>
+	          <Cur
+              cwd={currentCwd ?? null}
+              onSelectProject={onSelectProject}
+              onSelectSession={onSelectSession}
+            />
+	        </Suspense>
+	      </main>
     </div>
   )
 }
