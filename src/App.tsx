@@ -176,6 +176,7 @@ function SidebarLoader() {
 }
 
 type QueuedInput = { localId: string }
+type ReturnView = "chat" | "plugins"
 type ChatReturnTarget =
   | { kind: "project"; project: Project }
   | { kind: "session"; project: Project; session: SessionMeta }
@@ -325,6 +326,8 @@ export default function App() {
   >([])
   // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
   const sessionIdRef = useRef<string | null>(null)
+  const returnViewRef = useRef<ReturnView>("chat")
+  const settingsEntryTargetRef = useRef<ChatReturnTarget | null>(null)
   const queuedInputsRef = useRef<QueuedInput[]>([])
   const unlistenRef = useRef<UnlistenFn[]>([])
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
@@ -378,7 +381,10 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
         e.preventDefault()
+        returnViewRef.current = "chat"
+        settingsEntryTargetRef.current = null
         setShowSettings(false)
+        setShowPlugins(false)
         setShowAdd(true)
       }
     }
@@ -748,7 +754,10 @@ export default function App() {
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
       setProjects(listProjects())
+      returnViewRef.current = "chat"
+      settingsEntryTargetRef.current = null
       setShowSettings(false)
+      setShowPlugins(false)
       toast.success(`项目「${p.name}」已添加`)
     },
     [teardown]
@@ -793,14 +802,23 @@ export default function App() {
   }, [teardown, globalDefault])
 
   const openSettings = useCallback((section: string = "general") => {
+    if (!showSettings) {
+      returnViewRef.current = showPlugins ? "plugins" : "chat"
+      settingsEntryTargetRef.current =
+        !showPlugins && project && selectedSessionMeta
+          ? { kind: "session", project, session: selectedSessionMeta }
+          : null
+    }
     setChatReturnTarget(null)
     setSidebarVisible(true)
     setShowPlugins(false)
     setSettingsSection(typeof section === "string" ? section : "general")
     setShowSettings(true)
-  }, [])
+  }, [project, selectedSessionMeta, showPlugins, showSettings])
 
   const openPlugins = useCallback(() => {
+    returnViewRef.current = "chat"
+    settingsEntryTargetRef.current = null
     setChatReturnTarget(null)
     setSidebarVisible(true)
     setShowSettings(false)
@@ -808,13 +826,18 @@ export default function App() {
   }, [])
 
   const returnToChat = useCallback(() => {
-    setShowSettings(false)
-    setShowPlugins(false)
-    const target = chatReturnTarget
+    const target = chatReturnTarget ?? settingsEntryTargetRef.current
+    const returnView: ReturnView = target ? "chat" : returnViewRef.current
+    returnViewRef.current = "chat"
+    settingsEntryTargetRef.current = null
     setChatReturnTarget(null)
+    setShowSettings(false)
+    setShowPlugins(returnView === "plugins")
     if (target?.kind === "session") {
+      setShowPlugins(false)
       void switchSession(target.project, target.session)
     } else if (target?.kind === "project") {
+      setShowPlugins(false)
       void switchProject(target.project)
     }
   }, [chatReturnTarget, switchProject, switchSession])
@@ -834,6 +857,8 @@ export default function App() {
   )
 
   const newConversationFromChrome = useCallback(() => {
+    returnViewRef.current = "chat"
+    settingsEntryTargetRef.current = null
     setChatReturnTarget(null)
     setShowSettings(false)
     setShowPlugins(false)
@@ -841,6 +866,8 @@ export default function App() {
   }, [newConversation])
 
   const addProjectFromChrome = useCallback(() => {
+    returnViewRef.current = "chat"
+    settingsEntryTargetRef.current = null
     setChatReturnTarget(null)
     setShowSettings(false)
     setShowPlugins(false)

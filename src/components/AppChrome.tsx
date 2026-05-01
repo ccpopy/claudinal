@@ -9,6 +9,7 @@ import {
   Settings,
   X
 } from "lucide-react"
+import { useCallback, useRef } from "react"
 import type * as React from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { toast } from "sonner"
@@ -165,6 +166,32 @@ function ChromeMenu({
   onToggleMaximize: () => void
   onClose: () => void
 }) {
+  const backPointerHandledRef = useRef(false)
+  const invokeBack = useCallback(() => {
+    onBack?.()
+  }, [onBack])
+  const handleBackPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return
+      backPointerHandledRef.current = true
+      event.preventDefault()
+      event.stopPropagation()
+      invokeBack()
+      window.setTimeout(() => {
+        backPointerHandledRef.current = false
+      }, 0)
+    },
+    [invokeBack]
+  )
+  const handleBackSelect = useCallback(
+    (event: Event) => {
+      event.preventDefault()
+      if (backPointerHandledRef.current) return
+      invokeBack()
+    },
+    [invokeBack]
+  )
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -180,7 +207,10 @@ function ChromeMenu({
           <>
             {inSettings && (
               <>
-                <DropdownMenuItem onClick={() => onBack?.()}>
+                <DropdownMenuItem
+                  onPointerDown={handleBackPointerDown}
+                  onSelect={handleBackSelect}
+                >
                   <ArrowLeft />
                   <span>返回对话</span>
                 </DropdownMenuItem>
