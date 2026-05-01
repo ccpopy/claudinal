@@ -4,6 +4,7 @@ import {
   keychainGet,
   keychainSet
 } from "@/lib/ipc"
+import { emitSettingsBus } from "@/lib/settingsBus"
 
 export type ProxyProtocol = "http" | "https" | "socks5" | "socks5h"
 
@@ -60,6 +61,7 @@ function readPersisted(): PersistedShape {
 
 function writePersisted(shape: PersistedShape) {
   localStorage.setItem(KEY, JSON.stringify(shape))
+  emitSettingsBus("proxy")
 }
 
 /**

@@ -1,5 +1,6 @@
 import { readClaudeSettings, writeClaudeSettings } from "@/lib/ipc"
 import { loadSettings } from "@/lib/settings"
+import { emitSettingsBus } from "@/lib/settingsBus"
 
 // Composer 数据层（重新设计 2026-04-30）：
 //
@@ -100,6 +101,7 @@ export async function syncEffortToGlobal(effort: string): Promise<boolean> {
     const next = { ...((raw ?? {}) as Record<string, unknown>) }
     next.effortLevel = effort
     await writeClaudeSettings("global", next)
+    emitSettingsBus("composerPrefs")
     return true
   } catch {
     return false

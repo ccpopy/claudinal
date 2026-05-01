@@ -83,6 +83,7 @@ import {
   unarchive
 } from "@/lib/archivedSessions"
 import { unpin } from "@/lib/pinned"
+import { subscribeSettingsBus } from "@/lib/settingsBus"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -325,6 +326,7 @@ export default function App() {
   const [sessionComposer, setSessionComposer] = useState<ComposerPrefs | null>(
     null
   )
+  const [thirdPartyApiVersion, setThirdPartyApiVersion] = useState(0)
   const [oauthUsage, setOauthUsage] = useState<OauthUsage | null>(null)
   const [draft, setDraft] = useState("")
   const [pinTick, setPinTick] = useState(0)
@@ -350,6 +352,8 @@ export default function App() {
   const sessionIdRef = useRef<string | null>(null)
   const activeRuntimeIdRef = useRef<string | null>(null)
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
+  const sessionComposerRef = useRef<ComposerPrefs | null>(null)
+  const permissionModeTouchedRef = useRef(false)
   const returnViewRef = useRef<ReturnView>("chat")
   const settingsEntryTargetRef = useRef<ChatReturnTarget | null>(null)
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
@@ -366,6 +370,10 @@ export default function App() {
   useEffect(() => {
     stateRef.current = state
   }, [state])
+
+  useEffect(() => {
+    sessionComposerRef.current = sessionComposer
+  }, [sessionComposer])
 
   const flushRunningActions = useCallback((run: RunningSession) => {
     if (run.pendingActions.length === 0) return
@@ -530,6 +538,7 @@ export default function App() {
     setStreaming(run.streaming)
     dispatch({ kind: "replace_state", state: run.state })
     stateRef.current = run.state
+    sessionComposerRef.current = run.sessionComposer
     setSessionComposer(run.sessionComposer)
     setComposerPrefs(run.composerPrefs)
   }, [flushRunningActions])
@@ -620,6 +629,67 @@ export default function App() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
+  }, [])
+
+  // Settings 里改 defaultModel/defaultEffort，或 syncEffortToGlobal 写回 ~/.claude/settings.json
+  // 之后，App 缓存的 globalDefault 需要刷新；当前没有会话级覆盖时，Composer
+  // 也要跟着新默认值走，否则新会话会继续使用旧的非空 composerPrefs。
+  useEffect(() => {
+    let refreshSeq = 0
+    const applyDefaultComposer = (next: ComposerPrefs) => {
+      setGlobalDefault(next)
+      if (sessionComposerRef.current) return
+      setComposerPrefs(next)
+      const activeRuntimeId = activeRuntimeIdRef.current
+      const activeRun = activeRuntimeId
+        ? runningSessionsRef.current.get(activeRuntimeId)
+        : null
+      if (activeRun && !activeRun.sessionComposer) {
+        activeRun.composerPrefs = next
+      }
+    }
+    const refreshComposerDefaults = () => {
+      const seq = ++refreshSeq
+      loadGlobalDefault()
+        .then((next) => {
+          if (seq === refreshSeq) applyDefaultComposer(next)
+        })
+        .catch((error) => {
+          console.error("刷新 Composer 默认配置失败:", error)
+        })
+    }
+    const refreshAppSettings = () => {
+      if (permissionModeTouchedRef.current) return
+      const settings = loadSettings()
+      setSessionPermissionMode(settings.defaultPermissionMode)
+      setPlanMode(settings.defaultPermissionMode === "plan")
+    }
+    const refreshSettings = () => {
+      refreshAppSettings()
+      refreshComposerDefaults()
+    }
+    const refreshThirdPartyApi = () => {
+      setThirdPartyApiVersion((version) => version + 1)
+      refreshComposerDefaults()
+      if (!isOfficialApi()) {
+        setOauthUsage(null)
+        return
+      }
+      fetchOauthUsage()
+        .then((usage) => setOauthUsage(usage))
+        .catch((error) => {
+          console.error("刷新 OAuth 用量失败:", error)
+          setOauthUsage(null)
+        })
+    }
+    const off1 = subscribeSettingsBus("settings", refreshSettings)
+    const off2 = subscribeSettingsBus("composerPrefs", refreshComposerDefaults)
+    const off3 = subscribeSettingsBus("thirdPartyApi", refreshThirdPartyApi)
+    return () => {
+      off1()
+      off2()
+      off3()
+    }
   }, [])
 
   const teardown = useCallback(async () => {
@@ -968,6 +1038,7 @@ export default function App() {
 
   const handlePermissionModeChange = useCallback(
     (mode: AppSettings["defaultPermissionMode"]) => {
+      permissionModeTouchedRef.current = true
       setSessionPermissionMode(mode)
       setPlanMode(mode === "plan")
     },
@@ -975,6 +1046,7 @@ export default function App() {
   )
 
   const handlePlanModeChange = useCallback((enabled: boolean) => {
+    permissionModeTouchedRef.current = true
     setPlanMode(enabled)
     setSessionPermissionMode(
       enabled ? "plan" : loadSettings().defaultPermissionMode
@@ -1024,6 +1096,7 @@ export default function App() {
         dispatch({ kind: "load_transcript", events: merged })
         // 还原会话级 composer 偏好；没有 sidecar.composer 就用全局默认
         const sessionPrefs = pickComposerFromSidecar(sidecar)
+        sessionComposerRef.current = sessionPrefs
         setSessionComposer(sessionPrefs)
         setComposerPrefs(sessionPrefs ?? globalDefault)
       } catch (e) {
@@ -1096,6 +1169,7 @@ export default function App() {
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
     // 新对话清掉会话级覆盖，回到全局默认
+    sessionComposerRef.current = null
     setSessionComposer(null)
     setComposerPrefs(globalDefault)
   }, [detachActiveSession, globalDefault])
@@ -1326,6 +1400,7 @@ export default function App() {
         }
         // 用户已显式覆盖：标记到 sessionComposer，并尝试写入当前会话的 sidecar。
         // sid 优先级：select 的会话 → reducer init 拿到的 jsonl id（spawn 后第一时间可用）。
+        sessionComposerRef.current = updated
         setSessionComposer(updated)
         const activeRuntimeId = activeRuntimeIdRef.current
         const activeRun = activeRuntimeId
@@ -1361,7 +1436,7 @@ export default function App() {
       value: model,
       label: cfg.providerName ? `${cfg.providerName} · ${model}` : model
     }))
-  }, [showSettings])
+  }, [thirdPartyApiVersion])
 
   const projectActions = useMemo(() => {
     if (!project) return []

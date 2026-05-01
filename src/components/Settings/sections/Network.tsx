@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
@@ -33,6 +33,7 @@ import {
   type ProxyConfig,
   type ProxyProtocol
 } from "@/lib/proxy"
+import { subscribeSettingsBus } from "@/lib/settingsBus"
 import {
   SettingsSection,
   SettingsSectionBody,
@@ -82,6 +83,11 @@ export function Network() {
   const [target, setTarget] = useState<string>(TEST_TARGETS[0].value)
   const [kcOk, setKcOk] = useState<boolean | null>(null)
   const [secretStored, setSecretStored] = useState<SecretStorage>("unknown")
+  const dirtyRef = useRef(dirty)
+
+  useEffect(() => {
+    dirtyRef.current = dirty
+  }, [dirty])
 
   useEffect(() => {
     // 检测 settings.json env 是否已设代理 —— CLI 会优先合并 env 覆盖 spawn 注入
@@ -115,6 +121,29 @@ export function Network() {
       })
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const reload = () => {
+      if (dirtyRef.current) return
+      loadProxyAsync()
+        .then((c) => {
+          if (cancelled) return
+          setConfig(c)
+          setSecretStored(c.password ? "unknown" : "empty")
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            toast.error(`读取代理配置失败: ${String(error)}`)
+          }
+        })
+    }
+    const off = subscribeSettingsBus("proxy", reload)
+    return () => {
+      cancelled = true
+      off()
     }
   }, [])
 

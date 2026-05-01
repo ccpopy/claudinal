@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
   Download,
@@ -48,6 +48,7 @@ import {
   type ThirdPartyApiProvider,
   type ThirdPartyApiStore
 } from "@/lib/thirdPartyApi"
+import { subscribeSettingsBus } from "@/lib/settingsBus"
 
 interface CliSettings {
   model?: string
@@ -121,6 +122,8 @@ export function ThirdPartyApi() {
     : createThirdPartyApiProvider()
   const editorConfig = editor?.provider ?? null
   const activeOfficial = store.activeProviderId === OFFICIAL_PROVIDER_ID
+  const dirtyRef = useRef(dirty)
+  const editorRef = useRef(editor)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -143,6 +146,18 @@ export function ThirdPartyApi() {
 
   useEffect(() => {
     load()
+  }, [load])
+
+  useEffect(() => {
+    dirtyRef.current = dirty
+    editorRef.current = editor
+  }, [dirty, editor])
+
+  useEffect(() => {
+    return subscribeSettingsBus("thirdPartyApi", () => {
+      if (dirtyRef.current || editorRef.current) return
+      void load()
+    })
   }, [load])
 
   const update = (patch: Partial<ThirdPartyApiProvider>) => {

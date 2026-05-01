@@ -1,3 +1,5 @@
+import { emitSettingsBus } from "@/lib/settingsBus"
+
 const KEY = "claudinal.settings"
 
 export const DEFAULT_PERMISSION_MCP_TOOL =
@@ -60,6 +62,7 @@ export function loadSettings(): AppSettings {
 export function saveSettings(s: AppSettings) {
   try {
     localStorage.setItem(KEY, JSON.stringify(s))
+    emitSettingsBus("settings")
   } catch {
     // ignore
   }
@@ -151,6 +154,7 @@ export function recordResultUsage(
   snap.updatedAt = Date.now()
   try {
     localStorage.setItem(USAGE_KEY, JSON.stringify(snap))
+    emitSettingsBus("usage")
   } catch {
     // ignore
   }
@@ -159,6 +163,7 @@ export function recordResultUsage(
 export function clearUsage() {
   try {
     localStorage.removeItem(USAGE_KEY)
+    emitSettingsBus("usage")
   } catch {
     // ignore
   }

@@ -1,3 +1,5 @@
+import { emitSettingsBus } from "@/lib/settingsBus"
+
 export interface AppearanceConfig {
   accent?: string
   background?: string
@@ -135,17 +137,21 @@ export function loadAppearance(): Appearance {
       !merged.dark.background &&
       !merged.dark.foreground
     if (allEmpty) return cloneClaudeDefault()
+    // 迁移仅针对 Claude 预设：旧版本可能保存了 Sans 版字体栈或留空，
+    // 这里把它们规范成新的 Serif 默认。其他预设/自定义状态保持原样，
+    // 避免把用户清空的字段回填成 Anthropic Serif 这种"漏字段"。
     let migrated = false
-    const presetId = matchPreset(merged)
-    for (const mode of ["light", "dark"] as const) {
-      const fontUI = merged[mode].fontUI
-      if (!fontUI || (presetId === "claude" && fontUI === SANS_CLAUDE_FONT_UI)) {
-        merged[mode].fontUI = CLAUDE_FONT_UI
-        migrated = true
-      }
-      if (!merged[mode].fontMono && presetId === "claude") {
-        merged[mode].fontMono = CLAUDE_FONT_MONO
-        migrated = true
+    if (matchPreset(merged) === "claude") {
+      for (const mode of ["light", "dark"] as const) {
+        const fontUI = merged[mode].fontUI
+        if (!fontUI || fontUI === SANS_CLAUDE_FONT_UI) {
+          merged[mode].fontUI = CLAUDE_FONT_UI
+          migrated = true
+        }
+        if (!merged[mode].fontMono) {
+          merged[mode].fontMono = CLAUDE_FONT_MONO
+          migrated = true
+        }
       }
     }
     if (migrated) saveAppearance(merged)
@@ -157,10 +163,12 @@ export function loadAppearance(): Appearance {
 
 export function saveAppearance(a: Appearance) {
   localStorage.setItem(KEY, JSON.stringify(a))
+  emitSettingsBus("appearance")
 }
 
 export function resetAppearance() {
   localStorage.removeItem(KEY)
+  emitSettingsBus("appearance")
 }
 
 const DYNAMIC_VARS = [
@@ -192,6 +200,12 @@ function withFallback(stack: string, fallback: string): string {
 
 export function applyAppearance(theme: "light" | "dark", a: Appearance) {
   const cfg = theme === "dark" ? a.dark : a.light
+  const presetId = matchPreset(a)
+  // index.css 根级 --font-sans 写死了 Anthropic Serif，所以即使 cfg.fontUI 为空，
+  // 不主动覆盖就会"看起来还是 Claude"。这里按预设算一组兜底字体，确保切到
+  // Codex / GitHub / 自定义且未填字体时也能回到系统 sans / mono。
+  const fallbackUI = presetId === "claude" ? CLAUDE_FONT_UI : SANS_CLAUDE_FONT_UI
+  const fallbackMono = presetId === "claude" ? CLAUDE_FONT_MONO : MONO_FALLBACK
   const root = document.documentElement
   clearDynamic(root)
   if (cfg.accent) {
@@ -204,14 +218,15 @@ export function applyAppearance(theme: "light" | "dark", a: Appearance) {
   if (cfg.foreground) {
     root.style.setProperty("--foreground", cfg.foreground)
   }
-  if (cfg.fontUI) {
-    const fontUI = withFallback(cfg.fontUI, UI_FALLBACK)
-    root.style.setProperty("--font-sans", fontUI)
-    root.style.setProperty("font-family", fontUI)
-  }
-  if (cfg.fontMono) {
-    root.style.setProperty("--font-mono", withFallback(cfg.fontMono, MONO_FALLBACK))
-  }
+  const userFontUI = cfg.fontUI?.trim()
+  const fontUI = userFontUI ? withFallback(userFontUI, UI_FALLBACK) : fallbackUI
+  root.style.setProperty("--font-sans", fontUI)
+  root.style.setProperty("font-family", fontUI)
+  const userFontMono = cfg.fontMono?.trim()
+  const fontMono = userFontMono
+    ? withFallback(userFontMono, MONO_FALLBACK)
+    : fallbackMono
+  root.style.setProperty("--font-mono", fontMono)
   if (cfg.translucentSidebar) {
     root.style.setProperty("--sidebar", "transparent")
   }

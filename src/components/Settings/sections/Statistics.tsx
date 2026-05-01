@@ -15,6 +15,7 @@ import {
   type ActivityCell,
   type GlobalUsage
 } from "@/lib/ipc"
+import { subscribeSettingsBus } from "@/lib/settingsBus"
 import {
   SettingsSection,
   SettingsSectionBody,
@@ -60,6 +61,12 @@ export function Statistics() {
 
   useEffect(() => {
     refresh()
+  }, [refresh])
+
+  useEffect(() => {
+    return subscribeSettingsBus("usage", () => {
+      void refresh()
+    })
   }, [refresh])
 
   const sortedModels = useMemo(() => {

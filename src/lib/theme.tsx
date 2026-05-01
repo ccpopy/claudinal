@@ -9,6 +9,7 @@ import {
   ThemeContext,
   type Theme
 } from "./theme-context"
+import { subscribeSettingsBus } from "./settingsBus"
 
 function getSystemTheme(): "light" | "dark" {
   if (typeof window === "undefined") return "light"
@@ -46,6 +47,12 @@ export function ThemeProvider({
   useEffect(() => {
     applyClass(resolvedTheme)
     applyAppearance(resolvedTheme, loadAppearance())
+  }, [resolvedTheme])
+
+  useEffect(() => {
+    return subscribeSettingsBus("appearance", () => {
+      applyAppearance(resolvedTheme, loadAppearance())
+    })
   }, [resolvedTheme])
 
   const setTheme = (t: Theme) => {

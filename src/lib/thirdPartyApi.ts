@@ -1,3 +1,5 @@
+import { emitSettingsBus } from "@/lib/settingsBus"
+
 const KEY = "claudinal.third-party-api"
 
 export type ProviderInputFormat = "anthropic" | "openai-chat-completions"
@@ -226,6 +228,7 @@ export function loadThirdPartyApiStore(): ThirdPartyApiStore {
 export function saveThirdPartyApiStore(store: ThirdPartyApiStore) {
   try {
     localStorage.setItem(KEY, JSON.stringify(store))
+    emitSettingsBus("thirdPartyApi")
   } catch {
     // ignore
   }
