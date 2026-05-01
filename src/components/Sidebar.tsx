@@ -33,6 +33,7 @@ import {
 } from "@/lib/ipc"
 import type { Project } from "@/lib/projects"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
+import { listArchived, type ArchivedRef } from "@/lib/archivedSessions"
 import { getSessionTitle } from "@/lib/sessionTitles"
 
 interface Props {
@@ -103,8 +104,10 @@ export function Sidebar({
     Record<string, SessionListState>
   >({})
   const [pinned, setPinned] = useState<PinnedRef[]>(() => listPinned())
+  const [archived, setArchived] = useState<ArchivedRef[]>(() => listArchived())
 
   const refreshPinned = useCallback(() => setPinned(listPinned()), [])
+  const refreshArchived = useCallback(() => setArchived(listArchived()), [])
 
   const copyText = useCallback(async (text: string, label: string) => {
     try {
@@ -199,19 +202,27 @@ export function Sidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects])
 
-  // 主区触发的刷新（如发送消息后），把所有项目 sessions 重新拉一遍
+  // 主区触发的刷新（如发送消息后），把所有项目 sessions 重新拉一遍；
+  // 同时把 pinned / archived 重新读一次，确保 ChatHeader 改动后侧栏立即同步
   useEffect(() => {
     if (refreshKey === 0) return
     for (const p of projects) loadSessions(p)
+    refreshPinned()
+    refreshArchived()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey])
 
   // 计算置顶 + 过滤后的项目列表（项目里非置顶 session 数 > 0 才显示）
+  const archivedSet = new Set(
+    archived.map((a) => `${a.projectId}::${a.sessionId}`)
+  )
   const pinnedSet = new Set(
     pinned.map((p) => `${p.projectId}::${p.sessionId}`)
   )
   const pinnedItems = pinned
     .map((pr) => {
+      // 已归档不出现在置顶区
+      if (archivedSet.has(`${pr.projectId}::${pr.sessionId}`)) return null
       const proj = projects.find((p) => p.id === pr.projectId)
       if (!proj) return null
       const stateP = sessionsByProject[proj.id]
@@ -333,10 +344,12 @@ export function Sidebar({
                   const visibleSessions =
                     sessionsState?.kind === "ok"
                       ? sessionsState.items.filter(
-                          (s) => !pinnedSet.has(`${p.id}::${s.id}`)
+                          (s) =>
+                            !pinnedSet.has(`${p.id}::${s.id}`) &&
+                            !archivedSet.has(`${p.id}::${s.id}`)
                         )
                       : []
-                  // 当一个项目的会话全部被置顶后，从「项目」列表里隐藏
+                  // 当一个项目的会话全部被置顶 / 归档后，从「项目」列表里隐藏
                   if (
                     sessionsState?.kind === "ok" &&
                     sessionsState.items.length > 0 &&

@@ -68,6 +68,12 @@ import { PermissionDialog } from "@/components/PermissionDialog"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 import { getSessionTitle, setSessionTitle } from "@/lib/sessionTitles"
+import {
+  isArchived,
+  toggleArchive,
+  unarchive
+} from "@/lib/archivedSessions"
+import { unpin } from "@/lib/pinned"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -621,6 +627,9 @@ export default function App() {
     await teardown()
     try {
       await deleteSessionJsonl(project.cwd, target)
+      // 删除后顺手把残留的置顶 / 归档记录清掉，避免侧栏 / 归档页出现幽灵条目
+      unpin(project.id, target)
+      unarchive(project.id, target)
       dispatch({ kind: "reset" })
       setSelectedSessionId(null)
       setSidebarRefreshKey((k) => k + 1)
@@ -628,6 +637,28 @@ export default function App() {
     } catch (e) {
       toast.error(`删除失败: ${String(e)}`)
     }
+  }, [project, selectedSessionId, state, teardown])
+
+  const archiveCurrentSession = useCallback(async () => {
+    if (!project) return
+    const target = selectedSessionId ?? findInitSessionId(state)
+    if (!target) {
+      toast.error("当前还没有 session id，无法归档")
+      return
+    }
+    const willArchive = !isArchived(project.id, target)
+    toggleArchive(project.id, target)
+    if (willArchive) {
+      // 归档时自动取消置顶，避免置顶区出现一个其实已经隐藏的会话
+      unpin(project.id, target)
+      await teardown()
+      dispatch({ kind: "reset" })
+      setSelectedSessionId(null)
+      toast.success("会话已归档")
+    } else {
+      toast.success("已取消归档")
+    }
+    setSidebarRefreshKey((k) => k + 1)
   }, [project, selectedSessionId, state, teardown])
 
   const empty = state.entries.length === 0
@@ -740,9 +771,15 @@ export default function App() {
                 resumeSessionId={selectedSessionId}
                 jsonlSessionId={jsonlSessionId}
                 title={chatTitle(state, project, jsonlSessionId)}
+                archived={
+                  !!jsonlSessionId && isArchived(project.id, jsonlSessionId)
+                }
                 onPinChange={() => setPinTick((t) => t + 1)}
                 onRename={
                   jsonlSessionId ? () => setShowRename(true) : undefined
+                }
+                onArchive={
+                  jsonlSessionId ? archiveCurrentSession : undefined
                 }
                 onDelete={deleteCurrentSession}
                 onShowDiff={() => setShowDiff(true)}

@@ -36,6 +36,7 @@ import { McpServers } from "./sections/McpServers"
 import { Environment } from "./sections/Environment"
 import { Git } from "./sections/Git"
 import { Browser } from "./sections/Browser"
+import { Archive as ArchiveSection } from "./sections/Archive"
 
 interface Props {
   open: boolean
@@ -111,7 +112,7 @@ const SECTIONS: SectionDef[] = [
     id: "archive",
     label: "已归档对话",
     icon: Archive,
-    Component: () => <Placeholder title="已归档对话" />
+    Component: ArchiveSection
   },
   {
     id: "account",

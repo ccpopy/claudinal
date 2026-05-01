@@ -1,4 +1,6 @@
 import {
+  Archive,
+  ArchiveRestore,
   Copy,
   FileText,
   FolderOpen,
@@ -32,8 +34,10 @@ interface Props {
   resumeSessionId: string | null
   jsonlSessionId: string | null
   title: string
+  archived?: boolean
   onPinChange?: () => void
   onRename?: () => void
+  onArchive?: () => void
   onDelete?: () => void
   onShowDiff?: () => void
   diffCount?: number
@@ -44,8 +48,10 @@ export function ChatHeader({
   resumeSessionId,
   jsonlSessionId,
   title,
+  archived = false,
   onPinChange,
   onRename,
+  onArchive,
   onDelete,
   onShowDiff,
   diffCount = 0
@@ -148,6 +154,13 @@ export function ChatHeader({
               <span>复制 resume 命令</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => onArchive?.()}
+              disabled={!onArchive}
+            >
+              {archived ? <ArchiveRestore /> : <Archive />}
+              <span>{archived ? "取消归档" : "归档会话"}</span>
+            </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => onDelete?.()}
               disabled={!onDelete}

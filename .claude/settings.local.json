@@ -48,7 +48,8 @@
       "Bash(xargs -I {} sh -c 'echo \"==FILE: {}==\"; head -100 \"{}\"')",
       "Bash(pnpm dlx *)",
       "Bash(pnpm tsc *)",
-      "Bash(pnpm vite *)"
+      "Bash(pnpm vite *)",
+      "Bash(npx eslint *)"
     ]
   }
 }
