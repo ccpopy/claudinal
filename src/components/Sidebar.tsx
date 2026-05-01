@@ -640,6 +640,27 @@ function SessionRow({
       )}
       title={`${title}\n${project.name} · ${session.msg_count} msg · ${fullTime}\n${session.id}`}
     >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onTogglePin()
+            }}
+            className={cn(
+              "absolute top-1/2 z-10 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded bg-sidebar-accent text-sidebar-muted shadow-sm opacity-0 transition-opacity hover:text-sidebar-foreground group-hover/session:opacity-100",
+              indented ? "left-1.5" : "left-1"
+            )}
+            aria-label={pinned ? "取消置顶" : "置顶会话"}
+          >
+            {pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">
+          {pinned ? "取消置顶" : "置顶会话"}
+        </TooltipContent>
+      </Tooltip>
       <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
       {waiting ? (
         <span className="ml-1 shrink-0 rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary transition-opacity group-hover/session:opacity-0">
@@ -656,24 +677,6 @@ function SessionRow({
         </span>
       )}
       <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/session:opacity-100">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onTogglePin()
-              }}
-              className="inline-flex size-5 items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
-              aria-label={pinned ? "取消置顶" : "置顶会话"}
-            >
-              {pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">
-            {pinned ? "取消置顶" : "置顶会话"}
-          </TooltipContent>
-        </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
