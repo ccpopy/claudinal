@@ -76,7 +76,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
             需要授权
           </DialogTitle>
           <DialogDescription>
-            Claude Code 请求执行一个需要确认的操作。你的选择会直接返回给 Claude CLI。
+            Claude Code 请求执行一个需要确认的操作。
           </DialogDescription>
         </DialogHeader>
 
