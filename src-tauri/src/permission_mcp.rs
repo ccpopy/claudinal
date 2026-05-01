@@ -365,13 +365,16 @@ async fn resolve_permission(arguments: Value) -> Result<Value> {
         let token = std::env::var("CLAUDINAL_PERMISSION_BRIDGE_TOKEN")
             .map_err(|_| Error::Other("CLAUDINAL_PERMISSION_BRIDGE_TOKEN is required".into()))?;
         let request_id = Uuid::new_v4().to_string();
+        let runtime_session_id =
+            std::env::var("CLAUDINAL_RUNTIME_SESSION_ID").unwrap_or_else(|_| "mcp".into());
+        let runtime_cwd = std::env::var("CLAUDINAL_RUNTIME_CWD").ok();
         let tool_name = arguments
             .get("tool_name")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        let body = json!({
+        let mut body = json!({
             "request_id": request_id,
-            "session_id": "mcp",
+            "session_id": runtime_session_id,
             "request": {
                 "subtype": "can_use_tool",
                 "tool_name": tool_name,
@@ -380,6 +383,9 @@ async fn resolve_permission(arguments: Value) -> Result<Value> {
                 "description": permission_description(tool_name, arguments.get("input"))
             }
         });
+        if let (Some(obj), Some(cwd)) = (body.as_object_mut(), runtime_cwd) {
+            obj.insert("cwd".into(), json!(cwd));
+        }
         let endpoint = format!("{}/permission-request", url.trim_end_matches('/'));
         let resp = reqwest::Client::new()
             .post(endpoint)

@@ -42,6 +42,8 @@ interface Props {
   selectedSessionId: string | null
   streamingProjectId: string | null
   streamingSessionId: string | null
+  streamingSessionRefs?: Array<{ projectId: string; sessionId: string }>
+  waitingSessionRefs?: Array<{ projectId: string; sessionId: string }>
   inPlugins?: boolean
   onSelectProject: (p: Project) => void
   onSelectSession: (p: Project, s: SessionMeta) => void
@@ -58,6 +60,25 @@ type SessionListState =
   | { kind: "loading" }
   | { kind: "ok"; items: SessionMeta[] }
   | { kind: "error"; message: string }
+
+function samePinnedRefs(a: PinnedRef[], b: PinnedRef[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every(
+    (item, index) =>
+      item.projectId === b[index]?.projectId &&
+      item.sessionId === b[index]?.sessionId
+  )
+}
+
+function sameArchivedRefs(a: ArchivedRef[], b: ArchivedRef[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every(
+    (item, index) =>
+      item.projectId === b[index]?.projectId &&
+      item.sessionId === b[index]?.sessionId &&
+      item.archivedAt === b[index]?.archivedAt
+  )
+}
 
 function fmtRelative(ts: number): string {
   if (!ts) return ""
@@ -88,6 +109,8 @@ export function Sidebar({
   selectedSessionId,
   streamingProjectId,
   streamingSessionId,
+  streamingSessionRefs = [],
+  waitingSessionRefs = [],
   inPlugins = false,
   onSelectProject,
   onSelectSession,
@@ -109,9 +132,32 @@ export function Sidebar({
     () => new Set(pinned.map((p) => p.projectId)),
     [pinned]
   )
+  const streamingSet = useMemo(() => {
+    const set = new Set<string>()
+    if (streamingProjectId && streamingSessionId) {
+      set.add(`${streamingProjectId}::${streamingSessionId}`)
+    }
+    for (const ref of streamingSessionRefs) {
+      set.add(`${ref.projectId}::${ref.sessionId}`)
+    }
+    return set
+  }, [streamingProjectId, streamingSessionId, streamingSessionRefs])
+  const waitingSet = useMemo(() => {
+    const set = new Set<string>()
+    for (const ref of waitingSessionRefs) {
+      set.add(`${ref.projectId}::${ref.sessionId}`)
+    }
+    return set
+  }, [waitingSessionRefs])
 
-  const refreshPinned = useCallback(() => setPinned(listPinned()), [])
-  const refreshArchived = useCallback(() => setArchived(listArchived()), [])
+  const refreshPinned = useCallback(() => {
+    const next = listPinned()
+    setPinned((cur) => (samePinnedRefs(cur, next) ? cur : next))
+  }, [])
+  const refreshArchived = useCallback(() => {
+    const next = listArchived()
+    setArchived((cur) => (sameArchivedRefs(cur, next) ? cur : next))
+  }, [])
 
   const copyText = useCallback(async (text: string, label: string) => {
     try {
@@ -328,9 +374,9 @@ export function Sidebar({
                       selectedSessionId === session.id
                     }
                     streaming={
-                      streamingProjectId === project.id &&
-                      streamingSessionId === session.id
+                      streamingSet.has(`${project.id}::${session.id}`)
                     }
+                    waiting={waitingSet.has(`${project.id}::${session.id}`)}
                     indented={false}
                     onSelect={() => onSelectSession(project, session)}
                     onCopyId={() => copyText(session.id, "会话 ID")}
@@ -488,9 +534,9 @@ export function Sidebar({
                                   selectedSessionId === s.id
                                 }
                                 streaming={
-                                  streamingProjectId === p.id &&
-                                  streamingSessionId === s.id
+                                  streamingSet.has(`${p.id}::${s.id}`)
                                 }
+                                waiting={waitingSet.has(`${p.id}::${s.id}`)}
                                 indented
                                 onSelect={() => onSelectSession(p, s)}
                                 onCopyId={() => copyText(s.id, "会话 ID")}
@@ -532,6 +578,7 @@ function SessionRow({
   pinned,
   active,
   streaming,
+  waiting,
   indented,
   onSelect,
   onCopyId,
@@ -542,6 +589,7 @@ function SessionRow({
   pinned: boolean
   active: boolean
   streaming: boolean
+  waiting: boolean
   indented: boolean
   onSelect: () => void
   onCopyId: () => void
@@ -562,16 +610,21 @@ function SessionRow({
       )}
       title={`${title}\n${project.name} · ${session.msg_count} msg · ${fullTime}\n${session.id}`}
     >
-      {streaming && (
+      <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
+      {waiting ? (
+        <span className="ml-1 shrink-0 rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary transition-opacity group-hover/session:opacity-0">
+          等待中
+        </span>
+      ) : streaming ? (
         <Loader2
           aria-label="运行中"
-          className="size-3 shrink-0 animate-spin text-sidebar-muted"
+          className="ml-1 size-3 shrink-0 animate-spin text-primary transition-opacity group-hover/session:opacity-0"
         />
+      ) : (
+        <span className="ml-1 w-12 shrink-0 text-right text-[11px] tabular-nums text-sidebar-muted transition-opacity group-hover/session:opacity-0">
+          {compactTime}
+        </span>
       )}
-      <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
-      <span className="ml-1 w-12 shrink-0 text-right text-[11px] tabular-nums text-sidebar-muted transition-opacity group-hover/session:opacity-0">
-        {compactTime}
-      </span>
       <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/session:opacity-100">
         <Tooltip>
           <TooltipTrigger asChild>

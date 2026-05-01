@@ -1338,6 +1338,90 @@ pub async fn read_claude_json_mcp_configs(cwd: Option<String>) -> Result<ClaudeJ
 }
 
 #[tauri::command]
+pub async fn write_claude_json_mcp_config(
+    scope: String,
+    cwd: Option<String>,
+    data: Value,
+) -> Result<()> {
+    let path = claude_json_path()?;
+    let mut value = if path.is_file() {
+        let raw = std::fs::read_to_string(&path)?;
+        serde_json::from_str(&raw)?
+    } else {
+        Value::Object(Map::new())
+    };
+
+    if !value.is_object() {
+        return Err(Error::Other(format!(
+            "{} must contain a JSON object",
+            path.display()
+        )));
+    }
+
+    let mcp_servers = data
+        .get("mcpServers")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    if !mcp_servers.is_object() {
+        return Err(Error::Other("mcpServers must be a JSON object".into()));
+    }
+
+    match scope.as_str() {
+        "global" => {
+            value
+                .as_object_mut()
+                .ok_or_else(|| Error::Other("claude json root must be an object".into()))?
+                .insert("mcpServers".into(), mcp_servers);
+        }
+        "project" => {
+            let cwd = cwd.ok_or_else(|| Error::Other("cwd required for project scope".into()))?;
+            let target_key = claude_project_key_for_write(&value, &cwd);
+            let obj = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Other("claude json root must be an object".into()))?;
+            let projects = obj
+                .entry("projects")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !projects.is_object() {
+                return Err(Error::Other(
+                    "claude json projects field must be a JSON object".into(),
+                ));
+            }
+            let project = projects
+                .as_object_mut()
+                .ok_or_else(|| Error::Other("claude json projects must be an object".into()))?
+                .entry(target_key)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !project.is_object() {
+                return Err(Error::Other(
+                    "claude json project entry must be a JSON object".into(),
+                ));
+            }
+            project
+                .as_object_mut()
+                .ok_or_else(|| Error::Other("claude json project entry must be an object".into()))?
+                .insert("mcpServers".into(), mcp_servers);
+        }
+        _ => {
+            return Err(Error::Other(format!(
+                "invalid claude json mcp scope: {scope}"
+            )))
+        }
+    }
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+    let text = serde_json::to_string_pretty(&value)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(Error::from)?;
+    std::fs::rename(&tmp, &path).map_err(Error::from)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn read_claude_mcp_config(scope: String, cwd: Option<String>) -> Result<Option<Value>> {
     let path = claude_mcp_path(&scope, cwd.as_deref())?;
     if !path.is_file() {
@@ -1392,6 +1476,24 @@ fn push_unique_project_key(out: &mut Vec<String>, path: &str) {
 
 fn normalize_claude_project_key(path: &str) -> String {
     path.replace('\\', "/").trim_end_matches('/').to_string()
+}
+
+fn claude_project_key_for_write(value: &Value, cwd: &str) -> String {
+    if let Some(projects) = value.get("projects").and_then(Value::as_object) {
+        for candidate in claude_project_key_candidates(cwd) {
+            if projects.contains_key(&candidate) {
+                return candidate;
+            }
+        }
+        let normalized = normalize_claude_project_key(cwd);
+        if let Some((key, _)) = projects
+            .iter()
+            .find(|(key, _)| normalize_claude_project_key(key).eq_ignore_ascii_case(&normalized))
+        {
+            return key.clone();
+        }
+    }
+    normalize_claude_project_key(cwd)
 }
 
 #[tauri::command]

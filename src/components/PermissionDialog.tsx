@@ -90,6 +90,13 @@ export function PermissionDialog({ request, onSettled }: Props) {
                   "未知工具"}
               </div>
             </div>
+            <div className="rounded-md border bg-muted/30 px-3 py-2">
+              <div className="text-xs text-muted-foreground mb-1">来源</div>
+              <div className="space-y-1 font-mono text-xs">
+                <div className="break-all">session: {request.session_id}</div>
+                {request.cwd && <div className="break-all">cwd: {request.cwd}</div>}
+              </div>
+            </div>
             {request.request.description && (
               <div className="rounded-md border bg-muted/30 px-3 py-2">
                 <div className="text-xs text-muted-foreground mb-1">说明</div>

@@ -11,6 +11,7 @@ export type Action =
   | { kind: "unqueue_local"; localId: string }
   | { kind: "drop_local"; localId: string }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
+  | { kind: "replace_state"; state: State }
   | { kind: "reset" }
 
 export function init(): State {
@@ -19,6 +20,7 @@ export function init(): State {
 
 export function reduce(state: State, action: Action): State {
   if (action.kind === "reset") return init()
+  if (action.kind === "replace_state") return action.state
   if (action.kind === "user_local") {
     const ts = Date.now()
     const msg: UIMessage = {

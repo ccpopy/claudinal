@@ -54,7 +54,12 @@ import {
   trimApiUrl
 } from "@/lib/thirdPartyApi"
 import { isOfficialApi } from "@/lib/oauthUsage"
-import { reduce, init as reducerInit } from "@/lib/reducer"
+import {
+  reduce,
+  init as reducerInit,
+  type Action as ReducerAction,
+  type State as ReducerState
+} from "@/lib/reducer"
 import {
   listProjects,
   removeProject as removeProjectStore,
@@ -180,6 +185,21 @@ type ReturnView = "chat" | "plugins"
 type ChatReturnTarget =
   | { kind: "project"; project: Project }
   | { kind: "session"; project: Project; session: SessionMeta }
+
+type RunningSession = {
+  runtimeId: string
+  project: Project
+  jsonlSessionId: string | null
+  selectedSessionMeta: SessionMeta | null
+  state: ReducerState
+  streaming: boolean
+  pendingPermissionRequestIds: Set<string>
+  pendingActions: ReducerAction[]
+  queuedInputs: QueuedInput[]
+  unlisten: UnlistenFn[]
+  composerPrefs: ComposerPrefs
+  sessionComposer: ComposerPrefs | null
+}
 
 function buildCliBlocks(
   text: string,
@@ -317,6 +337,7 @@ export default function App() {
     string | null
   >(null)
   const [loadingSession, setLoadingSession] = useState(false)
+  const [runningTick, setRunningTick] = useState(0)
   const [gitStatus, setGitStatus] = useState<GitWorktreeStatus | null>(null)
   const [diffPatch, setDiffPatch] = useState<WorktreeDiff | null>(null)
   const [diffPatchLoading, setDiffPatchLoading] = useState(false)
@@ -325,12 +346,212 @@ export default function App() {
     PermissionRequestPayload[]
   >([])
   // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
+  const stateRef = useRef<ReducerState>(reducerInit())
   const sessionIdRef = useRef<string | null>(null)
+  const activeRuntimeIdRef = useRef<string | null>(null)
+  const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
   const returnViewRef = useRef<ReturnView>("chat")
   const settingsEntryTargetRef = useRef<ChatReturnTarget | null>(null)
-  const queuedInputsRef = useRef<QueuedInput[]>([])
-  const unlistenRef = useRef<UnlistenFn[]>([])
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
+  const switchTokenRef = useRef(0)
+  const streamingRefsCacheRef = useRef<{
+    key: string
+    value: Array<{ projectId: string; sessionId: string }>
+  }>({ key: "", value: [] })
+  const waitingRefsCacheRef = useRef<{
+    key: string
+    value: Array<{ projectId: string; sessionId: string }>
+  }>({ key: "", value: [] })
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
+
+  const flushRunningActions = useCallback((run: RunningSession) => {
+    if (run.pendingActions.length === 0) return
+    let next = run.state
+    for (const action of run.pendingActions) {
+      next = reduce(next, action)
+    }
+    run.pendingActions = []
+    run.state = next
+    if (activeRuntimeIdRef.current === run.runtimeId) {
+      dispatch({ kind: "replace_state", state: next })
+      stateRef.current = next
+    }
+  }, [])
+
+  const applyRunningAction = useCallback(
+    (run: RunningSession, action: ReducerAction) => {
+      if (activeRuntimeIdRef.current !== run.runtimeId) {
+        run.pendingActions.push(action)
+        return
+      }
+      run.state = reduce(run.state, action)
+      dispatch(action)
+    },
+    []
+  )
+
+  const setRunningSessionStreaming = useCallback(
+    (run: RunningSession, next: boolean) => {
+      if (run.streaming === next) return
+      run.streaming = next
+      if (activeRuntimeIdRef.current === run.runtimeId) {
+        setStreaming(next)
+      }
+      setRunningTick((tick) => tick + 1)
+    },
+    []
+  )
+
+  const closeRunningSession = useCallback(
+    async (
+      runtimeId: string,
+      opts: { dropQueued?: boolean; stopProcess?: boolean } = {}
+    ) => {
+      const run = runningSessionsRef.current.get(runtimeId)
+      if (!run) {
+        setPermissionRequests((cur) =>
+          cur.filter((request) => request.session_id !== runtimeId)
+        )
+        if (opts.stopProcess !== false) {
+          await stopSession(runtimeId).catch((e) => console.error(e))
+        }
+        if (activeRuntimeIdRef.current === runtimeId) {
+          activeRuntimeIdRef.current = null
+          sessionIdRef.current = null
+          setSessionId(null)
+          setStreaming(false)
+        }
+        return
+      }
+
+      const isActive = activeRuntimeIdRef.current === runtimeId
+      if (opts.dropQueued !== false && run.queuedInputs.length > 0) {
+        for (const item of run.queuedInputs) {
+          applyRunningAction(run, {
+            kind: "drop_local",
+            localId: item.localId
+          })
+        }
+        run.queuedInputs = []
+      }
+      run.unlisten.forEach((unlisten) => unlisten())
+      run.unlisten = []
+      runningSessionsRef.current.delete(runtimeId)
+      setPermissionRequests((cur) =>
+        cur.filter((request) => request.session_id !== runtimeId)
+      )
+      if (opts.stopProcess !== false) {
+        await stopSession(runtimeId).catch((e) => console.error(e))
+      }
+      if (isActive) {
+        activeRuntimeIdRef.current = null
+        sessionIdRef.current = null
+        setSessionId(null)
+        setStreaming(false)
+      }
+      setRunningTick((tick) => tick + 1)
+    },
+    [applyRunningAction]
+  )
+
+  const detachActiveSession = useCallback(async () => {
+    const runtimeId = activeRuntimeIdRef.current
+    activeRuntimeIdRef.current = null
+    sessionIdRef.current = null
+    setSessionId(null)
+    setStreaming(false)
+    if (!runtimeId) return
+    const run = runningSessionsRef.current.get(runtimeId)
+    if (
+      run &&
+      !run.streaming &&
+      run.pendingPermissionRequestIds.size === 0
+    ) {
+      await closeRunningSession(runtimeId, { dropQueued: false })
+    }
+  }, [closeRunningSession])
+
+  const stopActiveSession = useCallback(async () => {
+    const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
+    if (runtimeId) {
+      await closeRunningSession(runtimeId)
+      return
+    }
+    activeRuntimeIdRef.current = null
+    sessionIdRef.current = null
+    setSessionId(null)
+    setStreaming(false)
+  }, [closeRunningSession])
+
+  const findRunningSession = useCallback(
+    (p: Project, jsonlSessionId: string): RunningSession | null => {
+      for (const run of runningSessionsRef.current.values()) {
+        if (run.project.id !== p.id) continue
+        const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
+        if (sid && !run.jsonlSessionId) run.jsonlSessionId = sid
+        if (sid === jsonlSessionId) return run
+      }
+      return null
+    },
+    []
+  )
+
+  const stopRunningSessionForJsonl = useCallback(
+    async (p: Project, jsonlSessionId: string) => {
+      const targets: string[] = []
+      for (const run of runningSessionsRef.current.values()) {
+        if (run.project.id !== p.id) continue
+        const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
+        if (sid === jsonlSessionId) targets.push(run.runtimeId)
+      }
+      await Promise.all(targets.map((runtimeId) => closeRunningSession(runtimeId)))
+    },
+    [closeRunningSession]
+  )
+
+  const stopRunningSessionsForProject = useCallback(
+    async (projectId: string) => {
+      const targets = Array.from(runningSessionsRef.current.values())
+        .filter((run) => run.project.id === projectId)
+        .map((run) => run.runtimeId)
+      await Promise.all(targets.map((runtimeId) => closeRunningSession(runtimeId)))
+    },
+    [closeRunningSession]
+  )
+
+  const activateRunningSession = useCallback((run: RunningSession) => {
+    flushRunningActions(run)
+    activeRuntimeIdRef.current = run.runtimeId
+    sessionIdRef.current = run.runtimeId
+    setSessionId(run.runtimeId)
+    setStreaming(run.streaming)
+    dispatch({ kind: "replace_state", state: run.state })
+    stateRef.current = run.state
+    setSessionComposer(run.sessionComposer)
+    setComposerPrefs(run.composerPrefs)
+  }, [flushRunningActions])
+
+  const settlePermissionRequest = useCallback(
+    (requestId: string) => {
+      let changed = false
+      for (const run of runningSessionsRef.current.values()) {
+        if (run.pendingPermissionRequestIds.delete(requestId)) {
+          changed = true
+        }
+      }
+      setPermissionRequests((cur) =>
+        cur.filter((request) => request.request_id !== requestId)
+      )
+      if (changed) {
+        setSidebarRefreshKey((k) => k + 1)
+        setRunningTick((k) => k + 1)
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     detectClaudeCli()
@@ -359,19 +580,28 @@ export default function App() {
     setProjects(list)
     if (list.length > 0) setProject((cur) => cur ?? list[0])
     listenPermissionRequests((payload) => {
+      const run = runningSessionsRef.current.get(payload.session_id)
+      if (run) {
+        run.pendingPermissionRequestIds.add(payload.request_id)
+      }
       setPermissionRequests((cur) =>
         cur.some((p) => p.request_id === payload.request_id)
           ? cur
           : [...cur, payload]
       )
+      setSidebarRefreshKey((k) => k + 1)
+      setRunningTick((k) => k + 1)
     })
       .then((u) => {
         permissionUnlistenRef.current = u
       })
       .catch((e) => toast.error(`权限监听启动失败: ${String(e)}`))
     return () => {
-      unlistenRef.current.forEach((u) => u())
-      unlistenRef.current = []
+      for (const run of runningSessionsRef.current.values()) {
+        run.unlisten.forEach((u) => u())
+        stopSession(run.runtimeId).catch((e) => console.error(e))
+      }
+      runningSessionsRef.current.clear()
       permissionUnlistenRef.current?.()
       permissionUnlistenRef.current = null
     }
@@ -393,35 +623,17 @@ export default function App() {
   }, [])
 
   const teardown = useCallback(async () => {
-    const activeSessionId = sessionIdRef.current ?? sessionId
-    if (activeSessionId) {
-      try {
-        await stopSession(activeSessionId)
-      } catch (e) {
-        console.error(e)
-      }
-    }
-    unlistenRef.current.forEach((u) => u())
-    unlistenRef.current = []
-    setPermissionRequests([])
-    sessionIdRef.current = null
-    setSessionId(null)
-    setStreaming(false)
-    const queued = queuedInputsRef.current
-    if (queued.length > 0) {
-      for (const p of queued) dispatch({ kind: "drop_local", localId: p.localId })
-      toast(`已取消等待处理的 ${queued.length} 条消息`)
-      queuedInputsRef.current = []
-    }
-  }, [sessionId])
+    await stopActiveSession()
+  }, [stopActiveSession])
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
     if (!project) {
       setShowAdd(true)
       return null
     }
-    const activeSessionId = sessionIdRef.current ?? sessionId
+    const activeSessionId = activeRuntimeIdRef.current ?? sessionIdRef.current
     if (activeSessionId) return activeSessionId
+    let createdRuntimeId: string | null = null
     try {
       const proxyEnv = buildProxyEnv(await loadProxyAsync())
       const cfg = loadSettings()
@@ -450,14 +662,42 @@ export default function App() {
         permissionPromptTool: cfg.permissionPromptTool.trim() || null,
         mcpConfig: cfg.permissionMcpConfig.trim() || null
       })
+      createdRuntimeId = id
+      const run: RunningSession = {
+        runtimeId: id,
+        project,
+        jsonlSessionId: selectedSessionId,
+        selectedSessionMeta,
+        state: stateRef.current,
+        streaming: false,
+        pendingPermissionRequestIds: new Set(),
+        pendingActions: [],
+        queuedInputs: [],
+        unlisten: [],
+        composerPrefs,
+        sessionComposer
+      }
+      runningSessionsRef.current.set(id, run)
+      activeRuntimeIdRef.current = id
+      sessionIdRef.current = id
+      setSessionId(id)
+      setRunningTick((tick) => tick + 1)
       const u1 = await listenSessionEvents(id, (ev) => {
-        dispatch({ kind: "event", event: ev })
+        applyRunningAction(run, { kind: "event", event: ev })
         const t = (ev as { type?: string }).type
+        const evSessionId = (ev as { session_id?: string }).session_id
+        if (evSessionId && run.jsonlSessionId !== evSessionId) {
+          run.jsonlSessionId = evSessionId
+          if (activeRuntimeIdRef.current === run.runtimeId) {
+            setSelectedSessionId((cur) => cur ?? evSessionId)
+          }
+          setRunningTick((tick) => tick + 1)
+        }
         if (
           t === "stream_event" &&
           (ev as { event?: { type?: string } }).event?.type === "message_start"
         ) {
-          setStreaming(true)
+          setRunningSessionStreaming(run, true)
         }
         if (t === "system") {
           const apiKeySource = (ev as { apiKeySource?: string }).apiKeySource
@@ -490,17 +730,20 @@ export default function App() {
           }
         }
         if (t === "result") {
-          const queued = queuedInputsRef.current
+          const queued = run.queuedInputs
           if (queued.length > 0) {
             for (const item of queued) {
-              dispatch({ kind: "unqueue_local", localId: item.localId })
+              applyRunningAction(run, {
+                kind: "unqueue_local",
+                localId: item.localId
+              })
             }
-            queuedInputsRef.current = []
+            run.queuedInputs = []
           }
-          setStreaming(false)
+          setRunningSessionStreaming(run, false)
           setSidebarRefreshKey((k) => k + 1)
-          if (project) {
-            gitWorktreeStatus(project.cwd)
+          if (activeRuntimeIdRef.current === run.runtimeId) {
+            gitWorktreeStatus(run.project.cwd)
               .then(setGitStatus)
               .catch(() => setGitStatus(null))
           }
@@ -518,20 +761,20 @@ export default function App() {
             }
           )
           const sid =
-            (ev as { session_id?: string }).session_id ?? null
-          if (project && sid) {
+            (ev as { session_id?: string }).session_id ?? run.jsonlSessionId
+          if (sid) {
             // 保留 sidecar 已有字段，更新 result；如果用户在 session id 分配前就
             // 改过 composer，这里把 sessionComposer 一并落地。
-            readSessionSidecar(project.cwd, sid)
+            readSessionSidecar(run.project.cwd, sid)
               .then((existing) => {
                 const base = (existing && typeof existing === "object"
                   ? existing
                   : {}) as Record<string, unknown>
                 const next: Record<string, unknown> = { ...base, result: ev }
-                if (sessionComposer && !base.composer) {
-                  next.composer = sessionComposer
+                if (run.sessionComposer && !base.composer) {
+                  next.composer = run.sessionComposer
                 }
-                return writeSessionSidecar(project.cwd, sid, next)
+                return writeSessionSidecar(run.project.cwd, sid, next)
               })
               .catch((e) => console.warn("sidecar write failed:", e))
           }
@@ -539,23 +782,30 @@ export default function App() {
       })
       const u2 = await listenSessionErrors(id, (line) => {
         const ev = { type: "stderr", line } as unknown as ClaudeEvent
-        dispatch({ kind: "event", event: ev })
+        applyRunningAction(run, { kind: "event", event: ev })
       })
-      unlistenRef.current.push(u1, u2)
-      sessionIdRef.current = id
-      setSessionId(id)
+      run.unlisten = [u1, u2]
       return id
     } catch (e) {
+      if (createdRuntimeId) {
+        await closeRunningSession(createdRuntimeId).catch((err) =>
+          console.error(err)
+        )
+      }
       toast.error(`启动会话失败: ${String(e)}`)
       return null
     }
   }, [
     planMode,
     project,
-    sessionId,
     selectedSessionId,
+    selectedSessionMeta,
     composerPrefs,
-    sessionPermissionMode
+    sessionComposer,
+    sessionPermissionMode,
+    applyRunningAction,
+    setRunningSessionStreaming,
+    closeRunningSession
   ])
 
   const refreshGitStatus = useCallback(async () => {
@@ -645,28 +895,38 @@ export default function App() {
       const blocks = buildCliBlocks(text, images)
 
       if (streaming) {
-        dispatch({
-          kind: "user_local",
-          blocks: uiBlocks,
-          queued: true,
-          localId
-        })
-        queuedInputsRef.current = [...queuedInputsRef.current, { localId }]
         const id = sessionIdRef.current ?? (await ensureSession())
+        const run = id ? runningSessionsRef.current.get(id) : null
         if (!id) {
-          queuedInputsRef.current = queuedInputsRef.current.filter(
-            (item) => item.localId !== localId
-          )
-          dispatch({ kind: "drop_local", localId })
           return
+        }
+        if (run) {
+          applyRunningAction(run, {
+            kind: "user_local",
+            blocks: uiBlocks,
+            queued: true,
+            localId
+          })
+          run.queuedInputs = [...run.queuedInputs, { localId }]
+        } else {
+          dispatch({
+            kind: "user_local",
+            blocks: uiBlocks,
+            queued: true,
+            localId
+          })
         }
         try {
           await sendUserMessage(id, blocks)
         } catch (e) {
-          queuedInputsRef.current = queuedInputsRef.current.filter(
-            (item) => item.localId !== localId
-          )
-          dispatch({ kind: "drop_local", localId })
+          if (run) {
+            run.queuedInputs = run.queuedInputs.filter(
+              (item) => item.localId !== localId
+            )
+            applyRunningAction(run, { kind: "drop_local", localId })
+          } else {
+            dispatch({ kind: "drop_local", localId })
+          }
           toast.error(`发送失败: ${String(e)}`)
         }
         return
@@ -674,16 +934,32 @@ export default function App() {
 
       const id = await ensureSession()
       if (!id) return
-      dispatch({ kind: "user_local", blocks: uiBlocks, localId })
-      setStreaming(true)
+      const run = runningSessionsRef.current.get(id)
+      if (run) {
+        applyRunningAction(run, { kind: "user_local", blocks: uiBlocks, localId })
+        setRunningSessionStreaming(run, true)
+      } else {
+        dispatch({ kind: "user_local", blocks: uiBlocks, localId })
+        setStreaming(true)
+      }
       try {
         await sendUserMessage(id, blocks)
       } catch (e) {
         toast.error(`发送失败: ${String(e)}`)
-        setStreaming(false)
+        if (run) {
+          setRunningSessionStreaming(run, false)
+        } else {
+          setStreaming(false)
+        }
       }
     },
-    [streaming, ensureSession, teardown]
+    [
+      streaming,
+      ensureSession,
+      teardown,
+      applyRunningAction,
+      setRunningSessionStreaming
+    ]
   )
 
   const stop = useCallback(async () => {
@@ -707,29 +983,41 @@ export default function App() {
 
   const switchProject = useCallback(
     async (next: Project) => {
-      await teardown()
+      switchTokenRef.current++
+      await detachActiveSession()
       dispatch({ kind: "reset" })
       setProject(next)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
     },
-    [teardown]
+    [detachActiveSession]
   )
 
   const switchSession = useCallback(
     async (p: Project, s: SessionMeta) => {
-      await teardown()
+      const token = ++switchTokenRef.current
+      await detachActiveSession()
+      if (token !== switchTokenRef.current) return
       setLoadingSession(true)
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(s.id)
       setSelectedSessionMeta(s)
+      const runningSession = findRunningSession(p, s.id)
+      if (runningSession) {
+        runningSession.selectedSessionMeta = s
+        activateRunningSession(runningSession)
+        setLoadingSession(false)
+        return
+      }
       try {
         const events = (await readSessionTranscript(p.cwd, s.id)) as ClaudeEvent[]
+        if (token !== switchTokenRef.current) return
         // sidecar 里持久化的 result 事件追加到末尾，恢复 ✓ 完成 chip
         const sidecar = (await readSessionSidecar(p.cwd, s.id)) as
           | { result?: ClaudeEvent; composer?: { model?: string; effort?: string } }
           | null
+        if (token !== switchTokenRef.current) return
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
         dispatch({ kind: "load_transcript", events: merged })
@@ -738,17 +1026,24 @@ export default function App() {
         setSessionComposer(sessionPrefs)
         setComposerPrefs(sessionPrefs ?? globalDefault)
       } catch (e) {
+        if (token !== switchTokenRef.current) return
         toast.error(`加载会话失败: ${String(e)}`)
       } finally {
-        setLoadingSession(false)
+        if (token === switchTokenRef.current) setLoadingSession(false)
       }
     },
-    [teardown, globalDefault]
+    [
+      detachActiveSession,
+      findRunningSession,
+      activateRunningSession,
+      globalDefault
+    ]
   )
 
   const onProjectAdded = useCallback(
     async (p: Project) => {
-      await teardown()
+      switchTokenRef.current++
+      await detachActiveSession()
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(null)
@@ -760,7 +1055,7 @@ export default function App() {
       setShowPlugins(false)
       toast.success(`项目「${p.name}」已添加`)
     },
-    [teardown]
+    [detachActiveSession]
   )
 
   const handleRemove = useCallback((id: string) => {
@@ -770,10 +1065,10 @@ export default function App() {
   const performRemoveProject = useCallback(async () => {
     const id = pendingRemoveProjectId
     if (!id) return
+    await stopRunningSessionsForProject(id)
     removeProjectStore(id)
     setProjects(listProjects())
     if (project?.id === id) {
-      await teardown()
       setProject(null)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
@@ -781,7 +1076,7 @@ export default function App() {
     }
     setPendingRemoveProjectId(null)
     toast.success("项目已从列表移除")
-  }, [pendingRemoveProjectId, project, teardown])
+  }, [pendingRemoveProjectId, project, stopRunningSessionsForProject])
 
   const pendingRemoveProject = useMemo(
     () =>
@@ -792,14 +1087,15 @@ export default function App() {
   )
 
   const newConversation = useCallback(async () => {
-    await teardown()
+    switchTokenRef.current++
+    await detachActiveSession()
     dispatch({ kind: "reset" })
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
     // 新对话清掉会话级覆盖，回到全局默认
     setSessionComposer(null)
     setComposerPrefs(globalDefault)
-  }, [teardown, globalDefault])
+  }, [detachActiveSession, globalDefault])
 
   const openSettings = useCallback((section: string = "general") => {
     if (!showSettings) {
@@ -886,12 +1182,13 @@ export default function App() {
   }, [newConversationFromChrome])
 
   const clearProject = useCallback(async () => {
-    await teardown()
+    switchTokenRef.current++
+    await detachActiveSession()
     dispatch({ kind: "reset" })
     setProject(null)
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
-  }, [teardown])
+  }, [detachActiveSession])
 
   const deleteCurrentSession = useCallback(() => {
     if (!project) return
@@ -906,13 +1203,21 @@ export default function App() {
   const performDelete = useCallback(async () => {
     if (!project) return
     const target = selectedSessionId ?? findInitSessionId(state)
-    if (!target) return
-    await teardown()
+    if (!target) {
+      setShowDeleteConfirm(false)
+      return
+    }
+    await stopRunningSessionForJsonl(project, target)
     try {
       await deleteSessionJsonl(project.cwd, target)
       // 删除后顺手把残留的置顶 / 归档记录清掉，避免侧栏 / 归档页出现幽灵条目
       unpin(project.id, target)
       unarchive(project.id, target)
+      setShowDeleteConfirm(false)
+      activeRuntimeIdRef.current = null
+      sessionIdRef.current = null
+      setSessionId(null)
+      setStreaming(false)
       dispatch({ kind: "reset" })
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
@@ -921,7 +1226,7 @@ export default function App() {
     } catch (e) {
       toast.error(`删除失败: ${String(e)}`)
     }
-  }, [project, selectedSessionId, state, teardown])
+  }, [project, selectedSessionId, state, stopRunningSessionForJsonl])
 
   const archiveCurrentSession = useCallback(async () => {
     if (!project) return
@@ -935,7 +1240,7 @@ export default function App() {
     if (willArchive) {
       // 归档时自动取消置顶，避免置顶区出现一个其实已经隐藏的会话
       unpin(project.id, target)
-      await teardown()
+      await stopRunningSessionForJsonl(project, target)
       dispatch({ kind: "reset" })
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
@@ -944,11 +1249,48 @@ export default function App() {
       toast.success("已取消归档")
     }
     setSidebarRefreshKey((k) => k + 1)
-  }, [project, selectedSessionId, state, teardown])
+  }, [project, selectedSessionId, state, stopRunningSessionForJsonl])
 
   const empty = state.entries.length === 0
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
   const streamingJsonlId = streaming ? jsonlSessionId : null
+  const streamingSessionRefs = useMemo(() => {
+    const refs: Array<{ projectId: string; sessionId: string }> = []
+    for (const run of runningSessionsRef.current.values()) {
+      if (!run.streaming) continue
+      const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
+      if (!sid) continue
+      refs.push({ projectId: run.project.id, sessionId: sid })
+    }
+    const key = refs
+      .map((r) => `${r.projectId}::${r.sessionId}`)
+      .sort()
+      .join("|")
+    const cache = streamingRefsCacheRef.current
+    if (cache.key === key) return cache.value
+    streamingRefsCacheRef.current = { key, value: refs }
+    return refs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningTick])
+  const permissionWaitingSessionRefs = useMemo(() => {
+    const refs: Array<{ projectId: string; sessionId: string }> = []
+    for (const run of runningSessionsRef.current.values()) {
+      if (run.runtimeId === sessionId) continue
+      if (run.pendingPermissionRequestIds.size === 0) continue
+      const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
+      if (!sid) continue
+      refs.push({ projectId: run.project.id, sessionId: sid })
+    }
+    const key = refs
+      .map((r) => `${r.projectId}::${r.sessionId}`)
+      .sort()
+      .join("|")
+    const cache = waitingRefsCacheRef.current
+    if (cache.key === key) return cache.value
+    waitingRefsCacheRef.current = { key, value: refs }
+    return refs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningTick, sessionId])
   const diffCount = countDiffFiles(state.entries)
   const visibleDiffCount = Math.max(
     diffCount,
@@ -956,7 +1298,9 @@ export default function App() {
     diffPatch?.files.length ?? 0
   )
   const slashCommands = findSlashCommands(state)
-  const activePermissionRequest = permissionRequests[0] ?? null
+  const activePermissionRequest =
+    permissionRequests.find((request) => request.session_id === sessionId) ??
+    null
   void titleTick
 
   const handleModelEffortChange = useCallback(
@@ -969,6 +1313,14 @@ export default function App() {
         // 用户已显式覆盖：标记到 sessionComposer，并尝试写入当前会话的 sidecar。
         // sid 优先级：select 的会话 → reducer init 拿到的 jsonl id（spawn 后第一时间可用）。
         setSessionComposer(updated)
+        const activeRuntimeId = activeRuntimeIdRef.current
+        const activeRun = activeRuntimeId
+          ? runningSessionsRef.current.get(activeRuntimeId)
+          : null
+        if (activeRun) {
+          activeRun.sessionComposer = updated
+          activeRun.composerPrefs = updated
+        }
         const sid = selectedSessionId ?? findInitSessionId(state)
         if (project && sid) {
           // 读 sidecar → merge composer → 写回，保留其它字段（如 result）
@@ -1035,6 +1387,8 @@ export default function App() {
                   selectedSessionId={selectedSessionId}
                   streamingProjectId={streaming ? project?.id ?? null : null}
                   streamingSessionId={streamingJsonlId}
+                  streamingSessionRefs={streamingSessionRefs}
+                  waitingSessionRefs={permissionWaitingSessionRefs}
                   inPlugins={showPlugins}
                   onSelectProject={(p) => {
                     setShowPlugins(false)
@@ -1306,11 +1660,7 @@ export default function App() {
           <Suspense fallback={null}>
             <PermissionDialog
               request={activePermissionRequest}
-              onSettled={(requestId) =>
-                setPermissionRequests((cur) =>
-                  cur.filter((p) => p.request_id !== requestId)
-                )
-              }
+              onSettled={settlePermissionRequest}
             />
           </Suspense>
         )}

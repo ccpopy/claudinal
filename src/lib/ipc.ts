@@ -449,6 +449,18 @@ export async function readClaudeJsonMcpConfigs(
   })
 }
 
+export async function writeClaudeJsonMcpConfig(
+  scope: McpScope,
+  data: Record<string, unknown>,
+  cwd?: string
+): Promise<void> {
+  return invoke("write_claude_json_mcp_config", {
+    scope,
+    cwd: cwd ?? null,
+    data
+  })
+}
+
 export async function writeClaudeMcpConfig(
   scope: McpScope,
   data: Record<string, unknown>,

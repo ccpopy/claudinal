@@ -600,7 +600,7 @@ export function Composer({
             placeholder={
               streaming
                 ? "当前回复进行中，按 Enter 交给 Claude 排队"
-                : "要求后续变更"
+                : "coffee time?"
             }
             disabled={disabled}
             rows={1}

@@ -9,11 +9,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger
-} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import {
   BUILTIN_MODELS,
@@ -111,39 +106,28 @@ export function ModelEffortPicker({
 
   return (
     <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              disabled={disabled}
-              aria-label={`模型与思考强度（当前 ${triggerLabel}，${sourceLabel}）`}
-              className={cn(
-                "inline-flex h-7 max-w-[18rem] items-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
-                "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-              )}
-            >
-              <span className="truncate">{triggerLabel}</span>
-              {source === "session" && (
-                <span
-                  aria-hidden
-                  className="size-1.5 shrink-0 rounded-full bg-primary"
-                  title="已为本会话覆盖"
-                />
-              )}
-              <ChevronDown className="size-3 shrink-0 opacity-60" />
-            </button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-[18rem] text-left">
-          <div className="space-y-1">
-            <div>切换模型与思考强度</div>
-            <div className="text-[11px] text-muted-foreground">
-              当前：{triggerLabel} · {sourceLabel}
-            </div>
-          </div>
-        </TooltipContent>
-      </Tooltip>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={`模型与思考强度（当前 ${triggerLabel}，${sourceLabel}）`}
+          title={`切换模型与思考强度\n当前：${triggerLabel} · ${sourceLabel}`}
+          className={cn(
+            "inline-flex h-7 max-w-[18rem] items-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
+            "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          )}
+        >
+          <span className="truncate">{triggerLabel}</span>
+          {source === "session" && (
+            <span
+              aria-hidden
+              className="size-1.5 shrink-0 rounded-full bg-primary"
+              title="已为本会话覆盖"
+            />
+          )}
+          <ChevronDown className="size-3 shrink-0 opacity-60" />
+        </button>
+      </DropdownMenuTrigger>
 
       <DropdownMenuContent
         align="end"

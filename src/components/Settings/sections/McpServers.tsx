@@ -28,6 +28,7 @@ import {
   readClaudeJsonMcpConfigs,
   readClaudeMcpConfig,
   type McpScope,
+  writeClaudeJsonMcpConfig,
   writeClaudeMcpConfig
 } from "@/lib/ipc"
 import {
@@ -39,9 +40,13 @@ import {
 import { cn } from "@/lib/utils"
 import { SettingsSectionHeader } from "./layout"
 
-const SCOPE_OPTIONS: Array<{ value: McpScope; label: string }> = [
-  { value: "global", label: "用户级" },
-  { value: "project", label: "项目级" }
+type ServerScope = McpScope | "claude-json-global" | "claude-json-project"
+type EditableServerScope = McpScope | "claude-json-global"
+
+const SCOPE_OPTIONS: Array<{ value: EditableServerScope; label: string }> = [
+  { value: "global", label: "用户级 mcp.json" },
+  { value: "project", label: "项目级 .mcp.json" },
+  { value: "claude-json-global", label: "Claude CLI 全局" }
 ]
 
 const TYPE_OPTIONS = [
@@ -72,8 +77,6 @@ interface Props {
   cwd?: string | null
 }
 
-type ServerScope = McpScope | "claude-json-global" | "claude-json-project"
-
 interface ValueRow {
   id: string
   value: string
@@ -97,8 +100,8 @@ interface ServerRow {
 
 interface EditorState {
   originalName: string | null
-  originalScope: McpScope | null
-  scope: McpScope
+  originalScope: EditableServerScope | null
+  scope: EditableServerScope
   name: string
   enabled: boolean
   type: "stdio" | "http"
@@ -178,9 +181,17 @@ function serverFingerprint(config: McpServerConfig): string | null {
     .toLowerCase()
 }
 
+function isEditableScope(scope: ServerScope): scope is EditableServerScope {
+  return (
+    scope === "global" ||
+    scope === "project" ||
+    scope === "claude-json-global"
+  )
+}
+
 function editorFromServer(
   name: string,
-  scope: McpScope,
+  scope: EditableServerScope,
   config: McpServerConfig
 ): EditorState {
   const extra = Object.fromEntries(
@@ -209,7 +220,7 @@ function editorFromServer(
   }
 }
 
-function newEditor(scope: McpScope, name: string): EditorState {
+function newEditor(scope: EditableServerScope, name: string): EditorState {
   return {
     originalName: null,
     originalScope: null,
@@ -332,7 +343,7 @@ export function McpServers({ cwd }: Props) {
         config,
         status: statusMap.get(name) ?? null,
         overridesGlobal: false,
-        readOnly: true
+        readOnly: false
       })
     }
     for (const [name, config] of Object.entries(configs.global.mcpServers ?? {})) {
@@ -385,8 +396,25 @@ export function McpServers({ cwd }: Props) {
     setDirty(true)
   }
 
-  const replaceConfig = async (scope: McpScope, next: McpConfigFile) => {
-    await writeClaudeMcpConfig(scope, next as Record<string, unknown>, scope === "project" ? cwd ?? undefined : undefined)
+  const configForScope = (scope: EditableServerScope): McpConfigFile => {
+    if (scope === "claude-json-global") return claudeJsonConfigs.global
+    return configs[scope]
+  }
+
+  const replaceConfig = async (
+    scope: EditableServerScope,
+    next: McpConfigFile
+  ) => {
+    if (scope === "claude-json-global") {
+      await writeClaudeJsonMcpConfig("global", next as Record<string, unknown>)
+      setClaudeJsonConfigs((cur) => ({ ...cur, global: next }))
+      return
+    }
+    await writeClaudeMcpConfig(
+      scope,
+      next as Record<string, unknown>,
+      scope === "project" ? cwd ?? undefined : undefined
+    )
     setConfigs((cur) => ({ ...cur, [scope]: next }))
   }
 
@@ -441,7 +469,7 @@ export function McpServers({ cwd }: Props) {
   }
 
   const startEdit = (row: ServerRow) => {
-    if (row.readOnly || (row.scope !== "global" && row.scope !== "project")) return
+    if (row.readOnly || !isEditableScope(row.scope)) return
     setEditor(editorFromServer(row.name, row.scope, row.config))
     setDirty(false)
   }
@@ -466,7 +494,7 @@ export function McpServers({ cwd }: Props) {
       return
     }
 
-    const targetServers = configs[editor.scope].mcpServers ?? {}
+    const targetServers = configForScope(editor.scope).mcpServers ?? {}
     const isSameEntry =
       editor.originalName === name && editor.originalScope === editor.scope
     const conflictingRow = rows.find(
@@ -496,9 +524,9 @@ export function McpServers({ cwd }: Props) {
 
     setSaving(true)
     try {
-      const changed = new Map<McpScope, McpConfigFile>()
-      const getDraft = (scope: McpScope) => {
-        const existing = changed.get(scope) ?? configs[scope]
+      const changed = new Map<EditableServerScope, McpConfigFile>()
+      const getDraft = (scope: EditableServerScope) => {
+        const existing = changed.get(scope) ?? configForScope(scope)
         const draft = normalizeMcpConfig(existing)
         draft.mcpServers = { ...(draft.mcpServers ?? {}) }
         changed.set(scope, draft)
@@ -529,10 +557,10 @@ export function McpServers({ cwd }: Props) {
   }
 
   const toggleServer = async (row: ServerRow, enabled: boolean) => {
-    if (row.readOnly || (row.scope !== "global" && row.scope !== "project")) return
+    if (row.readOnly || !isEditableScope(row.scope)) return
     setSaving(true)
     try {
-      const next = normalizeMcpConfig(configs[row.scope])
+      const next = normalizeMcpConfig(configForScope(row.scope))
       next.mcpServers = { ...(next.mcpServers ?? {}) }
       const config = { ...row.config }
       if (enabled) delete config.disabled
@@ -548,10 +576,10 @@ export function McpServers({ cwd }: Props) {
   }
 
   const deleteServer = async (row: ServerRow) => {
-    if (row.readOnly || (row.scope !== "global" && row.scope !== "project")) return
+    if (row.readOnly || !isEditableScope(row.scope)) return
     setSaving(true)
     try {
-      const next = normalizeMcpConfig(configs[row.scope])
+      const next = normalizeMcpConfig(configForScope(row.scope))
       next.mcpServers = { ...(next.mcpServers ?? {}) }
       delete next.mcpServers[row.name]
       await replaceConfig(row.scope, next)
@@ -572,7 +600,7 @@ export function McpServers({ cwd }: Props) {
       <SettingsSectionHeader
         icon={Server}
         title="MCP 服务器"
-        description="连接外部工具和数据源，写入 Claude Code 原生 mcp.json。"
+        description="连接外部工具和数据源，可写入 mcp.json 或 Claude CLI 全局配置。"
         eyebrow={
           editor ? (
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -669,7 +697,7 @@ export function McpServers({ cwd }: Props) {
         description={
           pendingDelete ? (
             <span>
-              将从 {scopeLabel(pendingDelete.scope)} mcp.json 中移除{" "}
+              将从 {scopeLabel(pendingDelete.scope)} 配置中移除{" "}
               <code className="font-mono">{pendingDelete.name}</code>。
             </span>
           ) : null
@@ -909,12 +937,12 @@ function EditorView({
               <Select
                 value={editor.scope}
                 onChange={(e) =>
-                  onUpdate({ scope: e.target.value as McpScope })
+                  onUpdate({ scope: e.target.value as EditorState["scope"] })
                 }
                 options={
-                  hasProject
-                    ? SCOPE_OPTIONS
-                    : SCOPE_OPTIONS.filter((item) => item.value === "global")
+                  SCOPE_OPTIONS.filter(
+                    (item) => item.value !== "project" || hasProject
+                  )
                 }
                 disabled={disabled}
                 triggerClassName="max-w-[220px]"

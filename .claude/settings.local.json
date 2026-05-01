@@ -53,7 +53,10 @@
       "Bash(claude plugin *)",
       "Bash(echo \"---EXIT=$?\")",
       "Bash(claude auth *)",
-      "Bash(claude setup-token *)"
+      "Bash(claude setup-token *)",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(npm view *)",
+      "Bash(pnpm why *)"
     ]
   }
 }

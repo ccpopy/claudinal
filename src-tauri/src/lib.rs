@@ -106,6 +106,7 @@ pub fn run() {
             commands::write_claude_settings,
             commands::claude_mcp_path_for,
             commands::read_claude_json_mcp_configs,
+            commands::write_claude_json_mcp_config,
             commands::read_claude_mcp_config,
             commands::write_claude_mcp_config,
             commands::claude_md_path_for,

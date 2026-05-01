@@ -85,6 +85,8 @@ impl Manager {
                 cmd.env(k, v);
             }
         }
+        cmd.env("CLAUDINAL_RUNTIME_SESSION_ID", &session_id);
+        cmd.env("CLAUDINAL_RUNTIME_CWD", opts.cwd.display().to_string());
         for key in &opts.env_remove {
             cmd.env_remove(key);
         }
@@ -132,7 +134,25 @@ impl Manager {
                             }
                             match serde_json::from_str::<Value>(trimmed) {
                                 Ok(value) => {
-                                    debug!(session = %sid, "stdout event: {}", value);
+                                    let event_type = value
+                                        .get("type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown");
+                                    let subtype = value
+                                        .get("subtype")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let uuid = value
+                                        .get("uuid")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    debug!(
+                                        session = %sid,
+                                        event_type,
+                                        subtype,
+                                        uuid,
+                                        "stdout event"
+                                    );
                                     if value
                                         .get("type")
                                         .and_then(Value::as_str)
@@ -245,6 +265,9 @@ impl Manager {
     pub async fn stop(&self, session_id: &str) -> Result<()> {
         if let Some((_, session)) = self.sessions.remove(session_id) {
             let mut child = session.child.lock().await;
+            if let Some(pid) = child.id() {
+                kill_process_tree(pid);
+            }
             let _ = child.start_kill();
             let _ = child.wait().await;
             info!(session = %session_id, "stopped");
@@ -252,3 +275,19 @@ impl Manager {
         Ok(())
     }
 }
+
+#[cfg(windows)]
+fn kill_process_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000)
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_process_tree(_pid: u32) {}
