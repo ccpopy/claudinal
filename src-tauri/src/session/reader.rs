@@ -52,9 +52,31 @@ fn encode_cwd_unicode_compat(cwd: &str) -> String {
         .collect()
 }
 
-fn projects_root() -> Result<PathBuf> {
+pub(crate) fn projects_root() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
     Ok(home.join(".claude").join("projects"))
+}
+
+/// 从 jsonl 头部若干行尝试取出原始 cwd 字段（Claude CLI 在 init 事件里写入）。
+pub(crate) fn extract_cwd_from_jsonl(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines().take(20) {
+        let Ok(line) = line else { continue };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if let Some(cwd) = v.get("cwd").and_then(|x| x.as_str()) {
+            if !cwd.is_empty() {
+                return Some(cwd.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn project_dirs(cwd: &str) -> Result<Vec<PathBuf>> {

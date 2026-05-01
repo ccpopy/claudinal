@@ -2,12 +2,67 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 
 use crate::error::{Error, Result};
 
 use super::reader::{
-    project_dirs, scan_session_meta, session_file_meta, SessionFileMeta, SessionMeta,
+    extract_cwd_from_jsonl, project_dirs, projects_root, scan_session_meta, session_file_meta,
+    SessionFileMeta, SessionMeta,
 };
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSessionMeta {
+    #[serde(flatten)]
+    pub meta: SessionMeta,
+    /// 原始 cwd（若能从 jsonl 第一段事件抽到）
+    pub cwd: Option<String>,
+    /// `~/.claude/projects/<name>` 的目录名，作为兜底标签
+    pub dir_label: String,
+}
+
+pub fn list_recent_sessions_all(limit: usize) -> Result<Vec<GlobalSessionMeta>> {
+    let root = projects_root()?;
+    if !root.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut all_files: Vec<(String, SessionFileMeta)> = Vec::new();
+    for entry in std::fs::read_dir(&root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_label = entry.file_name().to_string_lossy().into_owned();
+        for f in std::fs::read_dir(&path)? {
+            let f = match f {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if let Ok(Some(meta)) = session_file_meta(&f.path()) {
+                all_files.push((dir_label.clone(), meta));
+            }
+        }
+    }
+    if all_files.is_empty() {
+        return Ok(vec![]);
+    }
+    all_files.sort_by(|a, b| b.1.modified_ts.cmp(&a.1.modified_ts));
+    let cap = limit.max(1);
+    let mut out: Vec<GlobalSessionMeta> = Vec::with_capacity(cap.min(all_files.len()));
+    for (dir_label, file) in all_files.into_iter().take(cap) {
+        let path = PathBuf::from(&file.file_path);
+        let cwd = extract_cwd_from_jsonl(&path);
+        let meta = scan_session_meta(&file);
+        out.push(GlobalSessionMeta {
+            meta,
+            cwd,
+            dir_label,
+        });
+    }
+    Ok(out)
+}
 
 const SCHEMA_VERSION: i64 = 1;
 

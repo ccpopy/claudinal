@@ -10,10 +10,11 @@ use crate::permission_mcp::{
 use crate::proc::{Manager, SpawnOptions};
 use crate::session::{
     delete_session_jsonl as delete_jsonl_inner, list_project_sessions as list_sessions_inner,
-    read_session_sidecar as read_sidecar_inner, read_session_transcript as read_transcript_inner,
+    list_recent_sessions_all as list_all_inner, read_session_sidecar as read_sidecar_inner,
+    read_session_transcript as read_transcript_inner,
     scan_activity_heatmap as scan_heatmap_inner, scan_all_usage_sidecars as scan_usage_inner,
-    write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalUsage, SessionMeta,
-    WatcherState,
+    write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalSessionMeta, GlobalUsage,
+    SessionMeta, WatcherState,
 };
 
 #[tauri::command]
@@ -359,6 +360,11 @@ pub async fn list_dir(path: String) -> Result<Vec<DirEntryInfo>> {
 #[tauri::command]
 pub async fn list_project_sessions(cwd: String) -> Result<Vec<SessionMeta>> {
     list_sessions_inner(&cwd)
+}
+
+#[tauri::command]
+pub async fn list_recent_sessions_all(limit: Option<usize>) -> Result<Vec<GlobalSessionMeta>> {
+    list_all_inner(limit.unwrap_or(50))
 }
 
 #[derive(Serialize)]

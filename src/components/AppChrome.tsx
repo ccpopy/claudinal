@@ -9,7 +9,6 @@ import {
   Settings,
   X
 } from "lucide-react"
-import { useCallback, useRef } from "react"
 import type * as React from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { toast } from "sonner"
@@ -58,7 +57,12 @@ export function AppChrome({
   const startDragging = (event: React.MouseEvent<HTMLElement>) => {
     if (event.button !== 0) return
     const target = event.target as HTMLElement
-    if (target.closest("button")) return
+    if (
+      target.closest(
+        "button, a, input, textarea, select, [role=menu], [role=menuitem], [role=dialog], [data-radix-popper-content-wrapper]"
+      )
+    )
+      return
     win.startDragging().catch(() => undefined)
   }
 
@@ -97,10 +101,9 @@ export function AppChrome({
                 key={item.key}
                 group={item.key}
                 label={item.label}
-                inSettings={inSettings}
+                disabled={inSettings && item.key === "file"}
                 sidebarVisible={sidebarVisible}
                 onToggleSidebar={onToggleSidebar}
-                onBack={onBack}
                 onNewConversation={onNewConversation}
                 onAddProject={onAddProject}
                 onOpenSettings={onOpenSettings}
@@ -142,10 +145,9 @@ export function AppChrome({
 function ChromeMenu({
   group,
   label,
-  inSettings,
+  disabled = false,
   sidebarVisible,
   onToggleSidebar,
-  onBack,
   onNewConversation,
   onAddProject,
   onOpenSettings,
@@ -155,10 +157,9 @@ function ChromeMenu({
 }: {
   group: (typeof MENU_GROUPS)[number]["key"]
   label: string
-  inSettings: boolean
+  disabled?: boolean
   sidebarVisible: boolean
   onToggleSidebar: () => void
-  onBack?: () => void
   onNewConversation: () => void
   onAddProject: () => void
   onOpenSettings: () => void
@@ -166,38 +167,13 @@ function ChromeMenu({
   onToggleMaximize: () => void
   onClose: () => void
 }) {
-  const backPointerHandledRef = useRef(false)
-  const invokeBack = useCallback(() => {
-    onBack?.()
-  }, [onBack])
-  const handleBackPointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return
-      backPointerHandledRef.current = true
-      event.preventDefault()
-      event.stopPropagation()
-      invokeBack()
-      window.setTimeout(() => {
-        backPointerHandledRef.current = false
-      }, 0)
-    },
-    [invokeBack]
-  )
-  const handleBackSelect = useCallback(
-    (event: Event) => {
-      event.preventDefault()
-      if (backPointerHandledRef.current) return
-      invokeBack()
-    },
-    [invokeBack]
-  )
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="h-7 rounded px-2 text-sm text-foreground/75 outline-none transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          disabled={disabled}
+          className="h-7 rounded px-2 text-sm text-foreground/75 outline-none transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35 data-[state=open]:bg-accent data-[state=open]:text-foreground"
         >
           {label}
         </button>
@@ -205,18 +181,6 @@ function ChromeMenu({
       <DropdownMenuContent align="start" className="min-w-[190px]">
         {group === "file" && (
           <>
-            {inSettings && (
-              <>
-                <DropdownMenuItem
-                  onPointerDown={handleBackPointerDown}
-                  onSelect={handleBackSelect}
-                >
-                  <ArrowLeft />
-                  <span>返回对话</span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
             <DropdownMenuItem onSelect={onNewConversation}>
               <MessageSquarePlus />
               <span>新对话</span>

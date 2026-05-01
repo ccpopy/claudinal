@@ -192,6 +192,17 @@ export async function listProjectSessions(cwd: string): Promise<SessionMeta[]> {
   return invoke<SessionMeta[]>("list_project_sessions", { cwd })
 }
 
+export interface GlobalSessionMeta extends SessionMeta {
+  cwd: string | null
+  dirLabel: string
+}
+
+export async function listRecentSessionsAll(
+  limit = 50
+): Promise<GlobalSessionMeta[]> {
+  return invoke<GlobalSessionMeta[]>("list_recent_sessions_all", { limit })
+}
+
 export async function gitWorktreeStatus(
   cwd: string
 ): Promise<GitWorktreeStatus> {

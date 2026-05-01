@@ -983,8 +983,9 @@ export default function App() {
 
   const switchProject = useCallback(
     async (next: Project) => {
-      switchTokenRef.current++
+      const token = ++switchTokenRef.current
       await detachActiveSession()
+      if (token !== switchTokenRef.current) return
       dispatch({ kind: "reset" })
       setProject(next)
       setSelectedSessionId(null)
@@ -1042,8 +1043,9 @@ export default function App() {
 
   const onProjectAdded = useCallback(
     async (p: Project) => {
-      switchTokenRef.current++
+      const token = ++switchTokenRef.current
       await detachActiveSession()
+      if (token !== switchTokenRef.current) return
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(null)
@@ -1087,8 +1089,9 @@ export default function App() {
   )
 
   const newConversation = useCallback(async () => {
-    switchTokenRef.current++
+    const token = ++switchTokenRef.current
     await detachActiveSession()
+    if (token !== switchTokenRef.current) return
     dispatch({ kind: "reset" })
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
@@ -1124,6 +1127,7 @@ export default function App() {
   const returnToChat = useCallback(() => {
     const target = chatReturnTarget ?? settingsEntryTargetRef.current
     const returnView: ReturnView = target ? "chat" : returnViewRef.current
+    const currentProjectId = project?.id ?? null
     returnViewRef.current = "chat"
     settingsEntryTargetRef.current = null
     setChatReturnTarget(null)
@@ -1134,9 +1138,18 @@ export default function App() {
       void switchSession(target.project, target.session)
     } else if (target?.kind === "project") {
       setShowPlugins(false)
+      if (currentProjectId === target.project.id && selectedSessionId === null) {
+        return
+      }
       void switchProject(target.project)
     }
-  }, [chatReturnTarget, switchProject, switchSession])
+  }, [
+    chatReturnTarget,
+    project?.id,
+    selectedSessionId,
+    switchProject,
+    switchSession
+  ])
 
   const selectProjectFromSettings = useCallback(
     (p: Project) => {
@@ -1182,8 +1195,9 @@ export default function App() {
   }, [newConversationFromChrome])
 
   const clearProject = useCallback(async () => {
-    switchTokenRef.current++
+    const token = ++switchTokenRef.current
     await detachActiveSession()
+    if (token !== switchTokenRef.current) return
     dispatch({ kind: "reset" })
     setProject(null)
     setSelectedSessionId(null)

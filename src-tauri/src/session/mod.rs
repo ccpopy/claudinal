@@ -3,7 +3,7 @@ pub mod reader;
 pub mod stats;
 pub mod watcher;
 
-pub use index::list_project_sessions;
+pub use index::{list_project_sessions, list_recent_sessions_all, GlobalSessionMeta};
 pub use reader::{
     delete_session_jsonl, read_session_sidecar, read_session_transcript, write_session_sidecar,
     SessionMeta,

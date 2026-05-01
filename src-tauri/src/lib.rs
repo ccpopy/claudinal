@@ -89,6 +89,7 @@ pub fn run() {
             commands::default_workspace_root,
             commands::list_dir,
             commands::list_project_sessions,
+            commands::list_recent_sessions_all,
             commands::git_worktree_status,
             commands::worktree_diff,
             commands::git_branch_list,

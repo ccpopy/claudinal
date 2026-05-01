@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react"
+import { lazy, Suspense, useEffect, useMemo, useState, useCallback } from "react"
 import {
   ChevronRight,
   Copy,
@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Kbd, KbdGroup } from "@/components/ui/kbd"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -35,6 +36,10 @@ import type { Project } from "@/lib/projects"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
 import { listArchived, type ArchivedRef } from "@/lib/archivedSessions"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
+
+const SearchPalette = lazy(() =>
+  import("@/components/SearchPalette").then((m) => ({ default: m.SearchPalette }))
+)
 
 interface Props {
   projects: Project[]
@@ -121,7 +126,7 @@ export function Sidebar({
   onOpenPlugins,
   refreshKey = 0
 }: Props) {
-  const [filter, setFilter] = useState("")
+  const [searchOpen, setSearchOpen] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [sessionsByProject, setSessionsByProject] = useState<
     Record<string, SessionListState>
@@ -168,13 +173,7 @@ export function Sidebar({
     }
   }, [])
 
-  const filtered = filter
-    ? projects.filter(
-        (p) =>
-          p.name.toLowerCase().includes(filter.toLowerCase()) ||
-          p.cwd.toLowerCase().includes(filter.toLowerCase())
-      )
-    : projects
+  const filtered = projects
 
   const loadSessions = useCallback(async (p: Project) => {
     setSessionsByProject((cur) => {
@@ -322,6 +321,19 @@ export function Sidebar({
     [refreshPinned]
   )
 
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return
+      if (event.key.toLowerCase() === "g") {
+        event.preventDefault()
+        setSearchOpen((cur) => !cur)
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [])
+
+
   return (
     <aside className="w-64 shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground flex flex-col rounded-lg">
       <div className="px-3 pt-3 flex flex-col gap-2">
@@ -333,15 +345,18 @@ export function Sidebar({
           <MessageSquarePlus />
           新对话
         </Button>
-        <div className="relative">
-          <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-sidebar-muted pointer-events-none" />
-          <input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="搜索"
-            className="w-full h-8 pl-8 pr-2 rounded-md text-sm bg-transparent border border-transparent hover:border-sidebar-border focus:border-sidebar-border focus:bg-card outline-none transition-colors"
-          />
-        </div>
+        <Button
+          variant="ghost"
+          className="group justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent"
+          onClick={() => setSearchOpen(true)}
+        >
+          <Search />
+          <span>搜索</span>
+          <KbdGroup className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <Kbd>Ctrl</Kbd>
+            <Kbd>G</Kbd>
+          </KbdGroup>
+        </Button>
         <Button
           variant="ghost"
           className={cn(
@@ -568,6 +583,21 @@ export function Sidebar({
           设置
         </Button>
       </div>
+      {searchOpen && (
+        <Suspense fallback={null}>
+          <SearchPalette
+            open={searchOpen}
+            onOpenChange={setSearchOpen}
+            projects={projects}
+            onSelectSession={onSelectSession}
+            onSelectProject={onSelectProject}
+            onNewConversation={onNewConversation}
+            onAddProject={onAdd}
+            onOpenSettings={onOpenSettings}
+            onOpenPlugins={onOpenPlugins}
+          />
+        </Suspense>
+      )}
     </aside>
   )
 }
