@@ -2,13 +2,16 @@ import { useEffect, useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
+  KeyRound,
   Loader2,
   Network as NetworkIcon,
   PlugZap,
   Save,
+  ShieldAlert,
   XCircle
 } from "lucide-react"
 import { toast } from "sonner"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -16,12 +19,16 @@ import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { readClaudeSettings, testProxyConnection } from "@/lib/ipc"
+import {
+  keychainAvailable,
+  readClaudeSettings,
+  testProxyConnection
+} from "@/lib/ipc"
 import {
   describeProxy,
   formatProxyUrl,
-  loadProxy,
-  saveProxy,
+  loadProxyAsync,
+  saveProxyAsync,
   DEFAULT_PROXY,
   type ProxyConfig,
   type ProxyProtocol
@@ -59,15 +66,22 @@ const TEST_TARGETS = [
   { value: "https://github.com", label: "GitHub" }
 ]
 
+type SecretStorage = "keychain" | "localstorage" | "empty" | "unknown"
+
 export function Network() {
-  const [config, setConfig] = useState<ProxyConfig>(() => loadProxy())
+  // 初始用 DEFAULT_PROXY 占位，避免渲染同步从 localStorage 读漏密码导致的闪烁
+  const [config, setConfig] = useState<ProxyConfig>(() => ({ ...DEFAULT_PROXY }))
   const [dirty, setDirty] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [conflict, setConflict] = useState<{
     https?: string
     http?: string
   } | null>(null)
   const [test, setTest] = useState<TestState>({ kind: "idle" })
   const [target, setTarget] = useState<string>(TEST_TARGETS[0].value)
+  const [kcOk, setKcOk] = useState<boolean | null>(null)
+  const [secretStored, setSecretStored] = useState<SecretStorage>("unknown")
 
   useEffect(() => {
     // 检测 settings.json env 是否已设代理 —— CLI 会优先合并 env 覆盖 spawn 注入
@@ -80,6 +94,28 @@ export function Network() {
         setConflict(c.https || c.http ? c : null)
       })
       .catch(() => setConflict(null))
+
+    // 异步：探测 keychain 可用性 + 加载完整配置（含从 keychain 拿 password）
+    let cancelled = false
+    keychainAvailable()
+      .then((ok) => {
+        if (!cancelled) setKcOk(ok)
+      })
+      .catch(() => {
+        if (!cancelled) setKcOk(false)
+      })
+    loadProxyAsync()
+      .then((c) => {
+        if (cancelled) return
+        setConfig(c)
+        setSecretStored(c.password ? "unknown" : "empty")
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const update = (patch: Partial<ProxyConfig>) => {
@@ -87,10 +123,22 @@ export function Network() {
     setDirty(true)
   }
 
-  const save = () => {
-    saveProxy(config)
-    setDirty(false)
-    toast.success("已保存")
+  const save = async () => {
+    setSaving(true)
+    try {
+      const stored = await saveProxyAsync(config)
+      setSecretStored(stored)
+      setDirty(false)
+      if (stored === "localstorage") {
+        toast.warning("已保存，但密码以明文存储（钥匙串不可用）")
+      } else {
+        toast.success("已保存")
+      }
+    } catch (e) {
+      toast.error(`保存失败: ${String(e)}`)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const previewUrl =
@@ -217,15 +265,21 @@ export function Network() {
               />
             </Row>
 
-            <Row label="密码">
-              <Input
-                type="password"
-                value={config.password}
-                onChange={(e) => update({ password: e.target.value })}
-                disabled={!config.enabled}
-                className="font-mono text-xs flex-1"
-                autoComplete="off"
-              />
+            <Row label="密码" align="input">
+              <div className="flex flex-1 flex-col gap-1.5">
+                <Input
+                  type="password"
+                  value={config.password}
+                  onChange={(e) => update({ password: e.target.value })}
+                  disabled={!config.enabled || loading}
+                  className="font-mono text-xs"
+                  placeholder={loading ? "正在从钥匙串读取…" : ""}
+                  autoComplete="off"
+                />
+                {!loading && (
+                  <SecretBadge stored={secretStored} kcOk={kcOk} hasPwd={!!config.password} />
+                )}
+              </div>
             </Row>
 
             <Separator />
@@ -315,8 +369,8 @@ export function Network() {
       </SettingsSectionBody>
 
       <SettingsSectionFooter>
-        <Button onClick={save} disabled={!dirty}>
-          <Save />
+        <Button onClick={save} disabled={!dirty || saving || loading}>
+          {saving ? <Loader2 className="animate-spin" /> : <Save />}
           保存
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
@@ -327,15 +381,58 @@ export function Network() {
 
 function Row({
   label,
-  children
+  children,
+  align = "center"
 }: {
   label: string
   children: React.ReactNode
+  align?: "center" | "input"
 }) {
   return (
-    <div className="flex items-center gap-3">
-      <Label className="w-16 text-xs shrink-0">{label}</Label>
+    <div className={`flex gap-3 ${align === "input" ? "items-start" : "items-center"}`}>
+      <Label className={`w-16 text-xs shrink-0 ${align === "input" ? "flex h-9 items-center" : ""}`}>
+        {label}
+      </Label>
       {children}
     </div>
+  )
+}
+
+function SecretBadge({
+  stored,
+  kcOk,
+  hasPwd
+}: {
+  stored: SecretStorage
+  kcOk: boolean | null
+  hasPwd: boolean
+}) {
+  if (!hasPwd) {
+    return (
+      <span className="text-[11px] text-muted-foreground">
+        留空表示无需认证
+      </span>
+    )
+  }
+  if (stored === "localstorage" || (kcOk === false && stored !== "keychain")) {
+    return (
+      <Badge variant="warn" className="font-sans">
+        <ShieldAlert className="size-3" />
+        明文存储 · 钥匙串不可用
+      </Badge>
+    )
+  }
+  if (stored === "keychain" || kcOk) {
+    return (
+      <Badge variant="success" className="font-sans">
+        <KeyRound className="size-3" />
+        系统钥匙串加密
+      </Badge>
+    )
+  }
+  return (
+    <span className="text-[11px] text-muted-foreground">
+      尚未保存到钥匙串，点击保存以加密
+    </span>
   )
 }

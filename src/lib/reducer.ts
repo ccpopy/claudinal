@@ -33,15 +33,29 @@ export function reduce(state: State, action: Action): State {
     return { entries: [...state.entries, msg] }
   }
   if (action.kind === "unqueue_local") {
-    // 排队消息 dispatch 时落在 entries 中间，flush 时需要移到末尾
-    // （排在 result 之后），否则 buildGroups 的 run 切分会错位。
+    // 插话发送时会先挂在当前 run 中间。CLI 真正处理它后，把它挪到
+    // 当前工具结果之后、后续 assistant 输出之前，避免 UI 显示成助手先答、用户后问。
     const idx = state.entries.findIndex(
       (e) => e.kind === "message" && e.id === action.localId
     )
     if (idx < 0) return state
     const cur = state.entries[idx] as UIMessage
     const filtered = state.entries.filter((_, i) => i !== idx)
-    return { entries: [...filtered, { ...cur, queued: false, ts: Date.now() }] }
+    let insertAt = filtered.length
+    for (let i = idx; i < filtered.length; i++) {
+      const e = filtered[i]
+      if (e.kind === "message" && (e as UIMessage).role === "assistant") {
+        insertAt = i
+        break
+      }
+    }
+    return {
+      entries: [
+        ...filtered.slice(0, insertAt),
+        { ...cur, queued: false },
+        ...filtered.slice(insertAt)
+      ]
+    }
   }
   if (action.kind === "drop_local") {
     return {
@@ -57,7 +71,7 @@ export function reduce(state: State, action: Action): State {
       // 过滤 jsonl 内部事件：queue-operation / attachment / ai-title
       if (
         t === "queue-operation" ||
-        t === "attachment" ||
+        (t === "attachment" && !isQueuedCommandAttachment(ev)) ||
         t === "ai-title" ||
         t === "deferred_tools_delta" ||
         t === "skill_listing" ||
@@ -109,6 +123,8 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
     return reduceStreamEvent(state, (ev as Record<string, unknown>).event, ts)
   if (t === "assistant") return reduceAssistant(state, ev as Record<string, unknown>, ts)
   if (t === "user") return reduceUser(state, ev as Record<string, unknown>, ts)
+  if (t === "attachment")
+    return reduceAttachment(state, ev as Record<string, unknown>, ts)
   if (t === "result") return reduceResult(state, ev as Record<string, unknown>, ts)
   if (t === "rate_limit_event")
     return reduceRateLimit(state, ev as Record<string, unknown>, ts)
@@ -128,6 +144,37 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
     }
   }
   return appendUnknown(state, ev, ts)
+}
+
+function isQueuedCommandAttachment(ev: ClaudeEvent): boolean {
+  if (!ev || typeof ev !== "object") return false
+  return (
+    (ev as Record<string, unknown>).type === "attachment" &&
+    ((ev as Record<string, unknown>).attachment as Record<string, unknown> | undefined)?.type ===
+      "queued_command"
+  )
+}
+
+function reduceAttachment(state: State, ev: Record<string, unknown>, ts: number): State {
+  const attachment = ev.attachment as Record<string, unknown> | undefined
+  if (attachment?.type !== "queued_command") {
+    return appendUnknown(state, ev as ClaudeEvent, ts)
+  }
+  const prompt = attachment.prompt
+  const blocks =
+    typeof prompt === "string"
+      ? ([{ type: "text", text: prompt }] as UIBlock[])
+      : convertContentBlocks(prompt)
+  if (blocks.length === 0) return state
+  const entry: UIMessage = {
+    kind: "message",
+    id: (ev.uuid as string | undefined) ?? `queued-${state.entries.length}-${ts}`,
+    role: "user",
+    blocks,
+    streaming: false,
+    ts
+  }
+  return { entries: [...state.entries, entry] }
 }
 
 function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): State {

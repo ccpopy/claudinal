@@ -205,6 +205,53 @@ export async function writeTextFile(path: string, contents: string): Promise<voi
   return invoke("write_text_file", { path, contents })
 }
 
+export async function keychainAvailable(): Promise<boolean> {
+  return invoke<boolean>("keychain_available")
+}
+
+export async function keychainSet(account: string, secret: string): Promise<void> {
+  return invoke("keychain_set", { account, secret })
+}
+
+export async function keychainGet(account: string): Promise<string | null> {
+  return invoke<string | null>("keychain_get", { account })
+}
+
+export async function keychainDelete(account: string): Promise<void> {
+  return invoke("keychain_delete", { account })
+}
+
+export interface AuthStatus {
+  loggedIn: boolean
+  authMethod: string | null
+  apiProvider: string | null
+  email: string | null
+  orgId: string | null
+  orgName: string | null
+  subscriptionType: string | null
+  raw: Record<string, unknown> | null
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  return invoke<AuthStatus>("auth_status")
+}
+
+export async function authLogout(): Promise<string> {
+  return invoke<string>("auth_logout")
+}
+
+export async function authStartLogin(useConsole: boolean): Promise<void> {
+  return invoke("auth_start_login", { useConsole })
+}
+
+export async function authCancelLogin(): Promise<void> {
+  return invoke("auth_cancel_login")
+}
+
+export async function authOpenLoginTerminal(useConsole: boolean): Promise<void> {
+  return invoke("auth_open_login_terminal", { useConsole })
+}
+
 export async function watchSessions(cwd: string): Promise<void> {
   return invoke("watch_sessions", { cwd })
 }
@@ -266,6 +313,12 @@ export async function writeClaudeSettings(
 
 export type McpScope = "global" | "project"
 
+export interface ClaudeJsonMcpConfigs {
+  path: string
+  global: Record<string, unknown> | null
+  project: Record<string, unknown> | null
+}
+
 export async function claudeMcpPath(
   scope: McpScope,
   cwd?: string
@@ -279,6 +332,14 @@ export async function readClaudeMcpConfig(
 ): Promise<Record<string, unknown> | null> {
   return invoke<Record<string, unknown> | null>("read_claude_mcp_config", {
     scope,
+    cwd: cwd ?? null
+  })
+}
+
+export async function readClaudeJsonMcpConfigs(
+  cwd?: string
+): Promise<ClaudeJsonMcpConfigs> {
+  return invoke<ClaudeJsonMcpConfigs>("read_claude_json_mcp_configs", {
     cwd: cwd ?? null
   })
 }

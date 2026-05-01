@@ -85,7 +85,7 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
         }
         if (userVisible.length > 0) {
           if (m.queued) {
-            // 排队中的 user 消息插在当前 run 后面，但不关掉当前 run
+            // 已提交给 CLI 的后续 user 消息先挂在当前 run 后面，不关掉当前 run。
             groups.push({
               kind: "msg",
               key: `msg-${m.id}`,

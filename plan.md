@@ -438,12 +438,19 @@ F:\project\claudecli\
 
 #### P3.10 已归档对话
 
-- [ ] 列出归档的 sessions（暂不实现 archive 行为）
+- [x] **列出归档的 sessions**：`Settings/sections/Archive.tsx` 跨项目列表，按项目分组 + 行内显示自定义标题/AI 标题/首条用户文本回退、归档时间、消息数、sessionId 前缀；行操作「恢复」/「删除 jsonl」（`ConfirmDialog` 二次确认）；jsonl 缺失时仍可清掉归档记录
+- [x] **数据层** `src/lib/archivedSessions.ts`（localStorage `claudinal.archived-sessions`），对外 `listArchived/isArchived/archive/unarchive/toggleArchive`，与 `pinned.ts` 完全对称
+- [x] **归档入口（最小面）**：仅在 ChatHeader 下拉菜单新增「归档会话 / 取消归档」项（`Archive` / `ArchiveRestore` 图标），不在 Sidebar 行 hover 加按钮，避免误触；归档时自动 `unpin` + `teardown` + 清 `selectedSessionId`（与 delete 一致）；删除会话同时清掉残留 pinned/archived ref，防幽灵条目
+- [x] **Sidebar 过滤**：`archivedSet` 同时排除置顶区与项目区下的已归档会话；`refreshKey` 副作用顺带 `refreshPinned() / refreshArchived()`，ChatHeader 操作后侧栏立即同步
 
 #### P3.11 账号 / Usage（顶部独立区）
 
-- [x] 显示登录方式：API key（环境变量）/ OAuth（Anthropic）/ Bedrock / Vertex / Foundry —— 来自 `system/init.apiKeySource` 缓存
-- [ ] 登出 / 重新登录（GUI 不接 OAuth flow，仍在 CLI 端完成）
+- [x] 显示登录方式：API key（环境变量）/ OAuth（Anthropic）/ Bedrock / Vertex / Foundry —— 数据源升级为 `claude auth status --json`（`{ loggedIn, authMethod, apiProvider, email, orgId, orgName, subscriptionType }`），比旧版 `system_init.apiKeySource` 更准；env 中的 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` 仍优先（CLI 也按此规则）
+- [x] **登出 / 重新登录**：
+  - 登出 = `claude auth logout`（非交互，6s 超时，spawn 等结果，CREATE_NO_WINDOW 防 conhost 闪屏）
+  - 登录 = 跨平台开独立终端窗口跑 `claude auth login [--console]`（Win 优先 `wt.exe`，回退 `cmd /k`；mac 走 `osascript`/Terminal.app；Linux 依次试 `x-terminal-emulator/gnome-terminal/konsole/xterm`）；GUI 这边不接 stdin，让用户在那边走完 OAuth
+  - 「等待登录」副作用：开窗后每 5s 轮询 `auth_status`，看到 `loggedIn=true` 自动停 + 拉一次 OAuth usage；上限 24 次（≈2 分钟），可手动「停止等待」
+  - Account 页 `AuthActions`：oauth 态下显示「登出 / 重新登录」（重新登录有 Claude.ai / Console 二选一）；未登录显示「登录」；env 凭据态下藏起来 + 提示「由环境变量提供」
 - [x] **Usage 面板**：
   - [x] 5h / 周 限额 + 周 Sonnet / 周 Opus 拆分（接入 Anthropic `GET /api/oauth/usage` 真接口；非官方端点静默隐藏）
   - [x] 累计成本（按 model 拆分） —— `recordResultUsage` 从 result 事件累加；Statistics 页全局扫 sidecar 还原历史
@@ -463,7 +470,7 @@ F:\project\claudecli\
 - [ ] 全应用范围（含 webview）：Tauri 2 暂未公开稳定的 setProxy API，留 P4
 - [ ] PAC URL 支持
 - [x] **测试连接按钮**：Rust `test_proxy_connection` 用 reqwest + 当前代理 URL HEAD 一次目标（默认 `https://api.anthropic.com`，可下拉选 Google / GitHub）；返回 `{ ok, status, latency_ms, message }`；UI 在 Network 页加分组卡，结果按 ok/error 着色，可重复执行
-- [ ] 密码 OS keychain 加密存储（`@tauri-apps/plugin-stronghold`）
+- [x] **密码 OS keychain 加密存储**：放弃 stronghold（要主密码、UX 重），改用 `keyring` crate 直接走 OS 原生（Windows Credential Manager / macOS Keychain / Linux Secret Service，service=`claudinal` / account=`proxy.password`）；Rust 新增 `keychain.rs` 模块 + 4 个 Tauri 命令（`keychain_available / keychain_set / keychain_get / keychain_delete`）；前端 `proxy.ts` 拆出 `loadProxyAsync` / `saveProxyAsync`，密码不再写 localStorage；启动时跑一次 `migrateLegacyProxyPassword` 把旧版明文迁进钥匙串；keychain 不可用时降级 localStorage 明文 + 显眼 warn badge；Network 页密码下方实时显示「系统钥匙串加密」/「明文存储 · 钥匙串不可用」状态徽标
 
 #### P3.13 插件 & 技能（全屏独立视图，非设置子项）
 
@@ -554,9 +561,11 @@ F:\project\claudecli\
 
 - [x] **流式中途发送下一轮输入**：
   - Composer streaming 态：Enter 仍触发 send；按钮文案改「排队」（ListPlus 图标，secondary 变体）+ 旁边 ghost 图标按钮「中断」（Square）。
-  - 排队中的 user 消息：reducer `user_local` action 加 `queued?: boolean`，立即 push 带 70% 透明度 + 右下角「将在当前回合后发送」chip（`Clock` 图标）。
-  - 投递时机：`result` 事件触发 `setStreaming(false)`；`useEffect([streaming, pending, sessionId])` 监听到 !streaming && pending.length>0 → dequeue 一条 → 派发 `unqueue_local`（移到 entries 末尾 + 清 queued + 更新 ts，避免 buildGroups grouping 错位）→ `sendUserMessage` 投递。
-  - 中断（Esc / Stop）：teardown 内 `setPending([])` + 对每条派发 `drop_local` 移除占位气泡 + toast 提示「已取消排队中的 N 条消息」。
+  - 排队中的 user 消息：reducer `user_local` action 加 `queued?: boolean`，立即 push 带 70% 透明度 + 右下角「已交给 Claude，等待当前步骤后处理」chip（`Clock` 图标）。
+  - 投递时机：streaming 态发送时立即 `sendUserMessage` 写入 CLI stdin 并 flush；前端 `queuedInputsRef` 只保存 `localId` 做 UI 标记。`result` 事件到来后批量派发 `unqueue_local`，把插话移到当前工具结果之后、后续 assistant 输出之前并清 queued，不再二次投递。
+  - 状态收束：`result.terminal_reason="completed"` 表示 CLI 已处理完本次运行内的所有 turn，前端必须 `setStreaming(false)`，不能因为存在 queued 标记继续保持处理中。
+  - 历史恢复：jsonl 中 `attachment.type="queued_command"` 是 CLI 持久化的插话记录；`load_transcript` 只放行这一类 attachment 并渲染成 user 气泡，其它 attachment 继续过滤。
+  - 中断（Esc / Stop）：teardown 内清空 `queuedInputsRef` + 对每条派发 `drop_local` 移除占位气泡 + toast 提示「已取消等待处理的 N 条消息」。
   - `MessageStream::buildGroups` 看到 queued user 消息时不关闭当前 run（避免提前关掉运行中的 RunGroup）。
 
 ### 9.1.2b Sidebar 会话状态图标
@@ -588,7 +597,8 @@ F:\project\claudecli\
 - [x] P3.4 个性化：CLAUDE.md 三 scope 编辑（global / project / project-local）+ pin 高频 slash；**不做** Codex 风记忆系统
 - [x] P3.5 MCP 服务器：列表卡 + 启用 toggle；详情编辑分 STDIO / 流式 HTTP，字段含启动命令 / 参数 / 环境变量 / 环境变量传递 / 工作目录；scope = global(`~/.claude/mcp.json`) / project(`<cwd>/.mcp.json`)；**已新增 Breadcrumb 组件**
 - [x] P3.7 环境（项目级）：项目列表 + 编辑视图（名称 / 设置脚本 / 清理脚本 / 操作，按 default/macOS/Linux/Windows 平台分 tab）；存 `localStorage["claudinal.project-env"]`；**复用 Breadcrumb 组件**
-- [ ] P3.6 / 3.8 / 3.9 / 3.10：Git / 工作树 / 浏览器 / 已归档对话（占位）
+- [x] P3.6 / 3.9 / 3.10：Git / 浏览器 / 已归档对话
+- [ ] P3.8：工作树（用户暂跳）
 - [x] P3.11 账号 & Usage：apiKeySource 来自 system_init（写 `claudinal.api-key-source`）+ `recordResultUsage` 在 result 事件累计 modelUsage 到 `claudinal.usage`；Account 页面显示登录方式 + 总成本 / tokens / cache + 按模型拆分表 + 清空 usage 按钮
 - [ ] P3.12 收尾：测试连接按钮（spawn `curl --proxy ... -I https://api.anthropic.com`）+ keychain 加密密码 + PAC URL + 全应用范围（含 webview，等 Tauri 2 setProxy 稳定）
 
@@ -682,7 +692,7 @@ F:\project\claudecli\
   - Rust 新增 `delete_session_jsonl` 命令；ChatHeader 下拉菜单删除会话（`window.confirm` 二次确认）
   - 自定义会话标题 store（`src/lib/sessionTitles.ts`）+ `RenameSessionDialog`；Sidebar/ChatHeader 都优先读自定义
   - ChatHeader 切换为 `jsonlSessionId` 取代本地 manager uuid（修复新会话 pin/copy 用错 id 的 bug）
-  - 流式中途排队消息（"插话"）：reducer 加 `user_local.queued / unqueue_local / drop_local`；Composer streaming 时 Enter 改排队，旁边 ghost「中断」按钮；teardown 清空队列；buildGroups 排队消息不关闭当前 run
+  - 流式中途排队消息（"插话"）：streaming 时 Enter 立即写入 CLI stdin，reducer 加 `user_local.queued / unqueue_local / drop_local` 只做 UI 标记；Composer streaming 时按钮改排队，旁边 ghost「中断」按钮；teardown 清空等待标记；buildGroups 排队消息不关闭当前 run
 - ✅ **2026-04-30 后续 #2（消息 / 图片 / 时长口径）**：
   - `CopyButton` 复用组件；user 气泡 hover 才显示，assistant 文本块复制按钮常显（codex 风），位置贴正文左下/右下，不浮出
   - `ImageLightbox` 全屏 dialog；ImageBlock 改 button 触发；`cursor-zoom-in`；Esc / 点击外部关闭
@@ -786,7 +796,33 @@ F:\project\claudecli\
   - **新增 Rust 命令**：`detect_playwright_install` / `test_proxy_connection`
   - **新增前端 IPC**：`detectPlaywrightInstall` / `testProxyConnection`
 - ⏳ 待用户实测 `pnpm tauri dev`
-- ⏳ P3 剩余：P3.8 工作树（用户暂跳）/ P3.10 归档对话；P3.12 代理收尾剩 keychain / PAC / webview；插件 OAuth flow（needs-auth marketplaces）
+- ⏳ P3 剩余：P3.8 工作树（用户暂跳）；P3.12 代理收尾剩 PAC / webview（Tauri 2 setProxy 稳定后再做）
+- ❌ **插件 OAuth flow（needs-auth marketplaces）**：取消。2026-05-01 实测 `claude plugin --help` 没有 `auth/login/needs-auth` 任何子命令；marketplace add 私有 repo 时 CLI 直接透传 git stderr（HTTPS = `Repository not found` / SSH = `SSH authentication failed`），鉴权完全靠系统 git credential helper / ssh-agent，没有结构化状态字段供 GUI 接管。要做的话只能是把 git 报错 toast 升成 dialog + 外链文档指引用户配 credential helper，跟"OAuth flow"不沾边，留 P4 备选
+- ✅ **2026-05-01 #16（P3.11 登出 / 重新登录落地）**：
+  - 接入真实数据源：放弃旧 `system_init.apiKeySource` 推断方案，改 spawn `claude auth status --json` 拿结构化状态（`{ loggedIn, authMethod, apiProvider, email, orgId, orgName, subscriptionType }`）
+  - Rust 新增 `src-tauri/src/auth.rs`：`auth_status` (4s 超时 + JSON 解析 + raw 兜底) / `auth_logout` (6s) / `open_login_terminal` 跨平台开终端
+  - 终端策略：Windows `wt.exe → cmd /k` 回退；macOS osascript Terminal.app；Linux `x-terminal-emulator → gnome-terminal → konsole → xterm` 依次试，全失败返显式错误
+  - 3 个 Tauri 命令注册到 `lib.rs`，`commands.rs` 加 `auth_status / auth_logout / auth_open_login_terminal`
+  - 前端 `lib/ipc.ts` 加 `AuthStatus` 类型 + 3 个 wrapper
+  - `Settings/sections/Account.tsx` 大改：
+    - `detectAuth(env, status)`：env 凭据 (ANTHROPIC_AUTH_TOKEN / API_KEY) 仍优先，否则看 `status.loggedIn`
+    - 新组件 `AuthActions`：oauth 态显示「登出 / 重新登录（Claude.ai / Console 下拉）」；未登录态显示「登录」；env 凭据态藏按钮 + 提示「由环境变量提供，CLI 登录态不参与」
+    - 登出走 `ConfirmDialog` 二次确认；登录开终端后进入 `awaitingLogin` 状态：5s 间隔轮询 `auth_status`，最多 24 次（≈2 分钟），看到 `loggedIn=true` 自动停 + 拉 OAuth usage；中途可「停止等待」
+    - subscriptionType / email / orgName 都展示在登录卡里
+  - 老 `claudinal.api-key-source` localStorage key 仍写入（`refresh()` 同步），保留对未迁移调用方的兼容
+- ✅ **2026-05-01 #14（P3.10 已归档对话落地）**：
+  - 数据层 `src/lib/archivedSessions.ts`（`claudinal.archived-sessions`），与 `pinned.ts` 对称
+  - ChatHeader 下拉「归档会话 / 取消归档」（`Archive` / `ArchiveRestore`）；归档行为：`unpin + teardown + reset + clear selection`，与 delete 一致体验；delete 同步清 pinned/archived ref，防幽灵条目
+  - Sidebar 过滤：置顶区 + 项目区都跳过 `archivedSet`；refreshKey 同步 pinned/archived
+  - `Settings/sections/Archive.tsx`：跨项目列表、按项目分组、行内显示标题/归档时间/消息数/sessionId 前缀；行操作「恢复 / 删除 jsonl」（ConfirmDialog 二次确认）；jsonl 缺失时仍可清记录
+- ✅ **2026-05-01 #15（P3.12 代理密码 OS 钥匙串加密）**：
+  - 改路线：放弃 plan §11.18 原拟的 `@tauri-apps/plugin-stronghold`（要用户记主密码，启动 UX 太重）；改用 Rust `keyring = "3"`（features=`apple-native, windows-native, linux-native`），直接走 OS 原生：Windows Credential Manager / macOS Keychain / Linux libsecret
+  - Rust 新增 `src-tauri/src/keychain.rs`：固定 `service="claudinal"`，对外 `set / get / delete / is_available`；`get` NoEntry 返 `Ok(None)` 与「真错」区分；`set("")` 幂等删除
+  - 4 个 Tauri 命令：`keychain_available / keychain_set / keychain_get / keychain_delete`，注册到 `lib.rs::invoke_handler`
+  - 前端 `lib/proxy.ts` 重构：localStorage 仅存非敏感字段；新增 `loadProxyAsync` / `saveProxyAsync`，密码异步从钥匙串读写；`saveProxyAsync` 返回 `"keychain" | "localstorage" | "empty"` 让 UI 着色；老版同步 `loadProxy` 保留但不再暴露密码
+  - 启动迁移 `migrateLegacyProxyPassword`：App.tsx `useEffect` 中静默把旧 localStorage 明文密码搬进钥匙串后删除
+  - Network 页：密码 input 下方实时徽标 —— `success` 「系统钥匙串加密」（KeyRound 图标）/ `warn` 「明文存储 · 钥匙串不可用」（ShieldAlert 图标）；保存按钮加 saving spinner；keychain 不可用时（多见于 headless Linux）降级写 localStorage 并加 `legacyPassword=true` 标记
+  - 兼容性：Linux 无 secret-service / 钥匙环未解锁时优雅降级；新增依赖：`keyring 3.6.3`（已 `cargo check` 通过）
 
 ---
 

@@ -116,7 +116,7 @@ const SECTIONS: SectionDef[] = [
   },
   {
     id: "account",
-    label: "使用情况",
+    label: "账户和使用情况",
     icon: Monitor,
     Component: Account
   },

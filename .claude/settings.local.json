@@ -49,7 +49,11 @@
       "Bash(pnpm dlx *)",
       "Bash(pnpm tsc *)",
       "Bash(pnpm vite *)",
-      "Bash(npx eslint *)"
+      "Bash(npx eslint *)",
+      "Bash(claude plugin *)",
+      "Bash(echo \"---EXIT=$?\")",
+      "Bash(claude auth *)",
+      "Bash(claude setup-token *)"
     ]
   }
 }

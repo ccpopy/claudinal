@@ -490,7 +490,7 @@ export function Composer({
       }}
       onDragLeave={() => setDragOver(false)}
     >
-      <div className={cn("relative", !centered && "mx-auto max-w-4xl")}>
+      <div className={cn("relative", !centered && "mx-auto max-w-3xl")}>
         <SuggestionPanel
           open={!!trigger}
           items={items}
@@ -574,7 +574,7 @@ export function Composer({
             onPaste={onPaste}
             placeholder={
               streaming
-                ? "Enter 排队，发送将在当前回合后投递"
+                ? "当前回复进行中，按 Enter 交给 Claude 排队"
                 : "要求后续变更"
             }
             disabled={disabled}
@@ -724,8 +724,8 @@ export function Composer({
                 disabled={disabled || !canSend}
                 variant={streaming ? "secondary" : "default"}
                 size="icon"
-                aria-label={streaming ? "排队发送" : "发送"}
-                title={streaming ? "排队发送" : "发送"}
+                aria-label={streaming ? "交给 Claude 排队" : "发送"}
+                title={streaming ? "交给 Claude 排队" : "发送"}
                 className="size-8 rounded-lg shadow-sm"
               >
                 {streaming ? (

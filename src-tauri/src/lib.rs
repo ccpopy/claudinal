@@ -1,6 +1,9 @@
 mod api_proxy;
+mod auth;
 mod commands;
 mod error;
+mod keychain;
+mod network_proxy;
 mod permission_mcp;
 mod plugins;
 mod proc;
@@ -23,6 +26,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(proc::Manager::new())
+        .manage(auth::AuthLoginState::new())
         .manage(permission_mcp::PermissionMcpBridge::new())
         .manage(session::WatcherState::new())
         .setup(|_app| Ok(()))
@@ -48,6 +52,7 @@ pub fn run() {
             commands::read_claude_settings,
             commands::write_claude_settings,
             commands::claude_mcp_path_for,
+            commands::read_claude_json_mcp_configs,
             commands::read_claude_mcp_config,
             commands::write_claude_mcp_config,
             commands::claude_md_path_for,
@@ -63,6 +68,15 @@ pub fn run() {
             commands::detect_playwright_install,
             commands::test_proxy_connection,
             commands::write_text_file,
+            commands::keychain_available,
+            commands::keychain_set,
+            commands::keychain_get,
+            commands::keychain_delete,
+            commands::auth_status,
+            commands::auth_logout,
+            commands::auth_start_login,
+            commands::auth_cancel_login,
+            commands::auth_open_login_terminal,
             plugins::list_installed_plugins,
             plugins::list_marketplaces,
             plugins::list_skills,

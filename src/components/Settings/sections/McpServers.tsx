@@ -25,6 +25,7 @@ import {
   claudeMcpPath,
   openPath,
   pathExists,
+  readClaudeJsonMcpConfigs,
   readClaudeMcpConfig,
   type McpScope,
   writeClaudeMcpConfig
@@ -71,6 +72,8 @@ interface Props {
   cwd?: string | null
 }
 
+type ServerScope = McpScope | "claude-json-global" | "claude-json-project"
+
 interface ValueRow {
   id: string
   value: string
@@ -84,10 +87,12 @@ interface PairRow {
 
 interface ServerRow {
   name: string
-  scope: McpScope
+  scope: ServerScope
   config: McpServerConfig
   status: string | null
   overridesGlobal: boolean
+  readOnly: boolean
+  duplicateOf?: string
 }
 
 interface EditorState {
@@ -143,6 +148,34 @@ function rowsToRecord(rows: PairRow[]) {
 
 function serverType(config: McpServerConfig): "stdio" | "http" {
   return config.type === "http" || config.url ? "http" : "stdio"
+}
+
+function commandName(command: string) {
+  const normalized = command.replace(/\\/g, "/").split("/").pop() ?? command
+  return normalized.toLowerCase().replace(/\.(cmd|exe|bat|ps1)$/i, "")
+}
+
+function serverFingerprint(config: McpServerConfig): string | null {
+  const type = serverType(config)
+  if (type === "http") {
+    const url = config.url?.trim().toLowerCase()
+    return url ? `http:${url}` : null
+  }
+
+  let command = config.command?.trim() ?? ""
+  let args = Array.isArray(config.args)
+    ? config.args.filter((arg): arg is string => typeof arg === "string")
+    : []
+  if (commandName(command) === "cmd" && args[0]?.toLowerCase() === "/c" && args[1]) {
+    command = args[1]
+    args = args.slice(2)
+  }
+  const normalizedCommand = commandName(command)
+  if (!normalizedCommand) return null
+  return ["stdio", normalizedCommand, ...args.map((arg) => arg.trim())]
+    .filter(Boolean)
+    .join("\0")
+    .toLowerCase()
 }
 
 function editorFromServer(
@@ -233,6 +266,11 @@ export function McpServers({ cwd }: Props) {
     global: "",
     project: ""
   })
+  const [claudeJsonPath, setClaudeJsonPath] = useState("")
+  const [claudeJsonConfigs, setClaudeJsonConfigs] = useState<Record<McpScope, McpConfigFile>>({
+    global: { mcpServers: {} },
+    project: { mcpServers: {} }
+  })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -252,10 +290,16 @@ export function McpServers({ cwd }: Props) {
         projectPath = await claudeMcpPath("project", cwd)
         projectRaw = await readClaudeMcpConfig("project", cwd)
       }
+      const claudeJson = await readClaudeJsonMcpConfigs(cwd ?? undefined)
       setPaths({ global: globalPath, project: projectPath })
       setConfigs({
         global: normalizeMcpConfig(globalRaw),
         project: normalizeMcpConfig(projectRaw)
+      })
+      setClaudeJsonPath(claudeJson.path)
+      setClaudeJsonConfigs({
+        global: normalizeMcpConfig(claudeJson.global),
+        project: normalizeMcpConfig(claudeJson.project)
       })
       setStatuses(loadMcpStatusCache())
       setEditor(null)
@@ -277,29 +321,64 @@ export function McpServers({ cwd }: Props) {
   )
 
   const rows = useMemo(() => {
-    const merged = new Map<string, ServerRow>()
+    const next: ServerRow[] = []
+    const globalNames = new Set<string>()
+
+    for (const [name, config] of Object.entries(claudeJsonConfigs.global.mcpServers ?? {})) {
+      globalNames.add(name)
+      next.push({
+        name,
+        scope: "claude-json-global",
+        config,
+        status: statusMap.get(name) ?? null,
+        overridesGlobal: false,
+        readOnly: true
+      })
+    }
     for (const [name, config] of Object.entries(configs.global.mcpServers ?? {})) {
-      merged.set(name, {
+      globalNames.add(name)
+      next.push({
         name,
         scope: "global",
         config,
         status: statusMap.get(name) ?? null,
-        overridesGlobal: false
+        overridesGlobal: false,
+        readOnly: false
+      })
+    }
+    for (const [name, config] of Object.entries(claudeJsonConfigs.project.mcpServers ?? {})) {
+      next.push({
+        name,
+        scope: "claude-json-project",
+        config,
+        status: statusMap.get(name) ?? null,
+        overridesGlobal: globalNames.has(name),
+        readOnly: true
       })
     }
     for (const [name, config] of Object.entries(configs.project.mcpServers ?? {})) {
-      merged.set(name, {
+      next.push({
         name,
         scope: "project",
         config,
         status: statusMap.get(name) ?? null,
-        overridesGlobal: merged.has(name)
+        overridesGlobal: globalNames.has(name),
+        readOnly: false
       })
     }
-    return Array.from(merged.values()).sort((a, b) =>
-      a.name.localeCompare(b.name)
+    const firstByFingerprint = new Map<string, string>()
+    for (const row of next) {
+      const fingerprint = serverFingerprint(row.config)
+      if (!fingerprint) continue
+      const first = firstByFingerprint.get(fingerprint)
+      if (first && first !== row.name) row.duplicateOf = first
+      else firstByFingerprint.set(fingerprint, row.name)
+    }
+    return next.sort((a, b) =>
+      a.name.localeCompare(b.name) ||
+      scopeLabel(a.scope).localeCompare(scopeLabel(b.scope))
     )
-  }, [configs, statusMap])
+  }, [claudeJsonConfigs, configs, statusMap])
 
   const updateEditor = (patch: Partial<EditorState>) => {
     setEditor((cur) => (cur ? { ...cur, ...patch } : cur))
@@ -332,23 +411,37 @@ export function McpServers({ cwd }: Props) {
     }
   }
 
-  const uniqueName = (base: string, scope: McpScope) => {
-    const servers = configs[scope].mcpServers ?? {}
-    if (!servers[base]) return base
+  const openClaudeJsonConfig = async () => {
+    if (!claudeJsonPath) return
+    try {
+      if (!(await pathExists(claudeJsonPath))) {
+        toast.error("Claude CLI 配置文件不存在")
+        return
+      }
+      await openPath(claudeJsonPath)
+    } catch (e) {
+      toast.error(`打开失败: ${String(e)}`)
+    }
+  }
+
+  const uniqueName = (base: string) => {
+    const names = new Set(rows.map((row) => row.name))
+    if (!names.has(base)) return base
     for (let i = 2; i < 100; i += 1) {
       const candidate = `${base}-${i}`
-      if (!servers[candidate]) return candidate
+      if (!names.has(candidate)) return candidate
     }
     return `${base}-${Date.now()}`
   }
 
   const startAdd = () => {
     const scope: McpScope = hasProject ? "project" : "global"
-    setEditor(newEditor(scope, uniqueName("new-server", scope)))
+    setEditor(newEditor(scope, uniqueName("new-server")))
     setDirty(true)
   }
 
   const startEdit = (row: ServerRow) => {
+    if (row.readOnly || (row.scope !== "global" && row.scope !== "project")) return
     setEditor(editorFromServer(row.name, row.scope, row.config))
     setDirty(false)
   }
@@ -376,8 +469,28 @@ export function McpServers({ cwd }: Props) {
     const targetServers = configs[editor.scope].mcpServers ?? {}
     const isSameEntry =
       editor.originalName === name && editor.originalScope === editor.scope
-    if (!isSameEntry && targetServers[name]) {
-      toast.error("同一 scope 下已存在同名 MCP 服务器")
+    const conflictingRow = rows.find(
+      (row) =>
+        row.name === name &&
+        !(row.scope === editor.originalScope && row.name === editor.originalName)
+    )
+    const nextConfig = buildServerConfig(editor)
+    const nextFingerprint = serverFingerprint(nextConfig)
+    const equivalentRow = nextFingerprint
+      ? rows.find(
+          (row) =>
+            serverFingerprint(row.config) === nextFingerprint &&
+            !(row.scope === editor.originalScope && row.name === editor.originalName)
+        )
+      : undefined
+    if (!isSameEntry && (targetServers[name] || conflictingRow || equivalentRow)) {
+      toast.error(
+        conflictingRow
+          ? `已存在同名 MCP 服务器（${scopeLabel(conflictingRow.scope)}）`
+          : equivalentRow
+            ? `已存在等价 MCP 服务器（${equivalentRow.name} / ${scopeLabel(equivalentRow.scope)}）`
+          : "同一 scope 下已存在同名 MCP 服务器"
+      )
       return
     }
 
@@ -399,7 +512,7 @@ export function McpServers({ cwd }: Props) {
       const target = getDraft(editor.scope)
       target.mcpServers = {
         ...(target.mcpServers ?? {}),
-        [name]: buildServerConfig(editor)
+        [name]: nextConfig
       }
 
       for (const [scope, config] of changed) {
@@ -416,6 +529,7 @@ export function McpServers({ cwd }: Props) {
   }
 
   const toggleServer = async (row: ServerRow, enabled: boolean) => {
+    if (row.readOnly || (row.scope !== "global" && row.scope !== "project")) return
     setSaving(true)
     try {
       const next = normalizeMcpConfig(configs[row.scope])
@@ -434,6 +548,7 @@ export function McpServers({ cwd }: Props) {
   }
 
   const deleteServer = async (row: ServerRow) => {
+    if (row.readOnly || (row.scope !== "global" && row.scope !== "project")) return
     setSaving(true)
     try {
       const next = normalizeMcpConfig(configs[row.scope])
@@ -533,10 +648,12 @@ export function McpServers({ cwd }: Props) {
         <ListView
           rows={rows}
           paths={paths}
+          claudeJsonPath={claudeJsonPath}
           loading={loading}
           saving={saving}
           hasProject={hasProject}
           onOpenPath={openConfigFile}
+          onOpenClaudeJson={openClaudeJsonConfig}
           onEdit={startEdit}
           onToggle={toggleServer}
           onDelete={setPendingDelete}
@@ -570,20 +687,24 @@ export function McpServers({ cwd }: Props) {
 function ListView({
   rows,
   paths,
+  claudeJsonPath,
   loading,
   saving,
   hasProject,
   onOpenPath,
+  onOpenClaudeJson,
   onEdit,
   onToggle,
   onDelete
 }: {
   rows: ServerRow[]
   paths: Record<McpScope, string>
+  claudeJsonPath: string
   loading: boolean
   saving: boolean
   hasProject: boolean
   onOpenPath: (scope: McpScope) => void
+  onOpenClaudeJson: () => void
   onEdit: (row: ServerRow) => void
   onToggle: (row: ServerRow, enabled: boolean) => void
   onDelete: (row: ServerRow) => void
@@ -613,6 +734,16 @@ function ListView({
               >
                 <ExternalLink className="size-3.5" />
                 打开项目级 mcp.json
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onOpenClaudeJson}
+                disabled={!claudeJsonPath}
+              >
+                <ExternalLink className="size-3.5" />
+                打开 Claude CLI 配置
               </Button>
             </div>
             {loading ? (
@@ -672,7 +803,8 @@ function ServerCard({
       </div>
       <button
         type="button"
-        onClick={onEdit}
+        onClick={row.readOnly ? undefined : onEdit}
+        disabled={row.readOnly}
         className="min-w-0 flex-1 text-left"
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -684,6 +816,16 @@ function ServerCard({
           {row.overridesGlobal && (
             <Badge variant="warn" className="font-sans">
               覆盖用户级
+            </Badge>
+          )}
+          {row.readOnly && (
+            <Badge variant="secondary" className="font-sans">
+              只读
+            </Badge>
+          )}
+          {row.duplicateOf && (
+            <Badge variant="warn" className="font-sans">
+              可能重复：{row.duplicateOf}
             </Badge>
           )}
           <Badge variant="secondary">{type === "stdio" ? "STDIO" : "HTTP"}</Badge>
@@ -698,10 +840,17 @@ function ServerCard({
         <Switch
           checked={!disabled}
           onCheckedChange={onToggle}
-          disabled={saving}
+          disabled={saving || row.readOnly}
           aria-label={`${disabled ? "启用" : "停用"} ${row.name}`}
         />
-        <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onEdit}
+          disabled={row.readOnly}
+          title={row.readOnly ? "来自 Claude CLI 配置，请打开配置文件修改" : undefined}
+        >
           <Settings2 className="size-3.5" />
           编辑
         </Button>
@@ -711,7 +860,9 @@ function ServerCard({
           size="icon"
           className="size-8 text-muted-foreground hover:text-destructive"
           onClick={onDelete}
+          disabled={row.readOnly}
           aria-label={`卸载 ${row.name}`}
+          title={row.readOnly ? "来自 Claude CLI 配置，请打开配置文件修改" : undefined}
         >
           <Trash2 className="size-4" />
         </Button>
@@ -1118,6 +1269,9 @@ function StatusDot({ status }: { status: string }) {
   )
 }
 
-function scopeLabel(scope: McpScope) {
-  return scope === "global" ? "用户级" : "项目级"
+function scopeLabel(scope: ServerScope) {
+  if (scope === "global") return "用户级"
+  if (scope === "project") return "项目级"
+  if (scope === "claude-json-global") return "Claude CLI 全局"
+  return "Claude CLI 项目"
 }

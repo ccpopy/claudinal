@@ -59,7 +59,7 @@ function MessageView({ msg }: { msg: UIMessage }) {
       {msg.queued && msg.role === "user" && (
         <div className="self-end inline-flex items-center gap-1 text-[10px] text-muted-foreground">
           <Clock className="size-3" />
-          <span>将在当前回合后发送</span>
+          <span>已交给 Claude，等待当前步骤后处理</span>
         </div>
       )}
     </div>

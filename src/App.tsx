@@ -25,7 +25,11 @@ import {
   type PermissionRequestPayload,
   type SessionMeta
 } from "@/lib/ipc"
-import { buildProxyEnv, loadProxy } from "@/lib/proxy"
+import {
+  buildProxyEnv,
+  loadProxyAsync,
+  migrateLegacyProxyPassword
+} from "@/lib/proxy"
 import { loadSettings, recordResultUsage } from "@/lib/settings"
 import {
   EMPTY_COMPOSER_PREFS,
@@ -80,6 +84,23 @@ const SUGGESTIONS = [
   "给我讲讲这个项目",
   "扫一遍代码，列出潜在的 bug 与改进点"
 ]
+
+type QueuedInput = { localId: string }
+
+function buildCliBlocks(
+  text: string,
+  images: ImagePayload[]
+): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = []
+  if (text) blocks.push({ type: "text", text })
+  for (const image of images) {
+    blocks.push({
+      type: "image",
+      source: { type: "base64", media_type: image.mime, data: image.data }
+    })
+  }
+  return blocks
+}
 
 function chatTitle(
   state: ReturnType<typeof reducerInit>,
@@ -189,13 +210,12 @@ export default function App() {
     string | null
   >(null)
   const [loadingSession, setLoadingSession] = useState(false)
-  const [pending, setPending] = useState<
-    Array<{ localId: string; text: string; images: ImagePayload[] }>
-  >([])
   const [permissionRequests, setPermissionRequests] = useState<
     PermissionRequestPayload[]
   >([])
   // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
+  const sessionIdRef = useRef<string | null>(null)
+  const queuedInputsRef = useRef<QueuedInput[]>([])
   const unlistenRef = useRef<UnlistenFn[]>([])
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
 
@@ -203,6 +223,8 @@ export default function App() {
     detectClaudeCli()
       .then(setCliPath)
       .catch((e) => toast.error(`未找到 claude CLI: ${String(e)}`))
+    // 一次性迁移：旧版 localStorage 里的明文代理密码 → keychain（keychain 可用时静默执行）
+    void migrateLegacyProxyPassword()
     loadGlobalDefault()
       .then((p) => {
         setGlobalDefault(p)
@@ -251,32 +273,11 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
-  useEffect(() => {
-    if (streaming) return
-    if (pending.length === 0) return
-    if (!sessionId) return
-    const head = pending[0]
-    setPending((cur) => cur.slice(1))
-    dispatch({ kind: "unqueue_local", localId: head.localId })
-    const blocks: Array<Record<string, unknown>> = []
-    if (head.text) blocks.push({ type: "text", text: head.text })
-    for (const image of head.images) {
-      blocks.push({
-        type: "image",
-        source: { type: "base64", media_type: image.mime, data: image.data }
-      })
-    }
-    setStreaming(true)
-    sendUserMessage(sessionId, blocks).catch((e) => {
-      toast.error(`发送失败: ${String(e)}`)
-      setStreaming(false)
-    })
-  }, [streaming, pending, sessionId])
-
   const teardown = useCallback(async () => {
-    if (sessionId) {
+    const activeSessionId = sessionIdRef.current ?? sessionId
+    if (activeSessionId) {
       try {
-        await stopSession(sessionId)
+        await stopSession(activeSessionId)
       } catch (e) {
         console.error(e)
       }
@@ -284,15 +285,15 @@ export default function App() {
     unlistenRef.current.forEach((u) => u())
     unlistenRef.current = []
     setPermissionRequests([])
+    sessionIdRef.current = null
     setSessionId(null)
     setStreaming(false)
-    setPending((cur) => {
-      if (cur.length > 0) {
-        for (const p of cur) dispatch({ kind: "drop_local", localId: p.localId })
-        toast(`已取消排队中的 ${cur.length} 条消息`)
-      }
-      return []
-    })
+    const queued = queuedInputsRef.current
+    if (queued.length > 0) {
+      for (const p of queued) dispatch({ kind: "drop_local", localId: p.localId })
+      toast(`已取消等待处理的 ${queued.length} 条消息`)
+      queuedInputsRef.current = []
+    }
   }, [sessionId])
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
@@ -300,9 +301,10 @@ export default function App() {
       setShowAdd(true)
       return null
     }
-    if (sessionId) return sessionId
+    const activeSessionId = sessionIdRef.current ?? sessionId
+    if (activeSessionId) return activeSessionId
     try {
-      const proxyEnv = buildProxyEnv(loadProxy())
+      const proxyEnv = buildProxyEnv(await loadProxyAsync())
       const cfg = loadSettings()
       const thirdPartyApi = loadThirdPartyApiConfig()
       const thirdPartyReady =
@@ -330,6 +332,12 @@ export default function App() {
       const u1 = await listenSessionEvents(id, (ev) => {
         dispatch({ kind: "event", event: ev })
         const t = (ev as { type?: string }).type
+        if (
+          t === "stream_event" &&
+          (ev as { event?: { type?: string } }).event?.type === "message_start"
+        ) {
+          setStreaming(true)
+        }
         if (t === "system") {
           const apiKeySource = (ev as { apiKeySource?: string }).apiKeySource
           if (apiKeySource) {
@@ -361,6 +369,13 @@ export default function App() {
           }
         }
         if (t === "result") {
+          const queued = queuedInputsRef.current
+          if (queued.length > 0) {
+            for (const item of queued) {
+              dispatch({ kind: "unqueue_local", localId: item.localId })
+            }
+            queuedInputsRef.current = []
+          }
           setStreaming(false)
           setSidebarRefreshKey((k) => k + 1)
           if (isOfficialApi()) {
@@ -401,6 +416,7 @@ export default function App() {
         dispatch({ kind: "event", event: ev })
       })
       unlistenRef.current.push(u1, u2)
+      sessionIdRef.current = id
       setSessionId(id)
       return id
     } catch (e) {
@@ -435,6 +451,7 @@ export default function App() {
         })
       }
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      const blocks = buildCliBlocks(text, images)
 
       if (streaming) {
         dispatch({
@@ -443,20 +460,29 @@ export default function App() {
           queued: true,
           localId
         })
-        setPending((cur) => [...cur, { localId, text, images }])
+        queuedInputsRef.current = [...queuedInputsRef.current, { localId }]
+        const id = sessionIdRef.current ?? (await ensureSession())
+        if (!id) {
+          queuedInputsRef.current = queuedInputsRef.current.filter(
+            (item) => item.localId !== localId
+          )
+          dispatch({ kind: "drop_local", localId })
+          return
+        }
+        try {
+          await sendUserMessage(id, blocks)
+        } catch (e) {
+          queuedInputsRef.current = queuedInputsRef.current.filter(
+            (item) => item.localId !== localId
+          )
+          dispatch({ kind: "drop_local", localId })
+          toast.error(`发送失败: ${String(e)}`)
+        }
         return
       }
 
       const id = await ensureSession()
       if (!id) return
-      const blocks: Array<Record<string, unknown>> = []
-      if (text) blocks.push({ type: "text", text })
-      for (const image of images) {
-        blocks.push({
-          type: "image",
-          source: { type: "base64", media_type: image.mime, data: image.data }
-        })
-      }
       dispatch({ kind: "user_local", blocks: uiBlocks, localId })
       setStreaming(true)
       try {
@@ -803,7 +829,7 @@ export default function App() {
                 </div>
                 {project && (
                   <div className="shrink-0 px-6 pb-6">
-                    <div className="mx-auto max-w-4xl space-y-2">
+                    <div className="mx-auto max-w-3xl space-y-2">
                       <Composer
                         onSend={send}
                         onStop={stop}

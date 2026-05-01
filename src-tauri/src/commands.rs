@@ -48,6 +48,7 @@ pub async fn spawn_session(
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
         env.remove("ANTHROPIC_API_KEY");
     }
+    bridge_socks_proxy_env(&mut env).await?;
     if let Some(model) = model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let is_claude_builtin = model == "default"
             || model == "best"
@@ -223,6 +224,40 @@ fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Opt
         sonnet_model,
         opus_model,
     })
+}
+
+async fn bridge_socks_proxy_env(
+    env: &mut std::collections::HashMap<String, String>,
+) -> Result<()> {
+    let proxy_url = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ]
+    .iter()
+    .find_map(|key| env.get(*key).map(String::as_str))
+    .filter(|url| crate::network_proxy::is_socks_proxy_url(url))
+    .map(str::to_string);
+
+    let Some(proxy_url) = proxy_url else {
+        return Ok(());
+    };
+
+    let local_proxy = crate::network_proxy::start_http_connect_bridge(&proxy_url).await?;
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        env.insert(key.into(), local_proxy.clone());
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -486,10 +521,47 @@ fn claude_mcp_path(scope: &str, cwd: Option<&str>) -> Result<std::path::PathBuf>
     }
 }
 
+fn claude_json_path() -> Result<std::path::PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
+    Ok(home.join(".claude.json"))
+}
+
 #[tauri::command]
 pub async fn claude_mcp_path_for(scope: String, cwd: Option<String>) -> Result<String> {
     let p = claude_mcp_path(&scope, cwd.as_deref())?;
     Ok(p.display().to_string())
+}
+
+#[derive(Serialize)]
+pub struct ClaudeJsonMcpConfigs {
+    pub path: String,
+    pub global: Option<Value>,
+    pub project: Option<Value>,
+}
+
+#[tauri::command]
+pub async fn read_claude_json_mcp_configs(cwd: Option<String>) -> Result<ClaudeJsonMcpConfigs> {
+    let path = claude_json_path()?;
+    if !path.is_file() {
+        return Ok(ClaudeJsonMcpConfigs {
+            path: path.display().to_string(),
+            global: None,
+            project: None,
+        });
+    }
+
+    let raw = std::fs::read_to_string(&path)?;
+    let value: Value = serde_json::from_str(&raw)?;
+    let global = mcp_config_from_value(&value);
+    let project = cwd
+        .as_deref()
+        .and_then(|cwd| mcp_project_config_from_claude_json(&value, cwd));
+
+    Ok(ClaudeJsonMcpConfigs {
+        path: path.display().to_string(),
+        global,
+        project,
+    })
 }
 
 #[tauri::command]
@@ -501,6 +573,52 @@ pub async fn read_claude_mcp_config(scope: String, cwd: Option<String>) -> Resul
     let raw = std::fs::read_to_string(&path)?;
     let v: Value = serde_json::from_str(&raw)?;
     Ok(Some(v))
+}
+
+fn mcp_config_from_value(value: &Value) -> Option<Value> {
+    let servers = value.get("mcpServers")?;
+    if !servers.is_object() {
+        return None;
+    }
+    let mut obj = Map::new();
+    obj.insert("mcpServers".into(), servers.clone());
+    Some(Value::Object(obj))
+}
+
+fn mcp_project_config_from_claude_json(value: &Value, cwd: &str) -> Option<Value> {
+    let projects = value.get("projects")?.as_object()?;
+    let candidates = claude_project_key_candidates(cwd);
+    for candidate in &candidates {
+        if let Some(project) = projects.get(candidate) {
+            return mcp_config_from_value(project);
+        }
+    }
+
+    let normalized = normalize_claude_project_key(cwd);
+    projects
+        .iter()
+        .find(|(key, _)| normalize_claude_project_key(key).eq_ignore_ascii_case(&normalized))
+        .and_then(|(_, project)| mcp_config_from_value(project))
+}
+
+fn claude_project_key_candidates(cwd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    push_unique_project_key(&mut out, cwd);
+    if let Ok(canonical) = std::fs::canonicalize(cwd) {
+        push_unique_project_key(&mut out, &canonical.display().to_string());
+    }
+    out
+}
+
+fn push_unique_project_key(out: &mut Vec<String>, path: &str) {
+    let normalized = normalize_claude_project_key(path);
+    if !normalized.is_empty() && !out.iter().any(|item| item == &normalized) {
+        out.push(normalized);
+    }
+}
+
+fn normalize_claude_project_key(path: &str) -> String {
+    path.replace('\\', "/").trim_end_matches('/').to_string()
 }
 
 #[tauri::command]
@@ -911,13 +1029,13 @@ pub async fn test_proxy_connection(req: ProxyTestRequest) -> Result<ProxyTestRes
         .to_string();
     let timeout = std::time::Duration::from_millis(req.timeout_ms.unwrap_or(8_000));
     let proxy = reqwest::Proxy::all(&req.url)
-        .map_err(|e| Error::Other(format!("invalid proxy url: {e}")))?;
+        .map_err(|e| Error::Other(format!("invalid proxy url: {}", error_chain(&e))))?;
     let client = reqwest::Client::builder()
         .proxy(proxy)
         .timeout(timeout)
         .danger_accept_invalid_certs(false)
         .build()
-        .map_err(|e| Error::Other(format!("http client: {e}")))?;
+        .map_err(|e| Error::Other(format!("http client: {}", error_chain(&e))))?;
     let start = std::time::Instant::now();
     match client
         .head(&target)
@@ -928,13 +1046,19 @@ pub async fn test_proxy_connection(req: ProxyTestRequest) -> Result<ProxyTestRes
         Ok(resp) => {
             let latency = start.elapsed().as_millis() as u64;
             let status = resp.status();
-            let ok = status.is_success() || status.is_redirection() || status.as_u16() == 401;
+            let ok = status.is_success()
+                || status.is_redirection()
+                || matches!(status.as_u16(), 401 | 403 | 404 | 405);
             Ok(ProxyTestResult {
                 ok,
                 status: Some(status.as_u16()),
                 latency_ms: latency,
                 message: if ok {
-                    format!("连接成功 · HTTP {}", status.as_u16())
+                    if status.is_success() || status.is_redirection() {
+                        format!("连接成功 · HTTP {}", status.as_u16())
+                    } else {
+                        format!("连接成功，目标返回 HTTP {}", status.as_u16())
+                    }
                 } else {
                     format!("代理可达，但目标返回 HTTP {}", status.as_u16())
                 },
@@ -946,10 +1070,24 @@ pub async fn test_proxy_connection(req: ProxyTestRequest) -> Result<ProxyTestRes
                 ok: false,
                 status: None,
                 latency_ms: latency,
-                message: format!("失败：{e}"),
+                message: format!("失败：{}", error_chain(&e)),
             })
         }
     }
+}
+
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut message = err.to_string();
+    let mut source = err.source();
+    while let Some(err) = source {
+        let detail = err.to_string();
+        if !detail.is_empty() && !message.contains(&detail) {
+            message.push_str(": ");
+            message.push_str(&detail);
+        }
+        source = err.source();
+    }
+    message
 }
 
 #[tauri::command]
@@ -1007,4 +1145,56 @@ pub async fn open_external(url: String) -> Result<()> {
             .map_err(Error::from)?;
     }
     Ok(())
+}
+
+/// 探测系统钥匙串是否可用。Linux 无 secret-service / DE 时返回 false，前端用来切降级。
+#[tauri::command]
+pub async fn keychain_available() -> bool {
+    crate::keychain::is_available()
+}
+
+/// 写入 / 覆盖密钥；secret 为空字符串视作删除。
+#[tauri::command]
+pub async fn keychain_set(account: String, secret: String) -> Result<()> {
+    crate::keychain::set(&account, &secret)
+}
+
+/// 读取密钥；不存在返回 None。
+#[tauri::command]
+pub async fn keychain_get(account: String) -> Result<Option<String>> {
+    crate::keychain::get(&account)
+}
+
+/// 删除密钥；不存在视作成功（幂等）。
+#[tauri::command]
+pub async fn keychain_delete(account: String) -> Result<()> {
+    crate::keychain::delete(&account)
+}
+
+#[tauri::command]
+pub async fn auth_status() -> Result<crate::auth::AuthStatus> {
+    crate::auth::auth_status().await
+}
+
+#[tauri::command]
+pub async fn auth_logout() -> Result<String> {
+    crate::auth::auth_logout().await
+}
+
+#[tauri::command]
+pub async fn auth_start_login(
+    login: State<'_, crate::auth::AuthLoginState>,
+    use_console: Option<bool>,
+) -> Result<()> {
+    login.start_hidden(use_console.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn auth_cancel_login(login: State<'_, crate::auth::AuthLoginState>) -> Result<()> {
+    login.cancel().await
+}
+
+#[tauri::command]
+pub async fn auth_open_login_terminal(use_console: Option<bool>) -> Result<()> {
+    crate::auth::open_login_terminal(use_console.unwrap_or(false))
 }
