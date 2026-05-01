@@ -52,6 +52,7 @@ import { cn } from "@/lib/utils"
 import {
   gitBranchList,
   gitCheckoutBranch,
+  gitWorktreeStatus,
   listFiles,
   type GitBranchList,
   type GitWorktreeStatus,
@@ -939,22 +940,31 @@ function GitBranchPicker({
   const [query, setQuery] = useState("")
   const [newBranch, setNewBranch] = useState("")
   const [branches, setBranches] = useState<GitBranchList | null>(null)
+  const [localStatus, setLocalStatus] = useState<GitWorktreeStatus | null>(status)
   const [loading, setLoading] = useState(false)
   const [switching, setSwitching] = useState(false)
-  const current = branches?.current ?? status?.branch ?? null
+  const effectiveStatus = localStatus ?? status
+  const current = branches?.current ?? effectiveStatus?.branch ?? null
+
+  useEffect(() => {
+    setLocalStatus(status)
+  }, [status])
 
   useEffect(() => {
     if (!open || !cwd || !status?.isRepo) return
     let cancelled = false
     setLoading(true)
-    gitBranchList(cwd)
-      .then((list) => {
-        if (!cancelled) setBranches(list)
+    Promise.all([gitBranchList(cwd), gitWorktreeStatus(cwd)])
+      .then(([list, nextStatus]) => {
+        if (cancelled) return
+        setBranches(list)
+        setLocalStatus(nextStatus)
+        void onChanged?.()
       })
       .catch((e) => {
         if (!cancelled) {
           setBranches(null)
-          toast.error(`读取分支失败: ${String(e)}`)
+          toast.error(`读取 Git 状态失败: ${String(e)}`)
         }
       })
       .finally(() => {
@@ -963,9 +973,9 @@ function GitBranchPicker({
     return () => {
       cancelled = true
     }
-  }, [open, cwd, status?.isRepo, status?.branch])
+  }, [open, cwd, status?.isRepo, onChanged])
 
-  if (!status?.isRepo || !current || !cwd) return null
+  if (!effectiveStatus?.isRepo || !current || !cwd) return null
 
   const filtered = (branches?.branches ?? [])
     .filter((branch) =>
@@ -982,6 +992,12 @@ function GitBranchPicker({
     setSwitching(true)
     try {
       await gitCheckoutBranch({ cwd, branch: target, create })
+      const [list, nextStatus] = await Promise.all([
+        gitBranchList(cwd),
+        gitWorktreeStatus(cwd)
+      ])
+      setBranches(list)
+      setLocalStatus(nextStatus)
       toast.success(create ? `已创建并切换到 ${target}` : `已切换到 ${target}`)
       setOpen(false)
       setNewBranch("")
@@ -995,7 +1011,9 @@ function GitBranchPicker({
   }
 
   const dirtySummary =
-    status.changedFiles > 0 ? `未提交：${status.changedFiles} 个文件` : "工作区干净"
+    effectiveStatus.changedFiles > 0
+      ? `未提交：${effectiveStatus.changedFiles} 个文件`
+      : "工作区干净"
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -1057,7 +1075,7 @@ function GitBranchPicker({
                   <span className="block truncate font-mono text-sm">
                     {branch.name}
                   </span>
-                  {branch.name === current && status.changedFiles > 0 && (
+                  {branch.name === current && effectiveStatus.changedFiles > 0 && (
                     <span className="block text-[11px] text-muted-foreground">
                       {dirtySummary}
                     </span>

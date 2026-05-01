@@ -127,7 +127,11 @@ export function Sidebar({
     : projects
 
   const loadSessions = useCallback(async (p: Project) => {
-    setSessionsByProject((cur) => ({ ...cur, [p.id]: { kind: "loading" } }))
+    setSessionsByProject((cur) => {
+      const existing = cur[p.id]
+      if (existing?.kind === "ok") return cur
+      return { ...cur, [p.id]: { kind: "loading" } }
+    })
     try {
       const items = await listProjectSessions(p.cwd)
       setSessionsByProject((cur) => ({

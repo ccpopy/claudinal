@@ -15,16 +15,21 @@ export interface Appearance {
 
 const KEY = "claudecli.appearance"
 
+export const CLAUDE_FONT_UI =
+  '"Anthropic Sans", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
+
 const CLAUDE_DEFAULT: Appearance = {
   light: {
     accent: "#cc7d5e",
     background: "#f9f9f7",
-    foreground: "#2d2d2b"
+    foreground: "#2d2d2b",
+    fontUI: CLAUDE_FONT_UI
   },
   dark: {
     accent: "#cc7d5e",
     background: "#2d2d2b",
-    foreground: "#f9f9f7"
+    foreground: "#f9f9f7",
+    fontUI: CLAUDE_FONT_UI
   }
 }
 

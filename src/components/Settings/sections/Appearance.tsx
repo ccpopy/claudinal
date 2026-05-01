@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch"
 import { useTheme, type Theme } from "@/lib/theme-context"
 import {
   applyAppearance,
+  CLAUDE_FONT_UI,
   defaultAppearance,
   loadAppearance,
   matchPreset,
@@ -228,7 +229,7 @@ function ModeSection({
       <FontRow
         label="UI 字体"
         value={cfg.fontUI}
-        placeholder='ui-sans-serif, system-ui, "Segoe UI"'
+        placeholder={CLAUDE_FONT_UI}
         onChange={(v) => onUpdate({ fontUI: v })}
       />
       <FontRow

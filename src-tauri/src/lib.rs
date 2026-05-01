@@ -42,6 +42,7 @@ pub fn run() {
             commands::list_dir,
             commands::list_project_sessions,
             commands::git_worktree_status,
+            commands::worktree_diff,
             commands::git_branch_list,
             commands::git_checkout_branch,
             commands::github_cli_status,

@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./assets/fonts/AnthropicSansVariable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* Claude 暖色调 light 主题（默认） */
@@ -116,6 +124,7 @@
   --radius-xl: calc(var(--radius) + 4px);
 
   --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
+  --font-sans: "Anthropic Sans", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 @layer base {
@@ -125,7 +134,8 @@
   html, body, #root { height: 100%; margin: 0; }
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-family: var(--font-sans);
+    font-optical-sizing: auto;
     font-size: 14px;
   }
   button:not(:disabled),

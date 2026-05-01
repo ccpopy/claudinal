@@ -49,6 +49,29 @@ export interface GitWorktreeStatus {
   files: GitFileChange[]
 }
 
+export interface DiffHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: string[]
+}
+
+export interface WorktreeFileDiff {
+  path: string
+  oldPath: string | null
+  status: string
+  additions: number
+  deletions: number
+  binary: boolean
+  hunks: DiffHunk[]
+}
+
+export interface WorktreeDiff {
+  isRepo: boolean
+  files: WorktreeFileDiff[]
+}
+
 export interface GithubCliStatus {
   installed: boolean
   path: string | null
@@ -173,6 +196,10 @@ export async function gitWorktreeStatus(
   cwd: string
 ): Promise<GitWorktreeStatus> {
   return invoke<GitWorktreeStatus>("git_worktree_status", { cwd })
+}
+
+export async function worktreeDiff(cwd: string): Promise<WorktreeDiff> {
+  return invoke<WorktreeDiff>("worktree_diff", { cwd })
 }
 
 export async function gitBranchList(cwd: string): Promise<GitBranchList> {

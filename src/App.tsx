@@ -12,6 +12,8 @@ import {
   detectClaudeCli,
   gitWorktreeStatus,
   type GitWorktreeStatus,
+  worktreeDiff,
+  type WorktreeDiff,
   spawnSession,
   sendUserMessage,
   stopSession,
@@ -216,6 +218,9 @@ export default function App() {
   >(null)
   const [loadingSession, setLoadingSession] = useState(false)
   const [gitStatus, setGitStatus] = useState<GitWorktreeStatus | null>(null)
+  const [diffPatch, setDiffPatch] = useState<WorktreeDiff | null>(null)
+  const [diffPatchLoading, setDiffPatchLoading] = useState(false)
+  const [diffPatchError, setDiffPatchError] = useState<string | null>(null)
   const [permissionRequests, setPermissionRequests] = useState<
     PermissionRequestPayload[]
   >([])
@@ -460,9 +465,30 @@ export default function App() {
     }
   }, [project])
 
+  const refreshWorktreeDiff = useCallback(async () => {
+    if (!project) {
+      setDiffPatch(null)
+      setDiffPatchError(null)
+      return
+    }
+    setDiffPatchLoading(true)
+    try {
+      const patch = await worktreeDiff(project.cwd)
+      setDiffPatch(patch)
+      setDiffPatchError(null)
+    } catch (e) {
+      setDiffPatch(null)
+      setDiffPatchError(String(e))
+    } finally {
+      setDiffPatchLoading(false)
+    }
+  }, [project])
+
   useEffect(() => {
     if (!project) {
       setGitStatus(null)
+      setDiffPatch(null)
+      setDiffPatchError(null)
       return
     }
     let cancelled = false
@@ -477,6 +503,12 @@ export default function App() {
       cancelled = true
     }
   }, [project?.cwd, selectedSessionId, sidebarRefreshKey])
+
+  useEffect(() => {
+    if (showDiff) {
+      void refreshWorktreeDiff()
+    }
+  }, [showDiff, refreshWorktreeDiff, sidebarRefreshKey])
 
   const send = useCallback(
     async (text: string, images: ImagePayload[]) => {
@@ -584,7 +616,6 @@ export default function App() {
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(s.id)
-      setSidebarRefreshKey((k) => k + 1)
       try {
         const events = (await readSessionTranscript(p.cwd, s.id)) as ClaudeEvent[]
         // sidecar 里持久化的 result 事件追加到末尾，恢复 ✓ 完成 chip
@@ -759,7 +790,11 @@ export default function App() {
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const diffCount = countDiffFiles(state.entries)
-  const visibleDiffCount = Math.max(diffCount, gitStatus?.changedFiles ?? 0)
+  const visibleDiffCount = Math.max(
+    diffCount,
+    gitStatus?.changedFiles ?? 0,
+    diffPatch?.files.length ?? 0
+  )
   const slashCommands = findSlashCommands(state)
   const activePermissionRequest = permissionRequests[0] ?? null
   void titleTick
@@ -1036,6 +1071,10 @@ export default function App() {
           onOpenChange={setShowDiff}
           entries={state.entries}
           gitStatus={gitStatus}
+          worktreeDiff={diffPatch}
+          worktreeDiffLoading={diffPatchLoading}
+          worktreeDiffError={diffPatchError}
+          cwd={project?.cwd ?? null}
         />
         <PermissionDialog
           request={activePermissionRequest}

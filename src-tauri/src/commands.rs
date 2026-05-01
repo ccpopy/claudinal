@@ -386,6 +386,35 @@ pub struct GitWorktreeStatus {
     pub files: Vec<GitFileChange>,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffHunk {
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub lines: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeFileDiff {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub binary: bool,
+    pub hunks: Vec<DiffHunk>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeDiff {
+    pub is_repo: bool,
+    pub files: Vec<WorktreeFileDiff>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubCliStatus {
@@ -526,6 +555,97 @@ pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
         changed_files: files.len() as u32,
         additions,
         deletions,
+        files,
+    })
+}
+
+#[tauri::command]
+pub async fn worktree_diff(cwd: String) -> Result<WorktreeDiff> {
+    let root = std::path::Path::new(&cwd);
+    if !root.is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    if !command_success(
+        std::process::Command::new("git")
+            .args(["-C", &cwd, "rev-parse", "--is-inside-work-tree"]),
+    ) {
+        return Ok(WorktreeDiff {
+            is_repo: false,
+            files: vec![],
+        });
+    }
+
+    let status_raw = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    ]))?;
+    let statuses = parse_git_status_z(&status_raw);
+
+    let patch_raw = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--patch",
+        "--no-color",
+        "--no-ext-diff",
+        "--unified=80",
+        "HEAD",
+        "--",
+    ]))?;
+    let numstat_raw = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--numstat",
+        "HEAD",
+        "--",
+    ]))?;
+    let numstat = parse_git_numstat(&numstat_raw);
+
+    let mut files = parse_git_patch(&patch_raw);
+    let mut index = std::collections::HashMap::new();
+    for (idx, file) in files.iter().enumerate() {
+        index.insert(file.path.clone(), idx);
+    }
+
+    for status in statuses {
+        if let Some(idx) = index.get(&status.path).copied() {
+            let file = &mut files[idx];
+            file.status = status.status;
+            file.old_path = status.old_path.or_else(|| file.old_path.clone());
+            if let Some((additions, deletions)) = numstat.get(&file.path).copied() {
+                file.additions = additions;
+                file.deletions = deletions;
+            }
+            continue;
+        }
+
+        if status.status == "??" {
+            if let Some(file) = untracked_file_diff(root, &status.path) {
+                index.insert(file.path.clone(), files.len());
+                files.push(file);
+            }
+        }
+    }
+
+    for file in &mut files {
+        if let Some((additions, deletions)) = numstat.get(&file.path).copied() {
+            file.additions = additions;
+            file.deletions = deletions;
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(WorktreeDiff {
+        is_repo: true,
         files,
     })
 }
@@ -687,6 +807,306 @@ fn parse_git_numstat(raw: &str) -> std::collections::HashMap<String, (u32, u32)>
         out.insert(path.to_string(), (additions, deletions));
     }
     out
+}
+
+struct GitStatusEntry {
+    path: String,
+    old_path: Option<String>,
+    status: String,
+}
+
+fn parse_git_status_z(raw: &str) -> Vec<GitStatusEntry> {
+    let mut out = Vec::new();
+    let mut entries = raw.split('\0').filter(|s| !s.is_empty());
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let status = entry[..2].trim().to_string();
+        let path = entry[3..].replace('\\', "/");
+        let old_path = if status.starts_with('R') || status.starts_with('C') {
+            entries.next().map(|s| s.replace('\\', "/"))
+        } else {
+            None
+        };
+        out.push(GitStatusEntry {
+            path,
+            old_path,
+            status,
+        });
+    }
+    out
+}
+
+fn parse_git_patch(raw: &str) -> Vec<WorktreeFileDiff> {
+    let mut files = Vec::new();
+    let mut current: Option<WorktreeFileDiff> = None;
+    let mut current_hunk: Option<DiffHunk> = None;
+
+    for line in raw.lines() {
+        if line.starts_with("diff --git ") {
+            push_hunk(&mut current, &mut current_hunk);
+            push_file(&mut files, current.take());
+            let (old_path, path) = parse_diff_git_header(line);
+            current = Some(WorktreeFileDiff {
+                path: path.unwrap_or_default(),
+                old_path,
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                binary: false,
+                hunks: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(file) = current.as_mut() else {
+            continue;
+        };
+
+        if let Some(path) = line.strip_prefix("--- ") {
+            file.old_path = parse_diff_marker_path(path);
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("+++ ") {
+            if let Some(path) = parse_diff_marker_path(path) {
+                file.path = path;
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("rename from ") {
+            file.old_path = Some(path.replace('\\', "/"));
+            file.status = "R".into();
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("rename to ") {
+            file.path = path.replace('\\', "/");
+            file.status = "R".into();
+            continue;
+        }
+        if line == "new file mode" || line.starts_with("new file mode ") {
+            file.status = "A".into();
+            continue;
+        }
+        if line == "deleted file mode" || line.starts_with("deleted file mode ") {
+            file.status = "D".into();
+            continue;
+        }
+        if line.starts_with("Binary files ") || line == "GIT binary patch" {
+            file.binary = true;
+            continue;
+        }
+        if line.starts_with("@@ ") {
+            push_hunk(&mut current, &mut current_hunk);
+            current_hunk = parse_unified_hunk_header(line);
+            continue;
+        }
+        if let Some(hunk) = current_hunk.as_mut() {
+            if line.starts_with('+') {
+                file.additions += 1;
+            } else if line.starts_with('-') {
+                file.deletions += 1;
+            }
+            hunk.lines.push(line.to_string());
+        }
+    }
+
+    push_hunk(&mut current, &mut current_hunk);
+    push_file(&mut files, current);
+    files
+}
+
+fn push_hunk(file: &mut Option<WorktreeFileDiff>, hunk: &mut Option<DiffHunk>) {
+    let Some(hunk) = hunk.take() else {
+        return;
+    };
+    if let Some(file) = file.as_mut() {
+        file.hunks.push(hunk);
+    }
+}
+
+fn push_file(files: &mut Vec<WorktreeFileDiff>, file: Option<WorktreeFileDiff>) {
+    let Some(mut file) = file else {
+        return;
+    };
+    if file.path.is_empty() {
+        if let Some(old_path) = file.old_path.clone() {
+            file.path = old_path;
+        }
+    }
+    if !file.path.is_empty() {
+        files.push(file);
+    }
+}
+
+fn parse_diff_git_header(line: &str) -> (Option<String>, Option<String>) {
+    let Some(rest) = line.strip_prefix("diff --git ") else {
+        return (None, None);
+    };
+    let Some(rest) = rest.strip_prefix("a/") else {
+        return (None, None);
+    };
+    let Some(idx) = rest.find(" b/") else {
+        return (None, None);
+    };
+    let old_path = rest[..idx].replace('\\', "/");
+    let new_path = rest[idx + 3..].replace('\\', "/");
+    (Some(old_path), Some(new_path))
+}
+
+fn parse_diff_marker_path(raw: &str) -> Option<String> {
+    let path = raw.trim().split('\t').next().unwrap_or("").trim();
+    if path == "/dev/null" || path.is_empty() {
+        return None;
+    }
+    let path = path
+        .strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path);
+    Some(path.replace('\\', "/"))
+}
+
+fn parse_unified_hunk_header(line: &str) -> Option<DiffHunk> {
+    let header = line.strip_prefix("@@ ")?;
+    let end = header.find(" @@")?;
+    let mut parts = header[..end].split_whitespace();
+    let old = parse_hunk_range(parts.next()?, '-')?;
+    let new = parse_hunk_range(parts.next()?, '+')?;
+    Some(DiffHunk {
+        old_start: old.0,
+        old_lines: old.1,
+        new_start: new.0,
+        new_lines: new.1,
+        lines: Vec::new(),
+    })
+}
+
+fn parse_hunk_range(token: &str, prefix: char) -> Option<(u32, u32)> {
+    let raw = token.strip_prefix(prefix)?;
+    let mut parts = raw.splitn(2, ',');
+    let start = parts.next()?.parse::<u32>().ok()?;
+    let lines = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(1);
+    Some((start, lines))
+}
+
+fn untracked_file_diff(root: &std::path::Path, rel: &str) -> Option<WorktreeFileDiff> {
+    let path = safe_workspace_child(root, rel)?;
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    if bytes.iter().any(|b| *b == 0) {
+        return Some(WorktreeFileDiff {
+            path: rel.replace('\\', "/"),
+            old_path: None,
+            status: "??".into(),
+            additions: 0,
+            deletions: 0,
+            binary: true,
+            hunks: Vec::new(),
+        });
+    }
+    let content = String::from_utf8(bytes).ok()?;
+    let mut lines = text_lines(&content)
+        .into_iter()
+        .map(|line| format!("+{line}"))
+        .collect::<Vec<_>>();
+    let additions = lines.len() as u32;
+    let hunks = if additions == 0 {
+        Vec::new()
+    } else {
+        vec![DiffHunk {
+            old_start: 0,
+            old_lines: 0,
+            new_start: 1,
+            new_lines: additions,
+            lines: std::mem::take(&mut lines),
+        }]
+    };
+    Some(WorktreeFileDiff {
+        path: rel.replace('\\', "/"),
+        old_path: None,
+        status: "??".into(),
+        additions,
+        deletions: 0,
+        binary: false,
+        hunks,
+    })
+}
+
+fn safe_workspace_child(root: &std::path::Path, rel: &str) -> Option<std::path::PathBuf> {
+    let rel_path = std::path::Path::new(rel);
+    if rel_path.is_absolute() {
+        return None;
+    }
+    for component in rel_path.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            _ => return None,
+        }
+    }
+    Some(root.join(rel_path))
+}
+
+fn text_lines(content: &str) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = content.split('\n').collect::<Vec<_>>();
+    if content.ends_with('\n') {
+        let _ = lines.pop();
+    }
+    lines
+        .into_iter()
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_git_patch_extracts_file_hunks() {
+        let raw = "\
+diff --git a/src/main.rs b/src/main.rs
+index 1111111..2222222 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
+-    println!(\"old\");
++    println!(\"new\");
++    println!(\"extra\");
+ }
+";
+
+        let files = parse_git_patch(raw);
+        assert_eq!(files.len(), 1);
+        let file = &files[0];
+        assert_eq!(file.path, "src/main.rs");
+        assert_eq!(file.additions, 2);
+        assert_eq!(file.deletions, 1);
+        assert_eq!(file.hunks.len(), 1);
+        assert_eq!(file.hunks[0].old_start, 1);
+        assert_eq!(file.hunks[0].new_start, 1);
+        assert_eq!(file.hunks[0].lines.len(), 5);
+    }
+
+    #[test]
+    fn parse_git_status_z_keeps_rename_source() {
+        let raw = "R  new name.rs\0old name.rs\0?? notes.txt\0";
+        let entries = parse_git_status_z(raw);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].status, "R");
+        assert_eq!(entries[0].path, "new name.rs");
+        assert_eq!(entries[0].old_path.as_deref(), Some("old name.rs"));
+        assert_eq!(entries[1].status, "??");
+        assert_eq!(entries[1].path, "notes.txt");
+    }
 }
 
 #[tauri::command]
