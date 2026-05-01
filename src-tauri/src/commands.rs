@@ -363,6 +363,332 @@ pub async fn list_project_sessions(cwd: String) -> Result<Vec<SessionMeta>> {
     list_sessions_inner(&cwd)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileChange {
+    pub path: String,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeStatus {
+    pub is_repo: bool,
+    pub branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub changed_files: u32,
+    pub additions: u32,
+    pub deletions: u32,
+    pub files: Vec<GitFileChange>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubCliStatus {
+    pub installed: bool,
+    pub path: Option<String>,
+    pub version: Option<String>,
+    pub authenticated: bool,
+    pub user: Option<String>,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchInfo {
+    pub name: String,
+    pub current: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchList {
+    pub is_repo: bool,
+    pub current: Option<String>,
+    pub branches: Vec<GitBranchInfo>,
+}
+
+#[tauri::command]
+pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    if !command_success(
+        std::process::Command::new("git")
+            .args(["-C", &cwd, "rev-parse", "--is-inside-work-tree"]),
+    ) {
+        return Ok(GitWorktreeStatus {
+            is_repo: false,
+            branch: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            changed_files: 0,
+            additions: 0,
+            deletions: 0,
+            files: vec![],
+        });
+    }
+
+    let branch = command_stdout(
+        std::process::Command::new("git").args(["-C", &cwd, "branch", "--show-current"]),
+    )?
+    .trim()
+    .to_string();
+    let branch = if branch.is_empty() {
+        command_stdout(
+            std::process::Command::new("git").args(["-C", &cwd, "rev-parse", "--short", "HEAD"]),
+        )
+        .ok()
+        .map(|s| format!("detached:{}", s.trim()))
+    } else {
+        Some(branch)
+    };
+
+    let upstream = command_stdout(
+        std::process::Command::new("git").args([
+            "-C",
+            &cwd,
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{u}",
+        ]),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+
+    let (behind, ahead) = if upstream.is_some() {
+        command_stdout(
+            std::process::Command::new("git").args([
+                "-C",
+                &cwd,
+                "rev-list",
+                "--left-right",
+                "--count",
+                "@{u}...HEAD",
+            ]),
+        )
+        .ok()
+        .and_then(|s| {
+            let mut parts = s.split_whitespace();
+            let behind = parts.next()?.parse::<u32>().ok()?;
+            let ahead = parts.next()?.parse::<u32>().ok()?;
+            Some((behind, ahead))
+        })
+        .unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+
+    let numstat_raw = command_stdout(
+        std::process::Command::new("git").args(["-C", &cwd, "diff", "--numstat", "HEAD", "--"]),
+    )
+    .unwrap_or_default();
+    let numstat = parse_git_numstat(&numstat_raw);
+    let status_raw = command_stdout(
+        std::process::Command::new("git").args(["-C", &cwd, "status", "--porcelain=v1", "-z"]),
+    )?;
+    let mut files = Vec::new();
+    let mut entries = status_raw.split('\0').filter(|s| !s.is_empty()).peekable();
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let status = entry[..2].trim().to_string();
+        let path = entry[3..].to_string();
+        if status.starts_with('R') || status.starts_with('C') {
+            let _ = entries.next();
+        }
+        let (additions, deletions) = numstat.get(&path).copied().unwrap_or((0, 0));
+        files.push(GitFileChange {
+            path,
+            status,
+            additions,
+            deletions,
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let additions = files.iter().map(|f| f.additions).sum();
+    let deletions = files.iter().map(|f| f.deletions).sum();
+
+    Ok(GitWorktreeStatus {
+        is_repo: true,
+        branch,
+        upstream,
+        ahead,
+        behind,
+        changed_files: files.len() as u32,
+        additions,
+        deletions,
+        files,
+    })
+}
+
+#[tauri::command]
+pub async fn git_branch_list(cwd: String) -> Result<GitBranchList> {
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    if !command_success(
+        std::process::Command::new("git")
+            .args(["-C", &cwd, "rev-parse", "--is-inside-work-tree"]),
+    ) {
+        return Ok(GitBranchList {
+            is_repo: false,
+            current: None,
+            branches: vec![],
+        });
+    }
+    let current = command_stdout(
+        std::process::Command::new("git").args(["-C", &cwd, "branch", "--show-current"]),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+    let raw = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads",
+    ]))?;
+    let mut branches = raw
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| GitBranchInfo {
+            name: name.to_string(),
+            current: current.as_deref() == Some(name),
+        })
+        .collect::<Vec<_>>();
+    branches.sort_by(|a, b| match (a.current, b.current) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.cmp(&b.name),
+    });
+    Ok(GitBranchList {
+        is_repo: true,
+        current,
+        branches,
+    })
+}
+
+#[tauri::command]
+pub async fn git_checkout_branch(cwd: String, branch: String, create: Option<bool>) -> Result<()> {
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    let branch = branch.trim();
+    if branch.is_empty()
+        || branch.contains('\0')
+        || branch.starts_with('-')
+        || branch.contains("..")
+        || branch.contains('~')
+        || branch.contains('^')
+        || branch.contains(':')
+        || branch.contains('?')
+        || branch.contains('*')
+        || branch.contains('[')
+        || branch.ends_with('/')
+        || branch.ends_with(".lock")
+    {
+        return Err(Error::Other(format!("invalid branch name: {branch}")));
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", &cwd, "switch"]);
+    if create.unwrap_or(false) {
+        cmd.arg("-c");
+    }
+    cmd.arg(branch);
+    command_stdout(&mut cmd).map(|_| ())
+}
+
+#[tauri::command]
+pub async fn github_cli_status() -> Result<GithubCliStatus> {
+    let path = match which::which("gh") {
+        Ok(path) => path,
+        Err(_) => {
+            return Ok(GithubCliStatus {
+                installed: false,
+                path: None,
+                version: None,
+                authenticated: false,
+                user: None,
+                message: "未找到 gh CLI".into(),
+            })
+        }
+    };
+    let version = command_stdout(std::process::Command::new(&path).arg("--version"))
+        .ok()
+        .and_then(|s| s.lines().next().map(str::to_string));
+    let auth = std::process::Command::new(&path).args(["auth", "status"]).output();
+    let authenticated = auth.as_ref().is_ok_and(|out| out.status.success());
+    let auth_text = auth
+        .ok()
+        .map(|out| {
+            let mut s = String::from_utf8_lossy(&out.stdout).to_string();
+            s.push_str(&String::from_utf8_lossy(&out.stderr));
+            s
+        })
+        .unwrap_or_default();
+    let user = auth_text
+        .lines()
+        .find_map(|line| line.split(" account ").nth(1))
+        .map(|tail| {
+            tail.split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '(' || c == ')' || c == ',')
+                .to_string()
+        })
+        .filter(|s| !s.is_empty());
+    Ok(GithubCliStatus {
+        installed: true,
+        path: Some(path.display().to_string()),
+        version,
+        authenticated,
+        user,
+        message: if authenticated {
+            "GitHub CLI 已认证".into()
+        } else {
+            "GitHub CLI 未通过身份验证，请在终端运行 gh auth login".into()
+        },
+    })
+}
+
+fn command_stdout(cmd: &mut std::process::Command) -> Result<String> {
+    let out = cmd.output().map_err(Error::from)?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(Error::Other(stderr.trim().to_string()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn command_success(cmd: &mut std::process::Command) -> bool {
+    cmd.output().is_ok_and(|out| out.status.success())
+}
+
+fn parse_git_numstat(raw: &str) -> std::collections::HashMap<String, (u32, u32)> {
+    let mut out = std::collections::HashMap::new();
+    for line in raw.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let additions = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let deletions = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let Some(path) = parts.next() else {
+            continue;
+        };
+        out.insert(path.to_string(), (additions, deletions));
+    }
+    out
+}
+
 #[tauri::command]
 pub async fn read_session_transcript(cwd: String, session_id: String) -> Result<Vec<Value>> {
     read_transcript_inner(&cwd, &session_id)

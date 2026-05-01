@@ -10,6 +10,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import {
   detectClaudeCli,
+  gitWorktreeStatus,
+  type GitWorktreeStatus,
   spawnSession,
   sendUserMessage,
   stopSession,
@@ -31,6 +33,7 @@ import {
   migrateLegacyProxyPassword
 } from "@/lib/proxy"
 import { loadSettings, recordResultUsage } from "@/lib/settings"
+import type { AppSettings } from "@/lib/settings"
 import {
   EMPTY_COMPOSER_PREFS,
   loadGlobalDefault,
@@ -184,6 +187,8 @@ export default function App() {
   const [sidebarVisible, setSidebarVisible] = useState(true)
   const [settingsSection, setSettingsSection] = useState("general")
   const [planMode, setPlanMode] = useState(false)
+  const [sessionPermissionMode, setSessionPermissionMode] =
+    useState<AppSettings["defaultPermissionMode"]>("default")
   const [composerPrefs, setComposerPrefs] = useState<ComposerPrefs>({
     model: "",
     effort: ""
@@ -210,6 +215,7 @@ export default function App() {
     string | null
   >(null)
   const [loadingSession, setLoadingSession] = useState(false)
+  const [gitStatus, setGitStatus] = useState<GitWorktreeStatus | null>(null)
   const [permissionRequests, setPermissionRequests] = useState<
     PermissionRequestPayload[]
   >([])
@@ -234,6 +240,9 @@ export default function App() {
       .catch(() => {
         // 读 settings.json 失败不致命；保持默认 auto
       })
+    const settings = loadSettings()
+    setSessionPermissionMode(settings.defaultPermissionMode)
+    setPlanMode(settings.defaultPermissionMode === "plan")
     if (isOfficialApi()) {
       fetchOauthUsage()
         .then((u) => setOauthUsage(u))
@@ -322,7 +331,9 @@ export default function App() {
         cwd: project.cwd,
         model,
         effort: uiEffort || cfg.defaultEffort.trim() || null,
-        permissionMode: planMode ? "plan" : cfg.defaultPermissionMode || "default",
+        permissionMode: planMode
+          ? "plan"
+          : sessionPermissionMode || cfg.defaultPermissionMode || "default",
         resumeSessionId: selectedSessionId,
         env: Object.keys(env).length > 0 ? env : null,
         permissionMcpEnabled: cfg.permissionMcpEnabled,
@@ -378,6 +389,11 @@ export default function App() {
           }
           setStreaming(false)
           setSidebarRefreshKey((k) => k + 1)
+          if (project) {
+            gitWorktreeStatus(project.cwd)
+              .then(setGitStatus)
+              .catch(() => setGitStatus(null))
+          }
           if (isOfficialApi()) {
             fetchOauthUsage()
               .then((u) => setOauthUsage(u))
@@ -423,7 +439,44 @@ export default function App() {
       toast.error(`启动会话失败: ${String(e)}`)
       return null
     }
-  }, [planMode, project, sessionId, selectedSessionId, composerPrefs])
+  }, [
+    planMode,
+    project,
+    sessionId,
+    selectedSessionId,
+    composerPrefs,
+    sessionPermissionMode
+  ])
+
+  const refreshGitStatus = useCallback(async () => {
+    if (!project) {
+      setGitStatus(null)
+      return
+    }
+    try {
+      setGitStatus(await gitWorktreeStatus(project.cwd))
+    } catch {
+      setGitStatus(null)
+    }
+  }, [project])
+
+  useEffect(() => {
+    if (!project) {
+      setGitStatus(null)
+      return
+    }
+    let cancelled = false
+    gitWorktreeStatus(project.cwd)
+      .then((status) => {
+        if (!cancelled) setGitStatus(status)
+      })
+      .catch(() => {
+        if (!cancelled) setGitStatus(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [project?.cwd, selectedSessionId, sidebarRefreshKey])
 
   const send = useCallback(
     async (text: string, images: ImagePayload[]) => {
@@ -498,6 +551,21 @@ export default function App() {
   const stop = useCallback(async () => {
     await teardown()
   }, [teardown])
+
+  const handlePermissionModeChange = useCallback(
+    (mode: AppSettings["defaultPermissionMode"]) => {
+      setSessionPermissionMode(mode)
+      setPlanMode(mode === "plan")
+    },
+    []
+  )
+
+  const handlePlanModeChange = useCallback((enabled: boolean) => {
+    setPlanMode(enabled)
+    setSessionPermissionMode(
+      enabled ? "plan" : loadSettings().defaultPermissionMode
+    )
+  }, [])
 
   const switchProject = useCallback(
     async (next: Project) => {
@@ -691,6 +759,7 @@ export default function App() {
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const diffCount = countDiffFiles(state.entries)
+  const visibleDiffCount = Math.max(diffCount, gitStatus?.changedFiles ?? 0)
   const slashCommands = findSlashCommands(state)
   const activePermissionRequest = permissionRequests[0] ?? null
   void titleTick
@@ -809,7 +878,7 @@ export default function App() {
                 }
                 onDelete={deleteCurrentSession}
                 onShowDiff={() => setShowDiff(true)}
-                diffCount={diffCount}
+                diffCount={visibleDiffCount}
               />
             )}
 
@@ -841,7 +910,11 @@ export default function App() {
                         cwd={project.cwd}
                         slashCommands={slashCommands}
                         planMode={planMode}
-                        onPlanModeChange={setPlanMode}
+                        onPlanModeChange={handlePlanModeChange}
+                        permissionMode={sessionPermissionMode}
+                        onPermissionModeChange={handlePermissionModeChange}
+                        gitStatus={gitStatus}
+                        onGitStatusRefresh={refreshGitStatus}
                         onOpenPlugins={openPlugins}
                         oauthUsage={oauthUsage}
                         model={composerPrefs.model}
@@ -883,7 +956,11 @@ export default function App() {
                   cwd={project?.cwd ?? null}
                   slashCommands={slashCommands}
                   planMode={planMode}
-                  onPlanModeChange={setPlanMode}
+                  onPlanModeChange={handlePlanModeChange}
+                  permissionMode={sessionPermissionMode}
+                  onPermissionModeChange={handlePermissionModeChange}
+                  gitStatus={gitStatus}
+                  onGitStatusRefresh={refreshGitStatus}
                   onOpenPlugins={openPlugins}
                   oauthUsage={oauthUsage}
                   model={composerPrefs.model}
@@ -958,6 +1035,7 @@ export default function App() {
           open={showDiff}
           onOpenChange={setShowDiff}
           entries={state.entries}
+          gitStatus={gitStatus}
         />
         <PermissionDialog
           request={activePermissionRequest}

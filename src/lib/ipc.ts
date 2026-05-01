@@ -30,6 +30,45 @@ export interface SessionMeta {
   first_user_text: string | null
 }
 
+export interface GitFileChange {
+  path: string
+  status: string
+  additions: number
+  deletions: number
+}
+
+export interface GitWorktreeStatus {
+  isRepo: boolean
+  branch: string | null
+  upstream: string | null
+  ahead: number
+  behind: number
+  changedFiles: number
+  additions: number
+  deletions: number
+  files: GitFileChange[]
+}
+
+export interface GithubCliStatus {
+  installed: boolean
+  path: string | null
+  version: string | null
+  authenticated: boolean
+  user: string | null
+  message: string
+}
+
+export interface GitBranchInfo {
+  name: string
+  current: boolean
+}
+
+export interface GitBranchList {
+  isRepo: boolean
+  current: string | null
+  branches: GitBranchInfo[]
+}
+
 export async function detectClaudeCli(): Promise<string> {
   return invoke<string>("detect_claude_cli")
 }
@@ -128,6 +167,32 @@ export async function listDir(path: string): Promise<DirEntry[]> {
 
 export async function listProjectSessions(cwd: string): Promise<SessionMeta[]> {
   return invoke<SessionMeta[]>("list_project_sessions", { cwd })
+}
+
+export async function gitWorktreeStatus(
+  cwd: string
+): Promise<GitWorktreeStatus> {
+  return invoke<GitWorktreeStatus>("git_worktree_status", { cwd })
+}
+
+export async function gitBranchList(cwd: string): Promise<GitBranchList> {
+  return invoke<GitBranchList>("git_branch_list", { cwd })
+}
+
+export async function gitCheckoutBranch(args: {
+  cwd: string
+  branch: string
+  create?: boolean
+}): Promise<void> {
+  return invoke("git_checkout_branch", {
+    cwd: args.cwd,
+    branch: args.branch,
+    create: args.create ?? false
+  })
+}
+
+export async function githubCliStatus(): Promise<GithubCliStatus> {
+  return invoke<GithubCliStatus>("github_cli_status")
 }
 
 export async function readSessionTranscript(

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ExternalLink, GitBranch, Save } from "lucide-react"
+import { ExternalLink, GitBranch, RefreshCw, Save, Terminal } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,6 +8,9 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
   claudeSettingsPath,
+  githubCliStatus,
+  type GithubCliStatus,
+  openExternal,
   openPath,
   readClaudeMd,
   readClaudeSettings,
@@ -131,6 +134,8 @@ export function Git() {
   const [loading, setLoading] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [gh, setGh] = useState<GithubCliStatus | null>(null)
+  const [ghLoading, setGhLoading] = useState(false)
 
   const [instructions, setInstructions] = useState<GitInstructions>(() =>
     loadInstructions()
@@ -170,9 +175,28 @@ export function Git() {
     }
   }, [])
 
+  const loadGh = useCallback(async () => {
+    setGhLoading(true)
+    try {
+      setGh(await githubCliStatus())
+    } catch (e) {
+      setGh({
+        installed: false,
+        path: null,
+        version: null,
+        authenticated: false,
+        user: null,
+        message: String(e)
+      })
+    } finally {
+      setGhLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     load()
-  }, [load])
+    loadGh()
+  }, [load, loadGh])
 
   const update = (patch: Partial<GitSettings>) => {
     setCur((c) => ({ ...c, ...patch }))
@@ -293,6 +317,78 @@ export function Git() {
             </div>
           </section>
 
+          <section className="overflow-hidden rounded-lg border bg-card">
+            <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Terminal className="size-4 text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">GitHub CLI</h3>
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  用于从 GUI 判断 gh 是否可用。实际登录仍交给官方 gh CLI。
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadGh}
+                disabled={ghLoading}
+              >
+                <RefreshCw className={ghLoading ? "size-3.5 animate-spin" : "size-3.5"} />
+                刷新
+              </Button>
+            </div>
+            <div className="space-y-2 px-5 py-4 text-sm">
+              <StatusLine
+                label="安装状态"
+                value={gh?.installed ? "已安装" : "未安装"}
+                tone={gh?.installed ? "ok" : "warn"}
+              />
+              <StatusLine
+                label="认证状态"
+                value={
+                  gh?.authenticated
+                    ? gh.user
+                      ? `已登录为 ${gh.user}`
+                      : "已认证"
+                    : "未认证"
+                }
+                tone={gh?.authenticated ? "ok" : "warn"}
+              />
+              {gh?.version && <StatusLine label="版本" value={gh.version} />}
+              {gh?.path && <StatusLine label="路径" value={gh.path} mono />}
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    navigator.clipboard
+                      .writeText("gh auth login")
+                      .then(() => toast.success("命令已复制"))
+                      .catch((e) => toast.error(String(e)))
+                  }
+                >
+                  复制 gh auth login
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    openExternal("https://cli.github.com/manual/gh_auth_login").catch((e) =>
+                      toast.error(String(e))
+                    )
+                  }
+                >
+                  <ExternalLink className="size-3.5" />
+                  认证文档
+                </Button>
+              </div>
+              {gh?.message && (
+                <p className="text-xs text-muted-foreground">{gh.message}</p>
+              )}
+            </div>
+          </section>
+
           <InstructionBlock
             title="提交指令"
             hint="保存后追加到 ~/.claude/CLAUDE.md，Claude 在所有项目生成 commit 信息时都会读到"
@@ -322,6 +418,33 @@ export function Git() {
           />
       </SettingsSectionBody>
     </SettingsSection>
+  )
+}
+
+function StatusLine({
+  label,
+  value,
+  tone,
+  mono
+}: {
+  label: string
+  value: string
+  tone?: "ok" | "warn"
+  mono?: boolean
+}) {
+  const color =
+    tone === "ok"
+      ? "text-connected"
+      : tone === "warn"
+        ? "text-warn"
+        : "text-foreground"
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-4 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className={`${color} min-w-0 truncate ${mono ? "font-mono" : ""}`} title={value}>
+        {value}
+      </span>
+    </div>
   )
 }
 

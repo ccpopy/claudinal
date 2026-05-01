@@ -12,23 +12,30 @@ import {
 import {
   ArrowUp,
   Blocks,
+  Check,
+  ChevronDown,
   FileText,
+  GitBranch,
   Image as ImageIcon,
   ListPlus,
   ListTodo,
   Package,
   Paperclip,
   Plus,
+  Search,
   Settings as SettingsIcon,
+  ShieldCheck,
   Square,
   X
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -42,8 +49,17 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { listFiles, type OauthUsage, type OauthUsageWindow } from "@/lib/ipc"
+import {
+  gitBranchList,
+  gitCheckoutBranch,
+  listFiles,
+  type GitBranchList,
+  type GitWorktreeStatus,
+  type OauthUsage,
+  type OauthUsageWindow
+} from "@/lib/ipc"
 import type { ComposerPrefs } from "@/lib/composerPrefs"
+import type { AppSettings } from "@/lib/settings"
 import { listInstalledPlugins, type InstalledPlugin } from "@/lib/plugins"
 import { loadSettings } from "@/lib/settings"
 import { shortResets, fiveHourPercent } from "@/lib/oauthUsage"
@@ -67,6 +83,10 @@ interface Props {
   slashCommands?: string[]
   planMode?: boolean
   onPlanModeChange?: (enabled: boolean) => void
+  permissionMode?: AppSettings["defaultPermissionMode"]
+  onPermissionModeChange?: (mode: AppSettings["defaultPermissionMode"]) => void
+  gitStatus?: GitWorktreeStatus | null
+  onGitStatusRefresh?: () => void | Promise<void>
   onOpenPlugins?: () => void
   oauthUsage?: OauthUsage | null
   model?: string
@@ -221,6 +241,10 @@ export function Composer({
   slashCommands,
   planMode = false,
   onPlanModeChange,
+  permissionMode = "default",
+  onPermissionModeChange,
+  gitStatus,
+  onGitStatusRefresh,
   onOpenPlugins,
   oauthUsage,
   model = "",
@@ -583,6 +607,7 @@ export function Composer({
           />
 
           <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-1">
             <DropdownMenu open={plusOpen} onOpenChange={setPlusOpen}>
               <DropdownMenuTrigger asChild>
                 <button
@@ -692,6 +717,18 @@ export function Composer({
                 </DropdownMenuSub>
               </DropdownMenuContent>
             </DropdownMenu>
+            <PermissionModePicker
+              mode={permissionMode}
+              onChange={onPermissionModeChange}
+              disabled={disabled}
+            />
+            <GitBranchPicker
+              cwd={cwd}
+              status={gitStatus ?? null}
+              disabled={disabled}
+              onChanged={onGitStatusRefresh}
+            />
+            </div>
 
             <div className="flex items-center gap-1">
               {onModelEffortChange && (
@@ -804,6 +841,262 @@ function AttachmentChip({
         <X className="size-3" />
       </button>
     </span>
+  )
+}
+
+const PERMISSION_OPTIONS: Array<{
+  value: AppSettings["defaultPermissionMode"]
+  label: string
+  description: string
+}> = [
+  {
+    value: "default",
+    label: "默认权限",
+    description: "使用 Claude CLI 默认权限策略"
+  },
+  {
+    value: "acceptEdits",
+    label: "接受编辑",
+    description: "允许文件编辑，仍保留其它权限请求"
+  },
+  {
+    value: "plan",
+    label: "计划模式",
+    description: "只规划，不直接执行修改"
+  },
+  {
+    value: "bypassPermissions",
+    label: "跳过权限",
+    description: "仅在可信工作区使用"
+  }
+]
+
+function PermissionModePicker({
+  mode,
+  onChange,
+  disabled
+}: {
+  mode: AppSettings["defaultPermissionMode"]
+  onChange?: (mode: AppSettings["defaultPermissionMode"]) => void
+  disabled?: boolean
+}) {
+  const current =
+    PERMISSION_OPTIONS.find((item) => item.value === mode) ??
+    PERMISSION_OPTIONS[0]
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled || !onChange}
+          className={cn(
+            "inline-flex h-7 max-w-[128px] items-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
+            "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          )}
+          title="会话权限模式，下一次启动 Claude CLI 会话时生效"
+        >
+          <ShieldCheck className="size-3.5" />
+          <span className="truncate">{current.label}</span>
+          <ChevronDown className="size-3 shrink-0 opacity-60" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top" className="w-56 rounded-xl p-1.5">
+        <DropdownMenuLabel>会话权限</DropdownMenuLabel>
+        {PERMISSION_OPTIONS.map((item) => (
+          <DropdownMenuItem
+            key={item.value}
+            className="rounded-lg"
+            onSelect={() => onChange?.(item.value)}
+          >
+            <span className="grid size-4 place-items-center">
+              {item.value === mode && <Check className="size-3.5" />}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm">{item.label}</span>
+              <span className="block truncate text-[11px] text-muted-foreground">
+                {item.description}
+              </span>
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function GitBranchPicker({
+  cwd,
+  status,
+  disabled,
+  onChanged
+}: {
+  cwd?: string | null
+  status: GitWorktreeStatus | null
+  disabled?: boolean
+  onChanged?: () => void | Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [newBranch, setNewBranch] = useState("")
+  const [branches, setBranches] = useState<GitBranchList | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [switching, setSwitching] = useState(false)
+  const current = branches?.current ?? status?.branch ?? null
+
+  useEffect(() => {
+    if (!open || !cwd || !status?.isRepo) return
+    let cancelled = false
+    setLoading(true)
+    gitBranchList(cwd)
+      .then((list) => {
+        if (!cancelled) setBranches(list)
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setBranches(null)
+          toast.error(`读取分支失败: ${String(e)}`)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, cwd, status?.isRepo, status?.branch])
+
+  if (!status?.isRepo || !current || !cwd) return null
+
+  const filtered = (branches?.branches ?? [])
+    .filter((branch) =>
+      query.trim()
+        ? branch.name.toLowerCase().includes(query.trim().toLowerCase())
+        : true
+    )
+    .slice(0, 80)
+
+  const checkout = async (branch: string, create = false) => {
+    if (!cwd || switching) return
+    const target = branch.trim()
+    if (!target) return
+    setSwitching(true)
+    try {
+      await gitCheckoutBranch({ cwd, branch: target, create })
+      toast.success(create ? `已创建并切换到 ${target}` : `已切换到 ${target}`)
+      setOpen(false)
+      setNewBranch("")
+      setQuery("")
+      await onChanged?.()
+    } catch (e) {
+      toast.error(`切换分支失败: ${String(e)}`)
+    } finally {
+      setSwitching(false)
+    }
+  }
+
+  const dirtySummary =
+    status.changedFiles > 0 ? `未提交：${status.changedFiles} 个文件` : "工作区干净"
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className={cn(
+            "hidden sm:inline-flex h-7 max-w-[150px] items-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
+            "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          )}
+          title={`${current} · ${dirtySummary}`}
+        >
+          <GitBranch className="size-3.5 shrink-0" />
+          <span className="truncate font-mono">{current}</span>
+          <ChevronDown className="size-3 shrink-0 opacity-60" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        side="top"
+        sideOffset={8}
+        className="w-72 rounded-2xl p-0"
+      >
+        <div className="border-b p-2">
+          <div className="flex h-8 items-center gap-2 rounded-lg px-2 text-muted-foreground">
+            <Search className="size-3.5" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              placeholder="搜索分支"
+              className="h-7 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
+            />
+          </div>
+        </div>
+        <DropdownMenuLabel className="px-3 pt-2 text-xs text-muted-foreground">
+          分支
+        </DropdownMenuLabel>
+        <div className="max-h-64 overflow-y-auto p-1">
+          {loading ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">
+              正在读取分支…
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">
+              没有匹配分支
+            </div>
+          ) : (
+            filtered.map((branch) => (
+              <DropdownMenuItem
+                key={branch.name}
+                className="min-h-10 rounded-lg"
+                disabled={switching || branch.name === current}
+                onSelect={() => void checkout(branch.name)}
+              >
+                <GitBranch className="size-4 text-muted-foreground" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-sm">
+                    {branch.name}
+                  </span>
+                  {branch.name === current && status.changedFiles > 0 && (
+                    <span className="block text-[11px] text-muted-foreground">
+                      {dirtySummary}
+                    </span>
+                  )}
+                </span>
+                {branch.name === current && <Check className="size-4" />}
+              </DropdownMenuItem>
+            ))
+          )}
+        </div>
+        <DropdownMenuSeparator />
+        <div className="flex items-center gap-2 p-2">
+          <Input
+            value={newBranch}
+            onChange={(e) => setNewBranch(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === "Enter") {
+                e.preventDefault()
+                void checkout(newBranch, true)
+              }
+            }}
+            placeholder="新分支名"
+            className="h-8 text-xs"
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={switching || !newBranch.trim()}
+            onClick={() => void checkout(newBranch, true)}
+            className="shrink-0"
+          >
+            <Plus className="size-3.5" />
+            创建
+          </Button>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

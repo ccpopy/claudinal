@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import type { GitWorktreeStatus } from "@/lib/ipc"
 import type { UIEntry, UIMessage } from "@/types/ui"
 
 interface StructuredHunk {
@@ -30,7 +31,10 @@ function basename(p?: string): string {
   return m[m.length - 1] || p
 }
 
-function collectChanges(entries: UIEntry[]): FileChange[] {
+function collectChanges(
+  entries: UIEntry[],
+  gitStatus?: GitWorktreeStatus | null
+): FileChange[] {
   const map = new Map<string, FileChange>()
   for (const e of entries) {
     if (e.kind !== "message") continue
@@ -88,6 +92,23 @@ function collectChanges(entries: UIEntry[]): FileChange[] {
       }
     }
   }
+  if (gitStatus?.isRepo) {
+    for (const file of gitStatus.files) {
+      if (map.has(file.path)) continue
+      map.set(file.path, {
+        path: file.path,
+        basename: basename(file.path),
+        kind: file.status.includes("D")
+          ? "delete"
+          : file.status.includes("?") || file.status.includes("A")
+            ? "create"
+            : "update",
+        hunks: [],
+        adds: file.additions,
+        dels: file.deletions
+      })
+    }
+  }
   return Array.from(map.values()).sort((a, b) =>
     a.basename.localeCompare(b.basename)
   )
@@ -97,10 +118,14 @@ interface Props {
   open: boolean
   onOpenChange: (v: boolean) => void
   entries: UIEntry[]
+  gitStatus?: GitWorktreeStatus | null
 }
 
-export function DiffOverview({ open, onOpenChange, entries }: Props) {
-  const changes = useMemo(() => collectChanges(entries), [entries])
+export function DiffOverview({ open, onOpenChange, entries, gitStatus }: Props) {
+  const changes = useMemo(
+    () => collectChanges(entries, gitStatus),
+    [entries, gitStatus]
+  )
   const [activeIdx, setActiveIdx] = useState(0)
 
   if (!open) return null
@@ -186,7 +211,7 @@ export function DiffOverview({ open, onOpenChange, entries }: Props) {
                     <pre className="p-2 rounded-md border bg-connected/5 border-connected/20 text-[12px] font-mono whitespace-pre-wrap break-words">
                       {active.content}
                     </pre>
-                  ) : (
+                  ) : active.hunks.length > 0 ? (
                     <div className="rounded-md border bg-muted/30 overflow-hidden">
                       {active.hunks.map((h, hi) => (
                         <div key={hi} className="font-mono text-[12px]">
@@ -216,6 +241,13 @@ export function DiffOverview({ open, onOpenChange, entries }: Props) {
                           })}
                         </div>
                       ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                      此文件来自当前 Git 工作树状态。没有结构化补丁可展示，但已检测到{" "}
+                      <span className="font-mono text-connected">+{active.adds}</span>{" "}
+                      <span className="font-mono text-destructive">-{active.dels}</span>
+                      。
                     </div>
                   )}
                 </div>
