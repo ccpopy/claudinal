@@ -214,6 +214,11 @@ pre::-webkit-scrollbar-button {
   width: 0;
 }
 
+.no-native-password-reveal::-ms-reveal,
+.no-native-password-reveal::-ms-clear {
+  display: none;
+}
+
 @keyframes blink-caret {
   0%, 50% { opacity: 1; }
   50.01%, 100% { opacity: 0; }

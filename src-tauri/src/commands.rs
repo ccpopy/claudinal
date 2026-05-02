@@ -57,6 +57,8 @@ pub async fn spawn_session(
             || model == "opus"
             || model == "haiku"
             || model == "opusplan"
+            || model == "sonnet[1m]"
+            || model == "opus[1m]"
             || model.starts_with("claude-")
             || model.starts_with("anthropic.");
         if !is_claude_builtin {
@@ -215,6 +217,14 @@ fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Opt
         .remove("CLAUDINAL_PROXY_SONNET_MODEL")
         .unwrap_or_default();
     let opus_model = env.remove("CLAUDINAL_PROXY_OPUS_MODEL").unwrap_or_default();
+    let available_models = env
+        .remove("CLAUDINAL_PROXY_AVAILABLE_MODELS")
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect();
     Some(ProxyConfig {
         target_url,
         api_key,
@@ -224,6 +234,7 @@ fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Opt
         haiku_model,
         sonnet_model,
         opus_model,
+        available_models,
     })
 }
 
@@ -1193,6 +1204,86 @@ index 1111111..2222222 100644
         assert_eq!(entries[1].status, "??");
         assert_eq!(entries[1].path, "notes.txt");
     }
+
+    #[test]
+    fn provider_models_urls_builds_anthropic_path_candidates() {
+        let urls = provider_models_urls("https://api.example.com/anthropic", "anthropic", false)
+            .expect("models url");
+        assert_eq!(
+            urls,
+            vec![
+                "https://api.example.com/anthropic/models".to_string(),
+                "https://api.example.com/v1/models".to_string(),
+                "https://api.example.com/anthropic/v1/models".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_models_urls_builds_official_anthropic_models_endpoint() {
+        let urls = provider_models_urls("https://api.example.com", "anthropic", false)
+            .expect("models url");
+        assert_eq!(urls, vec!["https://api.example.com/v1/models".to_string()]);
+    }
+
+    #[test]
+    fn provider_models_urls_strips_full_messages_endpoint() {
+        let urls = provider_models_urls(
+            "https://api.example.com/anthropic/v1/messages",
+            "anthropic",
+            true,
+        )
+        .expect("models url");
+        assert_eq!(
+            urls,
+            vec!["https://api.example.com/anthropic/v1/models".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_provider_models_reads_anthropic_models_response() {
+        let body = serde_json::json!({
+            "data": [
+                {
+                    "created_at": "2026-03-18T02:00:00Z",
+                    "display_name": "MiniMax-M2.7",
+                    "id": "MiniMax-M2.7",
+                    "type": "model"
+                },
+                {
+                    "created_at": "2026-02-13T02:00:00Z",
+                    "display_name": "MiniMax-M2.5",
+                    "id": "MiniMax-M2.5",
+                    "type": "model"
+                }
+            ],
+            "first_id": "MiniMax-M2.7",
+            "has_more": false,
+            "last_id": "MiniMax-M2.5"
+        });
+
+        assert_eq!(
+            extract_provider_models(&body),
+            vec!["MiniMax-M2.7".to_string(), "MiniMax-M2.5".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_provider_models_reads_openai_models_response() {
+        let body = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-5.1", "object": "model" },
+                { "id": "gpt-5.1", "object": "model" },
+                { "id": "gpt-5.1-mini", "object": "model" }
+            ]
+        });
+
+        assert_eq!(
+            extract_provider_models(&body),
+            vec!["gpt-5.1".to_string(), "gpt-5.1-mini".to_string()]
+        );
+    }
 }
 
 #[tauri::command]
@@ -1738,11 +1829,27 @@ pub async fn write_text_file(path: String, contents: String) -> Result<()> {
     Ok(())
 }
 
-fn provider_models_url(
+fn push_unique_url(urls: &mut Vec<String>, url: String) {
+    if !urls.iter().any(|seen| seen == &url) {
+        urls.push(url);
+    }
+}
+
+fn url_origin(url: &str) -> Option<&str> {
+    let scheme_end = url.find("://")?;
+    let authority_start = scheme_end + 3;
+    let path_start = url[authority_start..]
+        .find('/')
+        .map(|idx| authority_start + idx)
+        .unwrap_or(url.len());
+    Some(&url[..path_start])
+}
+
+fn provider_models_urls(
     request_url: &str,
     input_format: &str,
     use_full_url: bool,
-) -> Result<String> {
+) -> Result<Vec<String>> {
     let mut url = request_url.trim().trim_end_matches('/').to_string();
     if url.is_empty() {
         return Err(Error::Other("requestUrl required".into()));
@@ -1757,13 +1864,28 @@ fn provider_models_url(
             }
         }
     }
-    if !url.to_lowercase().ends_with("/models") {
-        if input_format == "anthropic" && !url.to_lowercase().ends_with("/v1") {
-            url.push_str("/v1");
-        }
-        url.push_str("/models");
+    if url.to_lowercase().ends_with("/models") {
+        return Ok(vec![url]);
     }
-    Ok(url)
+
+    let lower = url.to_lowercase();
+    let mut urls = Vec::new();
+    if input_format == "anthropic" {
+        if lower.ends_with("/v1") {
+            push_unique_url(&mut urls, format!("{url}/models"));
+        } else if lower.ends_with("/anthropic") {
+            push_unique_url(&mut urls, format!("{url}/models"));
+            if let Some(origin) = url_origin(&url) {
+                push_unique_url(&mut urls, format!("{origin}/v1/models"));
+            }
+            push_unique_url(&mut urls, format!("{url}/v1/models"));
+        } else {
+            push_unique_url(&mut urls, format!("{url}/v1/models"));
+        }
+    } else {
+        push_unique_url(&mut urls, format!("{url}/models"));
+    }
+    Ok(urls)
 }
 
 fn collect_model_ids(value: &Value, out: &mut Vec<String>) {
@@ -1811,6 +1933,21 @@ fn extract_provider_models(body: &Value) -> Vec<String> {
     unique
 }
 
+fn response_body_preview(bytes: &[u8]) -> String {
+    const MAX_CHARS: usize = 1000;
+    let text = String::from_utf8_lossy(bytes);
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview = normalized.chars().take(MAX_CHARS).collect::<String>();
+    if normalized.chars().count() > MAX_CHARS {
+        preview.push_str("...");
+    }
+    if preview.is_empty() {
+        format!("<{} bytes non-utf8 body>", bytes.len())
+    } else {
+        preview
+    }
+}
+
 #[tauri::command]
 pub async fn fetch_provider_models(
     request_url: String,
@@ -1819,7 +1956,7 @@ pub async fn fetch_provider_models(
     input_format: String,
     use_full_url: bool,
 ) -> Result<Vec<String>> {
-    let url = provider_models_url(&request_url, &input_format, use_full_url)?;
+    let urls = provider_models_urls(&request_url, &input_format, use_full_url)?;
     let token = api_key.trim();
     if token.is_empty() {
         return Err(Error::Other("apiKey required".into()));
@@ -1828,14 +1965,36 @@ pub async fn fetch_provider_models(
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| Error::Other(format!("http client: {e}")))?;
+    let mut errors = Vec::new();
+    for url in urls {
+        match fetch_provider_models_from_url(&client, &url, token, &auth_field, &input_format).await
+        {
+            Ok(models) => return Ok(models),
+            Err(err) => errors.push(err),
+        }
+    }
+    Err(Error::Other(format!(
+        "所有模型列表端点均失败: {}",
+        errors.join(" | ")
+    )))
+}
+
+async fn fetch_provider_models_from_url(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    auth_field: &str,
+    input_format: &str,
+) -> std::result::Result<Vec<String>, String> {
     let mut req = client
         .get(url)
         .header("Accept", "application/json")
         .header("User-Agent", "Claudinal/0.1");
+    if input_format == "anthropic" {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
     if auth_field == "ANTHROPIC_API_KEY" && input_format != "openai-chat-completions" {
-        req = req
-            .header("x-api-key", token)
-            .header("anthropic-version", "2023-06-01");
+        req = req.header("x-api-key", token);
     } else {
         let bearer = token.strip_prefix("Bearer ").unwrap_or(token);
         req = req.bearer_auth(bearer);
@@ -1843,22 +2002,31 @@ pub async fn fetch_provider_models(
     let resp = req
         .send()
         .await
-        .map_err(|e| Error::Other(format!("models request: {e}")))?;
+        .map_err(|e| format!("GET {url}: models request: {e}"))?;
     let status = resp.status();
-    let body: Value = resp
-        .json()
+    let bytes = resp
+        .bytes()
         .await
-        .map_err(|e| Error::Other(format!("models parse: {e}")))?;
+        .map_err(|e| format!("GET {url}: models response: {e}"))?;
     if !status.is_success() {
-        return Err(Error::Other(format!(
-            "models http {}: {}",
+        return Err(format!(
+            "GET {url}: models http {}: {}",
             status,
-            serde_json::to_string(&body).unwrap_or_default()
-        )));
+            response_body_preview(&bytes)
+        ));
     }
+    let body: Value = serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "GET {url}: models parse: {e}; body: {}",
+            response_body_preview(&bytes)
+        )
+    })?;
     let models = extract_provider_models(&body);
     if models.is_empty() {
-        return Err(Error::Other("响应中未找到模型 ID".into()));
+        return Err(format!(
+            "GET {url}: 响应中未找到模型 ID: {}",
+            response_body_preview(&bytes)
+        ));
     }
     Ok(models)
 }

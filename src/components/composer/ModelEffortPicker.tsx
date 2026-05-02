@@ -20,20 +20,14 @@ import {
   modelDisplayLabel,
   syncEffortToGlobal,
   type ComposerPrefs,
-  type EffortLevel,
-  type ModelOption
+  type EffortLevel
 } from "@/lib/composerPrefs"
-
-interface ExtraModel {
-  value: string
-  label?: string
-}
 
 interface Props {
   model: string
   effort: string
   onChange: (next: { model?: string; effort?: string }) => void
-  extraModels?: ExtraModel[]
+  modelOptions?: Array<{ value: string; label?: string }>
   disabled?: boolean
   globalDefault?: ComposerPrefs
   sessionPrefs?: ComposerPrefs | null
@@ -51,7 +45,7 @@ export function ModelEffortPicker({
   model,
   effort,
   onChange,
-  extraModels,
+  modelOptions,
   disabled,
   globalDefault,
   sessionPrefs
@@ -66,11 +60,19 @@ export function ModelEffortPicker({
   const modelLabel = modelDisplayLabel(model)
   const effortLabel = supportsEffort ? EFFORT_LABELS[safeEffort] : null
   const triggerLabel = effortLabel ? `${modelLabel} · ${effortLabel}` : modelLabel
-
-  const seenValues = new Set(BUILTIN_MODELS.map((m) => m.value))
-  const customModels: ModelOption[] = (extraModels ?? [])
-    .filter((m) => m.value && !seenValues.has(m.value))
-    .map((m) => ({ value: m.value, label: m.label || m.value, group: "Provider" }))
+  const options = modelOptions?.length
+    ? Array.from(
+        new Map(
+          modelOptions
+            .map((option) => ({
+              value: option.value.trim(),
+              label: (option.label || option.value).trim()
+            }))
+            .filter((option) => option.value)
+            .map((option) => [option.value, option])
+        ).values()
+      )
+    : BUILTIN_MODELS
 
   const baselineDefault = globalDefault ?? EMPTY_COMPOSER_PREFS
   const source = effortSource(effort, sessionPrefs ?? null, baselineDefault)
@@ -133,10 +135,11 @@ export function ModelEffortPicker({
         align="end"
         side="top"
         sideOffset={8}
-        className="w-72 rounded-2xl p-1.5"
+        collisionPadding={12}
+        className="max-h-[var(--radix-dropdown-menu-content-available-height)] w-72 overflow-y-auto rounded-2xl p-1.5 scrollbar-thin"
       >
         <DropdownMenuLabel className={MENU_LABEL_CLASS}>
-          模型列表
+          模型
         </DropdownMenuLabel>
         <DropdownMenuItem
           className={MENU_ITEM_CLASS}
@@ -145,7 +148,7 @@ export function ModelEffortPicker({
           <span className="flex-1">Default</span>
           {!model && <Check className={MENU_CHECK_CLASS} />}
         </DropdownMenuItem>
-        {BUILTIN_MODELS.map((m) => (
+        {options.map((m) => (
           <DropdownMenuItem
             key={m.value}
             className={MENU_ITEM_CLASS}
@@ -157,26 +160,6 @@ export function ModelEffortPicker({
             {model === m.value && <Check className={MENU_CHECK_CLASS} />}
           </DropdownMenuItem>
         ))}
-        {customModels.length > 0 && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className={MENU_LABEL_CLASS}>
-              第三方
-            </DropdownMenuLabel>
-            {customModels.map((m) => (
-              <DropdownMenuItem
-                key={`extra-${m.value}`}
-                className={MENU_ITEM_CLASS}
-                onSelect={() => onChange({ model: m.value })}
-              >
-                <span className="flex-1 truncate" title={m.value}>
-                  {m.label}
-                </span>
-                {model === m.value && <Check className={MENU_CHECK_CLASS} />}
-              </DropdownMenuItem>
-            ))}
-          </>
-        )}
 
         <DropdownMenuSeparator />
 

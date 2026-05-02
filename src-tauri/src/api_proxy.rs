@@ -16,6 +16,7 @@ pub struct ProxyConfig {
     pub haiku_model: String,
     pub sonnet_model: String,
     pub opus_model: String,
+    pub available_models: Vec<String>,
 }
 
 pub async fn start(config: ProxyConfig) -> Result<String> {
@@ -218,6 +219,7 @@ fn is_models_path(path: &str) -> bool {
 
 fn models_response(config: &ProxyConfig) -> Vec<u8> {
     let mut ids = configured_models(config);
+    ids.extend(config.available_models.iter().cloned());
     ids.sort();
     ids.dedup();
     let data: Vec<Value> = ids
@@ -276,9 +278,6 @@ fn mapped_model(source: &str, config: &ProxyConfig) -> String {
     if source_lower.contains("sonnet") && !config.sonnet_model.trim().is_empty() {
         return config.sonnet_model.trim().to_string();
     }
-    if !config.main_model.trim().is_empty() {
-        return config.main_model.trim().to_string();
-    }
     source.to_string()
 }
 
@@ -322,4 +321,59 @@ fn forward_url(target_url: &str, incoming_path: &str, use_full_url: bool) -> Res
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proxy_config() -> ProxyConfig {
+        ProxyConfig {
+            target_url: "https://api.example.com".into(),
+            api_key: "token".into(),
+            auth_field: "ANTHROPIC_AUTH_TOKEN".into(),
+            use_full_url: false,
+            main_model: "mimo-v2.5-pro".into(),
+            haiku_model: String::new(),
+            sonnet_model: String::new(),
+            opus_model: String::new(),
+            available_models: vec!["opus[1m]".into(), "mimo-v2.5-pro".into()],
+        }
+    }
+
+    #[test]
+    fn mapped_model_uses_main_model_for_missing_source() {
+        let config = proxy_config();
+        assert_eq!(mapped_model("", &config), "mimo-v2.5-pro");
+    }
+
+    #[test]
+    fn mapped_model_preserves_explicit_claude_alias_without_family_mapping() {
+        let config = proxy_config();
+        assert_eq!(mapped_model("opus[1m]", &config), "opus[1m]");
+        assert_eq!(mapped_model("sonnet", &config), "sonnet");
+    }
+
+    #[test]
+    fn mapped_model_rewrites_explicit_claude_alias_with_family_mapping() {
+        let mut config = proxy_config();
+        config.opus_model = "mimo-v2.5-pro".into();
+        assert_eq!(mapped_model("opus[1m]", &config), "mimo-v2.5-pro");
+    }
+
+    #[test]
+    fn models_response_includes_available_provider_models() {
+        let config = proxy_config();
+        let body: Value = serde_json::from_slice(&models_response(&config)).expect("models json");
+        let ids = body
+            .get("data")
+            .and_then(Value::as_array)
+            .expect("data")
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"mimo-v2.5-pro"));
+        assert!(ids.contains(&"opus[1m]"));
+    }
 }

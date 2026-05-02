@@ -161,6 +161,16 @@ export const BUILTIN_MODELS: ModelOption[] = [
   { value: "opusplan", label: "Opus Plan", group: "Aliases" }
 ]
 
+export function isClaudeModelEntry(model: string): boolean {
+  const trimmed = (model || "").trim()
+  return (
+    !trimmed ||
+    BUILTIN_MODELS.some((option) => option.value === trimmed) ||
+    trimmed.startsWith("claude-") ||
+    trimmed.startsWith("anthropic.")
+  )
+}
+
 // ===== 思考强度 =====
 // - "" 等价于 CLI 的 `auto`（不发 --effort，由 CLI 决定）
 

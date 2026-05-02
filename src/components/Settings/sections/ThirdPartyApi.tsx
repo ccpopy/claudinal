@@ -506,7 +506,7 @@ export function ThirdPartyApi() {
                     type={showKey ? "text" : "password"}
                     value={editorConfig.apiKey}
                     onChange={(e) => update({ apiKey: e.target.value })}
-                    className="font-mono text-xs pr-10"
+                    className="no-native-password-reveal font-mono text-xs pr-10"
                     autoComplete="off"
                     disabled={loading || saving}
                   />
@@ -727,7 +727,7 @@ export function ThirdPartyApi() {
                   供应商列表
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  选择当前会话使用的供应商；第三方供应商会通过本地代理转发。
+                  管理可用供应商；设为 Claude 使用后，新启动会话会通过本地代理转发。
                 </div>
               </div>
             </div>

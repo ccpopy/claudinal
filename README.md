@@ -107,8 +107,8 @@ pnpm package:zip-portable   # 仅便携版 zip
 推送和版本号一致的 tag 会自动触发 GitHub Release 打包：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 Workflow 会校验 `package.json` 与 `src-tauri/tauri.conf.json` 的版本号，然后在 Windows、macOS 和 Linux runner 上分别构建安装包，并上传源码包与 `SHA256SUMS.txt`。

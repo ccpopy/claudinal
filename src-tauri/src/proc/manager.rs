@@ -138,14 +138,10 @@ impl Manager {
                                         .get("type")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("unknown");
-                                    let subtype = value
-                                        .get("subtype")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let uuid = value
-                                        .get("uuid")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
+                                    let subtype =
+                                        value.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                                    let uuid =
+                                        value.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
                                     debug!(
                                         session = %sid,
                                         event_type,

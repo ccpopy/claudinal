@@ -87,10 +87,24 @@ export const PRESETS: Record<string, { label: string; appearance: Appearance }> 
   }
 }
 
-/// 比较核心三色 × 双模式 = 6 字段，全等才视为匹配该预设。
-/// 其他字段（contrast / fontUI / fontMono / translucentSidebar）不参与匹配，
-/// 用户在某预设基础上微调这些不影响 "激活态" 高亮。
-export function matchPreset(a: Appearance): string | null {
+function trimOptional(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function sameConfig(a: AppearanceConfig, b: AppearanceConfig): boolean {
+  return (
+    trimOptional(a.accent) === trimOptional(b.accent) &&
+    trimOptional(a.background) === trimOptional(b.background) &&
+    trimOptional(a.foreground) === trimOptional(b.foreground) &&
+    trimOptional(a.fontUI) === trimOptional(b.fontUI) &&
+    trimOptional(a.fontMono) === trimOptional(b.fontMono) &&
+    a.contrast === b.contrast &&
+    !!a.translucentSidebar === !!b.translucentSidebar
+  )
+}
+
+function matchPresetColors(a: Appearance): string | null {
   for (const [id, p] of Object.entries(PRESETS)) {
     const l = p.appearance.light
     const d = p.appearance.dark
@@ -102,6 +116,17 @@ export function matchPreset(a: Appearance): string | null {
       a.dark.background === d.background &&
       a.dark.foreground === d.foreground
     ) {
+      return id
+    }
+  }
+  return null
+}
+
+/// 完整比较预设字段。只改了字体或对比度时应显示为自定义，
+/// 否则不同机器会同时显示为 Claude 默认但实际字体不一致。
+export function matchPreset(a: Appearance): string | null {
+  for (const [id, p] of Object.entries(PRESETS)) {
+    if (sameConfig(a.light, p.appearance.light) && sameConfig(a.dark, p.appearance.dark)) {
       return id
     }
   }
@@ -141,7 +166,7 @@ export function loadAppearance(): Appearance {
     // 这里把它们规范成新的 Serif 默认。其他预设/自定义状态保持原样，
     // 避免把用户清空的字段回填成 Anthropic Serif 这种"漏字段"。
     let migrated = false
-    if (matchPreset(merged) === "claude") {
+    if (matchPresetColors(merged) === "claude") {
       for (const mode of ["light", "dark"] as const) {
         const fontUI = merged[mode].fontUI
         if (!fontUI || fontUI === SANS_CLAUDE_FONT_UI) {

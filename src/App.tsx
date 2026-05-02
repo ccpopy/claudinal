@@ -40,6 +40,7 @@ import { loadSettings, recordResultUsage } from "@/lib/settings"
 import type { AppSettings } from "@/lib/settings"
 import {
   EMPTY_COMPOSER_PREFS,
+  isClaudeModelEntry,
   loadGlobalDefault,
   pickComposerFromSidecar,
   type ComposerPrefs
@@ -50,6 +51,8 @@ import { saveSlashCommandsCache } from "@/lib/slashCommands"
 import {
   buildClaudeEnv,
   loadThirdPartyApiConfig,
+  loadThirdPartyApiStore,
+  OFFICIAL_PROVIDER_ID,
   providerModelOptions,
   trimApiUrl
 } from "@/lib/thirdPartyApi"
@@ -191,6 +194,7 @@ type RunningSession = {
   runtimeId: string
   project: Project
   jsonlSessionId: string | null
+  apiProfileKey: string
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
   streaming: boolean
@@ -215,6 +219,25 @@ function buildCliBlocks(
     })
   }
   return blocks
+}
+
+function currentApiProfileKey(): string {
+  const store = loadThirdPartyApiStore()
+  if (store.activeProviderId === OFFICIAL_PROVIDER_ID) return "official"
+  const provider = store.providers.find((p) => p.id === store.activeProviderId)
+  if (!provider) return "official"
+  return [
+    "third-party",
+    provider.id,
+    trimApiUrl(provider.requestUrl),
+    provider.inputFormat
+  ].join(":")
+}
+
+function sidecarApiProfileKey(sidecar: unknown): string | null {
+  if (!sidecar || typeof sidecar !== "object") return null
+  const raw = (sidecar as { apiProfileKey?: unknown }).apiProfileKey
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null
 }
 
 function chatTitle(
@@ -353,6 +376,7 @@ export default function App() {
   const activeRuntimeIdRef = useRef<string | null>(null)
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
+  const apiProfileKeyRef = useRef(currentApiProfileKey())
   const permissionModeTouchedRef = useRef(false)
   const returnViewRef = useRef<ReturnView>("chat")
   const settingsEntryTargetRef = useRef<ChatReturnTarget | null>(null)
@@ -669,8 +693,19 @@ export default function App() {
       refreshComposerDefaults()
     }
     const refreshThirdPartyApi = () => {
+      const previousProfileKey = apiProfileKeyRef.current
+      const nextProfileKey = currentApiProfileKey()
+      apiProfileKeyRef.current = nextProfileKey
       setThirdPartyApiVersion((version) => version + 1)
       refreshComposerDefaults()
+      if (previousProfileKey !== nextProfileKey && !activeRuntimeIdRef.current) {
+        dispatch({ kind: "reset" })
+        setSelectedSessionId(null)
+        setSelectedSessionMeta(null)
+        sessionComposerRef.current = null
+        setSessionComposer(null)
+        toast.info("API 供应商已切换，已切到新会话入口以避免复用不兼容的历史 thinking 签名")
+      }
       if (!isOfficialApi()) {
         setOauthUsage(null)
         return
@@ -716,6 +751,21 @@ export default function App() {
         ? buildClaudeEnv(thirdPartyApi)
         : {}
       const env = { ...thirdPartyEnv, ...proxyEnv }
+      const apiProfileKey = currentApiProfileKey()
+      let resumeSessionId = selectedSessionId
+      if (resumeSessionId) {
+        const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
+        const storedProfileKey = sidecarApiProfileKey(sidecar)
+        if (storedProfileKey && storedProfileKey !== apiProfileKey) {
+          resumeSessionId = null
+          dispatch({ kind: "reset" })
+          setSelectedSessionId(null)
+          setSelectedSessionMeta(null)
+          sessionComposerRef.current = null
+          setSessionComposer(null)
+          toast.info("当前会话属于另一个 API 供应商，已新建会话以避免复用不兼容的 thinking 签名")
+        }
+      }
       const uiModel = composerPrefs.model.trim()
       const uiEffort = composerPrefs.effort.trim()
       const model = uiModel || cfg.defaultModel.trim() || null
@@ -726,7 +776,7 @@ export default function App() {
         permissionMode: planMode
           ? "plan"
           : sessionPermissionMode || cfg.defaultPermissionMode || "default",
-        resumeSessionId: selectedSessionId,
+        resumeSessionId,
         env: Object.keys(env).length > 0 ? env : null,
         permissionMcpEnabled: cfg.permissionMcpEnabled,
         permissionPromptTool: cfg.permissionPromptTool.trim() || null,
@@ -736,9 +786,10 @@ export default function App() {
       const run: RunningSession = {
         runtimeId: id,
         project,
-        jsonlSessionId: selectedSessionId,
-        selectedSessionMeta,
-        state: stateRef.current,
+        jsonlSessionId: resumeSessionId,
+        apiProfileKey,
+        selectedSessionMeta: resumeSessionId ? selectedSessionMeta : null,
+        state: resumeSessionId ? stateRef.current : reducerInit(),
         streaming: false,
         pendingPermissionRequestIds: new Set(),
         pendingActions: [],
@@ -840,7 +891,11 @@ export default function App() {
                 const base = (existing && typeof existing === "object"
                   ? existing
                   : {}) as Record<string, unknown>
-                const next: Record<string, unknown> = { ...base, result: ev }
+                const next: Record<string, unknown> = {
+                  ...base,
+                  result: ev,
+                  apiProfileKey: run.apiProfileKey
+                }
                 if (run.sessionComposer && !base.composer) {
                   next.composer = run.sessionComposer
                 }
@@ -1429,14 +1484,35 @@ export default function App() {
     [project, selectedSessionId, state]
   )
 
-  const extraModels = useMemo(() => {
+  const modelOptions = useMemo(() => {
     const cfg = loadThirdPartyApiConfig()
-    if (!cfg.enabled) return [] as { value: string; label?: string }[]
+    if (!cfg.enabled) return [] as Array<{ value: string; label?: string }>
     return providerModelOptions(cfg).map((model) => ({
       value: model,
-      label: cfg.providerName ? `${cfg.providerName} · ${model}` : model
+      label: model
     }))
   }, [thirdPartyApiVersion])
+
+  const modelOptionValues = useMemo(
+    () => new Set(modelOptions.map((option) => option.value)),
+    [modelOptions]
+  )
+
+  useEffect(() => {
+    const shouldKeepModel = (model: string) => {
+      const trimmed = model.trim()
+      return isClaudeModelEntry(trimmed) || modelOptionValues.has(trimmed)
+    }
+
+    setComposerPrefs((cur) =>
+      shouldKeepModel(cur.model) ? cur : { ...cur, model: "" }
+    )
+    setSessionComposer((cur) => {
+      if (!cur || shouldKeepModel(cur.model)) return cur
+      const next = { ...cur, model: "" }
+      return next.effort ? next : null
+    })
+  }, [modelOptionValues])
 
   const projectActions = useMemo(() => {
     if (!project) return []
@@ -1587,7 +1663,7 @@ export default function App() {
 	                          model={composerPrefs.model}
 	                          effort={composerPrefs.effort}
 	                          onModelEffortChange={handleModelEffortChange}
-	                          extraModels={extraModels}
+	                          modelOptions={modelOptions}
 	                          globalDefault={globalDefault}
 	                          sessionPrefs={sessionComposer}
 	                        />
@@ -1651,7 +1727,7 @@ export default function App() {
                     model={composerPrefs.model}
                     effort={composerPrefs.effort}
                     onModelEffortChange={handleModelEffortChange}
-                    extraModels={extraModels}
+                    modelOptions={modelOptions}
                     globalDefault={globalDefault}
                     sessionPrefs={sessionComposer}
                   />

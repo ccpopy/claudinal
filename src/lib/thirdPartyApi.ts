@@ -86,7 +86,8 @@ const MANAGED_ENV_KEYS = [
   "CLAUDINAL_PROXY_MAIN_MODEL",
   "CLAUDINAL_PROXY_HAIKU_MODEL",
   "CLAUDINAL_PROXY_SONNET_MODEL",
-  "CLAUDINAL_PROXY_OPUS_MODEL"
+  "CLAUDINAL_PROXY_OPUS_MODEL",
+  "CLAUDINAL_PROXY_AVAILABLE_MODELS"
 ]
 
 function asInputFormat(value: unknown): ProviderInputFormat {
@@ -302,6 +303,9 @@ export function buildClaudeEnv(
   const sonnetModel = config.models.sonnetModel.trim()
   const opusModel = config.models.opusModel.trim()
   const subagentModel = config.models.subagentModel.trim()
+  const availableModels = config.availableModels
+    .map((model) => model.trim())
+    .filter(Boolean)
 
   next.ANTHROPIC_AUTH_TOKEN = "claudinal-proxy"
   if (baseUrl) next.CLAUDINAL_PROXY_TARGET_URL = baseUrl
@@ -323,6 +327,9 @@ export function buildClaudeEnv(
   if (opusModel) {
     next.ANTHROPIC_DEFAULT_OPUS_MODEL = opusModel
     next.CLAUDINAL_PROXY_OPUS_MODEL = opusModel
+  }
+  if (availableModels.length > 0) {
+    next.CLAUDINAL_PROXY_AVAILABLE_MODELS = JSON.stringify(availableModels)
   }
   if (subagentModel) next.CLAUDE_CODE_SUBAGENT_MODEL = subagentModel
 

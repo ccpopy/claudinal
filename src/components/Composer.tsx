@@ -93,7 +93,7 @@ interface Props {
   model?: string
   effort?: string
   onModelEffortChange?: (next: { model?: string; effort?: string }) => void
-  extraModels?: { value: string; label?: string }[]
+  modelOptions?: Array<{ value: string; label?: string }>
   globalDefault?: ComposerPrefs
   sessionPrefs?: ComposerPrefs | null
 }
@@ -251,7 +251,7 @@ export function Composer({
   model = "",
   effort = "",
   onModelEffortChange,
-  extraModels,
+  modelOptions,
   globalDefault,
   sessionPrefs
 }: Props) {
@@ -599,7 +599,7 @@ export function Composer({
             onPaste={onPaste}
             placeholder={
               streaming
-                ? "当前回复进行中，按 Enter 交给 Claude 排队"
+                ? "要求后续变更"
                 : "coffee time?"
             }
             disabled={disabled}
@@ -737,7 +737,7 @@ export function Composer({
                   model={model}
                   effort={effort}
                   onChange={onModelEffortChange}
-                  extraModels={extraModels}
+                  modelOptions={modelOptions}
                   disabled={disabled}
                   globalDefault={globalDefault}
                   sessionPrefs={sessionPrefs}
