@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, BarChart3, RefreshCw } from "lucide-react"
+import {
+  AlertTriangle,
+  ArrowLeft,
+  BarChart3,
+  RefreshCw,
+  Tag
+} from "lucide-react"
 import { toast } from "sonner"
+import { Badge } from "@/components/ui/badge"
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbSeparator
+} from "@/components/ui/breadcrumb"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -15,12 +27,20 @@ import {
   type ActivityCell,
   type GlobalUsage
 } from "@/lib/ipc"
+import {
+  findRule,
+  loadPricing,
+  recomputeCost,
+  type PricingConfig,
+  type RuleMatch
+} from "@/lib/pricing"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
 import {
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionHeader
 } from "./layout"
+import { PricingEditor } from "./PricingEditor"
 
 const HEATMAP_DAYS = 30
 
@@ -38,10 +58,17 @@ function fmtDate(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
+interface ModelCost {
+  cost: number | null
+  match: RuleMatch | null
+}
+
 export function Statistics() {
   const [usage, setUsage] = useState<GlobalUsage | null>(null)
   const [cells, setCells] = useState<ActivityCell[]>([])
   const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState<"list" | "pricing">("list")
+  const [pricing, setPricing] = useState<PricingConfig>(() => loadPricing())
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -68,37 +95,124 @@ export function Statistics() {
     })
   }, [refresh])
 
+  useEffect(() => {
+    return subscribeSettingsBus("pricing", () => {
+      setPricing(loadPricing())
+    })
+  }, [])
+
   const sortedModels = useMemo(() => {
     if (!usage) return [] as Array<[string, GlobalUsage["by_model"][string]]>
-    return Object.entries(usage.by_model).sort(
-      (a, b) => b[1].cost_usd - a[1].cost_usd
-    )
+    return Object.entries(usage.by_model).sort((a, b) => {
+      // 按 token 总量降序，避免依赖 CLI 计算的 cost_usd（已被忽略）
+      const ta =
+        a[1].input_tokens +
+        a[1].output_tokens +
+        a[1].cache_read_input_tokens +
+        a[1].cache_creation_input_tokens
+      const tb =
+        b[1].input_tokens +
+        b[1].output_tokens +
+        b[1].cache_read_input_tokens +
+        b[1].cache_creation_input_tokens
+      return tb - ta
+    })
   }, [usage])
+
+  const modelCosts = useMemo(() => {
+    const map = new Map<string, ModelCost>()
+    for (const [model, m] of sortedModels) {
+      const match = findRule(model, pricing)
+      const cost = recomputeCost(
+        {
+          input: m.input_tokens,
+          output: m.output_tokens,
+          cacheRead: m.cache_read_input_tokens,
+          cacheCreate: m.cache_creation_input_tokens
+        },
+        match?.rule ?? null
+      )
+      map.set(model, { cost, match: match ?? null })
+    }
+    return map
+  }, [sortedModels, pricing])
+
+  const { totalCost, unmatchedModels } = useMemo(() => {
+    let sum = 0
+    let unmatched = 0
+    for (const [, { cost }] of modelCosts) {
+      if (cost == null) unmatched += 1
+      else sum += cost
+    }
+    return { totalCost: sum, unmatchedModels: unmatched }
+  }, [modelCosts])
 
   return (
     <SettingsSection>
       <SettingsSectionHeader
-        icon={BarChart3}
-        title="统计"
+        icon={mode === "pricing" ? Tag : BarChart3}
+        title={mode === "pricing" ? "定价设置" : "统计"}
         description={
-          <>
-            全部会话累计来源于 <code className="font-mono text-xs">~/.claude/projects/</code> 目录，此处只统计 gui 端 result 的数据；活跃度按本地时区聚合最近 {HEATMAP_DAYS} 天。
-          </>
+          mode === "pricing" ? (
+            "为不同厂商/模型配置 4 维价格，统计页将按规则重算成本。规则按组内顺序匹配，命中即停。"
+          ) : (
+            <>
+              全部会话累计来源于 <code className="font-mono text-xs">~/.claude/projects/</code> 目录，此处只统计 gui 端 result 的数据；活跃度按本地时区聚合最近 {HEATMAP_DAYS} 天。成本按「定价设置」中的规则重算。
+            </>
+          )
+        }
+        eyebrow={
+          mode === "pricing" ? (
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => setMode("list")}
+                className="inline-flex items-center gap-1 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <ArrowLeft className="size-3.5" />
+                返回
+              </button>
+              <Breadcrumb>
+                <BreadcrumbItem onClick={() => setMode("list")}>
+                  统计
+                </BreadcrumbItem>
+                <BreadcrumbSeparator />
+                <BreadcrumbItem current>定价设置</BreadcrumbItem>
+              </Breadcrumb>
+            </div>
+          ) : undefined
         }
         actions={
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={refresh}
-          disabled={loading}
-        >
-          <RefreshCw className={loading ? "animate-spin" : ""} />
-          刷新
-        </Button>
+          mode === "list" ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setMode("pricing")}
+              >
+                <Tag className="size-3.5" />
+                定价设置
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={refresh}
+                disabled={loading}
+              >
+                <RefreshCw className={loading ? "animate-spin" : ""} />
+                刷新
+              </Button>
+            </>
+          ) : undefined
         }
       />
 
-      <SettingsSectionBody>
+      {mode === "pricing" ? (
+        <SettingsSectionBody>
+          <PricingEditor />
+        </SettingsSectionBody>
+      ) : (
+        <SettingsSectionBody>
           <section className="rounded-lg border bg-card p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -122,8 +236,12 @@ export function Statistics() {
               />
               <Stat
                 label="总成本"
-                value={`$${(usage?.total_cost_usd ?? 0).toFixed(4)}`}
-                hint="仅 GUI 端记录的会话"
+                value={`$${totalCost.toFixed(4)}`}
+                hint={
+                  unmatchedModels > 0
+                    ? `${unmatchedModels} 个模型未匹配定价规则`
+                    : "按定价设置重算"
+                }
               />
               <Stat
                 label="输入 tokens"
@@ -167,8 +285,17 @@ export function Statistics() {
             )}
             <Separator />
             <div className="space-y-2">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                按模型拆分
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  按模型拆分
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMode("pricing")}
+                  className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  管理定价 →
+                </button>
               </div>
               {sortedModels.length === 0 ? (
                 <div className="text-xs text-muted-foreground">
@@ -188,26 +315,74 @@ export function Statistics() {
                       </tr>
                     </thead>
                     <tbody>
-                      {sortedModels.map(([model, m]) => (
-                        <tr key={model} className="border-t">
-                          <td className="px-3 py-1.5 font-mono break-all">{model}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            ${m.cost_usd.toFixed(4)}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {fmt(m.input_tokens)}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {fmt(m.output_tokens)}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {fmt(m.cache_read_input_tokens)}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {fmt(m.cache_creation_input_tokens)}
-                          </td>
-                        </tr>
-                      ))}
+                      {sortedModels.map(([model, m]) => {
+                        const entry = modelCosts.get(model)
+                        return (
+                          <tr key={model} className="border-t">
+                            <td className="px-3 py-1.5 font-mono break-all">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span>{model}</span>
+                                {entry?.match && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Badge
+                                        variant="secondary"
+                                        className="font-sans text-[10px]"
+                                      >
+                                        {entry.match.groupName}
+                                      </Badge>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top">
+                                      <div className="text-[11px]">
+                                        命中规则：
+                                        <code className="font-mono">
+                                          {entry.match.rule.pattern}
+                                        </code>
+                                      </div>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {entry?.cost == null ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                      —
+                                      <Badge
+                                        variant="warn"
+                                        className="font-sans text-[10px]"
+                                      >
+                                        未配置
+                                      </Badge>
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top">
+                                    <div className="text-[11px]">
+                                      在「定价设置」中为该模型 ID 添加规则
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : (
+                                `$${entry.cost.toFixed(4)}`
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {fmt(m.input_tokens)}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {fmt(m.output_tokens)}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {fmt(m.cache_read_input_tokens)}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {fmt(m.cache_creation_input_tokens)}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -221,7 +396,8 @@ export function Statistics() {
             </div>
             <ActivityHeatmap cells={cells} days={HEATMAP_DAYS} />
           </section>
-      </SettingsSectionBody>
+        </SettingsSectionBody>
+      )}
     </SettingsSection>
   )
 }
