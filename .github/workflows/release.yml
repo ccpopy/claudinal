@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            artifact: windows-x64
+            rustTargets: "x86_64-pc-windows-msvc"
+            tauriArgs: "--bundles nsis,msi"
+          - platform: macos-latest
+            artifact: macos-x64
+            rustTargets: "x86_64-apple-darwin"
+            tauriArgs: "--target x86_64-apple-darwin --bundles app,dmg"
+          - platform: macos-latest
+            artifact: macos-arm64
+            rustTargets: "aarch64-apple-darwin"
+            tauriArgs: "--target aarch64-apple-darwin --bundles app,dmg"
+          - platform: ubuntu-22.04
+            artifact: linux-x64
+            rustTargets: "x86_64-unknown-linux-gnu"
+            tauriArgs: "--target x86_64-unknown-linux-gnu --bundles deb,rpm,appimage"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Validate tag version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+
+          if [ "$tag" != "$package_version" ]; then
+            echo "::error::Tag v$tag does not match package.json version $package_version"
+            exit 1
+          fi
+
+          if [ "$tag" != "$tauri_version" ]; then
+            echo "::error::Tag v$tag does not match src-tauri/tauri.conf.json version $tauri_version"
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            rpm \
+            wget
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTargets }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.artifact }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri bundles
+        run: pnpm tauri build ${{ matrix.tauriArgs }}
+
+      - name: Build Windows portable zip
+        if: runner.os == 'Windows'
+        run: pnpm package:zip-portable
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact="${{ matrix.artifact }}"
+          mkdir -p release-assets
+
+          bundle_root="src-tauri/target/release/bundle"
+          if [ -n "${{ matrix.rustTargets }}" ] && [ -d "src-tauri/target/${{ matrix.rustTargets }}/release/bundle" ]; then
+            bundle_root="src-tauri/target/${{ matrix.rustTargets }}/release/bundle"
+          fi
+
+          if [ ! -d "$bundle_root" ]; then
+            echo "::error::Bundle output not found: $bundle_root"
+            exit 1
+          fi
+
+          while IFS= read -r -d '' file; do
+            base="$(basename "$file")"
+            ext="${base##*.}"
+            stem="${base%.$ext}"
+            cp "$file" "release-assets/${stem}-${artifact}.${ext}"
+          done < <(find "$bundle_root" -type f \( \
+            -name "*.AppImage" -o \
+            -name "*.deb" -o \
+            -name "*.dmg" -o \
+            -name "*.exe" -o \
+            -name "*.msi" -o \
+            -name "*.rpm" \
+          \) -print0)
+
+          if [ -d release ]; then
+            while IFS= read -r -d '' file; do
+              base="$(basename "$file")"
+              ext="${base##*.}"
+              stem="${base%.$ext}"
+              cp "$file" "release-assets/${stem}-${artifact}.${ext}"
+            done < <(find release -type f -name "*.zip" -print0)
+          fi
+
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            while IFS= read -r -d '' app; do
+              app_base="$(basename "$app" .app)"
+              ditto -c -k --sequesterRsrc --keepParent "$app" "release-assets/${app_base}-${artifact}.app.zip"
+            done < <(find "$bundle_root" -type d -name "*.app" -print0)
+          fi
+
+          if [ "$(find release-assets -type f | wc -l | tr -d ' ')" = "0" ]; then
+            echo "::error::No release assets were collected"
+            exit 1
+          fi
+
+          find release-assets -type f -print | sort
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: claudinal-${{ matrix.artifact }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-assets
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          prefix="claudinal-${version}/"
+
+          mkdir -p release-assets
+          find downloaded-assets -maxdepth 2 -type f -exec cp {} release-assets/ \;
+
+          git archive --format=zip --prefix="$prefix" -o "release-assets/claudinal-${version}-source.zip" HEAD
+          git archive --format=tar --prefix="$prefix" HEAD | gzip -9 > "release-assets/claudinal-${version}-source.tar.gz"
+
+          (
+            cd release-assets
+            find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          )
+
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Claudinal ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: release-assets/*
