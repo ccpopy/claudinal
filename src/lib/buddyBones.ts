@@ -65,7 +65,7 @@ export const HAT_POOLS: Record<Exclude<Rarity, "common">, readonly Hat[]> = {
 export const HAT_LINES: Record<Hat, string> = {
   none: "            ",
   cap: "   ____     ",
-  halo: "   ====     ",
+  halo: "   (===)    ",
   tophat: "   _==_     ",
   wizard: "   /\\       ",
   crown: "   /^^\\     "
@@ -156,22 +156,22 @@ export const SPECIES_TEMPLATES: Record<
   dragon: {
     idle: [
       "            ",
-      "   /\\__/\\   ",
-      " <( {EYE})> ",
+      "  </\\__/\\>  ",
+      "  ( {EYE})  ",
       "   /~~~~\\   ",
       "  _/    \\_  "
     ],
     alt1: [
       "            ",
-      "   /\\__/\\   ",
-      " <( {EYE})> ",
+      "  </\\__/\\>  ",
+      "  ( {EYE})  ",
       "   /~~~~\\   ",
       "  _/    \\_~ "
     ],
     alt2: [
       "            ",
-      "   /\\--/\\   ",
-      " <( {EYE})> ",
+      "  </\\--/\\>  ",
+      "  ( {EYE})  ",
       "   /~~~~\\   ",
       "  _/    \\_  "
     ]
@@ -180,21 +180,21 @@ export const SPECIES_TEMPLATES: Record<
     idle: [
       "            ",
       "  [-----]   ",
-      "  | {EYE}|  ",
+      "  |{EYE}|   ",
       "  |  _  |   ",
       "  /|___|\\   "
     ],
     alt1: [
       "            ",
       "  [--^--]   ",
-      "  | {EYE}|  ",
+      "  |{EYE}|   ",
       "  |  _  |   ",
       "  /|___|\\   "
     ],
     alt2: [
       "            ",
       "  [-----]   ",
-      "  | {EYE}|  ",
+      "  |{EYE}|   ",
       "  |  o  |   ",
       "  /|___|\\   "
     ]

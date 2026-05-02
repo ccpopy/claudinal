@@ -755,7 +755,12 @@ pub async fn git_checkout_branch(cwd: String, branch: String, create: Option<boo
 }
 
 #[tauri::command]
-pub async fn github_cli_status() -> Result<GithubCliStatus> {
+pub async fn github_cli_status(
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<GithubCliStatus> {
+    use tokio::process::Command as AsyncCommand;
+    use tokio::time::{timeout, Duration};
+
     let path = match which::which("gh") {
         Ok(path) => path,
         Err(_) => {
@@ -769,15 +774,58 @@ pub async fn github_cli_status() -> Result<GithubCliStatus> {
             })
         }
     };
-    let version = command_stdout(std::process::Command::new(&path).arg("--version"))
-        .ok()
-        .and_then(|s| s.lines().next().map(str::to_string));
-    let auth = std::process::Command::new(&path)
-        .args(["auth", "status"])
-        .output();
-    let authenticated = auth.as_ref().is_ok_and(|out| out.status.success());
+
+    // 前端传来的 GUI 代理 env（HTTP_PROXY 等）。socks5 url gh (Go) 不识别，
+    // 沿用 spawn_session 同款 bridge_socks_proxy_env 桥接成本地 HTTP CONNECT 代理。
+    let mut env = env.unwrap_or_default();
+    bridge_socks_proxy_env(&mut env).await?;
+
+    // `gh --version` 是本地查询；`gh auth status` 会向 github.com 验证 token，
+    // 离线 / 网络差时会卡很久。两者并行 + 各自加超时，并通过 kill_on_drop 保证
+    // 超时后子进程不会留下来。
+    let version_path = path.clone();
+    let version_env = env.clone();
+    let version_fut = async move {
+        let mut cmd = AsyncCommand::new(&version_path);
+        cmd.arg("--version");
+        for (k, v) in &version_env {
+            cmd.env(k, v);
+        }
+        cmd.kill_on_drop(true);
+        cmd.output().await.ok()
+    };
+    let auth_path = path.clone();
+    let auth_env = env;
+    let auth_fut = async move {
+        let mut cmd = AsyncCommand::new(&auth_path);
+        cmd.args(["auth", "status"]);
+        for (k, v) in &auth_env {
+            cmd.env(k, v);
+        }
+        cmd.kill_on_drop(true);
+        cmd.output().await.ok()
+    };
+
+    let (version_res, auth_res) = tokio::join!(
+        timeout(Duration::from_secs(3), version_fut),
+        timeout(Duration::from_secs(6), auth_fut),
+    );
+
+    let version = version_res.ok().flatten().and_then(|out| {
+        if out.status.success() {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .map(str::to_string)
+        } else {
+            None
+        }
+    });
+
+    let auth_timed_out = auth_res.is_err();
+    let auth = auth_res.ok().flatten();
+    let authenticated = auth.as_ref().is_some_and(|out| out.status.success());
     let auth_text = auth
-        .ok()
         .map(|out| {
             let mut s = String::from_utf8_lossy(&out.stdout).to_string();
             s.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -795,17 +843,22 @@ pub async fn github_cli_status() -> Result<GithubCliStatus> {
                 .to_string()
         })
         .filter(|s| !s.is_empty());
+
+    let message = if authenticated {
+        "GitHub CLI 已认证".into()
+    } else if auth_timed_out {
+        "认证检测超时".into()
+    } else {
+        "GitHub CLI 未通过身份验证，请在终端运行 gh auth login".into()
+    };
+
     Ok(GithubCliStatus {
         installed: true,
         path: Some(path.display().to_string()),
         version,
         authenticated,
         user,
-        message: if authenticated {
-            "GitHub CLI 已认证".into()
-        } else {
-            "GitHub CLI 未通过身份验证，请在终端运行 gh auth login".into()
-        },
+        message,
     })
 }
 

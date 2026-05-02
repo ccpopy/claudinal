@@ -229,8 +229,10 @@ export async function gitCheckoutBranch(args: {
   })
 }
 
-export async function githubCliStatus(): Promise<GithubCliStatus> {
-  return invoke<GithubCliStatus>("github_cli_status")
+export async function githubCliStatus(
+  env?: Record<string, string>
+): Promise<GithubCliStatus> {
+  return invoke<GithubCliStatus>("github_cli_status", { env: env ?? null })
 }
 
 export async function readSessionTranscript(

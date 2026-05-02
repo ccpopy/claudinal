@@ -46,11 +46,10 @@ export function Statistics() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [u, c] = await Promise.all([
-        scanGlobalUsage(),
-        scanActivityHeatmap(HEATMAP_DAYS)
-      ])
+      // 串行扫描：两个命令各自打开 SQLite 写事务，并发会触发 `database is locked`。
+      const u = await scanGlobalUsage()
       setUsage(u)
+      const c = await scanActivityHeatmap(HEATMAP_DAYS)
       setCells(c)
     } catch (e) {
       toast.error(`扫描失败: ${String(e)}`)

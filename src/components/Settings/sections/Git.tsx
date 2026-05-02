@@ -17,6 +17,7 @@ import {
   writeClaudeMd,
   writeClaudeSettings
 } from "@/lib/ipc"
+import { buildProxyEnv, loadProxyAsync } from "@/lib/proxy"
 import {
   SettingsSection,
   SettingsSectionBody,
@@ -178,7 +179,14 @@ export function Git() {
   const loadGh = useCallback(async () => {
     setGhLoading(true)
     try {
-      setGh(await githubCliStatus())
+      // 走 GUI 代理：socks5 由后端桥接成本地 HTTP CONNECT 代理后注入 gh 子进程
+      let proxyEnv: Record<string, string> | undefined
+      try {
+        proxyEnv = buildProxyEnv(await loadProxyAsync())
+      } catch {
+        proxyEnv = undefined
+      }
+      setGh(await githubCliStatus(proxyEnv))
     } catch (e) {
       setGh({
         installed: false,
@@ -325,7 +333,7 @@ export function Git() {
                   <h3 className="text-sm font-semibold">GitHub CLI</h3>
                 </div>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  用于从 GUI 判断 gh 是否可用。实际登录仍交给官方 gh CLI。
+                  用于从 GUI 判断 gh 是否可用。认证检测会经 GUI 代理联网验证 token。
                 </p>
               </div>
               <Button

@@ -12,6 +12,7 @@
 //! jsonl + sidecar，重建库只是丢失 cache。
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
@@ -27,8 +28,30 @@ pub fn db_path() -> Result<PathBuf> {
     Ok(base.join("Claudinal").join("session-index-v1.sqlite3"))
 }
 
-/// 打开（或重建）SQLite 库，确保 schema 处于最新版本。
-pub fn open() -> Result<Connection> {
+/// 全局共享 Connection。
+///
+/// 所有 store 调用方走同一个连接 + 进程内 Mutex 串行化，避免在 WAL 模式下
+/// 多个 writer 同时持有写锁时撞 `database is locked`（busy_timeout 到期）。
+/// 调用方通过 `open()` 拿到 `LockedConn`（即 `MutexGuard<Connection>`），
+/// 离开作用域时锁自动释放。
+static CONN: OnceLock<Mutex<Connection>> = OnceLock::new();
+
+/// 首次初始化时用来防止两个线程同时打开 / 迁移数据库的入口锁。
+/// 一旦 `CONN` 被填好，后续走 fast path，永远不再触碰 `INIT`。
+static INIT: Mutex<()> = Mutex::new(());
+
+pub type LockedConn = MutexGuard<'static, Connection>;
+
+/// 拿到全局 Connection 的独占锁。首次调用会打开 / 迁移数据库。
+pub fn open() -> Result<LockedConn> {
+    if let Some(m) = CONN.get() {
+        return Ok(m.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+    let _init_guard = INIT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = CONN.get() {
+        return Ok(m.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
     let path = db_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -46,7 +69,13 @@ pub fn open() -> Result<Connection> {
         }
         Err(e) => return Err(e),
     };
-    Ok(conn)
+
+    let _ = CONN.set(Mutex::new(conn));
+    Ok(CONN
+        .get()
+        .expect("CONN just set")
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()))
 }
 
 fn try_open_and_migrate(path: &std::path::Path) -> Result<Connection> {
@@ -91,7 +120,7 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     let _ = conn.pragma_update(None, "mmap_size", 268_435_456_i64);
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.busy_timeout(std::time::Duration::from_secs(15))?;
     Ok(())
 }
 

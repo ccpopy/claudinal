@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label"
 import {
   detectPlaywrightInstall,
   openPath,
+  readClaudeJsonMcpConfigs,
   readClaudeMcpConfig,
   writeClaudeMcpConfig,
   type PlaywrightInstallState
@@ -86,26 +87,57 @@ export function Browser({ cwd }: Props) {
       const statuses = loadMcpStatusCache()
       const statusMap = new Map(statuses.map((s) => [s.name, s.status]))
       const out: BrowserMcpRow[] = []
-      const collect = async (scope: "global" | "project") => {
+      const seen = new Set<string>()
+      const push = (
+        name: string,
+        scope: "global" | "project",
+        conf: McpServerConfig
+      ) => {
+        if (!isBrowserServer(name, conf)) return
+        const key = `${scope}:${name}`
+        if (seen.has(key)) return
+        seen.add(key)
+        out.push({
+          name,
+          scope,
+          config: conf,
+          status: statusMap.get(name) ?? null
+        })
+      }
+      const collectMcpJson = async (scope: "global" | "project") => {
         if (scope === "project" && !cwd) return
         try {
           const raw = await readClaudeMcpConfig(scope, cwd ?? undefined)
           const cfg = normalizeMcpConfig(raw)
           for (const [name, conf] of Object.entries(cfg.mcpServers ?? {})) {
-            if (!isBrowserServer(name, conf)) continue
-            out.push({
-              name,
-              scope,
-              config: conf,
-              status: statusMap.get(name) ?? null
-            })
+            push(name, scope, conf)
           }
         } catch {
           // 文件缺失或损坏视作空
         }
       }
-      await collect("global")
-      await collect("project")
+      await collectMcpJson("global")
+      await collectMcpJson("project")
+
+      // ~/.claude.json（CLI 全局/项目）也是 server 来源 —— McpServers 页同样读这两份。
+      try {
+        const cj = await readClaudeJsonMcpConfigs(cwd ?? undefined)
+        const ingest = (
+          raw: Record<string, unknown> | null,
+          scope: "global" | "project"
+        ) => {
+          if (!raw) return
+          const cfg = normalizeMcpConfig(raw)
+          for (const [name, conf] of Object.entries(cfg.mcpServers ?? {})) {
+            push(name, scope, conf)
+          }
+        }
+        ingest(cj.global, "global")
+        if (cwd) ingest(cj.project, "project")
+      } catch {
+        // ignore
+      }
+
       setRows(out)
 
       try {
@@ -177,12 +209,12 @@ export function Browser({ cwd }: Props) {
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold">Claude 浏览器可用性</h3>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Claude CLI 需要同时加载浏览器 MCP，并能找到 Playwright 浏览器二进制。Codex App 自带的浏览器工具不会自动暴露给 Claude CLI。
+                  Claude CLI 需要同时加载浏览器 MCP，并能找到 Playwright 浏览器二进制。
                 </p>
               </div>
               <Badge variant={browserReady ? "primary" : "warn"} className="font-sans">
                 {browserReady
-                  ? "可用于新会话"
+                  ? "已就绪"
                   : enabledBrowserMcpCount === 0
                     ? "缺少浏览器 MCP"
                     : "缺少 Chromium"}
