@@ -905,29 +905,29 @@ function ProviderCard({
           <CurrentBadge />
         </div>
       )}
-      <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 bg-card/95 pl-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-          <Button type="button" size="sm" onClick={onApply} disabled={busy}>
-            <Play className="size-3.5" />
-            {applyLabel}
+      <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 bg-inherit pl-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        <Button type="button" size="sm" onClick={onApply} disabled={busy}>
+          <Play className="size-3.5" />
+          {applyLabel}
+        </Button>
+        {onEdit && (
+          <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+            <Pencil className="size-3.5" />
+            编辑
           </Button>
-          {onEdit && (
-            <Button type="button" variant="outline" size="sm" onClick={onEdit}>
-              <Pencil className="size-3.5" />
-              编辑
-            </Button>
-          )}
-          {onRemove && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 text-muted-foreground hover:text-destructive"
-              onClick={onRemove}
-              aria-label={`删除供应商 ${title}`}
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          )}
+        )}
+        {onRemove && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:text-destructive"
+            onClick={onRemove}
+            aria-label={`删除供应商 ${title}`}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        )}
       </div>
     </div>
   )

@@ -1,6 +1,7 @@
 mod api_proxy;
 mod auth;
 mod buddy;
+mod child_process;
 mod commands;
 mod error;
 mod keychain;
@@ -31,6 +32,8 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_uri_scheme_protocol(startup::PROTOCOL, |_ctx, _request| startup::response())
         .plugin(tauri_plugin_dialog::init())
         .manage(proc::Manager::new())
@@ -82,6 +85,7 @@ pub fn run() {
             startup::frontend_ready,
             buddy::get_buddy_bones,
             commands::detect_claude_cli,
+            commands::claude_cli_version_info,
             commands::spawn_session,
             commands::resolve_permission_request,
             commands::send_user_message,

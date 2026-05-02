@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 use tauri::{AppHandle, State};
 
 use crate::api_proxy::{start as start_api_proxy, ProxyConfig};
+use crate::child_process::{hide_std_window, hide_tokio_window};
 use crate::error::{Error, Result};
 use crate::permission_mcp::{
     render_default_mcp_config, PermissionMcpBridge, DEFAULT_PERMISSION_MCP_TOOL,
@@ -17,10 +18,70 @@ use crate::session::{
     SessionMeta, SessionSearchHit, WatcherState,
 };
 
+const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
+const CLAUDE_UPDATE_COMMAND: &str = "claude update";
+const CLAUDE_CLI_REFERENCE_URL: &str =
+    "https://docs.anthropic.com/en/docs/claude-code/cli-reference";
+
+#[derive(Serialize)]
+pub struct ClaudeCliVersionInfo {
+    pub path: String,
+    pub version: String,
+    pub min_supported_version: String,
+    pub supported: bool,
+    pub update_command: String,
+    pub docs_url: String,
+}
+
 #[tauri::command]
 pub async fn detect_claude_cli() -> Result<String> {
     let path = crate::proc::spawn::find_claude()?;
     Ok(path.display().to_string())
+}
+
+#[tauri::command]
+pub async fn claude_cli_version_info() -> Result<ClaudeCliVersionInfo> {
+    use tokio::process::Command as AsyncCommand;
+    use tokio::time::{timeout, Duration};
+
+    let path = crate::proc::spawn::find_claude()?;
+    let mut cmd = AsyncCommand::new(&path);
+    cmd.arg("--version");
+    cmd.kill_on_drop(true);
+    hide_tokio_window(&mut cmd);
+
+    let output = timeout(Duration::from_secs(5), cmd.output())
+        .await
+        .map_err(|_| Error::Other("读取 Claude CLI 版本超时".into()))??;
+    if !output.status.success() {
+        return Err(Error::Other(format!(
+            "读取 Claude CLI 版本失败：exit {}，stderr: {}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let version = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .ok_or_else(|| Error::Other("Claude CLI 没有输出版本号".into()))?
+        .to_string();
+    let supported = version_at_least(&version, MIN_SUPPORTED_CLAUDE_CLI_VERSION)
+        .ok_or_else(|| Error::Other(format!("无法解析 Claude CLI 版本号：{version}")))?;
+
+    Ok(ClaudeCliVersionInfo {
+        path: path.display().to_string(),
+        version,
+        min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
+        supported,
+        update_command: CLAUDE_UPDATE_COMMAND.into(),
+        docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
+    })
 }
 
 #[tauri::command]
@@ -109,6 +170,27 @@ pub async fn spawn_session(
         mcp_config,
     };
     manager.spawn(app, opts).await
+}
+
+fn version_at_least(version: &str, min_version: &str) -> Option<bool> {
+    let current = parse_semver_prefix(version)?;
+    let minimum = parse_semver_prefix(min_version)?;
+    Some(current >= minimum)
+}
+
+fn parse_semver_prefix(version: &str) -> Option<(u64, u64, u64)> {
+    let token = version.split_whitespace().next()?.trim_start_matches('v');
+    let mut parts = token.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch_raw = parts.next()?;
+    let patch = patch_raw
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    Some((major, minor, patch))
 }
 
 fn read_json_file_if_exists(path: &std::path::Path) -> Result<Option<Value>> {
@@ -803,6 +885,7 @@ pub async fn github_cli_status(
             cmd.env(k, v);
         }
         cmd.kill_on_drop(true);
+        hide_tokio_window(&mut cmd);
         cmd.output().await.ok()
     };
     let auth_path = path.clone();
@@ -814,6 +897,7 @@ pub async fn github_cli_status(
             cmd.env(k, v);
         }
         cmd.kill_on_drop(true);
+        hide_tokio_window(&mut cmd);
         cmd.output().await.ok()
     };
 
@@ -874,6 +958,7 @@ pub async fn github_cli_status(
 }
 
 fn command_stdout(cmd: &mut std::process::Command) -> Result<String> {
+    hide_std_window(cmd);
     let out = cmd.output().map_err(Error::from)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -883,6 +968,7 @@ fn command_stdout(cmd: &mut std::process::Command) -> Result<String> {
 }
 
 fn command_success(cmd: &mut std::process::Command) -> bool {
+    hide_std_window(cmd);
     cmd.output().is_ok_and(|out| out.status.success())
 }
 
@@ -2039,10 +2125,10 @@ pub async fn open_path(path: String) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer")
-            .arg(&p)
-            .spawn()
-            .map_err(Error::from)?;
+        let mut cmd = std::process::Command::new("explorer");
+        cmd.arg(&p);
+        hide_std_window(&mut cmd);
+        cmd.spawn().map_err(Error::from)?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -2097,6 +2183,7 @@ pub async fn run_project_action(cwd: String, command: String) -> Result<ProjectA
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    hide_tokio_window(&mut cmd);
 
     let output = cmd
         .output()
@@ -2280,10 +2367,10 @@ pub async fn open_external(url: String) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", &url])
-            .spawn()
-            .map_err(Error::from)?;
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "start", "", &url]);
+        hide_std_window(&mut cmd);
+        cmd.spawn().map_err(Error::from)?;
     }
     #[cfg(target_os = "macos")]
     {

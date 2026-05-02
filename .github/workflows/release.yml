@@ -107,7 +107,22 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate updater signing secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY secret. Tauri updater artifacts must be signed."
+            exit 1
+          fi
+
       - name: Build Tauri bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build ${{ matrix.tauriArgs }}
 
       - name: Build Windows portable zip
@@ -132,13 +147,32 @@ jobs:
             exit 1
           fi
 
-          while IFS= read -r -d '' file; do
+          copy_asset() {
+            local file="$1"
+            local base
+            local stem
+            local ext
+            local out
             base="$(basename "$file")"
-            ext="${base##*.}"
-            stem="${base%.$ext}"
-            cp "$file" "release-assets/${stem}-${artifact}.${ext}"
+            if [[ "$base" == *.tar.gz ]]; then
+              stem="${base%.tar.gz}"
+              ext="tar.gz"
+            else
+              ext="${base##*.}"
+              stem="${base%.$ext}"
+            fi
+            out="release-assets/${stem}-${artifact}.${ext}"
+            cp "$file" "$out"
+            if [ -f "$file.sig" ]; then
+              cp "$file.sig" "$out.sig"
+            fi
+          }
+
+          while IFS= read -r -d '' file; do
+            copy_asset "$file"
           done < <(find "$bundle_root" -type f \( \
             -name "*.AppImage" -o \
+            -name "*.app.tar.gz" -o \
             -name "*.deb" -o \
             -name "*.dmg" -o \
             -name "*.exe" -o \
@@ -148,10 +182,7 @@ jobs:
 
           if [ -d release ]; then
             while IFS= read -r -d '' file; do
-              base="$(basename "$file")"
-              ext="${base##*.}"
-              stem="${base%.$ext}"
-              cp "$file" "release-assets/${stem}-${artifact}.${ext}"
+              copy_asset "$file"
             done < <(find release -type f -name "*.zip" -print0)
           fi
 
@@ -205,6 +236,7 @@ jobs:
 
           git archive --format=zip --prefix="$prefix" -o "release-assets/claudinal-${version}-source.zip" HEAD
           git archive --format=tar --prefix="$prefix" HEAD | gzip -9 > "release-assets/claudinal-${version}-source.tar.gz"
+          node scripts/generate-latest-json.mjs release-assets "${GITHUB_REPOSITORY}" "$tag" "$version"
 
           (
             cd release-assets

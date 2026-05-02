@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+use crate::child_process::hide_tokio_window;
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Serialize)]
@@ -585,12 +586,15 @@ pub async fn install_builtin_skill(args: BuiltinSkillInstallArgs) -> Result<Plug
         }
     };
 
-    let output = tokio::process::Command::new(command)
-        .args(&cmd_args)
+    let mut cmd = tokio::process::Command::new(command);
+    cmd.args(&cmd_args)
         .current_dir(&install_cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    hide_tokio_window(&mut cmd);
+
+    let output = cmd
         .output()
         .await
         .map_err(|e| Error::Other(format!("spawn {command}: {e}")))?;
@@ -674,6 +678,7 @@ pub async fn run_plugin_command(args: PluginCommand) -> Result<PluginCommandResu
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    hide_tokio_window(&mut cmd);
 
     let output = cmd
         .output()

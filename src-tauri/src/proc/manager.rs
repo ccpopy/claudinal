@@ -1,6 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use serde_json::{json, Value};
@@ -11,6 +12,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use crate::child_process::{hide_std_window, hide_tokio_window};
 use crate::error::{Error, Result};
 use crate::proc::spawn::find_claude;
 
@@ -43,6 +45,7 @@ impl Manager {
 
     pub async fn spawn(&self, app: AppHandle, opts: SpawnOptions) -> Result<String> {
         let claude = find_claude()?;
+        ensure_required_claude_flags(&claude, &opts).await?;
         let session_id = Uuid::new_v4().to_string();
         info!(claude = %claude.display(), session = %session_id, cwd = %opts.cwd.display(), "spawning claude");
 
@@ -97,8 +100,7 @@ impl Manager {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        hide_tokio_window(&mut cmd);
 
         let mut child = cmd.spawn()?;
         let stdin = child
@@ -272,17 +274,120 @@ impl Manager {
     }
 }
 
+async fn ensure_required_claude_flags(claude: &Path, opts: &SpawnOptions) -> Result<()> {
+    let help = claude_help(claude).await?;
+    let mut required = vec![
+        "--input-format",
+        "--output-format",
+        "--include-partial-messages",
+        "--include-hook-events",
+        "--permission-mode",
+        "--permission-prompt-tool",
+    ];
+    if opts.model.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        required.push("--model");
+    }
+    if opts.effort.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        required.push("--effort");
+    }
+    if opts
+        .resume_session_id
+        .as_deref()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        required.push("--resume");
+    }
+    if opts
+        .mcp_config
+        .as_deref()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        required.push("--mcp-config");
+    }
+
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|flag| !help.contains(flag))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let version = claude_version(claude)
+        .await
+        .unwrap_or_else(|err| format!("unknown ({err})"));
+    Err(Error::Other(format!(
+        "当前 Claude CLI 不支持桌面端所需参数：{}。检测到的 Claude CLI：{}，版本：{}。请升级 Claude CLI 后重试（可运行 `claude update` 或重新安装 Claude Code）。",
+        missing.join(", "),
+        claude.display(),
+        version.trim()
+    )))
+}
+
+async fn claude_help(claude: &Path) -> Result<String> {
+    let mut cmd = Command::new(claude);
+    cmd.arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    hide_tokio_window(&mut cmd);
+
+    let output = tokio::time::timeout(Duration::from_secs(5), cmd.output())
+        .await
+        .map_err(|_| Error::Other("读取 Claude CLI 参数帮助超时".into()))??;
+    if !output.status.success() {
+        return Err(Error::Other(format!(
+            "读取 Claude CLI 参数帮助失败：exit {}，stderr: {}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.stderr.is_empty() {
+        text.push('\n');
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(text)
+}
+
+async fn claude_version(claude: &Path) -> Result<String> {
+    let mut cmd = Command::new(claude);
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    hide_tokio_window(&mut cmd);
+
+    let output = tokio::time::timeout(Duration::from_secs(5), cmd.output())
+        .await
+        .map_err(|_| Error::Other("读取 Claude CLI 版本超时".into()))??;
+    if !output.status.success() {
+        return Err(Error::Other(format!(
+            "读取 Claude CLI 版本失败：exit {}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[cfg(windows)]
 fn kill_process_tree(pid: u32) {
-    use std::os::windows::process::CommandExt;
-
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
+    let mut cmd = std::process::Command::new("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(0x08000000)
-        .status();
+        .stderr(Stdio::null());
+    hide_std_window(&mut cmd);
+    let _ = cmd.status();
 }
 
 #[cfg(not(windows))]

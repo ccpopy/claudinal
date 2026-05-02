@@ -96,6 +96,19 @@ export async function detectClaudeCli(): Promise<string> {
   return invoke<string>("detect_claude_cli")
 }
 
+export interface ClaudeCliVersionInfo {
+  path: string
+  version: string
+  min_supported_version: string
+  supported: boolean
+  update_command: string
+  docs_url: string
+}
+
+export async function claudeCliVersionInfo(): Promise<ClaudeCliVersionInfo> {
+  return invoke<ClaudeCliVersionInfo>("claude_cli_version_info")
+}
+
 export async function spawnSession(args: SpawnArgs): Promise<string> {
   return invoke<string>("spawn_session", args as Record<string, unknown>)
 }

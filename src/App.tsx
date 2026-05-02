@@ -87,6 +87,7 @@ import {
 } from "@/lib/archivedSessions"
 import { unpin } from "@/lib/pinned"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
+import { checkForAppUpdate } from "@/lib/updater"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -604,6 +605,9 @@ export default function App() {
     const settings = loadSettings()
     setSessionPermissionMode(settings.defaultPermissionMode)
     setPlanMode(settings.defaultPermissionMode === "plan")
+    if (settings.autoCheckUpdate) {
+      void checkForAppUpdate({ silent: true })
+    }
     if (isOfficialApi()) {
       fetchOauthUsage()
         .then((u) => setOauthUsage(u))
