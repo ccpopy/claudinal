@@ -538,8 +538,31 @@ pub struct GitBranchList {
     pub branches: Vec<GitBranchInfo>,
 }
 
-#[tauri::command]
-pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeInfo {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub bare: bool,
+    pub locked: Option<String>,
+    pub prunable: Option<String>,
+    pub current: bool,
+    pub exists: bool,
+    pub changed_files: Option<u32>,
+    pub status_error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeList {
+    pub is_repo: bool,
+    pub current_root: Option<String>,
+    pub worktrees: Vec<GitWorktreeInfo>,
+}
+
+fn git_worktree_status_inner(cwd: String) -> Result<GitWorktreeStatus> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
@@ -668,6 +691,11 @@ pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
         deletions,
         files,
     })
+}
+
+#[tauri::command]
+pub async fn git_worktree_status(cwd: String) -> Result<GitWorktreeStatus> {
+    git_worktree_status_inner(cwd)
 }
 
 #[tauri::command]
@@ -823,27 +851,89 @@ pub async fn git_checkout_branch(cwd: String, branch: String, create: Option<boo
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
     }
     let branch = branch.trim();
-    if branch.is_empty()
-        || branch.contains('\0')
-        || branch.starts_with('-')
-        || branch.contains("..")
-        || branch.contains('~')
-        || branch.contains('^')
-        || branch.contains(':')
-        || branch.contains('?')
-        || branch.contains('*')
-        || branch.contains('[')
-        || branch.ends_with('/')
-        || branch.ends_with(".lock")
-    {
-        return Err(Error::Other(format!("invalid branch name: {branch}")));
-    }
+    validate_git_branch_name(branch)?;
     let mut cmd = std::process::Command::new("git");
     cmd.args(["-C", &cwd, "switch"]);
     if create.unwrap_or(false) {
         cmd.arg("-c");
     }
     cmd.arg(branch);
+    command_stdout(&mut cmd).map(|_| ())
+}
+
+#[tauri::command]
+pub async fn git_worktree_list(cwd: String) -> Result<GitWorktreeList> {
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    if !command_success(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "rev-parse",
+        "--is-inside-work-tree",
+    ])) {
+        return Ok(GitWorktreeList {
+            is_repo: false,
+            current_root: None,
+            worktrees: vec![],
+        });
+    }
+
+    let current_root = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "rev-parse",
+        "--show-toplevel",
+    ]))?
+    .trim()
+    .to_string();
+    let raw = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "worktree",
+        "list",
+        "--porcelain",
+    ]))?;
+    let mut worktrees = parse_git_worktree_porcelain(&raw, &current_root);
+
+    for worktree in &mut worktrees {
+        if !worktree.exists || worktree.bare {
+            continue;
+        }
+        match git_worktree_status_inner(worktree.path.clone()) {
+            Ok(status) => worktree.changed_files = Some(status.changed_files),
+            Err(err) => worktree.status_error = Some(err.to_string()),
+        }
+    }
+
+    Ok(GitWorktreeList {
+        is_repo: true,
+        current_root: Some(current_root),
+        worktrees,
+    })
+}
+
+#[tauri::command]
+pub async fn git_remove_worktree(cwd: String, path: String) -> Result<()> {
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    let target = clean_path_arg(&path, "worktree path")?;
+    let current_root = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        &cwd,
+        "rev-parse",
+        "--show-toplevel",
+    ]))?
+    .trim()
+    .to_string();
+    if same_path(&target, std::path::Path::new(&current_root)) {
+        return Err(Error::Other("cannot remove the current worktree".into()));
+    }
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", &cwd, "worktree", "remove", "--"])
+        .arg(&target);
     command_stdout(&mut cmd).map(|_| ())
 }
 
@@ -970,6 +1060,115 @@ fn command_stdout(cmd: &mut std::process::Command) -> Result<String> {
 fn command_success(cmd: &mut std::process::Command) -> bool {
     hide_std_window(cmd);
     cmd.output().is_ok_and(|out| out.status.success())
+}
+
+fn validate_git_branch_name(branch: &str) -> Result<()> {
+    if branch.is_empty()
+        || branch.contains('\0')
+        || branch.starts_with('-')
+        || branch.contains("..")
+        || branch.contains('~')
+        || branch.contains('^')
+        || branch.contains(':')
+        || branch.contains('?')
+        || branch.contains('*')
+        || branch.contains('[')
+        || branch.ends_with('/')
+        || branch.ends_with(".lock")
+    {
+        return Err(Error::Other(format!("invalid branch name: {branch}")));
+    }
+    Ok(())
+}
+
+fn clean_path_arg(path: &str, label: &str) -> Result<std::path::PathBuf> {
+    let path = path.trim();
+    if path.is_empty() || path.contains('\0') {
+        return Err(Error::Other(format!("{label} required")));
+    }
+    Ok(std::path::PathBuf::from(path))
+}
+
+fn path_key(path: &std::path::Path) -> String {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
+fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    path_key(left) == path_key(right)
+}
+
+fn parse_git_worktree_porcelain(raw: &str, current_root: &str) -> Vec<GitWorktreeInfo> {
+    let mut out = Vec::new();
+    let mut current: Option<GitWorktreeInfo> = None;
+    let current_root = std::path::Path::new(current_root);
+
+    for line in raw.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if let Some(worktree) = current.take() {
+                out.push(worktree);
+            }
+            let path = path.to_string();
+            let path_ref = std::path::Path::new(&path);
+            current = Some(GitWorktreeInfo {
+                current: same_path(path_ref, current_root),
+                exists: path_ref.is_dir(),
+                path,
+                head: None,
+                branch: None,
+                detached: false,
+                bare: false,
+                locked: None,
+                prunable: None,
+                changed_files: None,
+                status_error: None,
+            });
+            continue;
+        }
+
+        let Some(worktree) = current.as_mut() else {
+            continue;
+        };
+        if let Some(head) = line.strip_prefix("HEAD ") {
+            worktree.head = Some(head.to_string());
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            worktree.branch = Some(
+                branch
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(branch)
+                    .to_string(),
+            );
+        } else if line == "detached" {
+            worktree.detached = true;
+        } else if line == "bare" {
+            worktree.bare = true;
+        } else if line == "locked" {
+            worktree.locked = Some(String::new());
+        } else if let Some(reason) = line.strip_prefix("locked ") {
+            worktree.locked = Some(reason.to_string());
+        } else if line == "prunable" {
+            worktree.prunable = Some(String::new());
+        } else if let Some(reason) = line.strip_prefix("prunable ") {
+            worktree.prunable = Some(reason.to_string());
+        }
+    }
+
+    if let Some(worktree) = current {
+        out.push(worktree);
+    }
+    out
 }
 
 fn parse_git_numstat(raw: &str) -> std::collections::HashMap<String, (u32, u32)> {
@@ -1289,6 +1488,38 @@ index 1111111..2222222 100644
         assert_eq!(entries[0].old_path.as_deref(), Some("old name.rs"));
         assert_eq!(entries[1].status, "??");
         assert_eq!(entries[1].path, "notes.txt");
+    }
+
+    #[test]
+    fn parse_git_worktree_porcelain_reads_branch_and_detached_entries() {
+        let raw = "\
+worktree F:/project/claudecli
+HEAD c5d0f681ac1930a867a6ba3549551ebe0c91e980
+branch refs/heads/main
+
+worktree C:/Users/me/.codex/worktrees/34b8/claudecli
+HEAD 49ec5009538b3e8f5a9f39e046f1f0c0aaedfeb7
+branch refs/heads/codex/review-fixes-deps
+
+worktree C:/Users/me/.gemini/worktrees/45b8/claudecli
+HEAD a6d190fcb36d0933bc0737b6d516352eb9461cea
+detached
+prunable gitdir file points to non-existent location
+";
+        let entries = parse_git_worktree_porcelain(raw, "F:/project/claudecli");
+
+        assert_eq!(entries.len(), 3);
+        assert!(entries[0].current);
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+        assert_eq!(
+            entries[1].branch.as_deref(),
+            Some("codex/review-fixes-deps")
+        );
+        assert!(entries[2].detached);
+        assert_eq!(
+            entries[2].prunable.as_deref(),
+            Some("gitdir file points to non-existent location")
+        );
     }
 
     #[test]

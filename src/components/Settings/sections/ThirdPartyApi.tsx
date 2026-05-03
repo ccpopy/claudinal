@@ -314,7 +314,7 @@ export function ThirdPartyApi() {
         }
         persistStore({ ...store, activeProviderId: OFFICIAL_PROVIDER_ID })
         setCliSettings(nextSettings)
-        toast.success("已恢复官方 Claude，下次启动会话生效")
+        toast.success("已恢复默认，下次启动会话生效")
         return
       }
 
@@ -340,7 +340,7 @@ export function ThirdPartyApi() {
       persistStore({ ...store, activeProviderId: providerId })
       setSelectedProviderId(providerId)
       setCliSettings(nextSettings)
-      toast.success("已设为 Claude 使用，下次启动会话生效")
+      toast.success("已启用该供应商，下次启动会话生效")
     } catch (e) {
       toast.error(`应用失败: ${String(e)}`)
     } finally {
@@ -727,7 +727,7 @@ export function ThirdPartyApi() {
                   供应商列表
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  管理可用供应商；设为 Claude 使用后，新启动会话会通过本地代理转发。
+                  管理可用供应商；启用后，新启动会话会通过本地代理转发。
                 </div>
               </div>
             </div>
@@ -737,6 +737,8 @@ export function ThirdPartyApi() {
                 <span className="font-medium">{activeTitle}</span>
                 <span className="text-muted-foreground"> · {activeSubtitle}</span>
               </div>
+            </div>
+            <div className="flex justify-end gap-2">
               {!activeOfficial && (
                 <Button
                   type="button"
@@ -745,11 +747,9 @@ export function ThirdPartyApi() {
                   onClick={() => applyProviderToClaude(OFFICIAL_PROVIDER_ID)}
                   disabled={loading || saving}
                 >
-                  恢复官方 Claude
+                  恢复默认
                 </Button>
               )}
-            </div>
-            <div className="flex justify-end">
               <Button variant="outline" size="sm" onClick={addProvider}>
                 <Plus />
                 新增供应商
@@ -781,8 +781,8 @@ export function ThirdPartyApi() {
                     onApply={() => applyProviderToClaude(provider.id)}
                     applyLabel={
                       store.activeProviderId === provider.id
-                        ? "重新写入 Claude"
-                        : "设为 Claude 使用"
+                        ? "重新启用"
+                        : "启用"
                     }
                     busy={loading || saving}
                     onEdit={() => editProvider(provider.id)}
@@ -872,7 +872,7 @@ function ProviderCard({
         "group relative flex min-h-[66px] items-center gap-3 rounded-lg border p-3 transition-colors",
         selected
           ? "border-primary/45 bg-primary/5 shadow-sm"
-          : "bg-card hover:border-primary/25 hover:bg-accent/45"
+          : "bg-card hover:border-primary/25 hover:bg-accent/45 focus-within:border-primary/25 focus-within:bg-accent/45"
       )}
     >
       {selected && (
@@ -905,7 +905,9 @@ function ProviderCard({
           <CurrentBadge />
         </div>
       )}
-      <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 bg-inherit pl-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <div
+        className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 pl-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+      >
         <Button type="button" size="sm" onClick={onApply} disabled={busy}>
           <Play className="size-3.5" />
           {applyLabel}

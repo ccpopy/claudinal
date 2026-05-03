@@ -100,6 +100,8 @@ pub fn run() {
             commands::worktree_diff,
             commands::git_branch_list,
             commands::git_checkout_branch,
+            commands::git_worktree_list,
+            commands::git_remove_worktree,
             commands::github_cli_status,
             commands::read_session_transcript,
             commands::delete_session_jsonl,

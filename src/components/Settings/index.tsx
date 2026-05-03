@@ -32,7 +32,6 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import type { SessionMeta } from "@/lib/ipc"
 import type { Project } from "@/lib/projects"
 import { cn } from "@/lib/utils"
-import { Placeholder } from "./sections/Placeholder"
 
 interface Props {
   open: boolean
@@ -46,12 +45,14 @@ interface SettingsWorkspaceProps {
   initialSection?: string
   onSelectProject?: (project: Project) => void
   onSelectSession?: (project: Project, session: SessionMeta) => void
+  onProjectsChanged?: () => void
 }
 
 interface SectionProps {
   cwd?: string | null
   onSelectProject?: (project: Project) => void
   onSelectSession?: (project: Project, session: SessionMeta) => void
+  onProjectsChanged?: () => void
 }
 
 interface SectionDef {
@@ -72,6 +73,7 @@ const loadPersonalization = () => import("./sections/Personalization")
 const loadMcpServers = () => import("./sections/McpServers")
 const loadGit = () => import("./sections/Git")
 const loadEnvironment = () => import("./sections/Environment")
+const loadWorktree = () => import("./sections/Worktree")
 const loadBrowser = () => import("./sections/Browser")
 const loadArchive = () => import("./sections/Archive")
 const loadAccount = () => import("./sections/Account")
@@ -95,6 +97,9 @@ const McpServers = lazy(() =>
 const Git = lazy(() => loadGit().then((m) => ({ default: m.Git })))
 const Environment = lazy(() =>
   loadEnvironment().then((m) => ({ default: m.Environment }))
+)
+const Worktree = lazy(() =>
+  loadWorktree().then((m) => ({ default: m.Worktree }))
 )
 const Browser = lazy(() => loadBrowser().then((m) => ({ default: m.Browser })))
 const ArchiveSection = lazy(() =>
@@ -167,7 +172,8 @@ const SECTIONS: SectionDef[] = [
     id: "worktree",
     label: "工作树",
     icon: TreePine,
-    Component: () => <Placeholder title="工作树" />
+    Component: Worktree,
+    load: loadWorktree
   },
   {
     id: "browser",
@@ -224,7 +230,8 @@ export function SettingsWorkspace({
   sidebarVisible = true,
   initialSection = "general",
   onSelectProject,
-  onSelectSession
+  onSelectSession,
+  onProjectsChanged
 }: SettingsWorkspaceProps) {
   const [section, setSection] = useState<string>(initialSection)
   const cur = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
@@ -272,6 +279,7 @@ export function SettingsWorkspace({
               cwd={currentCwd ?? null}
               onSelectProject={onSelectProject}
               onSelectSession={onSelectSession}
+              onProjectsChanged={onProjectsChanged}
             />
 	        </Suspense>
 	      </main>

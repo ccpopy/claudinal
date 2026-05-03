@@ -40,6 +40,7 @@ import { SettingsSectionHeader } from "./layout"
 interface Props {
   cwd?: string | null
   onSelectProject?: (project: Project) => void
+  onProjectsChanged?: () => void
 }
 
 interface EditorState {
@@ -101,7 +102,7 @@ function configFingerprint(config: ProjectEnvConfig) {
   return JSON.stringify(config)
 }
 
-export function Environment({ cwd, onSelectProject }: Props) {
+export function Environment({ cwd, onSelectProject, onProjectsChanged }: Props) {
   const [projects, setProjects] = useState(() => listProjects())
   const [envStore, setEnvStore] = useState(() => loadProjectEnvStore())
   const [addOpen, setAddOpen] = useState(false)
@@ -133,6 +134,7 @@ export function Environment({ cwd, onSelectProject }: Props) {
   const refreshProjects = () => {
     setProjects(listProjects())
     setEnvStore(loadProjectEnvStore())
+    onProjectsChanged?.()
   }
 
   const dirty = editor
@@ -181,7 +183,7 @@ export function Environment({ cwd, onSelectProject }: Props) {
       <SettingsSectionHeader
         icon={TerminalSquare}
         title="环境"
-        description="本地环境用于指示 Claude 如何为项目设置工作树。"
+        description="本地环境用于保存项目脚本和操作命令。"
         eyebrow={
           editor ? (
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -417,7 +419,7 @@ function EditorView({
 
           <ScriptSection
             title="设置脚本"
-            description="创建工作树时在项目根目录下运行。"
+            description="预留给工作树创建流程使用，当前不会自动运行。"
             value={editor.setupScripts[editor.setupPlatform]}
             platform={editor.setupPlatform}
             onPlatformChange={(setupPlatform) =>
@@ -430,7 +432,7 @@ function EditorView({
 
           <ScriptSection
             title="清理脚本"
-            description="清理工作树之前在项目根目录下运行。"
+            description="预留给工作树清理流程使用，当前不会自动运行。"
             value={editor.cleanupScripts[editor.cleanupPlatform]}
             platform={editor.cleanupPlatform}
             onPlatformChange={(cleanupPlatform) =>

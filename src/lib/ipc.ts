@@ -92,6 +92,26 @@ export interface GitBranchList {
   branches: GitBranchInfo[]
 }
 
+export interface GitWorktreeInfo {
+  path: string
+  head: string | null
+  branch: string | null
+  detached: boolean
+  bare: boolean
+  locked: string | null
+  prunable: string | null
+  current: boolean
+  exists: boolean
+  changedFiles: number | null
+  statusError: string | null
+}
+
+export interface GitWorktreeList {
+  isRepo: boolean
+  currentRoot: string | null
+  worktrees: GitWorktreeInfo[]
+}
+
 export async function detectClaudeCli(): Promise<string> {
   return invoke<string>("detect_claude_cli")
 }
@@ -240,6 +260,17 @@ export async function gitCheckoutBranch(args: {
     branch: args.branch,
     create: args.create ?? false
   })
+}
+
+export async function gitWorktreeList(cwd: string): Promise<GitWorktreeList> {
+  return invoke<GitWorktreeList>("git_worktree_list", { cwd })
+}
+
+export async function gitRemoveWorktree(args: {
+  cwd: string
+  path: string
+}): Promise<void> {
+  return invoke("git_remove_worktree", args)
 }
 
 export async function githubCliStatus(

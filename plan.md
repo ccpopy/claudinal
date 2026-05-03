@@ -1,6 +1,6 @@
 # Claudinal 实施计划
 
-> 更新日期：2026-05-02
+> 更新日期：2026-05-03
 >
 > 这份文档记录当前代码库的真实状态、已经变更或废弃的需求，以及后续任务优先级。它不再作为开发流水账使用；历史实现记录只在必要时沉淀为架构约束或待办事项。
 
@@ -11,8 +11,8 @@
 Claudinal 当前已经进入“核心功能可用，下一步以稳定性、收口和真实场景验证为主”的阶段。
 
 - 已完成：Tauri 2 + React 19 桌面外壳、Claude CLI stream-json 会话、流式渲染、历史会话恢复、SQLite 会话元数据缓存、会话置顶 / 重命名 / 归档 / 删除、notify 监听刷新、Composer 参数选择、图片和文本附件、`@` 文件补全、`/` 命令补全、权限弹窗、Git 状态和 diff、设置页大部分分类、MCP 管理、插件与技能管理、项目环境操作工具栏、网络代理、账号与用量、第三方 API provider、本地 API 代理、Windows 打包脚本。
-- 部分完成：工作树相关目前保存项目环境脚本、清理脚本和项目操作命令；项目操作可由用户显式点击执行，但没有真正创建 / 清理 / 派生 worktree。统计只覆盖 GUI 写入 sidecar 的 result，不代表所有 CLI 历史都完整有成本数据。第三方 API key 仍存本地配置，需要迁到系统钥匙串。
-- 最近验证：2026-05-02 已通过 `pnpm build`、`cargo check --manifest-path src-tauri/Cargo.toml`、`cargo test --manifest-path src-tauri/Cargo.toml`。仍需要真实 `pnpm tauri dev` 下完成新会话、恢复历史会话、权限审批、图片附件、MCP、代理、项目操作、插件操作和打包回归。
+- 部分完成：工作树设置页已支持查看当前 Git 仓库已有 worktree、添加为项目并删除外部工作树；默认根目录、创建流程、自动清理策略和会话派生入口仍待确认。协同能力已确定为独立功能，不放在工作树设置内，下一轮若实施必须先完成官方 CLI 调用可行性核验。统计只覆盖 GUI 写入 sidecar 的 result，不代表所有 CLI 历史都完整有成本数据。第三方 API key 仍存本地配置，需要迁到系统钥匙串。
+- 最近验证：2026-05-03 已通过 `pnpm build`、`cargo check --manifest-path src-tauri/Cargo.toml`、`cargo test --manifest-path src-tauri/Cargo.toml`。仍需要真实 `pnpm tauri dev` 下完成新会话、恢复历史会话、权限审批、图片附件、MCP、代理、项目操作、插件操作和打包回归。
 - 需求已变更：SQLite 只做可重建元数据缓存，不作为 transcript 事实源；不再做右侧 Context Panel，不再做 fork session 菜单，不再接管插件 OAuth flow，不做浏览器 viewport 假字段，不做 append-system-prompt / agents JSON 编辑器。
 
 ---
@@ -175,7 +175,51 @@ GUI 读写范围：
 - 项目操作在主对话页显示为“项目操作”工具栏，只有用户点击时才执行。
 - `run_project_action` 会在项目根目录下通过系统 shell 执行命令，并注入 `CLAUDINAL_WORKTREE_PATH=<cwd>`。
 - 命令结果不做假成功：前端展示真实 exit code、stdout、stderr；执行失败通过 toast 暴露。
-- setup / cleanup 脚本目前仍只是配置项，尚未接入真实 Git worktree 创建或清理生命周期。
+- setup / cleanup 脚本目前仍只是配置项；工作树设置页只管理已有 Git worktree，不自动创建目录或运行生命周期脚本。
+
+### 3.6 协同能力规划中
+
+协同能力必须作为独立功能开发，入口放在“设置 -> 协同”和 Composer 加号菜单，不放在“工作树”设置里。工作树只是可选的工作区隔离资源，不是协同功能本身。
+
+目标模型：
+
+- 使用线性单工作区模式作为首版：同一协同流程同一时间只允许一个 Agent 执行写入步骤，后续步骤必须等待前一步完成、记录输出并通过确认或验证后才能开始。
+- 允许 Codex、Gemini、opencode 或其他外部 Agent 写入，但每个写入步骤必须有明确责任范围，例如只改设置页 UI、只补测试、只改后端命令桥。
+- 不把协同等同于 Git worktree。首版不依赖 worktree，也不要求项目必须是 Git 仓库；如果项目是 Git 仓库，可以用 Git diff 做验证和展示。如果不是 Git 仓库，必须用显式文件清单、mtime/hash 快照或运行结果记录变更，不能静默假装有 diff。
+- Claude CLI 仍是主会话和最终整合者。外部 Agent 通过 Claudinal 提供的 MCP 工具被受控调用，不能让 Claude 直接自由拼 shell 命令去调用 `codex`、`gemini` 或 `opencode`。
+- 协同接近 workflow / skills 的产品体验，但不是 skills：skills 是给单个 Agent 的提示和流程知识；协同是 Claudinal 管理的跨 CLI 执行、状态持久化、权限和产物验证功能。
+
+Composer 交互：
+
+- 加号菜单新增“协同”项。
+- 点击后像图片附件一样在输入框上方显示“协同”徽标，表示下一条消息或当前会话允许进入协同模式。
+- 如果协同设置未启用，点击入口应引导到“设置 -> 协同”，不能隐式开启。
+- 如果当前 Claude 会话启动时没有加载协同 MCP，必须明确提示“新会话生效”或在全局启用时始终注入轻量协同 MCP，不能假装当前会话已经可用。
+
+MCP 工具边界：
+
+- `collab_status`：返回当前项目协同是否启用、可用 Agent、当前流程状态。
+- `collab_start_flow`：创建协同流程，记录用户需求、项目、主 Claude session id。
+- `collab_delegate`：按配置调用指定 Agent，并记录输入、命令、工作目录、权限模式和输出。
+- `collab_get_result`：读取某一步结构化结果和原始 stdout/stderr 摘要。
+- `collab_record_approval`：记录用户或 Claude 对某一步的确认、退回或继续。
+- `collab_run_verification`：运行用户配置或系统建议的验证命令，记录真实 exit code、stdout、stderr。
+
+持久化要求：
+
+- 至少记录 `collaboration_session`、`collaboration_step`、`agent_run` 三类数据。
+- 每一步必须保存输入 prompt、目标 Agent、责任范围、状态、开始/结束时间、退出码、结构化输出、原始 stdout/stderr 路径、验证结果、变更文件清单。
+- 状态机必须显式：`draft`、`running`、`completed`、`failed`、`approved`、`rejected`、`verified`、`cancelled`。只有当前步骤达到允许流转的状态，下一步才能开始。
+- 对写入步骤，必须在开始前记录允许修改范围，结束后比对实际变更；越界修改要显式标记为失败或冲突，不能自动吞掉。
+
+下一轮实现前的强制核验：
+
+- 必须查证官方文档并记录当日结论，不能按记忆猜 CLI 参数。
+- 必须在本机运行 `claude --help`、`codex exec --help`、`gemini --help`，如果安装了 opencode 也要运行 `opencode run --help`，对比官方文档和本机版本差异。
+- Codex 需核验 `codex exec`、`--json`、`--cd`、`--sandbox`、`--output-last-message`、`--output-schema` 的真实可用性。
+- Gemini 需核验非交互 prompt、`--output-format json`、`--output-format stream-json`、approval mode、退出码和 JSON schema。
+- opencode 需核验 `opencode run`、`--format json`、`--session`、`--continue`、`opencode serve` 的真实可用性；未安装时设置页必须显示未安装，不能 mock。
+- Claude 需核验 `--mcp-config`、stream-json 输入输出、MCP stdio server 接入方式、当前会话能否动态启用协同 MCP；如果不能动态启用，必须明确为“新会话生效”。
 
 ---
 
@@ -270,7 +314,7 @@ GUI 读写范围：
 - [x] MCP 服务器：global/project mcp.json，stdio/http，env/headers/auth，启停、编辑、卸载、重复提示，Claude CLI config 只读展示。
 - [x] Git：见 4.5。
 - [x] 环境：项目环境列表、显示名称、设置脚本、清理脚本、平台差异脚本、项目操作新增 / 编辑 / 删除。
-- [ ] 工作树：当前仍是 Placeholder。
+- [x] 工作树：设置页可列出当前仓库已有 Git worktree，支持打开、添加为项目并删除。
 - [x] 浏览器使用：浏览器 MCP 诊断、一键添加 playwright、Playwright 浏览器缓存检测。
 - [x] 已归档对话：列表、恢复、删除。
 - [x] 账户和使用情况：`claude auth status --json`、登录、登出、重新登录、OAuth usage。
@@ -337,7 +381,7 @@ GUI 读写范围：
 | `--append-system-prompt` 和 agents JSON 编辑器 | 不做 | 保持 prompt 来源集中到 CLAUDE.md，避免来源分裂 |
 | 全局 PATH 追加 / GUI 环境变量列表 | 不做 | 容易与 OAuth、settings.json env、第三方 API 注入冲突；高级配置直接编辑 settings.json |
 | webview 全应用代理 | 暂不做 | Tauri 2 稳定代理 API 未作为当前依赖；当前只保证 Claude 子进程代理 |
-| PAC URL | 暂不做 | 子进程代理已经覆盖主要需求；PAC 复杂度高，放 P4 |
+| PAC URL | 暂不做 | 子进程代理已经覆盖主要需求；PAC 复杂度高，放低优先级 |
 | CodeMirror merge view | 暂缓 | 当前 UnifiedDiff 已能满足只读审查；只有要做交互式文件编辑时再引入 |
 | 自研工具执行层 | 明确不做 | 违反“不重造 agent”不变量 |
 | 假成功 / mock 成功路径 | 明确不做 | 违反 Debug-First 策略 |
@@ -370,9 +414,18 @@ GUI 读写范围：
 
 ### 6.5 稳定性与测试缺口
 
-- `pnpm build`、`cargo test --manifest-path src-tauri/Cargo.toml`、`cargo check --manifest-path src-tauri/Cargo.toml` 已在 2026-05-02 通过；后续需要纳入每轮发布前固定回归。
+- `pnpm build`、`cargo test --manifest-path src-tauri/Cargo.toml`、`cargo check --manifest-path src-tauri/Cargo.toml` 已在 2026-05-03 通过；后续需要纳入每轮发布前固定回归。
 - 需要真实 CLI 集成验证权限 stdio、MCP 权限桥、resume、delete、proxy、third-party provider。
 - 需要为 reducer、session reader、Git patch parser、MCP config merge、proxy URL 构造补充针对性测试。
+
+### 6.6 协同功能缺口
+
+- 协同功能尚未实现；当前只有 Claude 主会话和用户显式触发的项目操作命令。
+- 尚未有外部 Agent provider 配置、CLI 探测、认证状态检测、非交互调用封装和输出解析。
+- 尚未有协同 MCP server，也没有把协同 MCP 合并进 Claude runtime config。
+- 尚未有协同流程持久化表、步骤状态机、Agent run 日志和变更文件清单。
+- 尚未实现线性执行锁；如果直接并发运行多个外部 CLI，可能出现多个 Agent 同时修改同一文件，因此实现前必须先完成线性流程控制。
+- 尚未决定协同数据落在 SQLite、sidecar 还是应用数据目录 JSON；无论选择哪种，都不能把 Claude transcript 作为唯一协同状态源。
 
 ---
 
@@ -394,9 +447,9 @@ GUI 读写范围：
 - [ ] 跑插件页：list、marketplace add/update/remove、plugin install/uninstall、skill import。
 - [ ] 跑项目操作：新增操作、保存、返回主对话、执行成功命令、执行失败命令、查看 stdout/stderr。
 - [ ] 跑 Git/diff：dirty repo、untracked text、binary、branch switch/create。
-- [x] 跑 `pnpm build`。最近一次通过：2026-05-02。
-- [x] 跑 `cargo test --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-02。
-- [x] 跑 `cargo check --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-02。
+- [x] 跑 `pnpm build`。最近一次通过：2026-05-03。
+- [x] 跑 `cargo test --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-03。
+- [x] 跑 `cargo check --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-03。
 - [x] 更新 README 中过时的 Zustand / Context Panel 描述，并把 SQLite 说明改成可重建元数据缓存。
 - [ ] 处理 `claudeCliPath` 字段：实现 GUI 配置注入，或删除字段与文档。
 - [ ] 处理 `autoCheckUpdate`：实现 release check，或把设置项标记为预留。
@@ -430,11 +483,42 @@ GUI 读写范围：
 - [ ] Appearance 对比度滑块如果继续保留，需要接入真实 CSS 变量；否则移除。
 - [ ] 浏览器页补充 Playwright MCP 常见错误诊断，而不是只做安装检测。
 
-### P3：工作树能力
+### P3：协同能力
+
+目标：作为独立功能开发，支持线性单工作区的多 Agent 协同流程，允许受控写入，并保证每一步可追踪、可验证、可恢复。
+
+实施前强制 gate：
+
+- [ ] 查证并记录官方调用方式：Claude CLI MCP / stream-json、Codex `exec` 非交互、Gemini headless、opencode `run` / `serve`。
+- [ ] 本机运行各 CLI `--help`，对比当前版本参数与官方文档；本机不可用或文档不一致时，必须把差异写进计划或实现说明。
+- [ ] 做最小 spike：从后端调用一个只读 `codex exec` 或 `gemini --output-format json`，捕获 exit code、stdout、stderr，不写文件。
+- [ ] 明确协同 MCP 是否能在当前会话动态启用；如果不能，设计为设置启用后新会话注入。
+
+首版范围：
+
+- [ ] 新增“设置 -> 协同”分类，用户可启用/禁用协同，配置 Agent provider、可执行路径、默认角色、默认权限、是否允许写入。
+- [ ] Provider 探测：Claude、Codex、Gemini、opencode；展示安装状态、版本、认证/可运行状态。未安装时显示真实错误，不提供假成功。
+- [ ] Composer 加号菜单新增“协同”，点击后显示协同徽标；发送消息时把协同模式写入会话启动参数或本地状态。
+- [ ] 新增 Claudinal 协同 MCP server，并在启用协同时合并进 Claude runtime MCP config。
+- [ ] MCP 工具实现 `collab_status`、`collab_start_flow`、`collab_delegate`、`collab_get_result`、`collab_record_approval`、`collab_run_verification`。
+- [ ] 实现线性执行锁：同一项目同一协同流程同一时间只有一个 Agent run 可以处于 `running`。
+- [ ] 实现线性单工作区写入策略：外部 Agent 可以写入，但每个步骤必须有一个 Agent、一个责任范围、一个状态机和一个完成记录。
+- [ ] 实现步骤持久化：输入 prompt、Agent、命令、cwd、权限、stdout/stderr、结构化输出、变更文件清单、验证结果。
+- [ ] 实现越界变更检测：写入步骤结束后对比允许范围与实际变更，越界时流程暂停并显示冲突。
+- [ ] 实现协同流程视图或消息内任务卡片，能看到每一步输出、失败原因、验证结果和下一步等待状态。
+
+明确暂不做：
+
+- [ ] 暂不做并行写入；并行只允许后续扩展到只读分析。
+- [ ] 暂不默认创建或绑定 Git worktree；worktree 是未来可选隔离策略，不是协同首版依赖。
+- [ ] 暂不接管外部 CLI 登录流程；只检测并展示状态，登录仍由各 CLI 官方方式完成。
+- [ ] 暂不把 CCB 作为 runtime 嵌入；只参考 Agent 命名、消息路由和 worktree 隔离设计。
+
+### P4：工作树能力
 
 目标：只有在用户确实需要并确认交互模型后才推进。
 
-- [ ] 工作树设置页从 Placeholder 变为真实配置页。
+- [x] 工作树设置页从 Placeholder 变为真实列表页。
 - [ ] 默认 worktree 根目录。
 - [ ] 创建工作树前展示预览：目标路径、基础分支、setup script、风险提示。
 - [ ] 创建工作树后运行项目环境 setup script。
@@ -442,7 +526,7 @@ GUI 读写范围：
 - [ ] 自动清理已合并 worktree，需要用户确认清理策略。
 - [ ] 如果重新引入 `--fork-session`，只能命名为“派生到新工作树”，并绑定 worktree 创建流程。
 
-### P4：低优先级和外部依赖项
+### P5：低优先级和外部依赖项
 
 - [ ] 基于 SQLite index 做全局历史会话视图和跨项目搜索；只读索引，不改变 jsonl 事实源。
 - [ ] PAC URL 支持。
@@ -500,6 +584,24 @@ GUI 读写范围：
 | `src/lib/archivedSessions.ts` | 归档会话 localStorage |
 | `src/lib/projectEnv.ts` | 项目环境脚本、清理脚本、项目操作配置 |
 
+### 8.3 协同功能建议文件
+
+这些文件尚未实现，下一轮开发可按实际代码组织调整，但职责边界必须保持清晰。
+
+| 文件 | 职责 |
+| --- | --- |
+| `src-tauri/src/collab/mod.rs` | 协同功能模块入口 |
+| `src-tauri/src/collab/providers.rs` | Claude / Codex / Gemini / opencode provider 定义、探测、版本检测 |
+| `src-tauri/src/collab/runner.rs` | 外部 CLI 非交互调用、stdout/stderr 捕获、退出码和超时处理 |
+| `src-tauri/src/collab/store.rs` | 协同 session、step、agent run 持久化 |
+| `src-tauri/src/collab/mcp.rs` | Claudinal 协同 MCP server 和工具实现 |
+| `src-tauri/src/collab/changes.rs` | 写入步骤前后文件清单、mtime/hash、Git diff 或非 Git 变更检测 |
+| `src/lib/collabSettings.ts` | 协同设置 localStorage 或后续持久化 wrapper |
+| `src/lib/collab.ts` | 前端 typed wrapper 和协同状态工具 |
+| `src/components/Settings/sections/Collaboration.tsx` | “设置 -> 协同”页面 |
+| `src/components/CollaborationFlow.tsx` | 协同流程步骤、输出、验证和错误展示 |
+| `src/components/Composer.tsx` | 加号菜单协同入口和协同徽标 |
+
 ---
 
 ## 9. 验证标准
@@ -538,7 +640,22 @@ pnpm package:zip
 - 第三方 API provider 新增、模型拉取、应用、恢复官方 Claude。
 - 账号登录、登出、usage 刷新。
 
-### 9.3 失败处理标准
+### 9.3 协同功能验证清单
+
+协同实现前后都必须执行，不允许只凭文档或只凭本机经验推进。
+
+- 官方文档核验：记录 Claude CLI MCP / stream-json、Codex `exec`、Gemini headless、opencode `run` 的链接、日期和关键参数。
+- 本机 CLI 核验：记录 `claude --help`、`codex exec --help`、`gemini --help`、`opencode run --help` 输出中的关键参数；opencode 未安装时记录未安装状态。
+- Provider 探测：每个 provider 的安装路径、版本、认证/可运行状态、失败原因都能在设置页展示。
+- 只读委派：在协同模式下让 Claude 通过 MCP 委派一个只读设计或评审任务，结果落盘，UI 能展示步骤输出。
+- 写入委派：允许一个外部 Agent 在明确责任范围内写入，步骤完成后展示修改文件、stdout/stderr、验证结果。
+- 线性锁：一个 Agent run 正在执行时，下一步不能启动；尝试启动时必须得到明确错误或等待状态。
+- 流程恢复：关闭并重开应用后，能从持久化记录恢复协同流程、步骤状态和上一轮输出。
+- 越界写入：构造一个 Agent 修改责任范围外文件的场景，流程必须暂停并显示冲突，不能自动继续。
+- 非 Git 项目：至少验证协同流程在非 Git 目录下能运行只读步骤；写入步骤如果需要变更检测，必须用明确文件快照或明确提示能力不足。
+- 错误处理：CLI 不存在、认证失败、JSON 解析失败、命令非零退出、用户取消，都必须保留真实错误和原始输出摘要。
+
+### 9.4 失败处理标准
 
 - CLI 不存在：明确提示路径检测失败。
 - settings/mcp JSON 损坏：显示解析错误，不自动覆盖。
@@ -573,6 +690,7 @@ pnpm package:zip
 3. 迁移第三方 API key 到 keychain。
 4. 补 reducer、session reader、MCP merge、proxy URL、项目操作命令执行的测试。
 5. 收口 `claudeCliPath` 和 `autoCheckUpdate` 两个未接线设置项。
-6. 再评估是否进入独立历史会话视图和真实工作树能力。
+6. 如果下一轮明确开始协同能力，先做 P3 的官方文档和本机 CLI 参数核验，再做只读委派 spike，最后进入设置页、Composer 徽标、MCP 工具和持久化实现。
+7. 再评估是否进入独立历史会话视图和真实工作树能力。
 
-在 P0/P1 完成前，不建议新增大功能。当前最有价值的是把已有功能跑稳，并把文档、设置项和真实行为统一起来。
+在 P0/P1 完成前，新增大功能需要先做独立 spike 和清晰 gate。协同能力可以作为下一轮独立功能推进，但第一步必须是查证官方调用方式和本机可执行性，不能直接按假设实现。

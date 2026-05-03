@@ -1544,6 +1544,7 @@ export default function App() {
 	                initialSection={settingsSection}
                   onSelectProject={selectProjectFromSettings}
                   onSelectSession={selectSessionFromSettings}
+                  onProjectsChanged={() => setProjects(listProjects())}
 	              />
             </Suspense>
           ) : (
