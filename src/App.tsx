@@ -45,6 +45,11 @@ import {
   pickComposerFromSidecar,
   type ComposerPrefs
 } from "@/lib/composerPrefs"
+import {
+  enabledProviderList,
+  loadCollabSettings,
+  providerPathEnv
+} from "@/lib/collabSettings"
 import { getProjectEnv, loadProjectEnvStore } from "@/lib/projectEnv"
 import { saveMcpStatusCache } from "@/lib/mcp"
 import { saveSlashCommandsCache } from "@/lib/slashCommands"
@@ -205,6 +210,7 @@ type RunningSession = {
   unlisten: UnlistenFn[]
   composerPrefs: ComposerPrefs
   sessionComposer: ComposerPrefs | null
+  collabMcpEnabled: boolean
 }
 
 function buildCliBlocks(
@@ -220,6 +226,40 @@ function buildCliBlocks(
     })
   }
   return blocks
+}
+
+function buildCollaborationPrompt(text: string, cfg: ReturnType<typeof loadCollabSettings>) {
+  const enabledProviders = enabledProviderList(cfg)
+  const providerScopes = enabledProviders.length
+    ? enabledProviders
+        .map((provider) => {
+          const scope = cfg.providerResponsibilityScopes[provider]?.trim()
+          return `- ${provider}: ${scope || cfg.defaultResponsibilityScope}`
+        })
+        .join("\n")
+    : "- 无"
+  const allowed = cfg.defaultAllowedPaths.length
+    ? cfg.defaultAllowedPaths.map((path) => `- ${path}`).join("\n")
+    : "- 本轮未默认授权写入路径；如果需要写入，先通过协同工具创建明确责任范围和允许路径。"
+  return [
+    "<claudinal_collaboration_request>",
+    "请进入 Claudinal 协同模式。使用已加载的 Claudinal 协同 MCP 工具管理流程，不要直接用 shell 自由调用外部 Agent。",
+    `默认 Agent：${cfg.defaultProvider}`,
+    `已启用 Agent：${enabledProviders.length ? enabledProviders.join(", ") : "无"}`,
+    `默认允许写入：${cfg.allowWrites ? "true" : "false"}`,
+    `默认责任范围：${cfg.defaultResponsibilityScope}`,
+    "Agent 职责范围：",
+    providerScopes,
+    "默认允许路径：",
+    allowed,
+    "",
+    "执行规则：先 collab_start_flow，再按线性步骤 collab_delegate；写入步骤必须记录责任范围、允许路径、输出、变更清单和验证结果；下一步必须等待上一写入步骤 approved 或 verified。",
+    "Agent 选择规则：如果用户明确指定 Agent，就使用该 Agent；如果用户没有指定，就使用默认 Agent；如果指定的 Agent 未启用或不可用，先说明原因并等待用户决定，不要换用其他 Agent。",
+    "",
+    "用户需求：",
+    text,
+    "</claudinal_collaboration_request>"
+  ].join("\n")
 }
 
 function currentApiProfileKey(): string {
@@ -334,6 +374,7 @@ export default function App() {
   const [sidebarVisible, setSidebarVisible] = useState(true)
   const [settingsSection, setSettingsSection] = useState("general")
   const [planMode, setPlanMode] = useState(false)
+  const [collaborationMode, setCollaborationMode] = useState(false)
   const [sessionPermissionMode, setSessionPermissionMode] =
     useState<AppSettings["defaultPermissionMode"]>("default")
   const [composerPrefs, setComposerPrefs] = useState<ComposerPrefs>({
@@ -382,6 +423,7 @@ export default function App() {
   const returnViewRef = useRef<ReturnView>("chat")
   const settingsEntryTargetRef = useRef<ChatReturnTarget | null>(null)
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
+  const collabMcpEnabledRef = useRef(false)
   const switchTokenRef = useRef(0)
   const streamingRefsCacheRef = useRef<{
     key: string
@@ -456,6 +498,7 @@ export default function App() {
           sessionIdRef.current = null
           setSessionId(null)
           setStreaming(false)
+          collabMcpEnabledRef.current = false
         }
         return
       }
@@ -484,6 +527,7 @@ export default function App() {
         sessionIdRef.current = null
         setSessionId(null)
         setStreaming(false)
+        collabMcpEnabledRef.current = false
       }
       setRunningTick((tick) => tick + 1)
     },
@@ -496,6 +540,7 @@ export default function App() {
     sessionIdRef.current = null
     setSessionId(null)
     setStreaming(false)
+    collabMcpEnabledRef.current = false
     if (!runtimeId) return
     const run = runningSessionsRef.current.get(runtimeId)
     if (
@@ -517,6 +562,7 @@ export default function App() {
     sessionIdRef.current = null
     setSessionId(null)
     setStreaming(false)
+    collabMcpEnabledRef.current = false
   }, [closeRunningSession])
 
   const findRunningSession = useCallback(
@@ -566,6 +612,7 @@ export default function App() {
     sessionComposerRef.current = run.sessionComposer
     setSessionComposer(run.sessionComposer)
     setComposerPrefs(run.composerPrefs)
+    collabMcpEnabledRef.current = run.collabMcpEnabled
   }, [flushRunningActions])
 
   const settlePermissionRequest = useCallback(
@@ -746,6 +793,7 @@ export default function App() {
     try {
       const proxyEnv = buildProxyEnv(await loadProxyAsync())
       const cfg = loadSettings()
+      const collabCfg = loadCollabSettings()
       const thirdPartyApi = loadThirdPartyApiConfig()
       const thirdPartyReady =
         thirdPartyApi.enabled &&
@@ -784,7 +832,10 @@ export default function App() {
         env: Object.keys(env).length > 0 ? env : null,
         permissionMcpEnabled: cfg.permissionMcpEnabled,
         permissionPromptTool: cfg.permissionPromptTool.trim() || null,
-        mcpConfig: cfg.permissionMcpConfig.trim() || null
+        mcpConfig: cfg.permissionMcpConfig.trim() || null,
+        collabMcpEnabled: collabCfg.enabled,
+        collabProviderPaths: providerPathEnv(collabCfg),
+        collabEnabledProviders: enabledProviderList(collabCfg)
       })
       createdRuntimeId = id
       const run: RunningSession = {
@@ -800,8 +851,10 @@ export default function App() {
         queuedInputs: [],
         unlisten: [],
         composerPrefs,
-        sessionComposer
+        sessionComposer,
+        collabMcpEnabled: collabCfg.enabled
       }
+      collabMcpEnabledRef.current = collabCfg.enabled
       runningSessionsRef.current.set(id, run)
       activeRuntimeIdRef.current = id
       sessionIdRef.current = id
@@ -1011,6 +1064,22 @@ export default function App() {
         // 仍把文本发给 CLI（CLI 会当普通文本处理），同时给一次性提醒
         toast.info("斜杠命令是 CLI TUI 专属，GUI 中作普通文本处理")
       }
+      let cliText = text
+      if (collaborationMode) {
+        const cfg = loadCollabSettings()
+        if (!cfg.enabled) {
+          setSettingsSection("collaboration")
+          setShowSettings(true)
+          toast.info("请先在设置中启用协同；启用后对新会话生效")
+          return
+        }
+        const activeSessionId = activeRuntimeIdRef.current ?? sessionIdRef.current
+        if (activeSessionId && !collabMcpEnabledRef.current) {
+          toast.warning("当前 Claude 会话未加载协同 MCP；请新建会话后再使用协同")
+          return
+        }
+        cliText = buildCollaborationPrompt(text, cfg)
+      }
       const uiBlocks: UIBlock[] = []
       if (text) uiBlocks.push({ type: "text", text })
       for (const image of images) {
@@ -1021,7 +1090,7 @@ export default function App() {
         })
       }
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      const blocks = buildCliBlocks(text, images)
+      const blocks = buildCliBlocks(cliText, images)
 
       if (streaming) {
         const id = sessionIdRef.current ?? (await ensureSession())
@@ -1047,6 +1116,7 @@ export default function App() {
         }
         try {
           await sendUserMessage(id, blocks)
+          if (collaborationMode) setCollaborationMode(false)
         } catch (e) {
           if (run) {
             run.queuedInputs = run.queuedInputs.filter(
@@ -1073,6 +1143,7 @@ export default function App() {
       }
       try {
         await sendUserMessage(id, blocks)
+        if (collaborationMode) setCollaborationMode(false)
       } catch (e) {
         toast.error(`发送失败: ${String(e)}`)
         if (run) {
@@ -1087,7 +1158,8 @@ export default function App() {
       ensureSession,
       teardown,
       applyRunningAction,
-      setRunningSessionStreaming
+      setRunningSessionStreaming,
+      collaborationMode
     ]
   )
 
@@ -1112,6 +1184,26 @@ export default function App() {
     )
   }, [])
 
+  const handleCollaborationModeChange = useCallback((enabled: boolean) => {
+    if (!enabled) {
+      setCollaborationMode(false)
+      return
+    }
+    const cfg = loadCollabSettings()
+    if (!cfg.enabled) {
+      setSettingsSection("collaboration")
+      setShowSettings(true)
+      toast.info("请先在设置中启用协同；启用后对新会话生效")
+      return
+    }
+    const activeSessionId = activeRuntimeIdRef.current ?? sessionIdRef.current
+    if (activeSessionId && !collabMcpEnabledRef.current) {
+      toast.warning("当前 Claude 会话未加载协同 MCP；请新建会话后再使用协同")
+      return
+    }
+    setCollaborationMode(true)
+  }, [])
+
   const switchProject = useCallback(
     async (next: Project) => {
       const token = ++switchTokenRef.current
@@ -1121,6 +1213,7 @@ export default function App() {
       setProject(next)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
+      setCollaborationMode(false)
     },
     [detachActiveSession]
   )
@@ -1131,6 +1224,7 @@ export default function App() {
       await detachActiveSession()
       if (token !== switchTokenRef.current) return
       setLoadingSession(true)
+      setCollaborationMode(false)
       dispatch({ kind: "reset" })
       setProject(p)
       setSelectedSessionId(s.id)
@@ -1231,6 +1325,7 @@ export default function App() {
     sessionComposerRef.current = null
     setSessionComposer(null)
     setComposerPrefs(globalDefault)
+    setCollaborationMode(false)
   }, [detachActiveSession, globalDefault])
 
   const openSettings = useCallback((section: string = "general") => {
@@ -1664,6 +1759,8 @@ export default function App() {
 	                          gitStatus={gitStatus}
 	                          onGitStatusRefresh={refreshGitStatus}
 	                          onOpenPlugins={openPlugins}
+                            collaborationMode={collaborationMode}
+                            onCollaborationModeChange={handleCollaborationModeChange}
 	                          oauthUsage={oauthUsage}
 	                          model={composerPrefs.model}
 	                          effort={composerPrefs.effort}
@@ -1728,6 +1825,8 @@ export default function App() {
                     gitStatus={gitStatus}
                     onGitStatusRefresh={refreshGitStatus}
                     onOpenPlugins={openPlugins}
+                    collaborationMode={collaborationMode}
+                    onCollaborationModeChange={handleCollaborationModeChange}
                     oauthUsage={oauthUsage}
                     model={composerPrefs.model}
                     effort={composerPrefs.effort}

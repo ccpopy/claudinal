@@ -2,6 +2,7 @@ mod api_proxy;
 mod auth;
 mod buddy;
 mod child_process;
+mod collab;
 mod commands;
 mod error;
 mod keychain;
@@ -19,6 +20,10 @@ use tauri::{
 
 pub fn run_permission_mcp_server() -> error::Result<()> {
     permission_mcp::run_stdio_mcp_server()
+}
+
+pub fn run_collab_mcp_server() -> error::Result<()> {
+    collab::run_stdio_mcp_server()
 }
 
 pub fn run() {
@@ -142,6 +147,14 @@ pub fn run() {
             commands::auth_start_login,
             commands::auth_cancel_login,
             commands::auth_open_login_terminal,
+            commands::collab_detect_providers,
+            commands::collab_detect_provider,
+            commands::collab_list_flows,
+            commands::collab_read_flow,
+            commands::collab_start_flow,
+            commands::collab_delegate,
+            commands::collab_record_approval,
+            commands::collab_run_verification,
             plugins::list_installed_plugins,
             plugins::list_marketplaces,
             plugins::list_skills,

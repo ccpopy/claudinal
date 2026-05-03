@@ -9,6 +9,7 @@ import {
 import {
   Archive,
   BarChart3,
+  Bot,
   Cog,
   GitBranch,
   Globe,
@@ -71,6 +72,7 @@ const loadConfig = () => import("./sections/Config")
 const loadThirdPartyApi = () => import("./sections/ThirdPartyApi")
 const loadPersonalization = () => import("./sections/Personalization")
 const loadMcpServers = () => import("./sections/McpServers")
+const loadCollaboration = () => import("./sections/Collaboration")
 const loadGit = () => import("./sections/Git")
 const loadEnvironment = () => import("./sections/Environment")
 const loadWorktree = () => import("./sections/Worktree")
@@ -93,6 +95,9 @@ const Personalization = lazy(() =>
 )
 const McpServers = lazy(() =>
   loadMcpServers().then((m) => ({ default: m.McpServers }))
+)
+const Collaboration = lazy(() =>
+  loadCollaboration().then((m) => ({ default: m.Collaboration }))
 )
 const Git = lazy(() => loadGit().then((m) => ({ default: m.Git })))
 const Environment = lazy(() =>
@@ -153,6 +158,13 @@ const SECTIONS: SectionDef[] = [
     icon: Plug,
     Component: McpServers,
     load: loadMcpServers
+  },
+  {
+    id: "collaboration",
+    label: "协同",
+    icon: Bot,
+    Component: Collaboration,
+    load: loadCollaboration
   },
   {
     id: "git",

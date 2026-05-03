@@ -12,6 +12,9 @@ export type SpawnArgs = {
   permissionMcpEnabled?: boolean | null
   permissionPromptTool?: string | null
   mcpConfig?: string | null
+  collabMcpEnabled?: boolean | null
+  collabProviderPaths?: Record<string, string> | null
+  collabEnabledProviders?: string[] | null
 }
 
 export interface DirEntry {
@@ -412,6 +415,183 @@ export async function authCancelLogin(): Promise<void> {
 
 export async function authOpenLoginTerminal(useConsole: boolean): Promise<void> {
   return invoke("auth_open_login_terminal", { useConsole })
+}
+
+export interface CollabProviderStatus {
+  id: string
+  label: string
+  installed: boolean
+  path: string | null
+  version: string | null
+  helpOk: boolean
+  detectedFlags: string[]
+  missingFlags: string[]
+  docsUrl: string
+  message: string
+}
+
+export interface CollabProviderPathOverride {
+  provider: string
+  path: string
+}
+
+export interface CollabFileChange {
+  path: string
+  changeType: string
+  allowed: boolean
+}
+
+export interface CollabAgentRun {
+  id: string
+  provider: string
+  command: string[]
+  cwd: string
+  permissionMode: string
+  startedAt: string
+  endedAt: string
+  exitCode: number
+  stdoutPath: string
+  stderrPath: string
+  outputPath: string | null
+  stdoutPreview: string
+  stderrPreview: string
+  structuredOutput: unknown | null
+}
+
+export interface CollabVerificationRecord {
+  id: string
+  command: string
+  cwd: string
+  startedAt: string
+  endedAt: string
+  exitCode: number
+  stdoutPath: string
+  stderrPath: string
+  stdoutPreview: string
+  stderrPreview: string
+}
+
+export interface CollabApprovalRecord {
+  decision: string
+  note: string | null
+  recordedAt: string
+}
+
+export interface CollabStep {
+  id: string
+  index: number
+  provider: string
+  responsibilityScope: string
+  allowedPaths: string[]
+  writeAllowed: boolean
+  status: string
+  inputPrompt: string
+  startedAt: string | null
+  endedAt: string | null
+  agentRun: CollabAgentRun | null
+  changedFiles: CollabFileChange[]
+  validationResults: CollabVerificationRecord[]
+  approval: CollabApprovalRecord | null
+  failureReason: string | null
+}
+
+export interface CollabFlow {
+  id: string
+  cwd: string
+  claudeSessionId: string | null
+  userPrompt: string
+  status: string
+  createdAt: string
+  updatedAt: string
+  steps: CollabStep[]
+}
+
+export interface CollabCommandResult {
+  flow: CollabFlow
+  stepId: string
+}
+
+export async function collabDetectProviders(
+  overrides?: CollabProviderPathOverride[]
+): Promise<CollabProviderStatus[]> {
+  return invoke<CollabProviderStatus[]>("collab_detect_providers", {
+    overrides: overrides ?? null
+  })
+}
+
+export async function collabDetectProvider(
+  provider: string,
+  overrides?: CollabProviderPathOverride[]
+): Promise<CollabProviderStatus> {
+  return invoke<CollabProviderStatus>("collab_detect_provider", {
+    provider,
+    overrides: overrides ?? null
+  })
+}
+
+export async function collabListFlows(cwd?: string | null): Promise<CollabFlow[]> {
+  return invoke<CollabFlow[]>("collab_list_flows", { cwd: cwd ?? null })
+}
+
+export async function collabReadFlow(flowId: string): Promise<CollabFlow> {
+  return invoke<CollabFlow>("collab_read_flow", { flowId })
+}
+
+export async function collabStartFlow(args: {
+  cwd: string
+  userPrompt: string
+  claudeSessionId?: string | null
+}): Promise<CollabFlow> {
+  return invoke<CollabFlow>("collab_start_flow", { req: args })
+}
+
+export async function collabDelegate(args: {
+  flowId: string
+  cwd: string
+  provider: string
+  prompt: string
+  responsibilityScope: string
+  allowedPaths?: string[]
+  writeAllowed?: boolean
+  model?: string | null
+  approvalMode?: string | null
+}): Promise<CollabCommandResult> {
+  return invoke<CollabCommandResult>("collab_delegate", {
+    req: {
+      ...args,
+      allowedPaths: args.allowedPaths ?? [],
+      writeAllowed: args.writeAllowed ?? false,
+      model: args.model ?? null,
+      approvalMode: args.approvalMode ?? null
+    }
+  })
+}
+
+export async function collabRecordApproval(args: {
+  flowId: string
+  stepId: string
+  decision: "approve" | "reject" | "cancel"
+  note?: string | null
+}): Promise<CollabFlow> {
+  return invoke<CollabFlow>("collab_record_approval", {
+    req: { ...args, note: args.note ?? null }
+  })
+}
+
+export async function collabRunVerification(args: {
+  flowId: string
+  stepId?: string | null
+  cwd?: string | null
+  command: string
+}): Promise<CollabCommandResult> {
+  return invoke<CollabCommandResult>("collab_run_verification", {
+    req: {
+      flowId: args.flowId,
+      stepId: args.stepId ?? null,
+      cwd: args.cwd ?? null,
+      command: args.command
+    }
+  })
 }
 
 export async function watchSessions(cwd: string): Promise<void> {

@@ -98,6 +98,9 @@ pub async fn spawn_session(
     permission_mcp_enabled: Option<bool>,
     permission_prompt_tool: Option<String>,
     mcp_config: Option<String>,
+    collab_mcp_enabled: Option<bool>,
+    collab_provider_paths: Option<std::collections::HashMap<String, String>>,
+    collab_enabled_providers: Option<Vec<String>>,
 ) -> Result<String> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
@@ -153,6 +156,25 @@ pub async fn spawn_session(
     let mut merged_mcp_config = load_native_mcp_config(&cwd)?;
     if let Some(config) = permission_mcp_config {
         merge_mcp_config(&mut merged_mcp_config, config);
+    }
+    if collab_mcp_enabled.unwrap_or(false) {
+        env.insert("CLAUDINAL_COLLAB_ENABLED".into(), "1".into());
+        if let Some(paths) = collab_provider_paths {
+            env.insert(
+                "CLAUDINAL_COLLAB_PROVIDER_PATHS".into(),
+                serde_json::to_string(&paths)?,
+            );
+        }
+        if let Some(providers) = collab_enabled_providers {
+            env.insert(
+                "CLAUDINAL_COLLAB_ENABLED_PROVIDERS".into(),
+                serde_json::to_string(&providers)?,
+            );
+        }
+        merge_mcp_config(
+            &mut merged_mcp_config,
+            crate::collab::render_default_mcp_config()?,
+        );
     }
     let mcp_config = merged_mcp_config
         .and_then(runtime_mcp_config)
@@ -2670,4 +2692,57 @@ pub async fn auth_cancel_login(login: State<'_, crate::auth::AuthLoginState>) ->
 #[tauri::command]
 pub async fn auth_open_login_terminal(use_console: Option<bool>) -> Result<()> {
     crate::auth::open_login_terminal(use_console.unwrap_or(false))
+}
+
+#[tauri::command]
+pub async fn collab_detect_providers(
+    overrides: Option<Vec<crate::collab::providers::ProviderPathOverride>>,
+) -> Result<Vec<crate::collab::CollabProviderStatus>> {
+    crate::collab::detect_providers(overrides).await
+}
+
+#[tauri::command]
+pub async fn collab_detect_provider(
+    provider: String,
+    overrides: Option<Vec<crate::collab::providers::ProviderPathOverride>>,
+) -> Result<crate::collab::CollabProviderStatus> {
+    crate::collab::detect_provider_by_id(provider, overrides).await
+}
+
+#[tauri::command]
+pub async fn collab_list_flows(cwd: Option<String>) -> Result<Vec<crate::collab::CollabFlow>> {
+    crate::collab::store::list_flows(cwd.as_deref())
+}
+
+#[tauri::command]
+pub async fn collab_read_flow(flow_id: String) -> Result<crate::collab::CollabFlow> {
+    crate::collab::store::read_flow(&flow_id)
+}
+
+#[tauri::command]
+pub async fn collab_start_flow(
+    req: crate::collab::CollabStartFlowRequest,
+) -> Result<crate::collab::CollabFlow> {
+    crate::collab::start_flow(req).await
+}
+
+#[tauri::command]
+pub async fn collab_delegate(
+    req: crate::collab::CollabDelegateRequest,
+) -> Result<crate::collab::CollabCommandResult> {
+    crate::collab::delegate(req).await
+}
+
+#[tauri::command]
+pub async fn collab_record_approval(
+    req: crate::collab::CollabApprovalRequest,
+) -> Result<crate::collab::CollabFlow> {
+    crate::collab::record_approval(req).await
+}
+
+#[tauri::command]
+pub async fn collab_run_verification(
+    req: crate::collab::CollabVerificationRequest,
+) -> Result<crate::collab::CollabCommandResult> {
+    crate::collab::run_verification(req).await
 }

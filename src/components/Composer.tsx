@@ -12,6 +12,7 @@ import {
 import {
   ArrowUp,
   Blocks,
+  Bot,
   Check,
   ChevronDown,
   FileText,
@@ -89,6 +90,8 @@ interface Props {
   gitStatus?: GitWorktreeStatus | null
   onGitStatusRefresh?: () => void | Promise<void>
   onOpenPlugins?: () => void
+  collaborationMode?: boolean
+  onCollaborationModeChange?: (enabled: boolean) => void
   oauthUsage?: OauthUsage | null
   model?: string
   effort?: string
@@ -247,6 +250,8 @@ export function Composer({
   gitStatus,
   onGitStatusRefresh,
   onOpenPlugins,
+  collaborationMode = false,
+  onCollaborationModeChange,
   oauthUsage,
   model = "",
   effort = "",
@@ -394,6 +399,7 @@ export function Composer({
     setText("")
     setImages([])
     setTextFiles([])
+    if (collaborationMode) onCollaborationModeChange?.(false)
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -544,8 +550,16 @@ export function Composer({
             }}
           />
 
-          {(images.length > 0 || textFiles.length > 0) && (
+          {(images.length > 0 || textFiles.length > 0 || collaborationMode) && (
             <div className="mb-2 flex flex-wrap gap-2">
+              {collaborationMode && (
+                <AttachmentChip
+                  icon={<Bot className="size-3.5" />}
+                  label="协同"
+                  meta="下一条消息"
+                  onRemove={() => onCollaborationModeChange?.(false)}
+                />
+              )}
               {images.map((img, i) => (
                 <AttachmentChip
                   key={img.id}
@@ -634,6 +648,17 @@ export function Composer({
                   <span>添加照片和文件</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="h-10 rounded-xl"
+                  onSelect={(e) => {
+                    e.preventDefault()
+                    onCollaborationModeChange?.(!collaborationMode)
+                  }}
+                >
+                  <Bot className="size-4" />
+                  <span className="flex-1">协同</span>
+                  {collaborationMode && <Check className="size-4" />}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   className="h-10 rounded-xl"
                   onSelect={(e) => {
