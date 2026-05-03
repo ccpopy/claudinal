@@ -92,7 +92,9 @@ fn visit(root: &Path, dir: &Path, out: &mut WorkspaceSnapshot) -> Result<()> {
         let entry = entry.map_err(Error::from)?;
         let path = entry.path();
         let name = entry.file_name();
-        if name == ".git" {
+        // .git 是 VCS 目录，.claudinal 是 Claudinal 自身的协同 / sidecar 产物，
+        // 都不属于工作区文件，跳过避免污染快照与"越界修改"误判。
+        if name == ".git" || name == ".claudinal" {
             continue;
         }
         let meta = std::fs::symlink_metadata(&path).map_err(Error::from)?;

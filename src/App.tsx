@@ -40,9 +40,12 @@ import { loadSettings, recordResultUsage } from "@/lib/settings"
 import type { AppSettings } from "@/lib/settings"
 import {
   EMPTY_COMPOSER_PREFS,
+  composerPrefsPatchFromCommandEvent,
   isClaudeModelEntry,
   loadGlobalDefault,
+  mergeComposerPrefs,
   pickComposerFromSidecar,
+  pickComposerFromTranscript,
   type ComposerPrefs
 } from "@/lib/composerPrefs"
 import {
@@ -56,7 +59,9 @@ import { saveSlashCommandsCache } from "@/lib/slashCommands"
 import {
   buildClaudeEnv,
   loadThirdPartyApiConfig,
+  loadThirdPartyApiConfigAsync,
   loadThirdPartyApiStore,
+  migrateLegacyThirdPartyApiKeys,
   OFFICIAL_PROVIDER_ID,
   providerModelOptions,
   trimApiUrl
@@ -93,6 +98,10 @@ import {
 import { unpin } from "@/lib/pinned"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
 import { checkForAppUpdate } from "@/lib/updater"
+import {
+  detectNetworkError,
+  type NetworkErrorTopic
+} from "@/lib/networkErrorHints"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -124,6 +133,9 @@ const MessageStream = lazy(() =>
 const PluginsView = lazy(() =>
   import("@/components/PluginsView").then((m) => ({ default: m.PluginsView }))
 )
+const HistoryView = lazy(() =>
+  import("@/components/HistoryView").then((m) => ({ default: m.HistoryView }))
+)
 const SettingsWorkspace = lazy(() =>
   import("@/components/Settings").then((m) => ({
     default: m.SettingsWorkspace
@@ -132,6 +144,11 @@ const SettingsWorkspace = lazy(() =>
 const DiffOverview = lazy(() =>
   import("@/components/DiffOverview").then((m) => ({
     default: m.DiffOverview
+  }))
+)
+const CollaborationFlow = lazy(() =>
+  import("@/components/CollaborationFlow").then((m) => ({
+    default: m.CollaborationFlow
   }))
 )
 const PermissionDialog = lazy(() =>
@@ -191,7 +208,7 @@ function SidebarLoader() {
 }
 
 type QueuedInput = { localId: string }
-type ReturnView = "chat" | "plugins"
+type ReturnView = "chat" | "plugins" | "history"
 type ChatReturnTarget =
   | { kind: "project"; project: Project }
   | { kind: "session"; project: Project; session: SessionMeta }
@@ -228,38 +245,21 @@ function buildCliBlocks(
   return blocks
 }
 
+// Collab prefix sentinel：reduceUser 用它识别并在 UI 里隐藏这段协同包装，
+// 只显示真正的用户原文。修改 sentinel 时同步更新 src/lib/reducer.ts:stripCollabPrefix。
+const COLLAB_PREFIX_TAG = "[Claudinal 协同模式]"
+const COLLAB_PROMPT_SEPARATOR = "\n\n用户需求：\n"
+
 function buildCollaborationPrompt(text: string, cfg: ReturnType<typeof loadCollabSettings>) {
   const enabledProviders = enabledProviderList(cfg)
-  const providerScopes = enabledProviders.length
-    ? enabledProviders
-        .map((provider) => {
-          const scope = cfg.providerResponsibilityScopes[provider]?.trim()
-          return `- ${provider}: ${scope || cfg.defaultResponsibilityScope}`
-        })
-        .join("\n")
-    : "- 无"
-  const allowed = cfg.defaultAllowedPaths.length
-    ? cfg.defaultAllowedPaths.map((path) => `- ${path}`).join("\n")
-    : "- 本轮未默认授权写入路径；如果需要写入，先通过协同工具创建明确责任范围和允许路径。"
-  return [
-    "<claudinal_collaboration_request>",
-    "请进入 Claudinal 协同模式。使用已加载的 Claudinal 协同 MCP 工具管理流程，不要直接用 shell 自由调用外部 Agent。",
-    `默认 Agent：${cfg.defaultProvider}`,
-    `已启用 Agent：${enabledProviders.length ? enabledProviders.join(", ") : "无"}`,
-    `默认允许写入：${cfg.allowWrites ? "true" : "false"}`,
-    `默认责任范围：${cfg.defaultResponsibilityScope}`,
-    "Agent 职责范围：",
-    providerScopes,
-    "默认允许路径：",
-    allowed,
-    "",
-    "执行规则：先 collab_start_flow，再按线性步骤 collab_delegate；写入步骤必须记录责任范围、允许路径、输出、变更清单和验证结果；下一步必须等待上一写入步骤 approved 或 verified。",
-    "Agent 选择规则：如果用户明确指定 Agent，就使用该 Agent；如果用户没有指定，就使用默认 Agent；如果指定的 Agent 未启用或不可用，先说明原因并等待用户决定，不要换用其他 Agent。",
-    "",
-    "用户需求：",
-    text,
-    "</claudinal_collaboration_request>"
+  // 包装尽量短，避免污染 AI title 和侧栏会话标题；详细职责放在 collab_status 工具返回里，
+  // Claude 自己第一次调用 collab_status 时获取。
+  const header = [
+    `${COLLAB_PREFIX_TAG} 请使用已加载的 claudinal_collab MCP 工具按线性步骤完成本任务。`,
+    `规则：先 collab_start_flow，再 collab_delegate；写入步骤必须显式 writeAllowed=true 与 allowedPaths；下一步必须等上一步 approved 或 verified。`,
+    `Agent：默认 ${cfg.defaultProvider}；已启用 ${enabledProviders.length ? enabledProviders.join("/") : "无"}；用户未指定时使用默认。`
   ].join("\n")
+  return `${header}${COLLAB_PROMPT_SEPARATOR}${text}`
 }
 
 function currentApiProfileKey(): string {
@@ -338,6 +338,20 @@ function findSlashCommands(
   return FALLBACK_SLASH
 }
 
+function applyComposerPatch(
+  current: ComposerPrefs,
+  patch: Partial<ComposerPrefs>
+): ComposerPrefs {
+  return {
+    model: patch.model !== undefined ? patch.model : current.model,
+    effort: patch.effort !== undefined ? patch.effort : current.effort
+  }
+}
+
+function nullableComposerPrefs(prefs: ComposerPrefs): ComposerPrefs | null {
+  return prefs.model || prefs.effort ? prefs : null
+}
+
 function countDiffFiles(
   entries: ReturnType<typeof reducerInit>["entries"]
 ): number {
@@ -369,6 +383,7 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showPlugins, setShowPlugins] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [chatReturnTarget, setChatReturnTarget] =
     useState<ChatReturnTarget | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(true)
@@ -399,6 +414,8 @@ export default function App() {
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
   const [showRename, setShowRename] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
+  const [showCollabFlow, setShowCollabFlow] = useState(false)
+  const [collabSettingsTick, setCollabSettingsTick] = useState(0)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [pendingRemoveProjectId, setPendingRemoveProjectId] = useState<
     string | null
@@ -480,6 +497,45 @@ export default function App() {
     []
   )
 
+  // 同一会话同一类网络错误在 NETWORK_TOAST_THROTTLE_MS 内只弹一次，
+  // 避免代理失效后 stderr 持续刷屏。
+  const networkToastTimestampsRef = useRef<
+    Map<string, Map<NetworkErrorTopic, number>>
+  >(new Map())
+  const NETWORK_TOAST_THROTTLE_MS = 30_000
+  // openSettings 定义在更下方，用 ref 中转避免 useCallback 依赖循环。
+  const openSettingsRef = useRef<(section?: string) => void>(() => {})
+
+  const reportNetworkError = useCallback(
+    (
+      runtimeId: string,
+      source: "stderr" | "result",
+      raw: string | null | undefined
+    ) => {
+      const hit = detectNetworkError(raw)
+      if (!hit) return
+      let perSession = networkToastTimestampsRef.current.get(runtimeId)
+      if (!perSession) {
+        perSession = new Map()
+        networkToastTimestampsRef.current.set(runtimeId, perSession)
+      }
+      const now = Date.now()
+      const lastAt = perSession.get(hit.topic) ?? 0
+      if (now - lastAt < NETWORK_TOAST_THROTTLE_MS) return
+      perSession.set(hit.topic, now)
+      const sourceLabel = source === "stderr" ? "CLI stderr" : "result.is_error"
+      toast.error(hit.summary, {
+        description: `${hit.hint}\n\n来自 ${sourceLabel}：${(raw ?? "").trim().slice(0, 240)}`,
+        duration: 9_000,
+        action: {
+          label: "网络设置",
+          onClick: () => openSettingsRef.current("network")
+        }
+      })
+    },
+    []
+  )
+
   const closeRunningSession = useCallback(
     async (
       runtimeId: string,
@@ -516,6 +572,7 @@ export default function App() {
       run.unlisten.forEach((unlisten) => unlisten())
       run.unlisten = []
       runningSessionsRef.current.delete(runtimeId)
+      networkToastTimestampsRef.current.delete(runtimeId)
       setPermissionRequests((cur) =>
         cur.filter((request) => request.session_id !== runtimeId)
       )
@@ -638,8 +695,9 @@ export default function App() {
     detectClaudeCli()
       .then(setCliPath)
       .catch((e) => toast.error(`未找到 claude CLI: ${String(e)}`))
-    // 一次性迁移：旧版 localStorage 里的明文代理密码 → keychain（keychain 可用时静默执行）
+    // 一次性迁移：旧版 localStorage 里的明文代理密码 / 第三方 API Key → keychain（keychain 可用时静默执行）
     void migrateLegacyProxyPassword()
+    void migrateLegacyThirdPartyApiKeys()
     loadGlobalDefault()
       .then((p) => {
         setGlobalDefault(p)
@@ -699,6 +757,7 @@ export default function App() {
         settingsEntryTargetRef.current = null
         setShowSettings(false)
         setShowPlugins(false)
+        setShowHistory(false)
         setShowAdd(true)
       }
     }
@@ -755,7 +814,7 @@ export default function App() {
         setSelectedSessionMeta(null)
         sessionComposerRef.current = null
         setSessionComposer(null)
-        toast.info("API 供应商已切换，已切到新会话入口以避免复用不兼容的历史 thinking 签名")
+        toast.info("API 供应商已切换，已自动创建新会话")
       }
       if (!isOfficialApi()) {
         setOauthUsage(null)
@@ -771,10 +830,14 @@ export default function App() {
     const off1 = subscribeSettingsBus("settings", refreshSettings)
     const off2 = subscribeSettingsBus("composerPrefs", refreshComposerDefaults)
     const off3 = subscribeSettingsBus("thirdPartyApi", refreshThirdPartyApi)
+    const off4 = subscribeSettingsBus("settings", () =>
+      setCollabSettingsTick((t) => t + 1)
+    )
     return () => {
       off1()
       off2()
       off3()
+      off4()
     }
   }, [])
 
@@ -794,7 +857,7 @@ export default function App() {
       const proxyEnv = buildProxyEnv(await loadProxyAsync())
       const cfg = loadSettings()
       const collabCfg = loadCollabSettings()
-      const thirdPartyApi = loadThirdPartyApiConfig()
+      const thirdPartyApi = await loadThirdPartyApiConfigAsync()
       const thirdPartyReady =
         thirdPartyApi.enabled &&
         !!trimApiUrl(thirdPartyApi.requestUrl) &&
@@ -815,16 +878,16 @@ export default function App() {
           setSelectedSessionMeta(null)
           sessionComposerRef.current = null
           setSessionComposer(null)
-          toast.info("当前会话属于另一个 API 供应商，已新建会话以避免复用不兼容的 thinking 签名")
+          toast.info("当前会话属于另一个 API 供应商，已自动创建新会话")
         }
       }
       const uiModel = composerPrefs.model.trim()
       const uiEffort = composerPrefs.effort.trim()
-      const model = uiModel || cfg.defaultModel.trim() || null
+      const model = uiModel || null
       const id = await spawnSession({
         cwd: project.cwd,
         model,
-        effort: uiEffort || cfg.defaultEffort.trim() || null,
+        effort: uiEffort || null,
         permissionMode: planMode
           ? "plan"
           : sessionPermissionMode || cfg.defaultPermissionMode || "default",
@@ -871,6 +934,34 @@ export default function App() {
           }
           setRunningTick((tick) => tick + 1)
         }
+        const composerPatch = composerPrefsPatchFromCommandEvent(ev)
+        if (composerPatch) {
+          const updated = applyComposerPatch(run.composerPrefs, composerPatch)
+          const updatedSession = nullableComposerPrefs(
+            applyComposerPatch(run.sessionComposer ?? EMPTY_COMPOSER_PREFS, composerPatch)
+          )
+          run.composerPrefs = updated
+          run.sessionComposer = updatedSession
+          if (activeRuntimeIdRef.current === run.runtimeId) {
+            sessionComposerRef.current = updatedSession
+            setSessionComposer(updatedSession)
+            setComposerPrefs(updated)
+          }
+          const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
+          if (sid) {
+            readSessionSidecar(run.project.cwd, sid)
+              .then((existing) => {
+                const base = (existing && typeof existing === "object"
+                  ? existing
+                  : {}) as Record<string, unknown>
+                return writeSessionSidecar(run.project.cwd, sid, {
+                  ...base,
+                  composer: updated
+                })
+              })
+              .catch((e) => console.warn("sidecar composer command write failed:", e))
+          }
+        }
         if (
           t === "stream_event" &&
           (ev as { event?: { type?: string } }).event?.type === "message_start"
@@ -908,6 +999,20 @@ export default function App() {
           }
         }
         if (t === "result") {
+          // 把网络相关的失败 result 也走一遍 toast；ev.is_error 时主要看 result/error 文本
+          const isError = (ev as { is_error?: unknown }).is_error === true
+          if (isError) {
+            const text = [
+              (ev as { result?: unknown }).result,
+              (ev as { error?: unknown }).error,
+              (ev as { stop_reason?: unknown }).stop_reason
+            ]
+              .filter((v): v is string => typeof v === "string")
+              .join("\n")
+            if (text) {
+              reportNetworkError(run.runtimeId, "result", text)
+            }
+          }
           const queued = run.queuedInputs
           if (queued.length > 0) {
             for (const item of queued) {
@@ -965,6 +1070,7 @@ export default function App() {
       const u2 = await listenSessionErrors(id, (line) => {
         const ev = { type: "stderr", line } as unknown as ClaudeEvent
         applyRunningAction(run, { kind: "event", event: ev })
+        reportNetworkError(run.runtimeId, "stderr", line)
       })
       run.unlisten = [u1, u2]
       return id
@@ -987,7 +1093,8 @@ export default function App() {
     sessionPermissionMode,
     applyRunningAction,
     setRunningSessionStreaming,
-    closeRunningSession
+    closeRunningSession,
+    reportNetworkError
   ])
 
   const refreshGitStatus = useCallback(async () => {
@@ -1247,8 +1354,13 @@ export default function App() {
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
         dispatch({ kind: "load_transcript", events: merged })
-        // 还原会话级 composer 偏好；没有 sidecar.composer 就用全局默认
-        const sessionPrefs = pickComposerFromSidecar(sidecar)
+        // 还原会话级 composer 偏好：sidecar 是 GUI 显式选择；没有 sidecar
+        // 时从 Claude CLI jsonl 里的 /model、/effort 和 system/init 反推。
+        const transcriptPrefs = pickComposerFromTranscript(events)
+        const sessionPrefs = mergeComposerPrefs(
+          transcriptPrefs,
+          pickComposerFromSidecar(sidecar)
+        )
         sessionComposerRef.current = sessionPrefs
         setSessionComposer(sessionPrefs)
         setComposerPrefs(sessionPrefs ?? globalDefault)
@@ -1281,6 +1393,7 @@ export default function App() {
       settingsEntryTargetRef.current = null
       setShowSettings(false)
       setShowPlugins(false)
+      setShowHistory(false)
       toast.success(`项目「${p.name}」已添加`)
     },
     [detachActiveSession]
@@ -1330,18 +1443,23 @@ export default function App() {
 
   const openSettings = useCallback((section: string = "general") => {
     if (!showSettings) {
-      returnViewRef.current = showPlugins ? "plugins" : "chat"
+      returnViewRef.current = showPlugins
+        ? "plugins"
+        : showHistory
+          ? "history"
+          : "chat"
       settingsEntryTargetRef.current =
-        !showPlugins && project && selectedSessionMeta
+        !showPlugins && !showHistory && project && selectedSessionMeta
           ? { kind: "session", project, session: selectedSessionMeta }
           : null
     }
     setChatReturnTarget(null)
     setSidebarVisible(true)
     setShowPlugins(false)
+    setShowHistory(false)
     setSettingsSection(typeof section === "string" ? section : "general")
     setShowSettings(true)
-  }, [project, selectedSessionMeta, showPlugins, showSettings])
+  }, [project, selectedSessionMeta, showPlugins, showHistory, showSettings])
 
   const openPlugins = useCallback(() => {
     returnViewRef.current = "chat"
@@ -1349,8 +1467,26 @@ export default function App() {
     setChatReturnTarget(null)
     setSidebarVisible(true)
     setShowSettings(false)
+    setShowHistory(false)
     setShowPlugins(true)
   }, [])
+
+  const openHistory = useCallback(() => {
+    returnViewRef.current = "chat"
+    settingsEntryTargetRef.current = null
+    setChatReturnTarget(null)
+    setSidebarVisible(true)
+    setShowSettings(false)
+    setShowPlugins(false)
+    setShowHistory(true)
+  }, [])
+
+  // openSettings 通过 ref 中转：reportNetworkError 在 ensureSession 上方（line ~500）
+  // 就被定义，但 openSettings 在更下方（这里）定义，直接闭包引用会触发 TS
+  // "used before declaration"。同步到 ref 即可。
+  useEffect(() => {
+    openSettingsRef.current = openSettings
+  }, [openSettings])
 
   const returnToChat = useCallback(() => {
     const target = chatReturnTarget ?? settingsEntryTargetRef.current
@@ -1361,11 +1497,14 @@ export default function App() {
     setChatReturnTarget(null)
     setShowSettings(false)
     setShowPlugins(returnView === "plugins")
+    setShowHistory(returnView === "history")
     if (target?.kind === "session") {
       setShowPlugins(false)
+      setShowHistory(false)
       void switchSession(target.project, target.session)
     } else if (target?.kind === "project") {
       setShowPlugins(false)
+      setShowHistory(false)
       if (currentProjectId === target.project.id && selectedSessionId === null) {
         return
       }
@@ -1399,6 +1538,7 @@ export default function App() {
     setChatReturnTarget(null)
     setShowSettings(false)
     setShowPlugins(false)
+    setShowHistory(false)
     void newConversation()
   }, [newConversation])
 
@@ -1408,6 +1548,7 @@ export default function App() {
     setChatReturnTarget(null)
     setShowSettings(false)
     setShowPlugins(false)
+    setShowHistory(false)
     setShowAdd(true)
   }, [])
 
@@ -1436,7 +1577,7 @@ export default function App() {
     if (!project) return
     const target = selectedSessionId ?? findInitSessionId(state)
     if (!target) {
-      toast.error("当前还没有 session id，无法删除")
+      toast.error("当前没有会话，无法删除")
       return
     }
     setShowDeleteConfirm(true)
@@ -1474,7 +1615,7 @@ export default function App() {
     if (!project) return
     const target = selectedSessionId ?? findInitSessionId(state)
     if (!target) {
-      toast.error("当前还没有 session id，无法归档")
+      toast.error("当前没有会话，无法归档")
       return
     }
     const willArchive = !isArchived(project.id, target)
@@ -1618,13 +1759,18 @@ export default function App() {
     return getProjectEnv(loadProjectEnvStore(), project.id).actions ?? []
   }, [project?.id, showSettings])
 
+  const collabEnabled = useMemo(() => {
+    void collabSettingsTick
+    return loadCollabSettings().enabled
+  }, [collabSettingsTick])
+
   return (
     <TooltipProvider>
       <>
         <div className="flex h-screen flex-col bg-background text-foreground">
           <AppChrome
             sidebarVisible={sidebarVisible}
-            inSettings={showSettings || showPlugins}
+            inSettings={showSettings || showPlugins || showHistory}
             onToggleSidebar={() => setSidebarVisible((v) => !v)}
             onBack={returnToChat}
             onNewConversation={newConversationFromChrome}
@@ -1657,20 +1803,24 @@ export default function App() {
                   inPlugins={showPlugins}
                   onSelectProject={(p) => {
                     setShowPlugins(false)
+                    setShowHistory(false)
                     switchProject(p)
                   }}
                   onSelectSession={(p, s) => {
                     setShowPlugins(false)
+                    setShowHistory(false)
                     switchSession(p, s)
                   }}
                   onAdd={() => setShowAdd(true)}
                   onRemove={handleRemove}
                   onNewConversation={() => {
                     setShowPlugins(false)
+                    setShowHistory(false)
                     void newConversation()
                   }}
                   onOpenSettings={() => openSettings()}
                   onOpenPlugins={openPlugins}
+                  onOpenHistory={openHistory}
                   refreshKey={sidebarRefreshKey}
                 />
               </Suspense>
@@ -1682,6 +1832,17 @@ export default function App() {
                 <PluginsView
                   cwd={project?.cwd ?? null}
                   onBack={returnToChat}
+                />
+              </Suspense>
+            ) : showHistory ? (
+              <Suspense fallback={<PaneLoader label="正在加载历史…" />}>
+                <HistoryView
+                  projects={projects}
+                  onBack={returnToChat}
+                  onSelectSession={(p, s) => {
+                    setShowHistory(false)
+                    void switchSession(p, s)
+                  }}
                 />
               </Suspense>
             ) : (
@@ -1712,6 +1873,8 @@ export default function App() {
                   onDelete={deleteCurrentSession}
                   onShowDiff={() => setShowDiff(true)}
                   diffCount={visibleDiffCount}
+                  onShowCollabFlow={() => setShowCollabFlow(true)}
+                  collabEnabled={collabEnabled}
                 />
               </Suspense>
             )}
@@ -1922,6 +2085,16 @@ export default function App() {
               worktreeDiffLoading={diffPatchLoading}
               worktreeDiffError={diffPatchError}
               cwd={project?.cwd ?? null}
+            />
+          </Suspense>
+        )}
+        {showCollabFlow && (
+          <Suspense fallback={null}>
+            <CollaborationFlow
+              open={showCollabFlow}
+              onOpenChange={setShowCollabFlow}
+              cwd={project?.cwd ?? null}
+              currentSessionId={jsonlSessionId}
             />
           </Suspense>
         )}

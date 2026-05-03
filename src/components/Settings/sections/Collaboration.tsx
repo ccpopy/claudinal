@@ -112,7 +112,7 @@ export function Collaboration() {
       <SettingsSectionHeader
         icon={Bot}
         title="协同"
-        description="通过受控 MCP 工具调用外部 Agent，线性执行并记录每一步输出、变更和验证。"
+        description="通过 MCP 工具调用外部 Agent，按步骤执行并记录输出、变更和验证结果。"
         actions={
           <Button
             variant="outline"
@@ -132,7 +132,7 @@ export function Collaboration() {
             <div>
               <Label className="text-sm">启用协同 MCP</Label>
               <div className="mt-0.5 text-xs text-muted-foreground">
-                开启后，新 Claude 会话会加载 Claudinal 协同 MCP；当前已启动会话不会生效。
+                开启后，新建的 Claude 会话将加载协同 MCP；当前已运行的会话不受影响。
               </div>
             </div>
             <Switch
@@ -203,7 +203,7 @@ export function Collaboration() {
             <div>
               <h3 className="text-sm font-semibold">Agent provider 探测</h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                这里读取真实本机 CLI 和 help 参数；未安装、未启用或参数不匹配会直接显示。
+                探测本机已安装的 CLI 及其参数兼容性；未安装、未启用或参数不匹配会在此处显示。
               </p>
             </div>
             <div className="flex items-center gap-2">

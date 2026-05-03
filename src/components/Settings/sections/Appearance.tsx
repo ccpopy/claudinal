@@ -244,11 +244,6 @@ function ModeSection({
         checked={!!cfg.translucentSidebar}
         onChange={(v) => onUpdate({ translucentSidebar: v })}
       />
-      <RangeRow
-        label="对比度"
-        value={cfg.contrast ?? 50}
-        onChange={(v) => onUpdate({ contrast: v })}
-      />
     </section>
   )
 }
@@ -326,29 +321,3 @@ function ToggleRow({
   )
 }
 
-function RangeRow({
-  label,
-  value,
-  onChange
-}: {
-  label: string
-  value: number
-  onChange: (v: number) => void
-}) {
-  return (
-    <div className="flex items-center gap-3">
-      <Label className="w-20 text-xs shrink-0">{label}</Label>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1 accent-primary"
-      />
-      <span className="text-xs w-8 text-right tabular-nums text-muted-foreground">
-        {value}
-      </span>
-    </div>
-  )
-}

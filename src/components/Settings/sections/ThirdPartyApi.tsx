@@ -23,7 +23,6 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
-import { loadSettings, saveSettings } from "@/lib/settings"
 import {
   claudeSettingsPath,
   fetchProviderModels,
@@ -36,11 +35,12 @@ import {
   clearManagedClaudeEnv,
   clearManagedModelOverrides,
   createThirdPartyApiProvider,
-  loadThirdPartyApiStore,
+  deleteProviderApiKey,
+  loadThirdPartyApiStoreAsync,
   maskSecret,
   OFFICIAL_PROVIDER_ID,
   providerModelOptions,
-  saveThirdPartyApiStore,
+  saveThirdPartyApiStoreAsync,
   trimApiUrl,
   type ModelMapping,
   type ProviderAuthField,
@@ -99,11 +99,12 @@ function providerExists(store: ThirdPartyApiStore, id: string | null) {
 }
 
 export function ThirdPartyApi() {
-  const [store, setStore] = useState<ThirdPartyApiStore>(() =>
-    loadThirdPartyApiStore()
-  )
-  const [selectedProviderId, setSelectedProviderId] = useState(
-    store.activeProviderId
+  const [store, setStore] = useState<ThirdPartyApiStore>({
+    activeProviderId: OFFICIAL_PROVIDER_ID,
+    providers: []
+  })
+  const [selectedProviderId, setSelectedProviderId] = useState<string>(
+    OFFICIAL_PROVIDER_ID
   )
   const [editor, setEditor] = useState<ProviderEditorState | null>(null)
   const [cliSettings, setCliSettings] = useState<CliSettings>({})
@@ -122,13 +123,17 @@ export function ThirdPartyApi() {
     : createThirdPartyApiProvider()
   const editorConfig = editor?.provider ?? null
   const activeOfficial = store.activeProviderId === OFFICIAL_PROVIDER_ID
+  const hasLegacyKey = useMemo(
+    () => store.providers.some((p) => p.legacyApiKey),
+    [store]
+  )
   const dirtyRef = useRef(dirty)
   const editorRef = useRef(editor)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const nextStore = loadThirdPartyApiStore()
+      const nextStore = await loadThirdPartyApiStoreAsync()
       setStore(nextStore)
       setSelectedProviderId(nextStore.activeProviderId)
       setEditor(null)
@@ -182,13 +187,14 @@ export function ThirdPartyApi() {
     setDirty(true)
   }
 
-  const persistStore = (next: ThirdPartyApiStore) => {
+  const persistStore = async (next: ThirdPartyApiStore) => {
     setStore(next)
-    saveThirdPartyApiStore(next)
+    const result = await saveThirdPartyApiStoreAsync(next)
     setDirty(false)
     setSelectedProviderId((id) =>
       providerExists(next, id) ? id : next.activeProviderId
     )
+    return result
   }
 
   const selectProvider = (id: string) => {
@@ -223,13 +229,14 @@ export function ThirdPartyApi() {
     setDirty(false)
   }
 
-  const removeProvider = (id: string) => {
+  const removeProvider = async (id: string) => {
     const providers = store.providers.filter((p) => p.id !== id)
     const activeProviderId =
       store.activeProviderId === id
         ? providers[0]?.id ?? OFFICIAL_PROVIDER_ID
         : store.activeProviderId
-    persistStore({ activeProviderId, providers })
+    await deleteProviderApiKey(id)
+    await persistStore({ activeProviderId, providers })
     setSelectedProviderId((cur) => (cur === id ? activeProviderId : cur))
     setEditor((cur) => (cur?.originalId === id ? null : cur))
   }
@@ -241,7 +248,20 @@ export function ThirdPartyApi() {
     setDirty(false)
   }
 
-  const saveLocal = () => {
+  const announceSaveResult = (
+    stored: "keychain" | "localstorage" | "empty"
+  ) => {
+    if (stored === "localstorage") {
+      toast.warning("API Key 暂存为明文", {
+        description:
+          "系统钥匙串当前不可用，密钥写回了 localStorage 明文；可在系统中恢复钥匙串后再保存一次自动迁移。"
+      })
+    } else {
+      toast.success("第三方 API 配置已保存")
+    }
+  }
+
+  const saveLocal = async () => {
     if (editor) {
       const provider = createThirdPartyApiProvider(editor.provider)
       if (!provider.providerName.trim()) {
@@ -268,17 +288,40 @@ export function ThirdPartyApi() {
           : OFFICIAL_PROVIDER_ID,
         providers
       }
-      setStore(next)
-      saveThirdPartyApiStore(next)
-      setSelectedProviderId(provider.id)
-      setEditor({ mode: "edit", originalId: provider.id, provider })
-      setDirty(false)
-      toast.success("第三方 API 配置已保存")
+      setSaving(true)
+      try {
+        const result = await saveThirdPartyApiStoreAsync(next)
+        // saveThirdPartyApiStoreAsync 内部已经把密钥从 localStorage 抹掉，
+        // 这里重新读 store 以拿到同步状态下的 provider（apiKey 字段已清空）。
+        const refreshed = await loadThirdPartyApiStoreAsync()
+        setStore(refreshed)
+        setSelectedProviderId(provider.id)
+        const refreshedProvider =
+          refreshed.providers.find((p) => p.id === provider.id) ?? provider
+        setEditor({
+          mode: "edit",
+          originalId: provider.id,
+          provider: refreshedProvider
+        })
+        setDirty(false)
+        announceSaveResult(result.stored)
+      } catch (e) {
+        toast.error(`保存失败: ${String(e)}`)
+      } finally {
+        setSaving(false)
+      }
       return
     }
-    saveThirdPartyApiStore(store)
-    setDirty(false)
-    toast.success("第三方 API 配置已保存")
+    setSaving(true)
+    try {
+      const result = await saveThirdPartyApiStoreAsync(store)
+      setDirty(false)
+      announceSaveResult(result.stored)
+    } catch (e) {
+      toast.error(`保存失败: ${String(e)}`)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const validate = (
@@ -308,17 +351,16 @@ export function ThirdPartyApi() {
         }
         delete nextSettings.model
         await writeClaudeSettings("global", nextSettings as Record<string, unknown>)
-        const appSettings = loadSettings()
-        if (appSettings.defaultModel.trim()) {
-          saveSettings({ ...appSettings, defaultModel: "" })
-        }
-        persistStore({ ...store, activeProviderId: OFFICIAL_PROVIDER_ID })
+        await persistStore({ ...store, activeProviderId: OFFICIAL_PROVIDER_ID })
         setCliSettings(nextSettings)
         toast.success("已恢复默认，下次启动会话生效")
         return
       }
 
-      const target = store.providers.find((provider) => provider.id === providerId)
+      // 应用 provider 时需要明文 apiKey 写进 settings.json env，
+      // 因此从 keychain 同步取一次（store 同步副本可能不含密钥）。
+      const refreshed = await loadThirdPartyApiStoreAsync()
+      const target = refreshed.providers.find((provider) => provider.id === providerId)
       if (!target) {
         toast.error("找不到要应用的供应商")
         return
@@ -333,11 +375,7 @@ export function ThirdPartyApi() {
       }
       delete nextSettings.model
       await writeClaudeSettings("global", nextSettings as Record<string, unknown>)
-      const appSettings = loadSettings()
-      if (appSettings.defaultModel.trim()) {
-        saveSettings({ ...appSettings, defaultModel: "" })
-      }
-      persistStore({ ...store, activeProviderId: providerId })
+      await persistStore({ ...refreshed, activeProviderId: providerId })
       setSelectedProviderId(providerId)
       setCliSettings(nextSettings)
       toast.success("已启用该供应商，下次启动会话生效")
@@ -382,7 +420,8 @@ export function ThirdPartyApi() {
           )
         }
         setStore(nextStore)
-        saveThirdPartyApiStore(nextStore)
+        // availableModels 列表无密钥，安全；走 async 写入会顺带把 apiKey 同步到 keychain。
+        await saveThirdPartyApiStoreAsync(nextStore)
       }
       setDirty(true)
       toast.success(
@@ -738,6 +777,11 @@ export function ThirdPartyApi() {
                 <span className="text-muted-foreground"> · {activeSubtitle}</span>
               </div>
             </div>
+            {hasLegacyKey && (
+              <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+                部分供应商的 API Key 以明文存储（钥匙串不可用或上次保存失败）。请重新打开并保存这些供应商，将密钥写入系统钥匙串。
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               {!activeOfficial && (
                 <Button

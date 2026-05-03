@@ -15,7 +15,6 @@ import {
   type PermissionRequestPayload,
   type PermissionUpdate
 } from "@/lib/ipc"
-import { CodeBlock } from "./MessageBlocks"
 
 interface Props {
   request: PermissionRequestPayload | null
@@ -69,8 +68,8 @@ export function PermissionDialog({ request, onSettled }: Props) {
         if (!open && request && !busy) deny()
       }}
     >
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
+        <DialogHeader className="shrink-0 pr-6">
           <DialogTitle className="flex items-center gap-2">
             <ShieldAlert className="size-5 text-warn" />
             需要授权
@@ -81,7 +80,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
         </DialogHeader>
 
         {request && (
-          <div className="space-y-3 text-sm">
+          <div className="min-h-0 space-y-3 overflow-y-auto pr-1 text-sm scrollbar-thin">
             <div className="rounded-md border bg-muted/30 px-3 py-2">
               <div className="text-xs text-muted-foreground mb-1">工具</div>
               <div className="font-mono break-all">
@@ -105,12 +104,12 @@ export function PermissionDialog({ request, onSettled }: Props) {
             )}
             <div>
               <div className="text-xs text-muted-foreground mb-1">参数</div>
-              <CodeBlock>{formatToolInput(request.request.input)}</CodeBlock>
+              <ToolInputView input={request.request.input} />
             </div>
           </div>
         )}
 
-        <DialogFooter className="flex-wrap sm:justify-between">
+        <DialogFooter className="shrink-0 flex-wrap sm:justify-between">
           <Button
             type="button"
             variant="destructive"
@@ -260,7 +259,70 @@ function allowResponse(
   return response
 }
 
-function formatToolInput(input: Record<string, unknown> | undefined): string {
-  if (!input) return "{}"
-  return JSON.stringify(input, null, 2)
+function ToolInputView({
+  input
+}: {
+  input: Record<string, unknown> | undefined
+}) {
+  const entries = input ? Object.entries(input) : []
+  if (entries.length === 0) {
+    return (
+      <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        无参数
+      </div>
+    )
+  }
+  return (
+    <div className="max-h-[38vh] space-y-2 overflow-auto rounded-md border bg-muted/30 p-3 text-xs scrollbar-thin">
+      {entries.map(([key, value]) => (
+        <ToolInputField key={key} name={key} value={value} />
+      ))}
+    </div>
+  )
+}
+
+function ToolInputField({ name, value }: { name: string; value: unknown }) {
+  if (value === null || value === undefined) {
+    return (
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="font-mono text-muted-foreground">{name}:</span>
+        <span className="font-mono">{String(value)}</span>
+      </div>
+    )
+  }
+  if (typeof value === "boolean" || typeof value === "number") {
+    return (
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="font-mono text-muted-foreground">{name}:</span>
+        <span className="font-mono">{String(value)}</span>
+      </div>
+    )
+  }
+  if (typeof value === "string") {
+    const isLong = value.includes("\n") || value.length > 80
+    if (isLong) {
+      return (
+        <div className="space-y-1">
+          <div className="font-mono text-muted-foreground">{name}</div>
+          <pre className="max-h-72 overflow-auto rounded border bg-background p-2 font-mono whitespace-pre-wrap break-words scrollbar-thin">
+            {value}
+          </pre>
+        </div>
+      )
+    }
+    return (
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="font-mono text-muted-foreground">{name}:</span>
+        <span className="font-mono break-all">{value}</span>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-1">
+      <div className="font-mono text-muted-foreground">{name}</div>
+      <pre className="max-h-72 overflow-auto rounded border bg-background p-2 font-mono whitespace-pre-wrap break-words scrollbar-thin">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </div>
+  )
 }

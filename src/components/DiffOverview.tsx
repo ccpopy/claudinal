@@ -1,9 +1,23 @@
 import { useMemo, useState } from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
-import { FileEdit, FilePlus, FileX, X } from "lucide-react"
+import {
+  Check,
+  ClipboardCopy,
+  FileEdit,
+  FilePlus,
+  FileText,
+  FileX,
+  X
+} from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { GitWorktreeStatus, WorktreeDiff } from "@/lib/ipc"
 import type { UIEntry, UIMessage } from "@/types/ui"
@@ -268,6 +282,53 @@ interface Props {
   cwd?: string | null
 }
 
+type SourceFilter = "all" | FileChange["source"]
+
+const SOURCE_LABEL: Record<FileChange["source"], string> = {
+  session: "会话",
+  git: "Git",
+  status: "状态"
+}
+
+function formatHunksAsPatch(change: FileChange): string {
+  if (change.binary) {
+    return `Binary file ${change.path} differs\n`
+  }
+  if (change.kind === "create" && change.content && change.hunks.length === 0) {
+    const lines = change.content.split("\n").map((l) => `+${l}`).join("\n")
+    return `--- /dev/null\n+++ b/${change.path}\n@@ -0,0 +1,${
+      change.content.split("\n").length
+    } @@\n${lines}\n`
+  }
+  if (change.hunks.length === 0) return ""
+  const header = `--- a/${change.oldPath ?? change.path}\n+++ b/${change.path}\n`
+  const body = change.hunks
+    .map((h) => {
+      const head = `@@ -${h.oldStart ?? 0},${h.oldLines ?? 0} +${
+        h.newStart ?? 0
+      },${h.newLines ?? 0} @@`
+      const lines = (h.lines ?? []).join("\n")
+      return `${head}\n${lines}`
+    })
+    .join("\n")
+  return `${header}${body}\n`
+}
+
+async function copyToClipboard(text: string, kind: string) {
+  if (!text) {
+    toast.warning(`没有可复制的${kind}`)
+    return false
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success(`已复制${kind}`)
+    return true
+  } catch (e) {
+    toast.error(`复制${kind}失败：${String(e)}`)
+    return false
+  }
+}
+
 export function DiffOverview({
   open,
   onOpenChange,
@@ -278,14 +339,61 @@ export function DiffOverview({
   worktreeDiffError,
   cwd
 }: Props) {
-  const changes = useMemo(
+  const allChanges = useMemo(
     () => collectChanges(entries, gitStatus, worktreeDiff, cwd),
     [entries, gitStatus, worktreeDiff, cwd]
   )
   const [activeIdx, setActiveIdx] = useState(0)
+  const [filter, setFilter] = useState<SourceFilter>("all")
+  const [copiedAllPatch, setCopiedAllPatch] = useState(false)
+
+  const sourceCounts = useMemo(() => {
+    const counts = { session: 0, git: 0, status: 0 } as Record<
+      FileChange["source"],
+      number
+    >
+    for (const c of allChanges) counts[c.source] += 1
+    return counts
+  }, [allChanges])
+
+  const changes = useMemo(
+    () =>
+      filter === "all"
+        ? allChanges
+        : allChanges.filter((c) => c.source === filter),
+    [allChanges, filter]
+  )
 
   const safeActiveIdx = Math.min(activeIdx, Math.max(changes.length - 1, 0))
   const active = changes[safeActiveIdx]
+
+  const copyActivePath = () => {
+    if (!active) return
+    void copyToClipboard(active.path, "文件路径")
+  }
+
+  const copyActivePatch = () => {
+    if (!active) return
+    const patch = formatHunksAsPatch(active)
+    if (!patch) {
+      toast.warning("当前文件没有可复制的 patch")
+      return
+    }
+    void copyToClipboard(patch, "patch")
+  }
+
+  const copyAllPatches = async () => {
+    if (changes.length === 0) return
+    const patches = changes
+      .map((c) => formatHunksAsPatch(c))
+      .filter((p) => !!p)
+      .join("\n")
+    const ok = await copyToClipboard(patches, "全部 patch")
+    if (ok) {
+      setCopiedAllPatch(true)
+      window.setTimeout(() => setCopiedAllPatch(false), 1600)
+    }
+  }
 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -304,17 +412,50 @@ export function DiffOverview({
             <Badge variant="outline" className="text-[10px]">
               {changes.length} 文件
             </Badge>
+            <SourceFilterChips
+              filter={filter}
+              total={allChanges.length}
+              counts={sourceCounts}
+              onChange={(next) => {
+                setFilter(next)
+                setActiveIdx(0)
+              }}
+            />
           </div>
-          <DialogPrimitive.Close asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              aria-label="关闭"
-            >
-              <X className="size-4" />
-            </Button>
-          </DialogPrimitive.Close>
+          <div className="flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={copyAllPatches}
+                  disabled={changes.length === 0}
+                  className="h-7 gap-1 px-2 text-[11px]"
+                >
+                  {copiedAllPatch ? (
+                    <Check className="size-3.5 text-connected" />
+                  ) : (
+                    <ClipboardCopy className="size-3.5" />
+                  )}
+                  复制全部 patch
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                把当前过滤后的 {changes.length} 个文件 patch 拼接复制
+              </TooltipContent>
+            </Tooltip>
+            <DialogPrimitive.Close asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                aria-label="关闭"
+              >
+                <X className="size-4" />
+              </Button>
+            </DialogPrimitive.Close>
+          </div>
         </div>
 
         {changes.length === 0 ? (
@@ -323,9 +464,11 @@ export function DiffOverview({
               ? "正在读取文件 diff…"
               : worktreeDiffError
                 ? `读取文件 diff 失败：${worktreeDiffError}`
-                : gitStatus?.isRepo === false
-                  ? "当前目录不是 Git 仓库；没有会话工具补丁时，缺少可比较基线，无法展示手工文件修改。"
-                  : "当前会话没有文件变更"}
+                : allChanges.length > 0
+                  ? `当前过滤（${SOURCE_LABEL[filter as FileChange["source"]] ?? "全部"}）下没有文件变更`
+                  : gitStatus?.isRepo === false
+                    ? "当前目录不是 Git 仓库，无法生成文件 diff。"
+                    : "当前会话没有文件变更"}
           </div>
         ) : (
           <div className="flex-1 min-h-0 grid grid-cols-[260px_1fr]">
@@ -386,11 +529,52 @@ export function DiffOverview({
                         : "正在读取最新文件 diff…"}
                     </div>
                   )}
-                  <div className="text-xs font-mono text-muted-foreground break-all">
-                    {active.path}
-                    {active.oldPath && active.oldPath !== active.path && (
-                      <span> ← {active.oldPath}</span>
-                    )}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 text-xs font-mono text-muted-foreground break-all">
+                      {active.path}
+                      {active.oldPath && active.oldPath !== active.path && (
+                        <span> ← {active.oldPath}</span>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-7 text-muted-foreground"
+                            onClick={copyActivePath}
+                            aria-label="复制文件路径"
+                          >
+                            <FileText className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">复制文件路径</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-7 text-muted-foreground"
+                            onClick={copyActivePatch}
+                            aria-label="复制此文件的 patch"
+                            disabled={
+                              active.binary ||
+                              (active.hunks.length === 0 &&
+                                !(active.kind === "create" && active.content))
+                            }
+                          >
+                            <ClipboardCopy className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">
+                          复制当前文件 patch
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
                   </div>
                   {active.binary ? (
                     <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
@@ -405,8 +589,8 @@ export function DiffOverview({
                   ) : (
                     <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
                       {active.source === "status"
-                        ? "此文件来自当前 Git 工作树状态。读取 patch 失败或尚未完成，但已检测到"
-                        : "此文件没有可展示的结构化补丁，但已记录到"}{" "}
+                        ? "此文件有工作树变更，patch 读取失败。检测到"
+                        : "此文件无可展示的结构化 patch，变更记录为"}{" "}
                       <span className="font-mono text-connected">+{active.adds}</span>{" "}
                       <span className="font-mono text-destructive">-{active.dels}</span>
                       。
@@ -420,5 +604,48 @@ export function DiffOverview({
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
+  )
+}
+
+function SourceFilterChips({
+  filter,
+  total,
+  counts,
+  onChange
+}: {
+  filter: SourceFilter
+  total: number
+  counts: Record<FileChange["source"], number>
+  onChange: (next: SourceFilter) => void
+}) {
+  const chips: Array<{ value: SourceFilter; label: string; count: number }> = [
+    { value: "all", label: "全部", count: total },
+    { value: "session", label: SOURCE_LABEL.session, count: counts.session },
+    { value: "git", label: SOURCE_LABEL.git, count: counts.git },
+    { value: "status", label: SOURCE_LABEL.status, count: counts.status }
+  ]
+  return (
+    <div className="ml-1 flex items-center gap-1">
+      {chips.map((chip) => {
+        if (chip.value !== "all" && chip.count === 0) return null
+        const active = filter === chip.value
+        return (
+          <button
+            key={chip.value}
+            type="button"
+            onClick={() => onChange(chip.value)}
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-[10px] transition-colors tabular-nums",
+              active
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            {chip.label}
+            <span className="ml-1 text-[10px] opacity-70">{chip.count}</span>
+          </button>
+        )
+      })}
+    </div>
   )
 }

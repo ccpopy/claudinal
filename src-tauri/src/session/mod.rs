@@ -12,4 +12,8 @@ pub use reader::{
 };
 pub use search::{search_sessions, SessionSearchHit};
 pub use stats::{scan_activity_heatmap, scan_all_usage_sidecars, ActivityCell, GlobalUsage};
+pub use store::{
+    diagnostics as session_index_diagnostics, rebuild as rebuild_session_index,
+    SessionIndexDiagnostics,
+};
 pub use watcher::WatcherState;

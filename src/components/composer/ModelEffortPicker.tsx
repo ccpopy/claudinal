@@ -78,10 +78,10 @@ export function ModelEffortPicker({
   const source = effortSource(effort, sessionPrefs ?? null, baselineDefault)
   const sourceLabel =
     source === "auto"
-      ? "Auto · 跟随 CLI 默认"
+      ? "自动 · 跟随 CLI 默认"
       : source === "session"
-        ? "本会话覆盖"
-        : `默认 · 来自 settings.json`
+        ? "本次会话覆盖"
+        : "全局默认"
   const isMaxSelected = safeEffort === "max"
   const canPersistGlobal =
     PERSISTABLE_EFFORTS.includes(safeEffort) && safeEffort !== ""
@@ -193,7 +193,7 @@ export function ModelEffortPicker({
                 {isMax && (
                   <span
                     className="text-[10px] text-warn"
-                    title="官方约束：max 仅当前会话有效，不会写入 settings.json"
+                    title="max 仅对当前会话生效，不会写入 settings.json"
                   >
                     仅本会话
                   </span>
@@ -215,8 +215,7 @@ export function ModelEffortPicker({
           <div className="mt-1 flex items-start gap-1.5 rounded-lg border border-warn/40 bg-warn/5 px-2.5 py-1.5 text-[11px] leading-snug text-warn">
             <AlertTriangle className="mt-0.5 size-3 shrink-0" />
             <span>
-              max 仅对当前会话生效（官方约束）。GUI 会在本会话 sidecar 里
-              记住你的选择，resume 时自动重新传入。
+              max 仅对当前会话生效，选择会保存在本会话中，resume 时自动传入。
             </span>
           </div>
         )}
@@ -233,7 +232,7 @@ export function ModelEffortPicker({
             <span className="flex-1">
               {isAlreadyGlobal
                 ? "已是全局默认"
-                : "同步为全局默认（写 settings.json）"}
+                : "设为全局默认"}
             </span>
             {!isAlreadyGlobal && (
               <span className={MENU_META_CLASS}>

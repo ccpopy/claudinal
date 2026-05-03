@@ -287,8 +287,8 @@ export function Git() {
       <SettingsSectionBody>
           <section className="overflow-hidden rounded-lg border bg-card">
             <SwitchRow
-              label="提交 / PR 署名"
-              hint="commit 与 PR 末尾追加 Generated with Claude Code 注脚"
+              label="Commit 与 PR 署名"
+              hint="在 commit 和 PR 末尾附加 Claude Code 署名"
               checked={attributionEnabled}
               onChange={(v) =>
                 update({
@@ -299,14 +299,14 @@ export function Git() {
             />
             <SwitchRow
               label="注入 Git 工作流指令"
-              hint="把 Claude Code 内置的 Git 提交 / PR 流程指令注入 system prompt"
+              hint="向 system prompt 注入内置的 Git 提交和 PR 流程指令"
               checked={cur.includeGitInstructions}
               onChange={(v) => update({ includeGitInstructions: v })}
               disabled={loading}
             />
             <InputRow
               label="PR URL 模板"
-              hint="无 gh CLI 时构造 PR URL 用；留空走 Claude Code 内置默认"
+              hint="未安装 gh 时用于构造 PR URL；留空使用 Claude Code 默认值"
               value={cur.prUrlTemplate ?? ""}
               onChange={(v) => update({ prUrlTemplate: v })}
               placeholder="https://github.com/{owner}/{repo}/compare/{base}...{branch}?expand=1"
@@ -333,7 +333,7 @@ export function Git() {
                   <h3 className="text-sm font-semibold">GitHub CLI</h3>
                 </div>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  用于从 GUI 判断 gh 是否可用。认证检测会经 GUI 代理联网验证 token。
+                  检测 GitHub CLI 的安装和认证状态。
                 </p>
               </div>
               <Button
@@ -399,27 +399,27 @@ export function Git() {
 
           <InstructionBlock
             title="提交指令"
-            hint="保存后追加到 ~/.claude/CLAUDE.md，Claude 在所有项目生成 commit 信息时都会读到"
+            hint="保存到 ~/.claude/CLAUDE.md，Claude 生成 commit 信息时会参考"
             value={instructions.commit}
             onChange={(v) => {
               setInstructions((i) => ({ ...i, commit: v }))
               setCommitDirty(true)
             }}
-            placeholder="添加提交消息指引…"
+            placeholder="添加 commit 信息指引…"
             dirty={commitDirty}
             busy={syncingCommit}
             onSave={() => syncBlock("commit")}
           />
 
           <InstructionBlock
-            title="拉取请求指令"
-            hint="保存后追加到 ~/.claude/CLAUDE.md，Claude 生成 PR 标题 / 描述时会参考"
+            title="PR 指令"
+            hint="保存到 ~/.claude/CLAUDE.md，Claude 生成 PR 标题和描述时会参考"
             value={instructions.pr}
             onChange={(v) => {
               setInstructions((i) => ({ ...i, pr: v }))
               setPrDirty(true)
             }}
-            placeholder="添加拉取请求指引…"
+            placeholder="添加 PR 指引…"
             dirty={prDirty}
             busy={syncingPr}
             onSave={() => syncBlock("pr")}

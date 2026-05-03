@@ -71,7 +71,7 @@ pub async fn start_flow(req: CollabStartFlowRequest) -> Result<CollabFlow> {
     let now = now_rfc3339();
     let mut flow = CollabFlow {
         id: Uuid::new_v4().to_string(),
-        cwd: req.cwd,
+        cwd: req.cwd.clone(),
         claude_session_id: req.claude_session_id,
         user_prompt: req.user_prompt,
         status: "draft".into(),
@@ -98,13 +98,13 @@ pub async fn delegate(req: CollabDelegateRequest) -> Result<CollabCommandResult>
     let allowed_paths = normalize_allowed_paths(&req.cwd, &req.allowed_paths)?;
     if req.write_allowed && allowed_paths.is_empty() {
         return Err(Error::Other(
-            "写入步骤必须显式声明允许修改的路径范围".into(),
+            "写入步骤必须明确声明允许修改的路径范围".into(),
         ));
     }
     if let Some(enabled) = crate::collab::enabled_providers_from_env() {
         if !enabled.iter().any(|provider| provider == &req.provider) {
             return Err(Error::Other(format!(
-                "Agent provider 未启用：{}。请在设置 -> 协同中启用后，新会话再使用。",
+                "Agent provider 未启用：{}。请在设置 -> 协同中启用后，新建会话即可使用。",
                 req.provider
             )));
         }
@@ -138,7 +138,28 @@ pub async fn delegate(req: CollabDelegateRequest) -> Result<CollabCommandResult>
 
     let before = capture_workspace(&req.cwd)?;
     let run_started_at = now_rfc3339();
-    let output = run_command(&command.executable, &command.args, &req.cwd).await?;
+    let run_result = run_command(&command.executable, &command.args, &req.cwd).await;
+    // 不论成功与否，子 claude 进程可能在 ~/.claude/projects 下落了 jsonl，
+    // 现在 sid 是我们预设的，删除它（以及对应 sidecar），避免侧栏出现"空会话"。
+    if let Some(sid) = command.child_session_id.as_deref() {
+        cleanup_child_session_files(&req.cwd, sid);
+    }
+    let output = match run_result {
+        Ok(out) => out,
+        Err(err) => {
+            // run_command 启动失败（.cmd 拒绝、CLI 不存在等）：把 step 落盘为 failed，
+            // 避免流程永久卡在 running 状态。
+            let mut flow = crate::collab::store::read_flow(&req.flow_id)?;
+            if let Some(step) = flow.steps.iter_mut().find(|s| s.id == step_id) {
+                step.status = "failed".into();
+                step.failure_reason = Some(format!("启动 Agent 失败：{err}"));
+                step.ended_at = Some(now_rfc3339());
+            }
+            flow.status = "failed".into();
+            let _ = write_flow(&mut flow);
+            return Err(err);
+        }
+    };
     let run_ended_at = now_rfc3339();
     let after = capture_workspace(&req.cwd)?;
     let changed_files = diff_snapshots(&before, &after, &allowed_paths);
@@ -226,6 +247,17 @@ pub async fn record_approval(req: CollabApprovalRequest) -> Result<CollabFlow> {
             )))
         }
     };
+    // 终态守护：approved / rejected / cancelled / verified 都是终态，不允许再次改写。
+    // 否则用户能反复点"取消"，每次都把 step.status 覆盖 + 加新 approval 记录。
+    if matches!(
+        step.status.as_str(),
+        "approved" | "rejected" | "cancelled" | "verified"
+    ) {
+        return Err(Error::Other(format!(
+            "步骤 {} 已处于终态 {}，不能再次审批；如需新一轮处理请新建后续步骤。",
+            req.step_id, step.status
+        )));
+    }
     step.status = next_status.into();
     step.approval = Some(ApprovalRecord {
         decision: next_status.into(),
@@ -280,7 +312,7 @@ pub async fn run_verification(req: CollabVerificationRequest) -> Result<CollabCo
     let record = VerificationRecord {
         id: run_id,
         command: command.into(),
-        cwd,
+        cwd: cwd.clone(),
         started_at,
         ended_at,
         exit_code: output.exit_code,
@@ -337,6 +369,8 @@ struct BuiltCommand {
     display: Vec<String>,
     permission_mode: String,
     output_path: Option<PathBuf>,
+    /// 仅 claude provider 设置：用 --session-id 预设 sid，命令结束后清理对应 jsonl。
+    child_session_id: Option<String>,
 }
 
 fn build_agent_command(req: &CollabDelegateRequest, run_id: &str) -> Result<BuiltCommand> {
@@ -348,6 +382,7 @@ fn build_agent_command(req: &CollabDelegateRequest, run_id: &str) -> Result<Buil
     let mut args = Vec::new();
     let permission_mode;
     let mut output_path = None;
+    let mut child_session_id: Option<String> = None;
 
     match req.provider.as_str() {
         "codex" => {
@@ -357,8 +392,16 @@ fn build_agent_command(req: &CollabDelegateRequest, run_id: &str) -> Result<Buil
             } else {
                 "read-only".to_string()
             };
+            args.push("exec".into());
+            #[cfg(target_os = "windows")]
             args.extend([
-                "exec".into(),
+                "-c".into(),
+                // 避免继承用户全局 windows.sandbox=elevated；该模式在 GUI 启动的
+                // headless 协同子进程里会走 CreateProcessWithLogonW，容易因缺少
+                // 沙箱账户凭据直接失败。unelevated 仍保留 Codex 的 sandbox 策略。
+                "windows.sandbox=unelevated".into(),
+            ]);
+            args.extend([
                 "--cd".into(),
                 req.cwd.clone(),
                 "--sandbox".into(),
@@ -443,10 +486,18 @@ fn build_agent_command(req: &CollabDelegateRequest, run_id: &str) -> Result<Buil
                     "plan"
                 })
                 .to_string();
+            // 双保险：
+            // 1) --no-session-persistence 仅对 --print 有效（实测某些版本仍会有 jsonl 残留）
+            // 2) --session-id 预设 sid，命令结束后由 cleanup_child_session_files 显式删除
+            //    ~/.claude/projects/<encoded-cwd>/<sid>.jsonl，确保侧栏不冒"空会话"。
+            let preset_sid = Uuid::new_v4().to_string();
             args.extend([
                 "-p".into(),
                 "--output-format".into(),
                 "json".into(),
+                "--no-session-persistence".into(),
+                "--session-id".into(),
+                preset_sid.clone(),
                 "--permission-mode".into(),
                 permission_mode.clone(),
             ]);
@@ -459,6 +510,7 @@ fn build_agent_command(req: &CollabDelegateRequest, run_id: &str) -> Result<Buil
                 args.extend(["--model".into(), model.into()]);
             }
             args.push(prompt);
+            child_session_id = Some(preset_sid);
         }
         other => {
             return Err(Error::Other(format!(
@@ -474,7 +526,20 @@ fn build_agent_command(req: &CollabDelegateRequest, run_id: &str) -> Result<Buil
         display,
         permission_mode,
         output_path,
+        child_session_id,
     })
+}
+
+/// 删除被委派 claude 子进程在 ~/.claude/projects 下落的 jsonl 与 sidecar，
+/// 让协同子任务不在 GUI 侧栏出现"空会话"。失败静默忽略——文件本来就可能不存在。
+fn cleanup_child_session_files(cwd: &str, session_id: &str) {
+    let Ok(dirs) = crate::session::reader::project_dirs(cwd) else {
+        return;
+    };
+    for dir in dirs {
+        let _ = std::fs::remove_file(dir.join(format!("{session_id}.jsonl")));
+        let _ = std::fs::remove_file(dir.join(format!("{session_id}.claudinal.json")));
+    }
 }
 
 fn build_agent_prompt(req: &CollabDelegateRequest) -> String {
@@ -484,13 +549,10 @@ fn build_agent_prompt(req: &CollabDelegateRequest) -> String {
         req.allowed_paths.join(", ")
     };
     format!(
-        "你是 Claudinal 协同流程中的被委派 Agent。\n\
-责任范围：{}\n\
-允许写入：{}\n\
-允许修改路径：{}\n\n\
-要求：只处理责任范围内的任务；如果允许写入，只能修改允许路径内的文件；不要返回假成功；失败必须暴露真实错误。\n\
-完成后请输出 JSON，字段包括 summary、changedFiles、verification、risks。\n\n\
-用户任务：\n{}",
+        "[协同任务] 责任范围：{}；允许写入：{}；允许路径：{}\n\
+约束：仅处理指定范围内的任务；写入操作仅限允许路径下的文件；失败如实报告，不返回假成功。\n\
+完成后输出 JSON：{{summary, changedFiles, verification, risks}}。\n\n\
+{}",
         req.responsibility_scope,
         if req.write_allowed { "true" } else { "false" },
         allowed,
@@ -533,6 +595,22 @@ struct ProcessOutput {
 }
 
 async fn run_command(executable: &Path, args: &[String], cwd: &str) -> Result<ProcessOutput> {
+    // Windows + .cmd/.bat npm shim 兼容：
+    // Rust 1.77+ 出于 CVE-2024-24576 加固，对 .bat/.cmd 子进程的 args 做严格校验，
+    // 含换行 / & | < > 等会直接拒绝（错误信息：batch file arguments are invalid）。
+    // 协同 prompt 必然包含换行和路径反斜杠，因此一旦 codex/gemini 的 CLI 是 npm
+    // 装的 .cmd shim 就完全跑不起来。这里把 shim 解析成真实 node 入口，直接 spawn
+    // node，绕过 cmd.exe 这一层。
+    #[cfg(target_os = "windows")]
+    if let Some((node, entry)) = resolve_npm_shim(executable) {
+        let mut full_args: Vec<String> = vec![entry.display().to_string()];
+        full_args.extend(args.iter().cloned());
+        return run_command_inner(&node, &full_args, cwd).await;
+    }
+    run_command_inner(executable, args, cwd).await
+}
+
+async fn run_command_inner(executable: &Path, args: &[String], cwd: &str) -> Result<ProcessOutput> {
     let mut cmd = Command::new(executable);
     cmd.args(args)
         .current_dir(cwd)
@@ -550,6 +628,51 @@ async fn run_command(executable: &Path, args: &[String], cwd: &str) -> Result<Pr
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         exit_code: output.status.code().unwrap_or(-1),
     })
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_npm_shim(executable: &Path) -> Option<(PathBuf, PathBuf)> {
+    let ext = executable.extension().and_then(|e| e.to_str())?;
+    if !ext.eq_ignore_ascii_case("cmd") && !ext.eq_ignore_ascii_case("bat") {
+        return None;
+    }
+    let content = std::fs::read_to_string(executable).ok()?;
+    let entry = extract_shim_js_path(&content, executable.parent()?)?;
+    if !entry.is_file() {
+        return None;
+    }
+    let node = which::which("node").ok()?;
+    Some((node, entry))
+}
+
+#[cfg(target_os = "windows")]
+fn extract_shim_js_path(content: &str, shim_dir: &Path) -> Option<PathBuf> {
+    // npm/pnpm/vfox shim 都把目标 js 放在引号里，路径以 .js 结尾。
+    // 例如 "%~dp0\node_modules\@openai\codex\bin\codex.js"。
+    // 取最后一个匹配（shim 的 if/else 分支里通常重复出现，最后一段是
+    // 实际 fallback 的入口）。
+    let mut last: Option<&str> = None;
+    let mut rest = content;
+    while let Some(start) = rest.find('"') {
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find('"') {
+            let candidate = &after[..end];
+            if candidate.to_ascii_lowercase().ends_with(".js") {
+                last = Some(candidate);
+            }
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    let raw = last?;
+    let dir_str = shim_dir.display().to_string();
+    let resolved = raw
+        .replace("%~dp0\\", &format!("{dir_str}\\"))
+        .replace("%~dp0/", &format!("{dir_str}/"))
+        .replace("%dp0%\\", &format!("{dir_str}\\"))
+        .replace("%dp0%/", &format!("{dir_str}/"));
+    Some(PathBuf::from(resolved))
 }
 
 async fn run_shell_command(command: &str, cwd: &str) -> Result<ProcessOutput> {

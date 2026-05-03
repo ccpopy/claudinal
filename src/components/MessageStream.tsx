@@ -73,6 +73,7 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
         const toolResults: UIBlock[] = []
         const userVisible: UIBlock[] = []
         for (const b of m.blocks) {
+          if (!b) continue
           if (b.type === "tool_result") toolResults.push(b)
           else userVisible.push(b)
         }
@@ -110,6 +111,7 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
         const stepBlocks: UIBlock[] = []
         const visibleBlocks: UIBlock[] = []
         for (const b of m.blocks) {
+          if (!b) continue
           if (b.type === "thinking" || b.type === "tool_use") stepBlocks.push(b)
           else visibleBlocks.push(b)
         }

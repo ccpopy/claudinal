@@ -419,7 +419,7 @@ function EditorView({
 
           <ScriptSection
             title="设置脚本"
-            description="预留给工作树创建流程使用，当前不会自动运行。"
+            description="用于工作树创建流程，当前不会自动运行。"
             value={editor.setupScripts[editor.setupPlatform]}
             platform={editor.setupPlatform}
             onPlatformChange={(setupPlatform) =>
@@ -432,7 +432,7 @@ function EditorView({
 
           <ScriptSection
             title="清理脚本"
-            description="预留给工作树清理流程使用，当前不会自动运行。"
+            description="用于工作树清理流程，当前不会自动运行。"
             value={editor.cleanupScripts[editor.cleanupPlatform]}
             platform={editor.cleanupPlatform}
             onPlatformChange={(cleanupPlatform) =>

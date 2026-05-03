@@ -1,6 +1,18 @@
+import {
+  keychainAvailable,
+  keychainDelete,
+  keychainGet,
+  keychainSet
+} from "@/lib/ipc"
 import { emitSettingsBus } from "@/lib/settingsBus"
 
 const KEY = "claudinal.third-party-api"
+// keychain 条目 account 前缀；service 在 Rust 侧固定为 "claudinal"
+const KEYCHAIN_ACCOUNT_PREFIX = "third-party-api.api-key:"
+
+function keychainAccountForProvider(providerId: string): string {
+  return `${KEYCHAIN_ACCOUNT_PREFIX}${providerId}`
+}
 
 export type ProviderInputFormat = "anthropic" | "openai-chat-completions"
 export type ProviderAuthField = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"
@@ -31,6 +43,9 @@ export interface ThirdPartyApiConfig {
 
 export interface ThirdPartyApiProvider extends ThirdPartyApiConfig {
   id: string
+  /** apiKey 仍以明文形式存放在 localStorage（旧版或 keychain 不可用时的降级路径）。
+   * keychain 写入成功后该标记会被清理；UI 可据此显示明文存储警告。 */
+  legacyApiKey?: boolean
 }
 
 export interface ThirdPartyApiStore {
@@ -127,12 +142,13 @@ function inferMainAlias(models: Partial<ModelMapping>): ClaudeModelAlias {
   return "sonnet"
 }
 
+/**
+ * 一个 provider 是否非空（用于过滤未填写的草稿）。
+ * keychain 模式下 apiKey 不存 localStorage，所以只要还有请求地址就算有内容。
+ */
 function hasProviderContent(provider: ThirdPartyApiProvider): boolean {
   const requestUrl = provider.requestUrl.trim()
-  return Boolean(
-    provider.apiKey.trim() ||
-      (requestUrl && provider.models.mainModel.trim())
-  )
+  return Boolean(provider.apiKey.trim() || requestUrl)
 }
 
 export function normalizeThirdPartyApiConfig(
@@ -171,15 +187,21 @@ function providerId(): string {
 export function createThirdPartyApiProvider(
   patch: Partial<ThirdPartyApiProvider> = {}
 ): ThirdPartyApiProvider {
-  return {
+  const provider: ThirdPartyApiProvider = {
     id: patch.id || providerId(),
     ...normalizeThirdPartyApiConfig({
       ...DEFAULT_THIRD_PARTY_API,
       ...patch
     })
   }
+  if (patch.legacyApiKey) provider.legacyApiKey = true
+  return provider
 }
 
+/**
+ * 同步加载：apiKey 字段仅来自 localStorage 中遗留的明文（旧版本 / keychain 不可用降级）。
+ * keychain 模式下密钥不会出现在同步路径，spawn 等需要密钥的场景必须使用 `loadThirdPartyApiStoreAsync`。
+ */
 export function loadThirdPartyApiStore(): ThirdPartyApiStore {
   try {
     const raw = localStorage.getItem(KEY)
@@ -226,9 +248,124 @@ export function loadThirdPartyApiStore(): ThirdPartyApiStore {
   return { ...DEFAULT_THIRD_PARTY_API_STORE, providers: [] }
 }
 
+/**
+ * 异步加载：同步读 localStorage 框架后用 keychain 填回每个 provider 的 apiKey。
+ * keychain 不可用或某个条目读取失败时，回退到 localStorage 中遗留的明文。
+ */
+export async function loadThirdPartyApiStoreAsync(): Promise<ThirdPartyApiStore> {
+  const store = loadThirdPartyApiStore()
+  let kcOk = false
+  try {
+    kcOk = await keychainAvailable()
+  } catch {
+    kcOk = false
+  }
+  if (!kcOk) return store
+  const providers = await Promise.all(
+    store.providers.map(async (provider) => {
+      // 先有明文（legacy / keychain 不可用）就保留，不再去 keychain 读，避免覆盖
+      if (provider.apiKey) return provider
+      let secret = ""
+      try {
+        secret = (await keychainGet(keychainAccountForProvider(provider.id))) ?? ""
+      } catch {
+        secret = ""
+      }
+      return secret ? { ...provider, apiKey: secret, legacyApiKey: false } : provider
+    })
+  )
+  return { ...store, providers }
+}
+
+interface PersistResult {
+  stored: "keychain" | "localstorage" | "empty"
+  legacyProviderIds: string[]
+}
+
+/**
+ * 写入：keychain 可用时把每个 provider 的 apiKey 送进 keychain，localStorage 中清空 apiKey 字段。
+ * keychain 不可用或单条失败：apiKey 写回 localStorage 并标 `legacyApiKey: true`，UI 据此显示明文存储警告。
+ */
+export async function saveThirdPartyApiStoreAsync(
+  store: ThirdPartyApiStore
+): Promise<PersistResult> {
+  let kcOk = false
+  try {
+    kcOk = await keychainAvailable()
+  } catch {
+    kcOk = false
+  }
+  const persisted: ThirdPartyApiProvider[] = []
+  const legacyIds: string[] = []
+  let hasSecret = false
+  for (const provider of store.providers) {
+    const sanitized: ThirdPartyApiProvider = { ...provider, legacyApiKey: false }
+    const secret = provider.apiKey.trim()
+    if (kcOk) {
+      try {
+        if (secret) {
+          await keychainSet(keychainAccountForProvider(provider.id), provider.apiKey)
+          sanitized.apiKey = ""
+          hasSecret = true
+        } else {
+          await keychainDelete(keychainAccountForProvider(provider.id))
+          sanitized.apiKey = ""
+        }
+      } catch {
+        // 单条 keychain 失败 → 单条降级
+        sanitized.apiKey = provider.apiKey
+        sanitized.legacyApiKey = secret ? true : false
+        if (secret) legacyIds.push(provider.id)
+      }
+    } else if (secret) {
+      sanitized.apiKey = provider.apiKey
+      sanitized.legacyApiKey = true
+      legacyIds.push(provider.id)
+    } else {
+      sanitized.apiKey = ""
+    }
+    persisted.push(sanitized)
+  }
+  try {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        activeProviderId: store.activeProviderId,
+        providers: persisted
+      })
+    )
+    emitSettingsBus("thirdPartyApi")
+  } catch {
+    // ignore
+  }
+  if (legacyIds.length > 0) {
+    return { stored: "localstorage", legacyProviderIds: legacyIds }
+  }
+  if (hasSecret) {
+    return { stored: "keychain", legacyProviderIds: [] }
+  }
+  return { stored: "empty", legacyProviderIds: [] }
+}
+
+/**
+ * 同步保存：仅写非敏感字段（apiKey 字段被强制清空）。
+ * 用于 settings bus 同步广播或不涉及密钥变更的快速保存。
+ * 真正涉及 apiKey 的写入必须走 `saveThirdPartyApiStoreAsync`。
+ */
 export function saveThirdPartyApiStore(store: ThirdPartyApiStore) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(store))
+    const persisted = store.providers.map((provider) => ({
+      ...provider,
+      apiKey: provider.legacyApiKey ? provider.apiKey : "",
+      legacyApiKey: provider.legacyApiKey ?? false
+    }))
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        activeProviderId: store.activeProviderId,
+        providers: persisted
+      })
+    )
     emitSettingsBus("thirdPartyApi")
   } catch {
     // ignore
@@ -255,12 +392,81 @@ export function loadThirdPartyApiConfig(): ThirdPartyApiConfig {
   return { ...normalizeThirdPartyApiConfig(active), enabled: true }
 }
 
-export function saveThirdPartyApiConfig(config: ThirdPartyApiConfig) {
-  const provider = createThirdPartyApiProvider(config)
-  saveThirdPartyApiStore({
-    activeProviderId: provider.id,
-    providers: [provider]
-  })
+export async function loadThirdPartyApiConfigAsync(): Promise<ThirdPartyApiConfig> {
+  const store = await loadThirdPartyApiStoreAsync()
+  if (store.activeProviderId === OFFICIAL_PROVIDER_ID) {
+    return {
+      ...DEFAULT_THIRD_PARTY_API,
+      enabled: false,
+      models: { ...DEFAULT_THIRD_PARTY_API.models }
+    }
+  }
+  const active = store.providers.find((p) => p.id === store.activeProviderId)
+  if (!active) {
+    return {
+      ...DEFAULT_THIRD_PARTY_API,
+      enabled: false,
+      models: { ...DEFAULT_THIRD_PARTY_API.models }
+    }
+  }
+  return { ...normalizeThirdPartyApiConfig(active), enabled: true }
+}
+
+/** 单独删除某个 provider 在 keychain 中的密钥；删 provider 时调用，幂等。 */
+export async function deleteProviderApiKey(providerId: string): Promise<void> {
+  try {
+    await keychainDelete(keychainAccountForProvider(providerId))
+  } catch {
+    // 静默；keychain 不可用 / 条目不存在都视作完成
+  }
+}
+
+/**
+ * 启动时一次性迁移：把 localStorage 里的明文 apiKey 写进 keychain，并从 localStorage 删除。
+ * keychain 不可用 / 单条失败时静默保留旧条目，下次写入仍会重试。
+ */
+export async function migrateLegacyThirdPartyApiKeys(): Promise<void> {
+  const store = loadThirdPartyApiStore()
+  const hasLegacy = store.providers.some((p) => p.apiKey && p.apiKey.trim())
+  if (!hasLegacy) return
+  let kcOk = false
+  try {
+    kcOk = await keychainAvailable()
+  } catch {
+    kcOk = false
+  }
+  if (!kcOk) return
+  const persisted: ThirdPartyApiProvider[] = []
+  let migrated = false
+  for (const provider of store.providers) {
+    const secret = provider.apiKey?.trim()
+    if (!secret) {
+      persisted.push({ ...provider, apiKey: "", legacyApiKey: false })
+      continue
+    }
+    try {
+      await keychainSet(keychainAccountForProvider(provider.id), provider.apiKey)
+      persisted.push({ ...provider, apiKey: "", legacyApiKey: false })
+      migrated = true
+    } catch {
+      // 单条失败：保留 legacy
+      persisted.push({ ...provider, legacyApiKey: true })
+    }
+  }
+  if (migrated) {
+    try {
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({
+          activeProviderId: store.activeProviderId,
+          providers: persisted
+        })
+      )
+      emitSettingsBus("thirdPartyApi")
+    } catch {
+      // ignore
+    }
+  }
 }
 
 export function trimApiUrl(url: string): string {

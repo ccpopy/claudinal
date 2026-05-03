@@ -6,7 +6,6 @@ export interface AppearanceConfig {
   foreground?: string
   fontUI?: string
   fontMono?: string
-  contrast?: number
   translucentSidebar?: boolean
 }
 
@@ -58,14 +57,12 @@ export const PRESETS: Record<string, { label: string; appearance: Appearance }> 
         accent: "#0169cc",
         background: "#ffffff",
         foreground: "#0d0d0d",
-        contrast: 45,
         translucentSidebar: true
       },
       dark: {
         accent: "#339cff",
         background: "#181818",
         foreground: "#ffffff",
-        contrast: 60,
         translucentSidebar: true
       }
     }
@@ -99,7 +96,6 @@ function sameConfig(a: AppearanceConfig, b: AppearanceConfig): boolean {
     trimOptional(a.foreground) === trimOptional(b.foreground) &&
     trimOptional(a.fontUI) === trimOptional(b.fontUI) &&
     trimOptional(a.fontMono) === trimOptional(b.fontMono) &&
-    a.contrast === b.contrast &&
     !!a.translucentSidebar === !!b.translucentSidebar
   )
 }
@@ -122,7 +118,7 @@ function matchPresetColors(a: Appearance): string | null {
   return null
 }
 
-/// 完整比较预设字段。只改了字体或对比度时应显示为自定义，
+/// 完整比较预设字段。只改了字体时也应显示为自定义，
 /// 否则不同机器会同时显示为 Claude 默认但实际字体不一致。
 export function matchPreset(a: Appearance): string | null {
   for (const [id, p] of Object.entries(PRESETS)) {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  ArrowDownNarrowWide,
   FolderOpen,
   MessageSquare,
   MessageSquarePlus,
@@ -29,6 +30,14 @@ type IndexedSession = {
   projectLabel: string
   archived: boolean
 }
+
+type SortMode = "modified" | "msgCount" | "title"
+
+const SORT_OPTIONS: Array<{ value: SortMode; label: string }> = [
+  { value: "modified", label: "最近活动" },
+  { value: "msgCount", label: "消息数" },
+  { value: "title", label: "标题" }
+]
 
 type BodyHit = {
   project: Project
@@ -89,6 +98,8 @@ export function SearchPalette({
   const [bodyHits, setBodyHits] = useState<BodyHit[]>([])
   const [bodySearching, setBodySearching] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [projectFilter, setProjectFilter] = useState<string | null>(null)
+  const [sortMode, setSortMode] = useState<SortMode>("modified")
   const inputRef = useRef<HTMLInputElement>(null)
   const projectsRef = useRef(projects)
   projectsRef.current = projects
@@ -96,6 +107,8 @@ export function SearchPalette({
   useEffect(() => {
     if (!open) {
       setQuery("")
+      setProjectFilter(null)
+      setSortMode("modified")
       return
     }
     const handle = window.setTimeout(() => inputRef.current?.focus(), 30)
@@ -213,12 +226,43 @@ export function SearchPalette({
     }
   }, [open, trimmedQuery])
 
+  const projectsInIndex = useMemo(() => {
+    const map = new Map<string, { id: string; label: string }>()
+    for (const entry of index) {
+      if (!map.has(entry.project.id)) {
+        map.set(entry.project.id, {
+          id: entry.project.id,
+          label: entry.projectLabel
+        })
+      }
+    }
+    return Array.from(map.values()).sort((a, b) =>
+      a.label.localeCompare(b.label)
+    )
+  }, [index])
+
   const sessionMatches = useMemo(() => {
-    if (!trimmedQuery) return index.slice(0, RECENT_LIMIT)
-    return index
-      .filter((entry) => entry.haystack.includes(lowerQuery))
-      .slice(0, SHORTCUTS_PER_LIST)
-  }, [index, trimmedQuery, lowerQuery])
+    let pool = index
+    if (projectFilter) {
+      pool = pool.filter((entry) => entry.project.id === projectFilter)
+    }
+    if (trimmedQuery) {
+      pool = pool.filter((entry) => entry.haystack.includes(lowerQuery))
+    }
+    const sorted = [...pool].sort((a, b) => {
+      if (sortMode === "msgCount") {
+        return (b.session.msg_count ?? 0) - (a.session.msg_count ?? 0)
+      }
+      if (sortMode === "title") {
+        return a.title.localeCompare(b.title, undefined, { sensitivity: "base" })
+      }
+      return b.session.modified_ts - a.session.modified_ts
+    })
+    if (!trimmedQuery && !projectFilter && sortMode === "modified") {
+      return sorted.slice(0, RECENT_LIMIT)
+    }
+    return sorted.slice(0, SHORTCUTS_PER_LIST)
+  }, [index, trimmedQuery, lowerQuery, projectFilter, sortMode])
 
   const projectMatches = useMemo(() => {
     if (!trimmedQuery) return []
@@ -315,6 +359,7 @@ export function SearchPalette({
     const seen = new Set<string>()
     const out: BodyHit[] = []
     for (const hit of bodyHits) {
+      if (projectFilter && hit.project.id !== projectFilter) continue
       if (titleIds.has(hit.session.id)) continue
       if (seen.has(hit.session.id)) continue
       seen.add(hit.session.id)
@@ -322,7 +367,7 @@ export function SearchPalette({
       if (out.length >= 8) break
     }
     return out
-  }, [bodyHits, sessionMatches])
+  }, [bodyHits, sessionMatches, projectFilter])
 
   const showEmpty =
     !loading &&
@@ -347,9 +392,59 @@ export function SearchPalette({
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索对话"
+              placeholder="搜索对话（支持跨项目 + 正文 FTS）"
               className="h-7 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
             />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+            <ArrowDownNarrowWide className="size-3.5" />
+            <select
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              className="rounded-sm border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground"
+            >
+              {SORT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  按{o.label}
+                </option>
+              ))}
+            </select>
+            {projectsInIndex.length > 0 && (
+              <select
+                value={projectFilter ?? ""}
+                onChange={(e) =>
+                  setProjectFilter(e.target.value ? e.target.value : null)
+                }
+                className="min-w-0 max-w-[180px] truncate rounded-sm border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground"
+                title={
+                  projectFilter
+                    ? `当前过滤项目：${projectsInIndex.find((p) => p.id === projectFilter)?.label ?? projectFilter}`
+                    : "全部项目"
+                }
+              >
+                <option value="">全部项目</option>
+                {projectsInIndex.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            {(projectFilter || sortMode !== "modified") && (
+              <button
+                type="button"
+                className="rounded-sm border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground transition-colors hover:bg-accent"
+                onClick={() => {
+                  setProjectFilter(null)
+                  setSortMode("modified")
+                }}
+              >
+                清除筛选
+              </button>
+            )}
+            <span className="ml-auto tabular-nums">
+              {sessionMatches.length} / {index.length}
+            </span>
           </div>
           <div className="max-h-[60vh] overflow-y-auto border-t border-border bg-popover px-1.5 py-2">
             {loading && index.length === 0 ? (

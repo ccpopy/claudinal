@@ -16,6 +16,7 @@ import {
   Trash2
 } from "lucide-react"
 import { toast } from "sonner"
+import { analyzePluginError } from "@/lib/pluginErrorHints"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -39,6 +40,36 @@ import {
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { openExternal } from "@/lib/ipc"
+
+function reportPluginError(action: string, error: unknown) {
+  const analysis = analyzePluginError(action, error)
+  const description = [
+    ...analysis.hints.map((h) => `· [${h.topic}] ${h.message}`),
+    "",
+    "原始错误：",
+    truncate(analysis.raw || "（无）", 600)
+  ].join("\n")
+  toast.error(analysis.summary, {
+    description,
+    duration: 12_000,
+    action: analysis.raw
+      ? {
+          label: "复制错误",
+          onClick: () => {
+            navigator.clipboard
+              .writeText(analysis.raw)
+              .then(() => toast.success("已复制原始错误"))
+              .catch(() => toast.error("复制失败"))
+          }
+        }
+      : undefined
+  })
+}
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max)}…（已截断 ${text.length - max} 字符，可点击「复制错误」获取完整内容）`
+}
 import {
   addMarketplace,
   installBuiltinSkill,
@@ -210,7 +241,7 @@ export function PluginsView({ cwd, onBack }: Props) {
         setInstallTarget(null)
         await refresh()
       } catch (e) {
-        toast.error(`安装失败: ${String(e)}`)
+        reportPluginError("安装插件", e)
       } finally {
         setBusy(false)
       }
@@ -229,7 +260,7 @@ export function PluginsView({ cwd, onBack }: Props) {
         toast.success(`已安装技能：${id}`)
         await refresh()
       } catch (e) {
-        toast.error(`安装技能失败: ${String(e)}`)
+        reportPluginError("安装内置技能", e)
       } finally {
         setBusy(false)
       }
@@ -246,7 +277,7 @@ export function PluginsView({ cwd, onBack }: Props) {
         setShowInstallSkill(false)
         await refresh()
       } catch (e) {
-        toast.error(`导入技能失败: ${String(e)}`)
+        reportPluginError("导入技能", e)
       } finally {
         setBusy(false)
       }
@@ -270,7 +301,7 @@ export function PluginsView({ cwd, onBack }: Props) {
         setPendingUninstall(null)
         await refresh()
       } catch (e) {
-        toast.error(`卸载失败: ${String(e)}`)
+        reportPluginError("卸载插件", e)
       } finally {
         setBusy(false)
       }
@@ -292,7 +323,7 @@ export function PluginsView({ cwd, onBack }: Props) {
         setShowAddMarket(false)
         await refresh()
       } catch (e) {
-        toast.error(`添加失败: ${String(e)}`)
+        reportPluginError("添加 Marketplace", e)
       } finally {
         setBusy(false)
       }
@@ -311,7 +342,7 @@ export function PluginsView({ cwd, onBack }: Props) {
         toast.success(`已刷新 ${m.name}`)
         await refresh()
       } catch (e) {
-        toast.error(`刷新失败: ${String(e)}`)
+        reportPluginError("刷新 Marketplace", e)
       } finally {
         setBusy(false)
       }
@@ -331,7 +362,7 @@ export function PluginsView({ cwd, onBack }: Props) {
         setPendingRemoveMarket(null)
         await refresh()
       } catch (e) {
-        toast.error(`移除失败: ${String(e)}`)
+        reportPluginError("移除 Marketplace", e)
       } finally {
         setBusy(false)
       }

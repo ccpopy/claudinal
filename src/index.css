@@ -171,6 +171,32 @@
     font-size: 14px;
     font-weight: 400;
   }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--ring);
+  }
+  *::-webkit-scrollbar-button {
+    display: none;
+    height: 0;
+    width: 0;
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
   code,
   pre,
   kbd,

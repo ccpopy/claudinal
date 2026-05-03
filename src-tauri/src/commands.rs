@@ -12,16 +12,42 @@ use crate::proc::{Manager, SpawnOptions};
 use crate::session::{
     delete_session_jsonl as delete_jsonl_inner, list_project_sessions as list_sessions_inner,
     list_recent_sessions_all as list_all_inner, read_session_sidecar as read_sidecar_inner,
-    read_session_transcript as read_transcript_inner, scan_activity_heatmap as scan_heatmap_inner,
-    scan_all_usage_sidecars as scan_usage_inner, search_sessions as search_sessions_inner,
+    read_session_transcript as read_transcript_inner, rebuild_session_index as rebuild_index_inner,
+    scan_activity_heatmap as scan_heatmap_inner, scan_all_usage_sidecars as scan_usage_inner,
+    search_sessions as search_sessions_inner, session_index_diagnostics as index_diagnostics_inner,
     write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalSessionMeta, GlobalUsage,
-    SessionMeta, SessionSearchHit, WatcherState,
+    SessionIndexDiagnostics, SessionMeta, SessionSearchHit, WatcherState,
 };
 
 const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
 const CLAUDE_UPDATE_COMMAND: &str = "claude update";
 const CLAUDE_CLI_REFERENCE_URL: &str =
     "https://docs.anthropic.com/en/docs/claude-code/cli-reference";
+
+/// 把字符串内容原子写入磁盘：先写到 `<path>.tmp.<pid>`，再 rename 到目标路径。
+/// 这样即使写入过程中崩溃 / 断电，也不会留下半截文件。所有 GUI 直接管理的
+/// 用户配置（settings.json / mcp.json / CLAUDE.md / 导出 JSON）都应该走这条。
+fn atomic_write_str(path: &std::path::Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+    let pid = std::process::id();
+    let mut tmp = path.to_path_buf();
+    let suffix = match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{ext}.tmp.{pid}"),
+        None => format!("tmp.{pid}"),
+    };
+    tmp.set_extension(suffix);
+    std::fs::write(&tmp, contents).map_err(Error::from)?;
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        // rename 失败时尽力清理临时文件，避免残留
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::from(err));
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 pub struct ClaudeCliVersionInfo {
@@ -1623,6 +1649,217 @@ prunable gitdir file points to non-existent location
             vec!["gpt-5.1".to_string(), "gpt-5.1-mini".to_string()]
         );
     }
+
+    #[test]
+    fn merge_mcp_config_overrides_global_servers_with_project_entries() {
+        let global = serde_json::json!({
+            "mcpServers": {
+                "shared": { "command": "global-shared" },
+                "global-only": { "command": "global" }
+            }
+        });
+        let project = serde_json::json!({
+            "mcpServers": {
+                "shared": { "command": "project-shared" },
+                "project-only": { "command": "project" }
+            }
+        });
+
+        let mut merged: Option<Value> = None;
+        merge_mcp_config(&mut merged, global);
+        merge_mcp_config(&mut merged, project);
+
+        let servers = merged
+            .as_ref()
+            .and_then(|v| v.get("mcpServers"))
+            .and_then(|v| v.as_object())
+            .expect("merged mcpServers should be an object");
+        assert_eq!(
+            servers
+                .get("shared")
+                .and_then(|v| v.get("command"))
+                .and_then(Value::as_str),
+            Some("project-shared")
+        );
+        assert!(servers.contains_key("global-only"));
+        assert!(servers.contains_key("project-only"));
+        assert_eq!(servers.len(), 3);
+    }
+
+    #[test]
+    fn merge_mcp_config_keeps_top_level_keys_and_replaces_disabled_entries() {
+        let mut merged: Option<Value> = None;
+        // 第一份配置带额外顶层 key（如 mcpRequiresApproval），merge 时保留
+        merge_mcp_config(
+            &mut merged,
+            serde_json::json!({
+                "mcpRequiresApproval": true,
+                "mcpServers": {
+                    "fs": { "command": "fs", "disabled": true }
+                }
+            }),
+        );
+        // 第二份重新 enable fs server
+        merge_mcp_config(
+            &mut merged,
+            serde_json::json!({
+                "mcpServers": {
+                    "fs": { "command": "fs", "disabled": false }
+                }
+            }),
+        );
+
+        let value = merged.expect("merged value");
+        assert_eq!(value.get("mcpRequiresApproval"), Some(&Value::Bool(true)));
+        let fs = value
+            .pointer("/mcpServers/fs")
+            .expect("fs server should remain");
+        assert_eq!(fs.get("disabled"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn merge_mcp_config_ignores_non_object_sources() {
+        let mut merged: Option<Value> = None;
+        merge_mcp_config(&mut merged, Value::Array(vec![Value::Bool(true)]));
+        // 非 object 输入不应破坏 target，target 应该被初始化为空 object
+        let value = merged.expect("merged should be initialized");
+        assert!(value.is_object());
+        assert!(value.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_mcp_config_strips_disabled_servers() {
+        let config = serde_json::json!({
+            "mcpServers": {
+                "alpha": { "command": "alpha" },
+                "beta":  { "command": "beta", "disabled": true },
+                "gamma": { "command": "gamma", "disabled": false }
+            }
+        });
+        let runtime = runtime_mcp_config(config).expect("runtime config");
+        let servers = runtime
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .expect("mcpServers");
+        assert_eq!(servers.len(), 2);
+        assert!(servers.contains_key("alpha"));
+        assert!(servers.contains_key("gamma"));
+        assert!(!servers.contains_key("beta"));
+    }
+
+    #[test]
+    fn runtime_mcp_config_returns_none_when_all_servers_disabled() {
+        let config = serde_json::json!({
+            "mcpServers": {
+                "alpha": { "command": "alpha", "disabled": true }
+            }
+        });
+        assert!(runtime_mcp_config(config).is_none());
+    }
+
+    #[test]
+    fn runtime_mcp_config_returns_none_when_mcp_servers_missing() {
+        let config = serde_json::json!({ "other": "value" });
+        assert!(runtime_mcp_config(config).is_none());
+    }
+
+    #[test]
+    fn mcp_config_from_value_extracts_only_mcp_servers_subtree() {
+        let raw = serde_json::json!({
+            "mcpServers": { "fs": { "command": "fs" } },
+            "ignored": "field"
+        });
+        let extracted = mcp_config_from_value(&raw).expect("should extract");
+        let obj = extracted.as_object().expect("object");
+        assert_eq!(obj.len(), 1);
+        assert!(obj.contains_key("mcpServers"));
+        assert!(extracted.pointer("/mcpServers/fs").is_some());
+    }
+
+    #[test]
+    fn mcp_config_from_value_returns_none_when_servers_field_missing_or_invalid() {
+        assert!(mcp_config_from_value(&serde_json::json!({})).is_none());
+        assert!(
+            mcp_config_from_value(&serde_json::json!({ "mcpServers": "not an object" })).is_none()
+        );
+    }
+
+    #[test]
+    fn mcp_project_config_from_claude_json_matches_normalized_paths() {
+        let claude_json = serde_json::json!({
+            "projects": {
+                "F:/project/claudecli": {
+                    "mcpServers": { "fs": { "command": "fs" } }
+                }
+            }
+        });
+        // 路径用 Windows 反斜杠传入，归一化后能命中 forward-slash key
+        let cfg = mcp_project_config_from_claude_json(&claude_json, "F:\\project\\claudecli")
+            .expect("project config");
+        assert!(cfg.pointer("/mcpServers/fs").is_some());
+    }
+
+    #[test]
+    fn mcp_project_config_from_claude_json_falls_back_to_case_insensitive_match() {
+        let claude_json = serde_json::json!({
+            "projects": {
+                "f:/Project/claudecli": {
+                    "mcpServers": { "fs": { "command": "fs" } }
+                }
+            }
+        });
+        // 直查 key 不匹配（大小写不同），但 normalize 后应能匹配
+        let cfg = mcp_project_config_from_claude_json(&claude_json, "F:/project/claudecli/")
+            .expect("case-insensitive match");
+        assert!(cfg.pointer("/mcpServers/fs").is_some());
+    }
+
+    #[test]
+    fn mcp_project_config_from_claude_json_returns_none_when_missing() {
+        let claude_json = serde_json::json!({
+            "projects": {
+                "F:/other/path": { "mcpServers": {} }
+            }
+        });
+        assert!(
+            mcp_project_config_from_claude_json(&claude_json, "F:/project/claudecli").is_none()
+        );
+    }
+
+    #[test]
+    fn normalize_claude_project_key_unifies_separators_and_trailing_slash() {
+        assert_eq!(
+            normalize_claude_project_key("F:\\project\\claudecli\\"),
+            "F:/project/claudecli"
+        );
+        assert_eq!(
+            normalize_claude_project_key("/Users/me/repo"),
+            "/Users/me/repo"
+        );
+    }
+
+    #[test]
+    fn claude_project_key_for_write_reuses_existing_key_variant() {
+        let claude_json = serde_json::json!({
+            "projects": {
+                "F:\\project\\claudecli": { "mcpServers": {} }
+            }
+        });
+        // 已有 key 用反斜杠形式存在，写入时应该复用同一个 key（避免重复 entry）
+        assert_eq!(
+            claude_project_key_for_write(&claude_json, "F:/project/claudecli"),
+            "F:\\project\\claudecli"
+        );
+    }
+
+    #[test]
+    fn claude_project_key_for_write_creates_normalized_key_when_absent() {
+        let claude_json = serde_json::json!({ "projects": {} });
+        assert_eq!(
+            claude_project_key_for_write(&claude_json, "F:\\project\\claudecli\\"),
+            "F:/project/claudecli"
+        );
+    }
 }
 
 #[tauri::command]
@@ -1632,7 +1869,9 @@ pub async fn read_session_transcript(cwd: String, session_id: String) -> Result<
 
 #[tauri::command]
 pub async fn delete_session_jsonl(cwd: String, session_id: String) -> Result<()> {
-    delete_jsonl_inner(&cwd, &session_id)
+    delete_jsonl_inner(&cwd, &session_id)?;
+    crate::collab::store::delete_flows_for_session(&cwd, &session_id)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1734,6 +1973,16 @@ pub async fn scan_activity_heatmap(days: u32) -> Result<Vec<ActivityCell>> {
 #[tauri::command]
 pub async fn search_sessions(query: String, limit: Option<usize>) -> Result<Vec<SessionSearchHit>> {
     search_sessions_inner(&query, limit.unwrap_or(50))
+}
+
+#[tauri::command]
+pub async fn session_index_diagnostics() -> Result<SessionIndexDiagnostics> {
+    index_diagnostics_inner()
+}
+
+#[tauri::command]
+pub async fn rebuild_session_index() -> Result<()> {
+    rebuild_index_inner()
 }
 
 #[tauri::command]
@@ -1903,15 +2152,8 @@ pub async fn write_claude_json_mcp_config(
         }
     }
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(Error::from)?;
-        }
-    }
     let text = serde_json::to_string_pretty(&value)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text).map_err(Error::from)?;
-    std::fs::rename(&tmp, &path).map_err(Error::from)?;
+    atomic_write_str(&path, &text)?;
     Ok(())
 }
 
@@ -1997,16 +2239,8 @@ pub async fn write_claude_mcp_config(
     data: Value,
 ) -> Result<()> {
     let path = claude_mcp_path(&scope, cwd.as_deref())?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(Error::from)?;
-        }
-    }
     let text = serde_json::to_string_pretty(&data)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text).map_err(Error::from)?;
-    std::fs::rename(&tmp, &path).map_err(Error::from)?;
-    Ok(())
+    atomic_write_str(&path, &text)
 }
 
 #[tauri::command]
@@ -2029,14 +2263,8 @@ pub async fn read_claude_settings(scope: String, cwd: Option<String>) -> Result<
 #[tauri::command]
 pub async fn write_claude_settings(scope: String, cwd: Option<String>, data: Value) -> Result<()> {
     let path = claude_settings_path(&scope, cwd.as_deref())?;
-    if let Some(parent) = path.parent() {
-        if !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(Error::from)?;
-        }
-    }
     let text = serde_json::to_string_pretty(&data)?;
-    std::fs::write(&path, text).map_err(Error::from)?;
-    Ok(())
+    atomic_write_str(&path, &text)
 }
 
 /// CLAUDE.md 三 scope 路径解析。
@@ -2083,18 +2311,12 @@ pub async fn read_claude_md(scope: String, cwd: Option<String>) -> Result<String
 #[tauri::command]
 pub async fn write_claude_md(scope: String, cwd: Option<String>, contents: String) -> Result<()> {
     let path = claude_md_path(&scope, cwd.as_deref())?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(Error::from)?;
-        }
-    }
-    std::fs::write(&path, contents).map_err(Error::from)?;
-    Ok(())
+    atomic_write_str(&path, &contents)
 }
 
 /// 读 ~/.claude/.credentials.json 中的 claudeAiOauth.accessToken。
-/// macOS 上 CLI 把凭据存在 Keychain（"Claude Code-credentials"），
-/// 当前实现仅覆盖 Linux/Windows；macOS 留 P4。
+/// macOS 上 CLI 把凭据存在系统钥匙串（item 名 "Claude Code-credentials"），
+/// 文件可能根本不存在；这里只读文件、不访问系统钥匙串，由调用方决定如何提示用户。
 fn read_oauth_access_token() -> Result<Option<String>> {
     let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
     let path = home.join(".claude").join(".credentials.json");
@@ -2110,6 +2332,9 @@ fn read_oauth_access_token() -> Result<Option<String>> {
     Ok(token)
 }
 
+#[cfg(target_os = "macos")]
+const MACOS_OAUTH_KEYCHAIN_HINT: &str = "macOS 上的 OAuth token 存在系统钥匙串（\"Claude Code-credentials\"），桌面端不会读取。可在终端运行 `claude auth status` 查看登录态，或在「第三方 API」页配置 ANTHROPIC_API_KEY 查看用量。";
+
 #[tauri::command]
 pub async fn read_claude_oauth_token() -> Result<Option<String>> {
     read_oauth_access_token()
@@ -2124,8 +2349,21 @@ const DEFAULT_OAUTH_BETA: &str = "oauth-2025-04-20";
 /// 头：Authorization: Bearer <token> + anthropic-beta: <ANTHROPIC_OAUTH_BETA or default>
 #[tauri::command]
 pub async fn fetch_oauth_usage() -> Result<Value> {
-    let token = read_oauth_access_token()?
-        .ok_or_else(|| Error::Other("OAuth 未登录：未找到 ~/.claude/.credentials.json".into()))?;
+    let token = match read_oauth_access_token()? {
+        Some(token) => token,
+        None => {
+            #[cfg(target_os = "macos")]
+            {
+                return Err(Error::Other(MACOS_OAUTH_KEYCHAIN_HINT.into()));
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err(Error::Other(
+                    "OAuth 未登录：未找到 ~/.claude/.credentials.json".into(),
+                ));
+            }
+        }
+    };
     let beta =
         std::env::var("ANTHROPIC_OAUTH_BETA").unwrap_or_else(|_| DEFAULT_OAUTH_BETA.to_string());
     let client = reqwest::Client::builder()
@@ -2156,16 +2394,13 @@ pub async fn fetch_oauth_usage() -> Result<Value> {
     Ok(body)
 }
 
+/// 把任意文本写入用户在系统对话框中显式选择的路径。当前唯一使用方是
+/// 设置页的「导出配置」流程（`ConfigExportDialog`）：路径由 `dialog.save()`
+/// 返回，文件由用户主动选择，这里不做额外的路径白名单。原子写避免半截文件。
 #[tauri::command]
 pub async fn write_text_file(path: String, contents: String) -> Result<()> {
     let p = std::path::PathBuf::from(&path);
-    if let Some(parent) = p.parent() {
-        if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(Error::from)?;
-        }
-    }
-    std::fs::write(&p, contents).map_err(Error::from)?;
-    Ok(())
+    atomic_write_str(&p, &contents)
 }
 
 fn push_unique_url(urls: &mut Vec<String>, url: String) {

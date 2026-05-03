@@ -13,6 +13,8 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
 
+use super::reader::is_internal_command_text;
+
 use crate::error::{Error, Result};
 
 use super::reader::extract_cwd_from_jsonl;
@@ -320,7 +322,11 @@ fn ingest_fts_increments(
 fn extract_message_text(v: &Value) -> Option<String> {
     let content = v.pointer("/message/content")?;
     if let Some(s) = content.as_str() {
-        return Some(s.trim().to_string());
+        let trimmed = s.trim();
+        if trimmed.is_empty() || is_internal_command_text(trimmed) {
+            return None;
+        }
+        return Some(trimmed.to_string());
     }
     let arr = content.as_array()?;
     let mut buf = String::new();
@@ -351,7 +357,7 @@ fn extract_message_text(v: &Value) -> Option<String> {
         }
     }
     let trimmed = buf.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || is_internal_command_text(trimmed) {
         None
     } else {
         Some(trimmed.to_string())

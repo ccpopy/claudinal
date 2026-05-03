@@ -555,8 +555,8 @@ export function Composer({
               {collaborationMode && (
                 <AttachmentChip
                   icon={<Bot className="size-3.5" />}
-                  label="协同"
-                  meta="下一条消息"
+                  label="协同模式"
+                  meta="本次发送生效"
                   onRemove={() => onCollaborationModeChange?.(false)}
                 />
               )}
@@ -650,9 +650,9 @@ export function Composer({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="h-10 rounded-xl"
-                  onSelect={(e) => {
-                    e.preventDefault()
+                  onSelect={() => {
                     onCollaborationModeChange?.(!collaborationMode)
+                    setPlusOpen(false)
                   }}
                 >
                   <Bot className="size-4" />

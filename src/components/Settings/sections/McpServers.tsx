@@ -824,77 +824,152 @@ function ServerCard({
   const disabled = row.config.disabled === true
   const type = serverType(row.config)
   const status = statusLabel(row.status, disabled)
+  const showDiagnostic =
+    !disabled && (status === "needs-auth" || status === "failed")
   return (
-    <div className="flex min-h-[72px] items-center gap-3 rounded-lg border bg-background p-3 transition-colors hover:bg-accent/35">
-      <div className="grid size-10 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
-        <Server className="size-4" />
-      </div>
-      <button
-        type="button"
-        onClick={row.readOnly ? undefined : onEdit}
-        disabled={row.readOnly}
-        className="min-w-0 flex-1 text-left"
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-semibold">{row.name}</span>
-          <StatusDot status={status} />
-          <Badge variant="outline" className="font-sans">
-            {scopeLabel(row.scope)}
-          </Badge>
-          {row.overridesGlobal && (
-            <Badge variant="warn" className="font-sans">
-              覆盖用户级
-            </Badge>
-          )}
-          {row.readOnly && (
-            <Badge variant="secondary" className="font-sans">
-              只读
-            </Badge>
-          )}
-          {row.duplicateOf && (
-            <Badge variant="warn" className="font-sans">
-              可能重复：{row.duplicateOf}
-            </Badge>
-          )}
-          <Badge variant="secondary">{type === "stdio" ? "STDIO" : "HTTP"}</Badge>
+    <div className="overflow-hidden rounded-lg border bg-background transition-colors hover:bg-accent/35">
+      <div className="flex min-h-[72px] items-center gap-3 p-3">
+        <div className="grid size-10 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
+          <Server className="size-4" />
         </div>
-        <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
-          {type === "stdio"
-            ? row.config.command || "未配置启动命令"
-            : row.config.url || "未配置 URL"}
+        <button
+          type="button"
+          onClick={row.readOnly ? undefined : onEdit}
+          disabled={row.readOnly}
+          className="min-w-0 flex-1 text-left"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-semibold">{row.name}</span>
+            <StatusDot status={status} />
+            <Badge variant="outline" className="font-sans">
+              {scopeLabel(row.scope)}
+            </Badge>
+            {row.overridesGlobal && (
+              <Badge variant="warn" className="font-sans">
+                覆盖用户级
+              </Badge>
+            )}
+            {row.readOnly && (
+              <Badge variant="secondary" className="font-sans">
+                只读
+              </Badge>
+            )}
+            {row.duplicateOf && (
+              <Badge variant="warn" className="font-sans">
+                可能重复：{row.duplicateOf}
+              </Badge>
+            )}
+            <Badge variant="secondary">{type === "stdio" ? "STDIO" : "HTTP"}</Badge>
+          </div>
+          <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
+            {type === "stdio"
+              ? row.config.command || "未配置启动命令"
+              : row.config.url || "未配置 URL"}
+          </div>
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Switch
+            checked={!disabled}
+            onCheckedChange={onToggle}
+            disabled={saving || row.readOnly}
+            aria-label={`${disabled ? "启用" : "停用"} ${row.name}`}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onEdit}
+            disabled={row.readOnly}
+            title={row.readOnly ? "来自 Claude CLI 配置，请打开配置文件修改" : undefined}
+          >
+            <Settings2 className="size-3.5" />
+            编辑
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:text-destructive"
+            onClick={onDelete}
+            disabled={row.readOnly}
+            aria-label={`卸载 ${row.name}`}
+            title={row.readOnly ? "来自 Claude CLI 配置，请打开配置文件修改" : undefined}
+          >
+            <Trash2 className="size-4" />
+          </Button>
         </div>
-      </button>
-      <div className="flex shrink-0 items-center gap-2">
-        <Switch
-          checked={!disabled}
-          onCheckedChange={onToggle}
-          disabled={saving || row.readOnly}
-          aria-label={`${disabled ? "启用" : "停用"} ${row.name}`}
-        />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={onEdit}
-          disabled={row.readOnly}
-          title={row.readOnly ? "来自 Claude CLI 配置，请打开配置文件修改" : undefined}
-        >
-          <Settings2 className="size-3.5" />
-          编辑
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 text-muted-foreground hover:text-destructive"
-          onClick={onDelete}
-          disabled={row.readOnly}
-          aria-label={`卸载 ${row.name}`}
-          title={row.readOnly ? "来自 Claude CLI 配置，请打开配置文件修改" : undefined}
-        >
-          <Trash2 className="size-4" />
-        </Button>
       </div>
+      {showDiagnostic && (
+        <ServerDiagnostic name={row.name} status={status} type={type} />
+      )}
+    </div>
+  )
+}
+
+function ServerDiagnostic({
+  name,
+  status,
+  type
+}: {
+  name: string
+  status: string
+  type: "stdio" | "http"
+}) {
+  const isNeedsAuth = status === "needs-auth"
+  const tone = isNeedsAuth
+    ? "border-warn/40 bg-warn/5 text-foreground"
+    : "border-destructive/30 bg-destructive/5 text-foreground"
+  return (
+    <div className={cn("border-t px-4 py-3 text-[11px] space-y-1.5", tone)}>
+      <div className="font-medium">
+        {isNeedsAuth
+          ? "需要 OAuth 登录"
+          : "MCP server 未能启动"}
+      </div>
+      {isNeedsAuth ? (
+        <>
+          <div className="text-muted-foreground">
+            Claudinal 不接管 OAuth 流程。请在终端运行
+            {type === "http" ? (
+              <>
+                <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-mono">
+                  claude mcp authenticate {name}
+                </code>{" "}
+                完成浏览器登录；
+              </>
+            ) : (
+              <>
+                {" "}
+                CLI 自带的鉴权命令完成登录（如{" "}
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
+                  claude mcp authenticate {name}
+                </code>
+                ），或直接使用对应工具的官方登录方式（gh / gcloud / npm login 等）；
+              </>
+            )}
+            登录态会写入 CLI 维护的凭据文件，下次启动会话即可生效。
+          </div>
+          <div className="text-muted-foreground">
+            登录后可在「MCP 服务器」页右上「刷新」按钮重新拉一次状态。
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="text-muted-foreground">
+            常见原因：1) 启动命令路径不存在 / 缺依赖；2) 项目级配置覆盖了用户级 server，但项目目录缺权限；3)
+            网络代理或 TLS 证书问题。可在「网络代理」页确认代理是否生效，或在终端用同样的命令手动跑一次看 stderr。
+          </div>
+          {type === "http" && (
+            <div className="text-muted-foreground">
+              对于 HTTP MCP，先确认 URL 可达；若需要鉴权，运行
+              <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-mono">
+                claude mcp authenticate {name}
+              </code>
+              。
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }

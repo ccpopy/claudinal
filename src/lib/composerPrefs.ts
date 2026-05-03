@@ -1,6 +1,6 @@
 import { readClaudeSettings, writeClaudeSettings } from "@/lib/ipc"
-import { loadSettings } from "@/lib/settings"
 import { emitSettingsBus } from "@/lib/settingsBus"
+import type { ClaudeEvent, ContentBlock } from "@/types/events"
 
 // Composer 数据层（重新设计 2026-04-30）：
 //
@@ -57,7 +57,7 @@ function consumeLegacyPrefs(): Partial<ComposerPrefs> | null {
  * 故 max 不会出现在这里——max 必须从会话级 sidecar 来。
  */
 export async function loadGlobalDefault(): Promise<ComposerPrefs> {
-  // 优先读 ~/.claude/settings.json（CLI 权威）
+  // ~/.claude/settings.json 是 CLI 权威，作为全局默认的唯一事实源
   try {
     const raw = await readClaudeSettings("global")
     const obj = (raw ?? {}) as Record<string, unknown>
@@ -70,23 +70,15 @@ export async function loadGlobalDefault(): Promise<ComposerPrefs> {
   } catch {
     // 文件缺失/损坏不致命
   }
-  // 回落 app settings
-  const cfg = loadSettings()
-  const fallback: ComposerPrefs = {
-    model: cfg.defaultModel.trim(),
-    effort: cfg.defaultEffort.trim()
-  }
   // 兜底吸收旧 localStorage 一次（避免用户已有偏好突然全部归零）
-  if (!fallback.model && !fallback.effort) {
-    const legacy = consumeLegacyPrefs()
-    if (legacy) {
-      return {
-        model: typeof legacy.model === "string" ? legacy.model.trim() : "",
-        effort: typeof legacy.effort === "string" ? legacy.effort.trim() : ""
-      }
+  const legacy = consumeLegacyPrefs()
+  if (legacy) {
+    return {
+      model: typeof legacy.model === "string" ? legacy.model.trim() : "",
+      effort: typeof legacy.effort === "string" ? legacy.effort.trim() : ""
     }
   }
-  return fallback
+  return { model: "", effort: "" }
 }
 
 /**
@@ -119,6 +111,126 @@ export function pickComposerFromSidecar(
   const model = typeof obj.model === "string" ? obj.model.trim() : ""
   const effort = typeof obj.effort === "string" ? obj.effort.trim() : ""
   if (!model && !effort) return null
+  return { model, effort }
+}
+
+export function mergeComposerPrefs(
+  base: ComposerPrefs | null,
+  override: ComposerPrefs | null
+): ComposerPrefs | null {
+  const model = override?.model || base?.model || ""
+  const effort = override?.effort || base?.effort || ""
+  if (!model && !effort) return null
+  return { model, effort }
+}
+
+function decodeTagText(text: string): string {
+  return text
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&amp;", "&")
+}
+
+function readSimpleTag(text: string, tag: string): string | null {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i").exec(text)
+  if (!match) return null
+  return decodeTagText(match[1]).trim()
+}
+
+function normalizeEffort(value: string): EffortLevel | null {
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, "")
+  if (!normalized || normalized === "auto" || normalized === "default") return ""
+  if (normalized === "low") return "low"
+  if (normalized === "medium") return "medium"
+  if (normalized === "high") return "high"
+  if (normalized === "xhigh" || normalized === "extrahigh") return "xhigh"
+  if (normalized === "max" || normalized === "maximum") return "max"
+  return null
+}
+
+function messageTextBlocks(ev: ClaudeEvent): string[] {
+  if (!ev || typeof ev !== "object") return []
+  const message = (ev as { message?: unknown }).message
+  if (!message || typeof message !== "object") return []
+  const content = (message as { content?: unknown }).content
+  if (typeof content === "string") return [content]
+  if (!Array.isArray(content)) return []
+  return (content as ContentBlock[]).flatMap((block) => {
+    const obj = block as unknown as Record<string, unknown>
+    return obj.type === "text" && typeof obj.text === "string" ? [obj.text] : []
+  })
+}
+
+export function composerPrefsPatchFromCommandEvent(
+  ev: ClaudeEvent
+): Partial<ComposerPrefs> | null {
+  for (const text of messageTextBlocks(ev)) {
+    const commandName = readSimpleTag(text, "command-name")
+    if (!commandName) continue
+    const command = commandName.trim().replace(/^\//, "").toLowerCase()
+    const args = readSimpleTag(text, "command-args") ?? ""
+    if (command === "effort") {
+      const effort = normalizeEffort(args)
+      if (effort !== null) return { effort }
+    }
+    if (command === "model") {
+      const modelArg = args.trim()
+      const model =
+        !modelArg || ["default", "auto"].includes(modelArg.toLowerCase())
+          ? ""
+          : modelArg
+      return { model }
+    }
+  }
+  return null
+}
+
+export function pickComposerFromTranscript(
+  events: ClaudeEvent[]
+): ComposerPrefs | null {
+  let model = ""
+  let effort = ""
+  let explicitModel = false
+  let hasValue = false
+
+  for (const ev of events) {
+    const t = (ev as { type?: string }).type
+    if (t === "system") {
+      const subtype = (ev as { subtype?: string }).subtype
+      const initModel = (ev as { model?: unknown }).model
+      if (
+        subtype === "init" &&
+        !explicitModel &&
+        typeof initModel === "string" &&
+        initModel.trim()
+      ) {
+        model = initModel.trim()
+        hasValue = true
+      }
+    } else if (t === "assistant") {
+      const msgModel = (ev as { message?: { model?: unknown } }).message?.model
+      if (!explicitModel && typeof msgModel === "string" && msgModel.trim()) {
+        model = msgModel.trim()
+        hasValue = true
+      }
+    }
+
+    const patch = composerPrefsPatchFromCommandEvent(ev)
+    if (!patch) continue
+    if (patch.model !== undefined) {
+      model = patch.model
+      explicitModel = true
+      hasValue = hasValue || !!patch.model
+    }
+    if (patch.effort !== undefined) {
+      effort = patch.effort
+      hasValue = hasValue || !!patch.effort
+    }
+  }
+
+  if (!hasValue && !model && !effort) return null
   return { model, effort }
 }
 

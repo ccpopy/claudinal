@@ -274,7 +274,7 @@ export function Account() {
       <SettingsSectionHeader
         icon={Monitor}
         title="账户和使用情况"
-        description="登录方式来自 claude auth status；env 中的 AUTH_TOKEN / API_KEY 优先。"
+        description="查看和管理 Anthropic 账号的登录状态与计划用量。"
         actions={
           <Button
             variant="outline"
@@ -376,7 +376,7 @@ function AuthActions({
   if (auth.kind === "third-party" || auth.kind === "official-key") {
     return (
       <span className="text-[11px] text-muted-foreground">
-        当前由环境变量提供凭据，CLI 登录态不参与
+        凭据由环境变量提供，CLI 登录状态不适用
       </span>
     )
   }
@@ -470,7 +470,7 @@ function PlanUsageSection({
           <span className="break-all">{error}</span>
         </div>
         <div className="text-[11px] text-muted-foreground">
-          仅 Anthropic OAuth 登录用户可拉取；macOS 凭据存 Keychain 待 P4 支持。
+          仅 OAuth 登录用户可查看。macOS 上 token 存在系统钥匙串（"Claude Code-credentials"），桌面端不读取；终端运行 `claude auth status` 可查看登录态。
         </div>
       </section>
     )
@@ -492,7 +492,18 @@ function PlanUsageSection({
   return (
     <section className="rounded-lg border bg-card p-5 space-y-5">
       <div className="space-y-3">
-        <div className="text-sm font-semibold">计划用量限额</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-sm font-semibold">计划用量限额</div>
+          <Badge
+            variant="outline"
+            className="font-sans text-[10px] tracking-normal"
+          >
+            Anthropic OAuth
+          </Badge>
+        </div>
+        <div className="text-[11px] text-muted-foreground">
+          数据来自 <code className="font-mono">/api/oauth/usage</code>，显示 Anthropic 账号的 5 小时滚动窗口与每周限额，与桌面端是否运行无关。「设置 → 统计」展示的是本地会话用量。
+        </div>
         {fiveHour && (
           <UsageBar
             label="当前会话"

@@ -41,9 +41,14 @@ pub fn runtime_cwd_from_env() -> Result<String> {
 }
 
 pub fn runtime_session_from_env() -> Option<String> {
-    std::env::var("CLAUDINAL_RUNTIME_SESSION_ID")
+    let runtime_session_id = std::env::var("CLAUDINAL_RUNTIME_SESSION_ID")
         .ok()
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.trim().is_empty())?;
+    match store::resolve_runtime_session_id(&runtime_session_id) {
+        Ok(Some(claude_session_id)) => Some(claude_session_id),
+        Ok(None) => Some(runtime_session_id),
+        Err(_) => Some(runtime_session_id),
+    }
 }
 
 pub fn enabled_providers_from_env() -> Option<Vec<String>> {

@@ -191,7 +191,7 @@ export function Personalization({ cwd }: Props) {
       <SettingsSectionHeader
         icon={UserCircle}
         title="个性化"
-        description="自定义 CLAUDE.md 与 Composer 的高频命令。"
+        description="管理 CLAUDE.md 自定义指令和常用斜杠命令。"
         actions={
           <Button
             variant="outline"
@@ -212,7 +212,7 @@ export function Personalization({ cwd }: Props) {
             <div>
               <h3 className="text-sm font-semibold">自定义指令</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
-                通过 CLAUDE.md 给 Claude 长期上下文。
+                通过 CLAUDE.md 为 Claude 设置系统提示词，每次会话自动注入。
               </p>
             </div>
 

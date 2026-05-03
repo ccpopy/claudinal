@@ -193,9 +193,27 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect::<String>()
 }
 
-fn is_internal_command_text(s: &str) -> bool {
+pub(crate) fn is_internal_command_text(s: &str) -> bool {
     let trimmed = s.trim_start();
-    trimmed.starts_with("<command-name>") && trimmed.contains("</command-name>")
+    if let Some(rest) = trimmed.strip_prefix("<command-name>") {
+        return rest.contains("</command-name>");
+    }
+    let Some(after_prefix) = trimmed.strip_prefix("<local-command-") else {
+        return false;
+    };
+    let Some(end_idx) = after_prefix.find('>') else {
+        return false;
+    };
+    let tag_suffix = &after_prefix[..end_idx];
+    if tag_suffix.is_empty()
+        || !tag_suffix
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return false;
+    }
+    let closing = format!("</local-command-{tag_suffix}>");
+    after_prefix[end_idx + 1..].contains(&closing)
 }
 
 fn title_candidate(s: &str, max_chars: usize) -> Option<String> {
@@ -286,7 +304,13 @@ pub fn write_session_sidecar(cwd: &str, session_id: &str, data: serde_json::Valu
         }
     }
     let text = serde_json::to_string_pretty(&data)?;
-    std::fs::write(&path, text).map_err(Error::from)?;
+    // 原子写：先写临时文件再 rename，避免半截 sidecar 影响后续 composer 偏好恢复。
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, text).map_err(Error::from)?;
+    if let Err(err) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::from(err));
+    }
     Ok(())
 }
 
@@ -342,11 +366,96 @@ mod tests {
         let raw = "<command-name>/effort</command-name>\n\
             <command-message>effort</command-message>\n\
             <command-args>max</command-args>";
+        let stdout = "<local-command-stdout>Set effort level to max</local-command-stdout>";
 
         assert_eq!(title_candidate(raw, 120), None);
+        assert_eq!(title_candidate(stdout, 120), None);
         assert_eq!(
             title_candidate(" 更新 plan.md 和项目事件 ", 120),
             Some("更新 plan.md 和项目事件".to_string())
         );
+    }
+
+    #[test]
+    fn title_candidate_returns_none_for_blank_input() {
+        assert_eq!(title_candidate("   ", 120), None);
+        assert_eq!(title_candidate("", 120), None);
+    }
+
+    #[test]
+    fn title_candidate_truncates_to_char_limit_without_panicking_on_multibyte() {
+        // 5 chars 限制，每个汉字算一个 char
+        assert_eq!(
+            title_candidate("一二三四五六七八", 5),
+            Some("一二三四五".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_cwd_replaces_non_ascii_alphanumeric_with_dash() {
+        // ASCII：字母数字 / 连字符保留，其他每个字符被替换为单独一个 -（不压缩相邻 -）
+        assert_eq!(
+            encode_cwd("F:\\project\\claude-test"),
+            "F--project-claude-test"
+        );
+        assert_eq!(encode_cwd("/Users/me/repo"), "-Users-me-repo");
+        assert_eq!(encode_cwd("with space"), "with-space");
+        // 中文不属于 ASCII alphanumeric，每个字符各替换为一个 -
+        // F:\项目\demo → F + - + - + - + - + - + d + e + m + o
+        assert_eq!(encode_cwd("F:\\项目\\demo"), "F-----demo");
+    }
+
+    #[test]
+    fn encode_cwd_unicode_compat_preserves_non_ascii_alphanumerics() {
+        // 兼容编码把中文当作 alphanumeric 保留下来；分隔符仍各自被替换为一个 -
+        // F:\项目\demo → F + - + - + 项 + 目 + - + d + e + m + o
+        assert_eq!(encode_cwd_unicode_compat("F:\\项目\\demo"), "F--项目-demo");
+        assert_eq!(
+            encode_cwd_unicode_compat("F:\\project\\claude-test"),
+            "F--project-claude-test"
+        );
+    }
+
+    #[test]
+    fn project_dirs_contains_distinct_ascii_and_unicode_paths_when_relevant() {
+        let dirs = project_dirs("F:\\项目\\demo").expect("dirs");
+        // ASCII 编码结果
+        assert!(dirs.iter().any(|p| p.ends_with("F-----demo")));
+        // Unicode 兼容编码结果
+        assert!(dirs.iter().any(|p| p.ends_with("F--项目-demo")));
+        assert_eq!(dirs.len(), 2);
+
+        // ASCII-only 路径下两个编码结果一致，应该只保留一个
+        let ascii_dirs = project_dirs("F:\\project\\demo").expect("ascii dirs");
+        assert_eq!(ascii_dirs.len(), 1);
+    }
+
+    #[test]
+    fn validate_session_id_blocks_path_separators_and_traversal() {
+        assert!(validate_session_id("abc-123").is_ok());
+        assert!(validate_session_id("good_id-2026").is_ok());
+        assert!(validate_session_id("../escape").is_err());
+        assert!(validate_session_id("with/slash").is_err());
+        assert!(validate_session_id("with\\backslash").is_err());
+        assert!(validate_session_id("dot..segment").is_err());
+    }
+
+    #[test]
+    fn is_internal_command_text_recognizes_command_blocks() {
+        assert!(is_internal_command_text(
+            "<command-name>/help</command-name>"
+        ));
+        assert!(is_internal_command_text(
+            "  <local-command-stdout>ok</local-command-stdout>"
+        ));
+        // 闭合标签未出现 → 不算命令文本
+        assert!(!is_internal_command_text("<command-name>/help"));
+        // 标签后缀含非法字符 → 不算
+        assert!(!is_internal_command_text(
+            "<local-command-bad name>x</local-command-bad name>"
+        ));
+        // 空字符串 / 普通文本
+        assert!(!is_internal_command_text(""));
+        assert!(!is_internal_command_text("普通用户消息"));
     }
 }

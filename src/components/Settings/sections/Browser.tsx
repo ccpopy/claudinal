@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import {
+  AlertTriangle,
   CheckCircle2,
   Circle,
   Copy,
@@ -8,6 +9,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Stethoscope,
   XCircle
 } from "lucide-react"
 import { toast } from "sonner"
@@ -19,6 +21,7 @@ import {
   openPath,
   readClaudeJsonMcpConfigs,
   readClaudeMcpConfig,
+  readClaudeSettings,
   writeClaudeMcpConfig,
   type PlaywrightInstallState
 } from "@/lib/ipc"
@@ -59,6 +62,27 @@ interface BrowserMcpRow {
   status: string | null
 }
 
+interface PlaywrightEnvEntry {
+  key: string
+  value: string
+}
+
+// 用户在 ~/.claude/settings.json 的 env 里手动设置这些时，可能直接影响
+// Playwright 启动行为；列出来让用户对照排查。
+const PLAYWRIGHT_ENV_KEYS = [
+  "PLAYWRIGHT_BROWSERS_PATH",
+  "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+  "PLAYWRIGHT_LAUNCH_OPTIONS",
+  "PLAYWRIGHT_HEADLESS",
+  "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH",
+  "PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH",
+  "PLAYWRIGHT_WEBKIT_EXECUTABLE_PATH"
+]
+
+function isFailingStatus(status: string | null): boolean {
+  return status === "failed" || status === "error"
+}
+
 function isBrowserServer(name: string, config: McpServerConfig): boolean {
   const haystack = [name, config.command ?? "", ...(config.args ?? [])]
     .join(" ")
@@ -75,9 +99,11 @@ export function Browser({ cwd }: Props) {
   const [busy, setBusy] = useState(false)
   const [rows, setRows] = useState<BrowserMcpRow[]>([])
   const [pw, setPw] = useState<PlaywrightInstallState | null>(null)
+  const [envEntries, setEnvEntries] = useState<PlaywrightEnvEntry[]>([])
   const enabledBrowserMcpCount = rows.filter(
     (row) => row.config.disabled !== true
   ).length
+  const failingRows = rows.filter((row) => isFailingStatus(row.status))
   const hasChromium = !!pw?.chromium
   const browserReady = enabledBrowserMcpCount > 0 && hasChromium
 
@@ -145,6 +171,21 @@ export function Browser({ cwd }: Props) {
       } catch {
         setPw(null)
       }
+
+      try {
+        const s = await readClaudeSettings("global")
+        const env = ((s as { env?: Record<string, string> } | null)?.env) ?? {}
+        const entries: PlaywrightEnvEntry[] = []
+        for (const key of PLAYWRIGHT_ENV_KEYS) {
+          const value = env[key]
+          if (typeof value === "string" && value.trim()) {
+            entries.push({ key, value })
+          }
+        }
+        setEnvEntries(entries)
+      } catch {
+        setEnvEntries([])
+      }
     } finally {
       setLoading(false)
     }
@@ -209,7 +250,7 @@ export function Browser({ cwd }: Props) {
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold">Claude 浏览器可用性</h3>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Claude CLI 需要同时加载浏览器 MCP，并能找到 Playwright 浏览器二进制。
+                  Claude CLI 需要加载浏览器 MCP 并找到 Playwright 浏览器才能操控浏览器。
                 </p>
               </div>
               <Badge variant={browserReady ? "primary" : "warn"} className="font-sans">
@@ -242,7 +283,7 @@ export function Browser({ cwd }: Props) {
             <div>
               <h3 className="text-sm font-semibold">浏览器 MCP</h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                这里读取的是 MCP 服务器页同一份配置，不维护第二套浏览器配置。通过 MCP 让 Claude 操作浏览器；写入{" "}
+                读取的是 MCP 服务器页的同一份配置。通过 MCP 让 Claude 操控浏览器；配置文件为{" "}
                 <code className="font-mono">~/.claude/mcp.json</code> 或{" "}
                 <code className="font-mono">&lt;cwd&gt;/.mcp.json</code>，由 CLI 加载。
               </p>
@@ -287,18 +328,113 @@ export function Browser({ cwd }: Props) {
             )}
           </section>
 
+          {(failingRows.length > 0 || envEntries.length > 0) && (
+            <section className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Stethoscope className="size-4 text-warn" />
+                <h3 className="text-sm font-semibold">MCP 启动诊断</h3>
+                <Badge variant="warn" className="font-sans text-[10px]">
+                  {failingRows.length > 0 ? "检测到失败" : "环境变量提醒"}
+                </Badge>
+              </div>
+
+              {failingRows.length > 0 && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 space-y-3 text-xs">
+                  <div className="flex items-start gap-2">
+                    <XCircle className="size-4 shrink-0 text-destructive mt-0.5" />
+                    <div className="min-w-0 space-y-1.5">
+                      <div className="font-medium text-destructive">
+                        以下浏览器 MCP 启动失败：
+                      </div>
+                      <ul className="ml-1 space-y-0.5">
+                        {failingRows.map((row) => (
+                          <li
+                            key={`${row.scope}:${row.name}`}
+                            className="font-mono break-all"
+                          >
+                            · {row.name}
+                            <span className="ml-1 text-[11px] text-muted-foreground">
+                              （{row.scope === "global" ? "用户级" : "项目级"} · {row.status}）
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5 text-muted-foreground">
+                    <div className="font-medium text-foreground">常见原因 & 排查：</div>
+                    <ol className="ml-4 list-decimal space-y-1">
+                      <li>
+                        <strong className="text-foreground">npx 不可用</strong>：MCP command 默认是 <code className="font-mono">npx</code>，确认本机已安装 Node.js（推荐 ≥ 18），并且 PATH 中可执行 <code className="font-mono">npx --version</code>。
+                      </li>
+                      <li>
+                        <strong className="text-foreground">Playwright 浏览器缺失</strong>：在终端运行{" "}
+                        <code className="font-mono">{INSTALL_HINT}</code>{" "}
+                        安装 Chromium。
+                      </li>
+                      <li>
+                        <strong className="text-foreground">网络问题</strong>：首次拉取 <code className="font-mono">@playwright/mcp</code> 需要 npm registry 可达；如果在内网，先到「网络代理」页配置代理或在 settings.json 中设置 <code className="font-mono">npm_config_registry</code>。
+                      </li>
+                      <li>
+                        <strong className="text-foreground">权限被拒</strong>：macOS 首次启动 Chromium 时系统会要求授权；Linux/WSL 缺 GUI 库时需安装 <code className="font-mono">libnss3 libxkbcommon libxcomposite</code> 等。
+                      </li>
+                      <li>
+                        改完配置后回到「MCP 服务器」页重启对应 server，状态会刷新到这里。
+                      </li>
+                    </ol>
+                  </div>
+                  <div className="pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={refresh}
+                      disabled={loading}
+                    >
+                      <RefreshCw className={loading ? "size-3.5 animate-spin" : "size-3.5"} />
+                      重新检测
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {envEntries.length > 0 && (
+                <div className="rounded-lg border border-warn/30 bg-warn/5 p-4 space-y-2 text-xs">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="size-4 shrink-0 text-warn mt-0.5" />
+                    <div className="min-w-0 space-y-1.5">
+                      <div className="font-medium text-foreground">
+                        settings.json 中检测到 {envEntries.length} 个 PLAYWRIGHT_* 环境变量
+                      </div>
+                      <ul className="space-y-0.5 font-mono break-all">
+                        {envEntries.map((e) => (
+                          <li key={e.key}>
+                            "{e.key}": "{e.value}"
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="text-muted-foreground">
+                        这些值会在 Claude CLI 启动时合并到子进程，可能改变浏览器路径 / 跳过下载 / 强制启动选项。如果与上面的诊断状态不一致，先确认这些字段是有意保留还是历史残留。
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           <section className="space-y-3">
             <div>
               <h3 className="text-sm font-semibold">Playwright 浏览器</h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                浏览器 MCP 调用 Playwright 前需要本机浏览器二进制。下面只检测{" "}
-                <code className="font-mono">ms-playwright</code> 缓存状态；缓存目录只是诊断位置，不代表 Claude CLI 已加载 MCP。
+                Playwright 需要本地浏览器才能运行。此处检测{" "}
+                <code className="font-mono">ms-playwright</code> 缓存状态，用于排查浏览器是否安装到位。
               </p>
             </div>
             <div className="space-y-3 rounded-lg border bg-card p-5">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <Label className="text-sm">缓存目录（仅诊断）</Label>
+                  <Label className="text-sm">缓存目录</Label>
                   <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
                     {pw?.root_path ?? (loading ? "检测中…" : "未检测")}
                   </div>

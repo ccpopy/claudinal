@@ -1,6 +1,7 @@
 import {
   Archive,
   ArchiveRestore,
+  Bot,
   Copy,
   FileText,
   FolderOpen,
@@ -41,6 +42,8 @@ interface Props {
   onDelete?: () => void
   onShowDiff?: () => void
   diffCount?: number
+  onShowCollabFlow?: () => void
+  collabEnabled?: boolean
 }
 
 export function ChatHeader({
@@ -54,7 +57,9 @@ export function ChatHeader({
   onArchive,
   onDelete,
   onShowDiff,
-  diffCount = 0
+  diffCount = 0,
+  onShowCollabFlow,
+  collabEnabled = false
 }: Props) {
   const pinTarget = resumeSessionId ?? jsonlSessionId
   const pinned = pinTarget ? isPinned(project.id, pinTarget) : false
@@ -73,7 +78,7 @@ export function ChatHeader({
 
   const handleTogglePin = () => {
     if (!pinTarget) {
-      toast.error("当前还没有 session id，等首次对话或恢复后再置顶")
+      toast.error("当前没有会话，发起对话后可置顶")
       return
     }
     togglePin(project.id, pinTarget)
@@ -177,6 +182,29 @@ export function ChatHeader({
         </DropdownMenu>
 
         <div className="ml-auto flex items-center gap-1">
+          {onShowCollabFlow && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground hover:text-foreground relative"
+                  aria-label="协同流程"
+                  onClick={() => onShowCollabFlow()}
+                >
+                  <Bot className="size-4" />
+                  {collabEnabled && (
+                    <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {collabEnabled
+                  ? "协同流程（已启用）"
+                  : "协同流程（未启用）"}
+              </TooltipContent>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

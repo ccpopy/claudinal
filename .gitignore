@@ -8,6 +8,7 @@ tsconfig.tsbuildinfo
 
 # local Claude settings
 .claude/settings.local.json
+.claudinal/
 
 # rust / tauri
 src-tauri/target/

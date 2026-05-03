@@ -370,6 +370,27 @@ export async function writeTextFile(path: string, contents: string): Promise<voi
   return invoke("write_text_file", { path, contents })
 }
 
+export interface SessionIndexDiagnostics {
+  path: string
+  schemaVersion: number
+  expectedSchemaVersion: number
+  fileSizeBytes: number
+  sessionIndexRows: number
+  sessionUsageRows: number
+  activityBucketRows: number
+  heatmapProgressRows: number
+  ftsProgressRows: number
+  sessionTextRows: number
+}
+
+export async function sessionIndexDiagnostics(): Promise<SessionIndexDiagnostics> {
+  return invoke<SessionIndexDiagnostics>("session_index_diagnostics")
+}
+
+export async function rebuildSessionIndex(): Promise<void> {
+  return invoke("rebuild_session_index")
+}
+
 export async function keychainAvailable(): Promise<boolean> {
   return invoke<boolean>("keychain_available")
 }

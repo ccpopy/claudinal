@@ -154,10 +154,10 @@ export function Statistics() {
         title={mode === "pricing" ? "定价设置" : "统计"}
         description={
           mode === "pricing" ? (
-            "为不同厂商/模型配置 4 维价格，统计页将按规则重算成本。规则按组内顺序匹配，命中即停。"
+            "为不同厂商和模型配置价格参数，统计页将按规则重算成本。规则按组内顺序匹配，命中即停。"
           ) : (
             <>
-              全部会话累计来源于 <code className="font-mono text-xs">~/.claude/projects/</code> 目录，此处只统计 gui 端 result 的数据；活跃度按本地时区聚合最近 {HEATMAP_DAYS} 天。成本按「定价设置」中的规则重算。
+              统计桌面端 GUI 中运行的会话。终端直接使用 CLI 的会话不计入。成本按「定价设置」中的规则计算，活跃度按本地时区统计最近 {HEATMAP_DAYS} 天。
             </>
           )
         }
@@ -214,9 +214,17 @@ export function Statistics() {
       ) : (
         <SettingsSectionBody>
           <section className="rounded-lg border bg-card p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                全部会话累计
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  全部会话累计
+                </div>
+                <Badge
+                  variant="outline"
+                  className="font-sans text-[10px] tracking-normal"
+                >
+                  GUI sidecar
+                </Badge>
               </div>
               {usage && usage.last_updated > 0 && (
                 <div className="text-[11px] text-muted-foreground tabular-nums">

@@ -8,9 +8,11 @@ import {
   PlugZap,
   Save,
   ShieldAlert,
+  Trash2,
   XCircle
 } from "lucide-react"
 import { toast } from "sonner"
+import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,7 +24,8 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   keychainAvailable,
   readClaudeSettings,
-  testProxyConnection
+  testProxyConnection,
+  writeClaudeSettings
 } from "@/lib/ipc"
 import {
   describeProxy,
@@ -69,16 +72,45 @@ const TEST_TARGETS = [
 
 type SecretStorage = "keychain" | "localstorage" | "empty" | "unknown"
 
+interface ConflictEntry {
+  key: string
+  value: string
+}
+
+// Claude CLI 启动时会把 settings.json 中 env 字段合并到子进程环境，
+// 这些 key 与 Claudinal 注入的代理变量同名，会覆盖 GUI 配置。
+const CONFLICT_KEYS = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy"
+]
+
+function collectConflicts(env: Record<string, string>): ConflictEntry[] {
+  const out: ConflictEntry[] = []
+  for (const key of CONFLICT_KEYS) {
+    const value = env[key]
+    if (typeof value === "string" && value.trim()) {
+      out.push({ key, value })
+    }
+  }
+  return out
+}
+
 export function Network() {
   // 初始用 DEFAULT_PROXY 占位，避免渲染同步从 localStorage 读漏密码导致的闪烁
   const [config, setConfig] = useState<ProxyConfig>(() => ({ ...DEFAULT_PROXY }))
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [conflict, setConflict] = useState<{
-    https?: string
-    http?: string
-  } | null>(null)
+  const [conflicts, setConflicts] = useState<ConflictEntry[]>([])
+  const [conflictsLoading, setConflictsLoading] = useState(false)
+  const [confirmCleanup, setConfirmCleanup] = useState(false)
+  const [cleanupBusy, setCleanupBusy] = useState(false)
   const [test, setTest] = useState<TestState>({ kind: "idle" })
   const [target, setTarget] = useState<string>(TEST_TARGETS[0].value)
   const [kcOk, setKcOk] = useState<boolean | null>(null)
@@ -89,17 +121,22 @@ export function Network() {
     dirtyRef.current = dirty
   }, [dirty])
 
+  const refreshConflicts = async () => {
+    setConflictsLoading(true)
+    try {
+      const s = await readClaudeSettings("global")
+      const env = ((s as { env?: Record<string, string> } | null)?.env) ?? {}
+      setConflicts(collectConflicts(env))
+    } catch {
+      setConflicts([])
+    } finally {
+      setConflictsLoading(false)
+    }
+  }
+
   useEffect(() => {
     // 检测 settings.json env 是否已设代理 —— CLI 会优先合并 env 覆盖 spawn 注入
-    readClaudeSettings("global")
-      .then((s) => {
-        const env = ((s as { env?: Record<string, string> } | null)?.env) ?? {}
-        const c: { https?: string; http?: string } = {}
-        if (env.HTTPS_PROXY) c.https = env.HTTPS_PROXY
-        if (env.HTTP_PROXY) c.http = env.HTTP_PROXY
-        setConflict(c.https || c.http ? c : null)
-      })
-      .catch(() => setConflict(null))
+    void refreshConflicts()
 
     // 异步：探测 keychain 可用性 + 加载完整配置（含从 keychain 拿 password）
     let cancelled = false
@@ -150,6 +187,37 @@ export function Network() {
   const update = (patch: Partial<ProxyConfig>) => {
     setConfig((c) => ({ ...c, ...patch }))
     setDirty(true)
+  }
+
+  const handleCleanupConflicts = async () => {
+    setConfirmCleanup(false)
+    setCleanupBusy(true)
+    try {
+      const raw = (await readClaudeSettings("global")) as
+        | (Record<string, unknown> & { env?: Record<string, string> })
+        | null
+      const next = { ...(raw ?? {}) }
+      const env = { ...((raw?.env as Record<string, string> | undefined) ?? {}) }
+      let removed = 0
+      for (const key of CONFLICT_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(env, key)) {
+          delete env[key]
+          removed += 1
+        }
+      }
+      if (removed === 0) {
+        toast.info("settings.json 中已没有冲突的代理变量")
+        return
+      }
+      next.env = env
+      await writeClaudeSettings("global", next as Record<string, unknown>)
+      toast.success(`已从 settings.json 中移除 ${removed} 个代理变量`)
+      await refreshConflicts()
+    } catch (e) {
+      toast.error(`清理失败：${String(e)}`)
+    } finally {
+      setCleanupBusy(false)
+    }
   }
 
   const save = async () => {
@@ -213,21 +281,50 @@ export function Network() {
       />
 
       <SettingsSectionBody>
-          {conflict && (
-            <section className="rounded-lg border border-warn/40 bg-warn/10 p-4 flex items-start gap-2">
+          {conflicts.length > 0 && (
+            <section className="rounded-lg border border-warn/40 bg-warn/10 p-4 flex items-start gap-3">
               <AlertTriangle className="size-4 text-warn shrink-0 mt-0.5" />
-              <div className="text-xs text-foreground/90 space-y-1">
+              <div className="min-w-0 flex-1 text-xs text-foreground/90 space-y-2">
                 <div className="font-medium">
-                  如果 settings.json 中 env 字段属性值配置了代理的话，会覆盖此处配置
+                  settings.json 中 env 含 {conflicts.length} 个代理相关字段，会覆盖此处配置
                 </div>
-                {conflict.https && (
-                  <div className="font-mono">"HTTPS_PROXY": "{conflict.https}"</div>
-                )}
-                {conflict.http && (
-                  <div className="font-mono">"HTTP_PROXY": "{conflict.http}"</div>
-                )}
+                <div className="space-y-1">
+                  {conflicts.map((c) => (
+                    <div key={c.key} className="font-mono break-all">
+                      "{c.key}": "{c.value}"
+                    </div>
+                  ))}
+                </div>
                 <div className="text-muted-foreground">
-                  CLI 启动时会把 settings.json 中的 env 属性值合并到进程环境，优先级高于 spawn 注入。要让此处生效，请打开 settings.json 删除上述字段。
+                  CLI 启动时会把 env 合并到进程环境，优先级高于 GUI 注入。点击下方「一键清理」会从 settings.json 中移除这些字段（仅这些 key），不影响其他 env 设置。
+                </div>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirmCleanup(true)}
+                    disabled={cleanupBusy}
+                  >
+                    {cleanupBusy ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-3.5" />
+                    )}
+                    一键清理冲突变量
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void refreshConflicts()}
+                    disabled={conflictsLoading || cleanupBusy}
+                  >
+                    {conflictsLoading ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : null}
+                    重新检测
+                  </Button>
                 </div>
               </div>
             </section>
@@ -343,7 +440,7 @@ export function Network() {
               <div className="min-w-0">
                 <Label className="text-sm">测试连接</Label>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  通过当前代理 HEAD 一次目标 URL，验证能否访问 Claude / 外网。不影响保存。
+                  通过代理测试目标 URL 的连通性，仅检测，不修改任何设置。
                 </p>
               </div>
               <Button
@@ -404,6 +501,27 @@ export function Network() {
         </Button>
         {dirty && <span className="text-xs text-warn">有未保存的修改</span>}
       </SettingsSectionFooter>
+
+      <ConfirmDialog
+        open={confirmCleanup}
+        onOpenChange={setConfirmCleanup}
+        title="清理 settings.json 中的代理变量"
+        confirmText={cleanupBusy ? "清理中…" : "清理"}
+        description={
+          <span>
+            将从 <code className="font-mono">~/.claude/settings.json</code> 的 <code className="font-mono">env</code> 中删除以下字段：
+            <span className="mt-2 block space-y-0.5 font-mono text-[11px] text-foreground/85">
+              {conflicts.map((c) => (
+                <span key={c.key} className="block break-all">
+                  {c.key} = "{c.value}"
+                </span>
+              ))}
+            </span>
+            <span className="mt-2 block">其他 env 字段保留。该改动会立刻写盘，下次启动会话生效。</span>
+          </span>
+        }
+        onConfirm={handleCleanupConflicts}
+      />
     </SettingsSection>
   )
 }

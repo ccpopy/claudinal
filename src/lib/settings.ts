@@ -15,26 +15,20 @@ export const DEFAULT_PERMISSION_MCP_CONFIG = `{
 }`
 
 export interface AppSettings {
-  // P3.1 常规
+  // 常规：自动检查更新与默认权限模式（应用级偏好，会话级覆盖在 Composer）
   autoCheckUpdate: boolean
-  // P3.3 配置
-  defaultModel: string
-  defaultEffort: string
   defaultPermissionMode: "default" | "acceptEdits" | "plan" | "bypassPermissions"
-  claudeCliPath: string
+  // 权限 MCP 工具（可选）：开启后由 MCP server 接管 control_request
   permissionMcpEnabled: boolean
   permissionPromptTool: string
   permissionMcpConfig: string
-  // P3.4 个性化：高频 slash 命令 pin（不带 / 前缀，与 system/init.slash_commands 一致）
+  // 高频 slash 命令 pin（不带 / 前缀，与 system/init.slash_commands 一致）
   pinnedSlash: string[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   autoCheckUpdate: true,
-  defaultModel: "",
-  defaultEffort: "",
   defaultPermissionMode: "default",
-  claudeCliPath: "",
   permissionMcpEnabled: false,
   permissionPromptTool: DEFAULT_PERMISSION_MCP_TOOL,
   permissionMcpConfig: DEFAULT_PERMISSION_MCP_CONFIG,

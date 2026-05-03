@@ -17,15 +17,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
+use crate::app_paths::claudinal_dir;
 use crate::error::{Error, Result};
 
 pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn db_path() -> Result<PathBuf> {
-    let base = dirs::data_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| Error::Other("data dir not found for session index".into()))?;
-    Ok(base.join("Claudinal").join("session-index-v1.sqlite3"))
+    Ok(claudinal_dir()?.join("session-index-v1.sqlite3"))
 }
 
 /// 全局共享 Connection。
@@ -237,6 +235,73 @@ pub fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// SQLite 索引诊断结构。仅用作 GUI 透明展示派生 cache 状态，
+/// 真理源仍是磁盘上的 jsonl + sidecar。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexDiagnostics {
+    pub path: String,
+    pub schema_version: i64,
+    pub expected_schema_version: i64,
+    pub file_size_bytes: u64,
+    pub session_index_rows: i64,
+    pub session_usage_rows: i64,
+    pub activity_bucket_rows: i64,
+    pub heatmap_progress_rows: i64,
+    pub fts_progress_rows: i64,
+    pub session_text_rows: i64,
+}
+
+/// 读取诊断信息：文件大小 + schema 版本 + 各派生表行数。
+/// 损坏 / 缺失表会让计数报错；返回错误时 GUI 会引导用户重建索引。
+pub fn diagnostics() -> Result<SessionIndexDiagnostics> {
+    let path = db_path()?;
+    let file_size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    let conn = open()?;
+    let schema_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let count = |table: &str| -> Result<i64> {
+        Ok(
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })?,
+        )
+    };
+
+    Ok(SessionIndexDiagnostics {
+        path: path.display().to_string(),
+        schema_version,
+        expected_schema_version: SCHEMA_VERSION,
+        file_size_bytes,
+        session_index_rows: count("session_index")?,
+        session_usage_rows: count("session_usage")?,
+        activity_bucket_rows: count("activity_bucket")?,
+        heatmap_progress_rows: count("heatmap_progress")?,
+        fts_progress_rows: count("fts_progress")?,
+        session_text_rows: count("session_text")?,
+    })
+}
+
+/// 重建索引：清空所有派生表 + FTS。schema 与 db 文件保留，
+/// 下次列表 / 用量扫描会按 jsonl + sidecar 重新填充。
+///
+/// 不动 jsonl、不动 sidecar、不动 keychain；仅重置 cache。
+pub fn rebuild() -> Result<()> {
+    let conn = open()?;
+    conn.execute_batch(
+        r#"
+        DELETE FROM session_index;
+        DELETE FROM session_usage;
+        DELETE FROM activity_bucket;
+        DELETE FROM heatmap_progress;
+        DELETE FROM fts_progress;
+        DELETE FROM session_text;
+        "#,
+    )?;
+    let _ = conn.execute_batch("VACUUM;");
+    Ok(())
 }
 
 pub fn as_i64<T>(value: T, field: &str) -> Result<i64>

@@ -199,9 +199,9 @@ async fn detect_provider(
                 missing_flags: missing_flags.clone(),
                 docs_url: spec.docs_url.into(),
                 message: if help_ok {
-                    "本机 help 与首版协同所需参数匹配".into()
+                    "参数匹配，可用于协同".into()
                 } else {
-                    format!("本机 help 缺少参数：{}", missing_flags.join(", "))
+                    format!("缺少必要参数：{}", missing_flags.join(", "))
                 },
             }
         }

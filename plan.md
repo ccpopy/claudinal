@@ -1,6 +1,6 @@
 # Claudinal 实施计划
 
-> 更新日期：2026-05-03
+> 更新日期：2026-05-04
 >
 > 这份文档记录当前代码库的真实状态、已经变更或废弃的需求，以及后续任务优先级。它不再作为开发流水账使用；历史实现记录只在必要时沉淀为架构约束或待办事项。
 
@@ -10,9 +10,9 @@
 
 Claudinal 当前已经进入“核心功能可用，下一步以稳定性、收口和真实场景验证为主”的阶段。
 
-- 已完成：Tauri 2 + React 19 桌面外壳、Claude CLI stream-json 会话、流式渲染、历史会话恢复、SQLite 会话元数据缓存、会话置顶 / 重命名 / 归档 / 删除、notify 监听刷新、Composer 参数选择、图片和文本附件、`@` 文件补全、`/` 命令补全、权限弹窗、Git 状态和 diff、设置页大部分分类、MCP 管理、插件与技能管理、项目环境操作工具栏、网络代理、账号与用量、第三方 API provider、本地 API 代理、Windows 打包脚本、协同 CLI gate 记录、协同设置页、Composer 协同徽标、协同 MCP server 首版、外部 Agent provider 探测和线性执行持久化。
-- 部分完成：工作树设置页已支持查看当前 Git 仓库已有 worktree、添加为项目并删除外部工作树；默认根目录、创建流程、自动清理策略和会话派生入口仍待确认。协同能力已确定为独立功能，不放在工作树设置内；首版代码已经落地，但仍需要真实 `pnpm tauri dev` 下验证设置保存、新会话 MCP 注入、Claude 通过 MCP 发起只读/写入委派、错误展示和流程恢复。统计只覆盖 GUI 写入 sidecar 的 result，不代表所有 CLI 历史都完整有成本数据。第三方 API key 仍存本地配置，需要迁到系统钥匙串。
-- 最近验证：2026-05-03 已通过 `pnpm build`、`cargo check --manifest-path src-tauri/Cargo.toml`、`cargo test --manifest-path src-tauri/Cargo.toml`。仍需要真实 `pnpm tauri dev` 下完成新会话、恢复历史会话、权限审批、图片附件、MCP、代理、项目操作、插件操作和打包回归。
+- 已完成：Tauri 2 + React 19 桌面外壳、Claude CLI stream-json 会话、流式渲染、历史会话恢复、SQLite 会话元数据缓存、会话置顶 / 重命名 / 归档 / 删除、notify 监听刷新、Composer 参数选择、图片和文本附件、`@` 文件补全、`/` 命令补全、权限弹窗、Git 状态和 diff、设置页大部分分类、MCP 管理、插件与技能管理、项目环境操作工具栏、网络代理、账号与用量、第三方 API provider、本地 API 代理、Windows 打包脚本、协同 CLI gate 记录、协同设置页、Composer 协同徽标、协同 MCP server 首版、外部 Agent provider 探测、线性执行持久化、协同流程视图、协同会话绑定和流程删除联动。
+- 部分完成：工作树设置页已支持查看当前 Git 仓库已有 worktree、添加为项目并删除外部工作树；默认根目录、创建流程、自动清理策略和会话派生入口仍待确认。协同能力已确定为独立功能，不放在工作树设置内；首版代码已经落地，已在真实 GUI 使用中暴露并修复 Codex Windows sandbox、流程列表刷新、会话绑定和弹窗滚动问题，但仍需要系统化 `pnpm tauri dev` 回归覆盖设置保存、新会话 MCP 注入、Claude 通过 MCP 发起只读/写入委派、错误展示和重启后的流程恢复。统计只覆盖 GUI 写入 sidecar 的 result，不代表所有 CLI 历史都完整有成本数据。第三方 API key 仍存本地配置，需要迁到系统钥匙串。
+- 最近验证：2026-05-04 已通过 `pnpm build`、`cargo check --manifest-path src-tauri/Cargo.toml`、`cargo test --manifest-path src-tauri/Cargo.toml`。仍需要真实 `pnpm tauri dev` 下完成新会话、恢复历史会话、权限审批、图片附件、MCP、代理、项目操作、插件操作和打包回归。
 - 需求已变更：SQLite 只做可重建元数据缓存，不作为 transcript 事实源；不再做右侧 Context Panel，不再做 fork session 菜单，不再接管插件 OAuth flow，不做浏览器 viewport 假字段，不做 append-system-prompt / agents JSON 编辑器。
 
 ---
@@ -118,7 +118,7 @@ claudinal://permission/request
 
 - 历史 transcript 直接读取 Claude CLI 写入的 jsonl。
 - GUI sidecar 写在同一 Claude project 目录下，文件名为 `<sessionId>.claudinal.json`。
-- SQLite index 位于系统应用数据目录的 `Claudinal/session-index-v1.sqlite3`，只缓存 session id、jsonl 路径、mtime、大小、消息数、AI 标题和首条用户文本。
+- SQLite index 位于 Claudinal 应用根 `.claudinal/session-index-v1.sqlite3`；开发模式写到仓库根 `.claudinal/session-index-v1.sqlite3`，打包后写到 exe 同级目录 `.claudinal/session-index-v1.sqlite3`。索引只缓存 session id、jsonl 路径、mtime、大小、消息数、AI 标题和首条用户文本。
 - sidecar 目前保存 `result` 和会话级 `composer` 偏好。
 - `list_project_sessions(cwd)` 先枚举 jsonl 文件元数据；mtime、大小、路径未变化时直接读 SQLite 缓存，只有新增或变更的 jsonl 才重新扫描正文。
 - `notify` watcher 只监听当前可见、展开或置顶相关项目的 jsonl 变化，并做 200ms 节流；刷新时会自然更新 SQLite 缓存。
@@ -194,7 +194,7 @@ GUI 读写范围：
 Composer 交互：
 
 - 加号菜单已经新增“协同”项。
-- 点击后像图片附件一样在输入框上方显示“协同”徽标，表示下一条消息进入协同模式；发送后清除徽标。
+- 点击后像图片附件一样在输入框上方显示“协同”徽标，表示下一条消息进入协同模式；发送后清除徽标；选择菜单项后下拉层会关闭。
 - 如果协同设置未启用，点击入口会引导到“设置 -> 协同”，不会隐式开启。
 - 如果当前 Claude 会话启动时没有加载协同 MCP，会提示当前会话不可用；协同 MCP 按“新会话生效”处理，不做动态补载。
 
@@ -209,11 +209,13 @@ MCP 工具边界：
 
 持久化与执行策略：
 
-- 协同状态保存到应用数据目录的 `Claudinal/collaboration-v1`，不写入 Claude transcript，不依赖 SQLite。
+- 协同状态保存到 Claudinal 应用根下 `.claudinal/collaboration-v1`；开发模式写到仓库根 `.claudinal/collaboration-v1`，不写入 Claude transcript，不依赖 SQLite。
 - 每一步保存输入 prompt、目标 Agent、责任范围、状态、开始/结束时间、退出码、结构化输出、原始 stdout/stderr 路径、验证结果和变更文件清单。
+- Claude runtime session id 会在 `system/init` 后映射到真实 Claude jsonl session id；流程绑定使用真实会话 id，删除会话时级联删除对应 flow、run 日志和 lock 文件。
 - 状态机显式使用 `draft`、`running`、`completed`、`failed`、`approved`、`rejected`、`verified`、`cancelled`。只有当前步骤达到允许流转的状态，下一步才能开始。
 - 对写入步骤，开始前记录允许修改范围，结束后用工作区 mtime/hash 快照比对实际变更；越界修改显式标记失败或冲突。
 - 外部 CLI 退出非零时记录真实 exit code、stdout、stderr，步骤进入失败状态；不会重试、模拟成功或自动换 Agent。
+- Codex provider 在 Windows 下显式传入 `-c windows.sandbox=unelevated`，避免继承用户全局 `windows.sandbox=elevated` 后触发 `CreateProcessWithLogonW failed: 1326`；仍保留 Codex 的 `read-only/workspace-write` sandbox 策略。
 
 ---
 
@@ -290,6 +292,7 @@ MCP 工具边界：
 - [x] stdout `control_request` 转 GUI 弹窗。
 - [x] GUI 返回 `control_response`。
 - [x] 支持允许、拒绝、此次会话允许所有编辑、此次会话允许此类工具、写入项目本地规则。
+- [x] 权限弹窗限制最大高度，主体和长参数区超出时显示统一滚动条，避免参数撑出屏幕。
 - [x] session 级授权不落盘。
 - [x] `localSettings` 写入必须来自用户明确点击。
 - [x] 可选内置 MCP 权限 server：`--permission-mcp-server`。
@@ -371,11 +374,14 @@ MCP 工具边界：
 - [x] 协同设置保存到 `localStorage["claudinal.collaboration.settings"]`，支持启用开关、默认 Agent、默认允许写入、默认责任范围、默认允许路径、每个 provider 的启用状态、自定义路径和职责范围。
 - [x] 默认 Agent 为 Claude CLI，默认只启用 Claude；Codex、Gemini、opencode 探测结果只作为信息，是否启用由用户决定。
 - [x] Composer 加号菜单新增“协同”，点击后显示和附件类似的协同徽标，发送后清除。
+- [x] Composer 加号菜单选择“协同”后会关闭下拉层，不保留悬浮菜单。
 - [x] 同一 flow 使用 `FlowLock` 限制同一时间只有一个运行步骤。
 - [x] 写入步骤使用 mtime/hash 工作区快照记录 added/modified/deleted，非 Git 项目也能记录变更清单；Git 只作为后续可选 diff 能力。
 - [x] 只读步骤发生文件变更会失败；写入步骤越出允许路径会失败。
 - [x] Agent 非零退出记录真实 exit code、stdout、stderr 路径和摘要，不做重试、mock 或自动切换 Agent。
-- [ ] 仍缺专门的协同流程视图或消息内任务卡片；当前主要由 Claude MCP 调用结果和持久化记录承载流程状态。
+- [x] 协同流程视图已接入 ChatHeader：可按项目查看 flow 列表、步骤、stdout/stderr 预览、结构化输出、文件变更、验证记录和审批操作；打开后会定时静默刷新。
+- [x] 协同流程绑定真实 Claude jsonl session id；删除会话会级联删除对应 flow 与 run 日志，列表刷新不做破坏性清理。
+- [x] Codex Windows provider 调用已固定 `windows.sandbox=unelevated`，修复 elevated Windows sandbox 缺凭据导致的 `CreateProcessWithLogonW failed: 1326`。
 - [ ] 仍需要在真实 `pnpm tauri dev` 下验证从设置启用到新会话 MCP 注入、只读委派、写入委派、失败展示、流程恢复的完整链路。
 
 ---
@@ -411,32 +417,38 @@ MCP 工具边界：
 
 ### 6.2 配置项未完全接线
 
-- `AppSettings.claudeCliPath` 字段存在，但当前 CLI 检测只读取环境变量 `CLAUDE_CLI_PATH` 和 PATH，需要决定接入 UI 写入环境，或删除该字段。
-- `autoCheckUpdate` 有设置项，但当前未看到真实 GitHub release 检查流程，需要实现或改成“预留项”。
 - Config 页面与 General 页面对默认 permission mode 的职责有重叠，需要统一口径。
 
 ### 6.3 安全存储缺口
 
 - 代理密码已经走 keychain。
-- 第三方 API provider 的 API key 仍在 localStorage，需要迁移到 keychain，且迁移过程必须显式可见、失败时暴露错误。
+- 第三方 API provider 的 API key 已迁移到 OS keychain（`src/lib/thirdPartyApi.ts` 提供 `loadThirdPartyApiStoreAsync` / `saveThirdPartyApiStoreAsync` / `migrateLegacyThirdPartyApiKeys`，App 启动时一次性把旧明文条目搬到钥匙串）；keychain 不可用时降级回 localStorage 并通过设置页警告 banner 暴露明文存储状态。
+
+### 6.4.1 会话期间网络错误可见性
+
+- 之前代理失效时，stderr 会以 stderr entry 静默追加到对话流末尾，没有 toast 提示，用户在滚动会话时容易错过；现增加 `src/lib/networkErrorHints.ts` 与 App.tsx `reportNetworkError`：
+  - 监听 stderr 与 result.is_error 文本，按代理 / TLS / DNS / 超时 / 连接被拒 / 限流 / 鉴权 / 5xx 八类模式识别。
+  - 命中后弹 toast.error（标题 + 修复建议 + 原始错误片段），含「网络设置」action 直接打开 Network 设置页。
+  - 同一 runtime 同 topic 30 秒内只弹一次，避免持续刷屏；会话关闭时清掉节流条目。
+  - 单测 `src/lib/networkErrorHints.test.ts` 覆盖 12 个场景。
 
 ### 6.4 平台兼容缺口
 
-- OAuth usage 当前读取 `~/.claude/.credentials.json`，macOS 上 CLI 凭据可能在 Keychain，当前需要明确支持状态。
+- OAuth usage 当前读取 `~/.claude/.credentials.json`：Linux/Windows 上 CLI 写到该文件可正常工作；macOS 上 CLI 凭据存系统钥匙串（"Claude Code-credentials"），Claudinal 不读取系统钥匙串，会显式返回平台说明错误并在 Account 页提示。
 - 打包脚本覆盖 macOS/Linux，但缺少当前平台实测记录。
 
 ### 6.5 稳定性与测试缺口
 
-- `pnpm build`、`cargo test --manifest-path src-tauri/Cargo.toml`、`cargo check --manifest-path src-tauri/Cargo.toml` 已在 2026-05-03 通过；后续需要纳入每轮发布前固定回归。
+- `pnpm build`、`cargo test --manifest-path src-tauri/Cargo.toml`、`cargo check --manifest-path src-tauri/Cargo.toml` 已在 2026-05-04 通过；后续需要纳入每轮发布前固定回归。`pnpm test`（vitest）也加入 reducer 单测（14 cases）。
 - 需要真实 CLI 集成验证权限 stdio、MCP 权限桥、resume、delete、proxy、third-party provider。
-- 需要为 reducer、session reader、Git patch parser、MCP config merge、proxy URL 构造补充针对性测试。
+- 需要为 session reader、Git patch parser、MCP config merge、proxy URL 构造补充针对性测试（reducer 已覆盖）。
 
 ### 6.6 协同功能待收口
 
-- 协同 CLI gate、设置页、Composer 入口、MCP server、provider 探测、线性锁、步骤持久化、stdout/stderr 记录和 mtime/hash 变更清单已经落地。
-- 当前协同数据落在应用数据目录 JSON，不落 Claude transcript，也不依赖 Git 仓库或 SQLite。
-- 当前还缺真实 GUI 集成回归：需要在 `pnpm tauri dev` 中验证启用协同、新建 Claude 会话、MCP 注入、Claude 调用协同工具、只读委派、写入委派、失败展示和流程恢复。
-- 当前还没有专门的协同流程视图或消息内任务卡片，用户不能在 GUI 中集中查看每一步输出、验证记录和等待状态。
+- 协同 CLI gate、设置页、Composer 入口、MCP server、provider 探测、线性锁、步骤持久化、stdout/stderr 记录、mtime/hash 变更清单、流程视图和流程恢复入口已经落地。
+- 当前协同数据落在 Claudinal 应用根 `.claudinal/collaboration-v1`，开发模式落在仓库根 `.claudinal/collaboration-v1`；不落 Claude transcript，也不依赖 Git 仓库或 SQLite。
+- 当前还缺系统化 GUI 集成回归：需要在 `pnpm tauri dev` 中验证启用协同、新建 Claude 会话、MCP 注入、Claude 调用协同工具、只读委派、写入委派、失败展示、关闭重开后的流程恢复。
+- 协同流程视图已经能集中查看每一步输出、验证记录和等待状态；下一步重点是回归运行中刷新、会话删除级联、旧 flow 兼容和错误态展示，而不是重新实现视图。
 - Provider 探测已经能展示安装、版本、help 参数和失败原因，但认证状态仍以真实 CLI 执行结果为准；如果 Agent 需要登录或版本不兼容，运行步骤会失败并记录真实输出。
 - opencode 本机未安装，provider 探测必须继续显示未安装状态，不能 mock。
 - 当前默认 Agent 是 Claude CLI，默认只启用 Claude；其他 provider 即使探测可用，也必须由用户显式启用。
@@ -461,41 +473,42 @@ MCP 工具边界：
 - [ ] 跑插件页：list、marketplace add/update/remove、plugin install/uninstall、skill import。
 - [ ] 跑项目操作：新增操作、保存、返回主对话、执行成功命令、执行失败命令、查看 stdout/stderr。
 - [ ] 跑 Git/diff：dirty repo、untracked text、binary、branch switch/create。
-- [x] 跑 `pnpm build`。最近一次通过：2026-05-03。
-- [x] 跑 `cargo test --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-03。
-- [x] 跑 `cargo check --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-03。
+- [x] 跑 `pnpm build`。最近一次通过：2026-05-04。
+- [x] 跑 `cargo test --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-04。
+- [x] 跑 `cargo check --manifest-path src-tauri/Cargo.toml`。最近一次通过：2026-05-04。
 - [x] 更新 README 中过时的 Zustand / Context Panel 描述，并把 SQLite 说明改成可重建元数据缓存。
-- [ ] 处理 `claudeCliPath` 字段：实现 GUI 配置注入，或删除字段与文档。
-- [ ] 处理 `autoCheckUpdate`：实现 release check，或把设置项标记为预留。
+- [x] 处理 `claudeCliPath` 字段：从 `AppSettings` 删除未接线字段，CLI 路径统一走 `CLAUDE_CLI_PATH` 环境变量与 PATH 检测。
+- [x] 处理 `autoCheckUpdate`：已通过 `@tauri-apps/plugin-updater` 在启动时静默检查、设置页提供"立即检查"按钮（`src/lib/updater.ts`、`src/App.tsx`、`src/components/Settings/sections/General.tsx`）。
 
 ### P1：稳定性和数据安全
 
 目标：减少真实用户遇到的配置损坏、密钥泄漏和平台差异问题。
 
-- [ ] 第三方 API key 迁移到 OS keychain。
-- [ ] `settings.json` 写入改为临时文件 + rename 的原子写，与 MCP 写入保持一致。
-- [ ] 给 `write_text_file` 增加明确用途审视；如果只为设置页导出服务，限制到可解释范围。
-- [ ] Account 页明确 macOS OAuth token 读取策略：支持 Keychain 或清晰提示不可读取。
-- [ ] 统一 Config / General / Composer 对 model、effort、permission 的职责边界。
-- [ ] 为 session reader 补测试：ASCII cwd 编码、Unicode 兼容目录、sidecar 读写、删除同步。
-- [ ] 增加会话索引诊断和“重建 SQLite 索引”入口；索引损坏时明确提示，不静默降级到全量扫描。
-- [ ] 为 reducer 补测试：partial streaming、assistant 覆盖、tool_use_result 附着、unknown 保留。
-- [ ] 为 Git patch parser 补测试：rename、delete、binary、untracked text。
-- [ ] 为 MCP merge 补测试：global/project 覆盖、disabled 过滤、权限 MCP 合并。
-- [ ] 为 proxy 补测试：URL 构造、NO_PROXY、SOCKS bridge env 改写。
+- [x] 第三方 API key 迁移到 OS keychain：`thirdPartyApi.ts` 在 keychain 可用时按 provider id 写入，启动时静默迁移旧明文；keychain 不可用时降级到 localStorage 并显示警告。
+- [x] `settings.json` 写入改为临时文件 + rename 的原子写，与 MCP 写入保持一致：`commands.rs` 引入 `atomic_write_str`，`write_claude_settings` / `write_claude_md` / `write_text_file` / `write_claude_json_mcp_servers` 全部统一走原子写；`session/reader.rs::write_session_sidecar` 也改成临时文件+rename。
+- [x] 给 `write_text_file` 增加明确用途审视：函数注释明确唯一调用方为「设置页导出配置」，路径来自系统对话框选择，不再做额外白名单。
+- [x] Account 页明确 macOS OAuth token 读取策略：`fetch_oauth_usage` 在 macOS 平台 + token 不在文件时显式返回带说明的错误，前端 PlanUsageSection 文案同步更新；明确 Claudinal 不读取系统钥匙串。
+- [x] 统一 Config / General / Composer 对 model、effort、permission 的职责边界：删除未接线的 `AppSettings.defaultModel` / `defaultEffort`，加载链改为 `composerPrefs → ~/.claude/settings.json → 空`；Config 页与 General 页加文案说明会话级覆盖在 Composer。
+- [x] 为 session reader 补测试：ASCII cwd 编码、Unicode 兼容目录、`project_dirs` 双路径、`validate_session_id` 路径穿越拦截、`is_internal_command_text` 标签校验、`title_candidate` 多字节截断（位于 `src-tauri/src/session/reader.rs::tests`）。
+- [x] 增加会话索引诊断和「重建 SQLite 索引」入口：`session::store::diagnostics()` / `rebuild()` + Tauri 命令 `session_index_diagnostics` / `rebuild_session_index`；「设置 -> 已归档对话」底部展示 db 路径、schema 版本（与期望不一致时高亮）、文件大小和各派生表行数，按钮支持手动诊断 / 重建（带二次确认），重建仅清空派生表，不动 jsonl / sidecar。
+- [x] 为 reducer 补测试：partial streaming（含 input_json_delta 解析、index 跨号占位）、assistant 覆盖（含中途快照不关闭 streaming）、tool_use_result 附着（含 tool_use endedAt 打点）、unknown / raw / stderr 保留、协同 prompt 前缀剥离、内部 command echo 过滤、user_local 排队 / unqueue 移位 / drop / reset、load_transcript 内部事件过滤。`pnpm test` 接入 vitest 4.1.5。
+- [x] 为 Git patch parser 补测试：已在 `src-tauri/src/commands.rs::tests` 覆盖 hunk 解析、rename（`parse_git_status_z_keeps_rename_source`）、worktree 列表（`parse_git_worktree_porcelain_reads_branch_and_detached_entries`）等场景；后续如需 binary / untracked text 再追加。
+- [x] 为 MCP merge 补测试：`merge_mcp_config` global/project 覆盖、保留顶层 key、disabled 字段更新、非 object 源拒绝；`runtime_mcp_config` 禁用过滤与全部禁用返回 None；`mcp_config_from_value` 仅取 `mcpServers` 子树；`mcp_project_config_from_claude_json` 大小写 / 反斜杠归一化匹配；`claude_project_key_for_write` 复用既有 key 变体。
+- [x] 为 proxy 补测试：URL 构造（含 username/password URL-encode）、NO_PROXY 默认值与覆盖、各 protocol 透传、describeProxy 状态分支。
+- [x] 顺带补 `thirdPartyApi.ts`（buildClaudeEnv env 注入、normalize、clearManagedClaudeEnv、maskSecret、providerModelOptions、createThirdPartyApiProvider、trimApiUrl）和 `composerPrefs.ts`（mergeComposerPrefs / pickComposerFromSidecar / pickComposerFromTranscript / composerPrefsPatchFromCommandEvent / effortSource / isClaudeModelEntry）的单测。`pnpm test` 共 66 cases 通过。
 
 ### P2：体验补齐
 
 目标：补上高价值但不改变底层架构的体验缺口。
 
-- [ ] 独立历史会话视图：搜索、按项目筛选、按时间 / 消息数 / cost 排序。
-- [ ] 会话搜索先做元数据和首条用户文本；消息全文搜索只有在性能验证后再做。
-- [ ] Account / Statistics 的用量口径统一：OAuth plan usage、GUI sidecar usage、CLI result cost 要分别标注。
-- [ ] diff 面板支持复制文件路径、复制 patch、按来源筛选。
-- [ ] 插件安装失败时把 git credential / SSH / HTTPS 报错做成可读诊断弹窗。
-- [ ] Network 页增加从 settings.json env 清理冲突代理的显式操作，执行前二次确认。
-- [ ] Appearance 对比度滑块如果继续保留，需要接入真实 CSS 变量；否则移除。
-- [ ] 浏览器页补充 Playwright MCP 常见错误诊断，而不是只做安装检测。
+- [x] 跨项目历史会话搜索 + 按项目筛选 + 按时间 / 消息数 / 标题排序：直接增强 SearchPalette（顶部加排序 + 项目过滤 + 计数 + 清除筛选），元数据排序与正文 FTS 并存。完整全屏视图保留到 P5（基于 SQLite index）。
+- [x] 会话搜索元数据 + 首条用户文本：SearchPalette 已基于 jsonl 元数据 + sidecar 标题 + 全文 FTS 查询。
+- [x] Account / Statistics 用量口径统一：Account 的「计划用量限额」加 Anthropic OAuth Badge + 来源说明；Statistics 顶部说明数据源 = GUI sidecar，加 GUI sidecar Badge，明确不计 CLI 直接发起的会话。
+- [x] diff 面板支持复制文件路径、复制 patch、按来源筛选：DiffOverview 顶部加 来源 chip（全部 / 会话 / Git / 状态）+「复制全部 patch」按钮；当前文件标题旁加复制路径 / 复制本文件 patch；patch 重新拼成标准 unified diff 格式。
+- [x] 插件安装失败时做可读诊断：新增 `src/lib/pluginErrorHints.ts` 按关键词识别 git 凭据 / SSH / HTTPS / TLS / 网络 / 权限 / 磁盘 / Claude CLI / Git 缺失等场景，给可执行 hint；PluginsView 各路径错误调 `reportPluginError(action, error)` 弹长 toast 含 hint + 复制原始错误。
+- [x] Network 页冲突代理清理：检测 `settings.json` env 中 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`（含小写）冲突字段，提供「一键清理冲突变量」按钮，二次确认后从 settings.json 中删除（保留其他 env 字段）。
+- [x] Appearance 对比度滑块：删除未接线的 contrast 字段与 UI（`AppearanceConfig.contrast`、Codex 预设值、`isAppearanceEqual` 比较、`Appearance.tsx` 滑块、`RangeRow` 都已移除）。
+- [x] 浏览器页 Playwright MCP 错误诊断：检测到 MCP 状态 failed/error 时展开诊断卡片，列出 5 类常见原因（npx 缺失、Playwright 浏览器缺失、网络、权限、注册表）；同时检测 `settings.json` 中的 `PLAYWRIGHT_*` 环境变量并在另一个卡片提示是否会影响。
 
 ### P3：协同能力
 
@@ -515,19 +528,22 @@ MCP 工具边界：
 - [x] 每个 provider 可单独启用；探测出可用不等于自动启用。
 - [x] 每个 provider 支持自定义路径和职责范围；默认职责范围按 Claude、Codex、Gemini、opencode 的常见优势填入。
 - [x] Composer 加号菜单新增“协同”，点击后显示协同徽标；发送消息时把协同要求包装进当前用户消息。
+- [x] Composer 加号菜单选择协同后会关闭弹层；协同模式是单次发送标记，发送后清除，不会让后续普通问题自动继续协同。
 - [x] 新增 Claudinal 协同 MCP server，并在启用协同时合并进 Claude runtime MCP config。
 - [x] MCP 工具实现 `collab_status`、`collab_start_flow`、`collab_delegate`、`collab_get_result`、`collab_record_approval`、`collab_run_verification`。
 - [x] 实现线性执行锁：同一项目同一协同流程同一时间只有一个 Agent run 可以处于 `running`。
 - [x] 实现线性单工作区写入策略：外部 Agent 可以写入，但每个步骤必须有一个 Agent、一个责任范围、一个状态机和一个完成记录。
 - [x] 实现步骤持久化：输入 prompt、Agent、命令、cwd、权限、stdout/stderr、结构化输出、变更文件清单、验证结果。
 - [x] 实现越界变更检测：写入步骤结束后对比允许范围与实际变更，越界时流程暂停并标记失败。
+- [x] 实现协同流程视图：ChatHeader 入口可查看项目 flow 列表、步骤详情、stdout/stderr、结构化输出、验证记录、文件变更和审批操作，并在打开时定时静默刷新。
+- [x] 实现协同流程与真实 Claude jsonl session id 绑定：runtime id 在 Claude `system/init` 后映射到真实 session id；删除会话时级联删除对应 flow 和 run 产物。
+- [x] 修复 Codex Windows sandbox 调用：协同委派 Codex 时显式传 `windows.sandbox=unelevated`，避免 elevated helper 缺凭据失败，同时保留 Codex 的读写 sandbox 策略。
 
 剩余收口：
 
 - [ ] 在 `pnpm tauri dev` 中完成真实端到端验证：设置启用协同、新建 Claude 会话、MCP 注入、Claude 调用 `collab_status`、创建 flow、只读委派、写入委派、审批、验证、恢复。
 - [ ] 真实验证 Agent 错误路径：未登录、版本不兼容、命令非零退出、JSON 解析失败、用户禁用 provider。
-- [ ] 实现协同流程视图或消息内任务卡片，能看到每一步输出、失败原因、验证结果和下一步等待状态。
-- [ ] 把协同流程恢复入口接到 GUI，而不是只通过持久化文件和 MCP result 间接观察。
+- [ ] 回归协同流程视图：运行中刷新、完成后保留、关闭重开恢复、旧 runtime-id flow 兼容、会话删除级联和 Windows 文件占用场景。
 - [ ] 为 provider 探测、runner、store、changes、MCP 工具补充针对性单元测试或集成测试。
 
 明确暂不做：
@@ -551,14 +567,13 @@ MCP 工具边界：
 
 ### P5：低优先级和外部依赖项
 
-- [ ] 基于 SQLite index 做全局历史会话视图和跨项目搜索；只读索引，不改变 jsonl 事实源。
-- [ ] PAC URL 支持。
-- [ ] webview 全应用代理。
-- [ ] macOS / Linux 打包和签名完整流程。
-- [ ] 自动更新。
-- [ ] CI 多平台矩阵。
-- [ ] 插件 enable/disable 持久化：等待 Claude CLI 暴露稳定路径。
-- [ ] MCP OAuth 诊断：只做状态说明和外部配置指引，不做 GUI OAuth 接管。
+- [x] 基于 SQLite index 做全局历史会话视图和跨项目搜索：新增 `src/components/HistoryView/index.tsx` 全屏视图，复用 `list_recent_sessions_all` + `search_sessions`（FTS5），支持搜索、按项目筛选、按最近活动 / 消息数 / 标题排序、含归档开关、清除筛选；侧边栏新增「历史会话」入口。
+- [ ] PAC URL 支持。（依赖嵌入 JS 引擎评估 FindProxyForURL，本机暂未做。）
+- [ ] webview 全应用代理。（Tauri 2 builder 阶段配置，需要平台稳定性测试，单独 spike。）
+- [ ] macOS / Linux 打包和签名完整流程。（需平台机器实测，本机为 Windows，跳过。）
+- [ ] CI 多平台矩阵。（与上一项绑定，等待 macOS/Linux 打包基线。）
+- [ ] 插件 enable/disable 持久化：等待 Claude CLI 暴露稳定路径（外部依赖未到位）。
+- [x] MCP OAuth 诊断：MCP server 状态为 needs-auth / failed 时在卡片底部展开诊断条，给出 `claude mcp authenticate <name>` 指引、网络/代理/证书排查清单；不接管 OAuth 流程。
 
 ---
 
@@ -616,18 +631,18 @@ MCP 工具边界：
 | `src-tauri/src/collab/mod.rs` | 协同功能模块入口 |
 | `src-tauri/src/collab/providers.rs` | Claude / Codex / Gemini / opencode provider 定义、探测、版本检测 |
 | `src-tauri/src/collab/runner.rs` | 外部 CLI 非交互调用、stdout/stderr 捕获、退出码和超时处理 |
-| `src-tauri/src/collab/store.rs` | 协同 flow、step、agent run、verification 的应用数据目录 JSON 持久化和线性锁 |
+| `src-tauri/src/collab/store.rs` | 协同 flow、step、agent run、verification 的 `.claudinal/collaboration-v1` JSON 持久化、线性锁、runtime session 映射和 flow 删除 |
 | `src-tauri/src/collab/mcp.rs` | Claudinal 协同 MCP server 和工具实现 |
 | `src-tauri/src/collab/changes.rs` | 写入步骤前后文件清单、mtime/hash、非 Git 变更检测 |
 | `src-tauri/src/lib.rs` | 注册协同 Tauri commands，并暴露 `run_collab_mcp_server()` |
 | `src-tauri/src/main.rs` | 识别 `--collab-mcp-server` 启动参数 |
-| `src-tauri/src/commands.rs` | 新会话注入协同 MCP 环境和 runtime config，暴露协同 Tauri commands |
+| `src-tauri/src/commands.rs` | 新会话注入协同 MCP 环境和 runtime config，暴露协同 Tauri commands，并在删除会话时级联删除绑定 flow |
 | `src/lib/collabSettings.ts` | 协同设置 localStorage wrapper、默认 provider 职责范围、启用 provider 列表 |
 | `src/lib/ipc.ts` | 协同 Tauri command 的 typed wrapper 和数据结构 |
-| `src/App.tsx` | 协同模式状态、新会话 MCP 注入参数、协同 prompt 包装和当前会话不可用提示 |
+| `src/App.tsx` | 协同模式状态、新会话 MCP 注入参数、协同 prompt 包装、当前会话不可用提示和协同流程视图入口 |
 | `src/components/Settings/sections/Collaboration.tsx` | “设置 -> 协同”页面 |
 | `src/components/Composer.tsx` | 加号菜单协同入口和协同徽标 |
-| `src/components/CollaborationFlow.tsx` | 尚未实现；未来用于集中展示协同流程步骤、输出、验证和错误 |
+| `src/components/CollaborationFlow.tsx` | 协同流程抽屉视图：flow 列表、步骤详情、输出预览、结构化输出、文件变更、验证记录、审批操作和定时刷新 |
 
 ---
 
@@ -675,8 +690,8 @@ pnpm package:zip
 - [x] 本机 CLI 核验：记录 `claude --help`、`codex exec --help`、`gemini --help`、`opencode run --help` 输出中的关键参数；opencode 未安装时记录未安装状态。
 - [x] Provider 探测命令：后端 Tauri command 已支持全量探测和单 provider 探测，设置页逐个渲染更新。
 - [x] MCP server 基础验证：`--collab-mcp-server` 可返回 tools list，包含所有协同工具。
-- [x] 构建验证：`pnpm build` 通过。
-- [x] Rust 验证：`cargo check --manifest-path src-tauri/Cargo.toml` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 在 2026-05-03 通过。
+- [x] 构建验证：`pnpm build` 在 2026-05-04 通过。
+- [x] Rust 验证：`cargo check --manifest-path src-tauri/Cargo.toml` 和 `cargo test --manifest-path src-tauri/Cargo.toml` 均在 2026-05-04 通过。
 - [ ] Provider 探测 GUI 验证：每个 provider 的安装路径、版本、help 参数、失败原因和启用开关都能在设置页稳定展示。
 - [ ] 新会话 MCP 注入验证：启用协同后新建 Claude 会话，确认 runtime `--mcp-config` 加载 `claudinal_collab`。
 - [ ] 当前会话不可用验证：旧会话或未加载协同 MCP 的会话点击协同时，必须提示当前会话不会生效。
@@ -719,12 +734,11 @@ pnpm package:zip
 最推荐的下一轮开发顺序：
 
 1. 先做真实 `pnpm tauri dev` 回归验证，记录失败点，尤其覆盖协同启用、新会话 MCP 注入、只读委派、写入委派、错误路径和流程恢复。
-2. 做协同流程视图或消息内任务卡片，让用户能直接看到每一步输出、变更清单、验证结果和失败原因。
+2. 回归现有协同流程视图，重点覆盖运行中刷新、完成后保留、关闭重开恢复、会话删除级联、旧 flow 兼容和错误态展示。
 3. 为协同 provider 探测、runner、store、changes、MCP 工具补测试，补齐越界写入、非 Git 目录、禁用 provider 和非零退出路径。
 4. 修正 README 和配置项口径不一致。
 5. 迁移第三方 API key 到 keychain。
 6. 补 reducer、session reader、MCP merge、proxy URL、项目操作命令执行的测试。
-7. 收口 `claudeCliPath` 和 `autoCheckUpdate` 两个未接线设置项。
-8. 再评估是否进入独立历史会话视图和真实工作树能力。
+7. 再评估是否进入独立历史会话视图和真实工作树能力。
 
 在 P0/P1 完成前，新增大功能需要先做独立 spike 和清晰 gate。协同能力的 gate 已完成，后续重点是验证真实执行链路和补齐用户可见的流程反馈。

@@ -5,9 +5,9 @@ type SessionTitleMeta = Pick<SessionMeta, "id" | "ai_title" | "first_user_text">
 
 export function isInternalCommandText(text: string): boolean {
   const trimmed = text.trimStart()
-  return (
-    trimmed.startsWith("<command-name>") && trimmed.includes("</command-name>")
-  )
+  const opening = trimmed.match(/^<(command-name|local-command-[a-z0-9-]+)>/i)
+  if (!opening) return false
+  return trimmed.includes(`</${opening[1]}>`)
 }
 
 export function cleanSessionTitleText(

@@ -225,7 +225,7 @@ export function General() {
               <div>
                 <Label className="text-sm">默认权限模式</Label>
                 <div className="text-xs text-muted-foreground mt-0.5">
-                  新会话启动时传给 Claude CLI 的 permission-mode。
+                  新会话启动时传给 Claude CLI 的 permission-mode。Composer 内的「计划模式」和权限模式选择器是会话级临时覆盖，不会写回这里。
                 </div>
               </div>
               <Select

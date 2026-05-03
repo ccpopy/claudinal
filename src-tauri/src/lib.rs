@@ -1,4 +1,5 @@
 mod api_proxy;
+mod app_paths;
 mod auth;
 mod buddy;
 mod child_process;
@@ -132,6 +133,8 @@ pub fn run() {
             commands::scan_global_usage,
             commands::scan_activity_heatmap,
             commands::search_sessions,
+            commands::session_index_diagnostics,
+            commands::rebuild_session_index,
             commands::open_path,
             commands::run_project_action,
             commands::open_external,

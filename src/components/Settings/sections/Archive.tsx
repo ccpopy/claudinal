@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Archive as ArchiveIcon,
   ArchiveRestore,
+  Database,
   Eye,
   FolderOpen,
   Loader2,
   RefreshCw,
-  Trash2
+  Trash2,
+  Wrench
 } from "lucide-react"
 import { toast } from "sonner"
 import { ArchivedSessionPreview } from "@/components/ArchivedSessionPreview"
@@ -21,6 +23,9 @@ import {
 import {
   deleteSessionJsonl,
   listProjectSessions,
+  rebuildSessionIndex,
+  sessionIndexDiagnostics,
+  type SessionIndexDiagnostics,
   type SessionMeta
 } from "@/lib/ipc"
 import {
@@ -74,6 +79,39 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
   const [loading, setLoading] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ArchivedRow | null>(null)
   const [previewRow, setPreviewRow] = useState<ArchivedRow | null>(null)
+  const [diag, setDiag] = useState<SessionIndexDiagnostics | null>(null)
+  const [diagError, setDiagError] = useState<string | null>(null)
+  const [diagLoading, setDiagLoading] = useState(false)
+  const [rebuilding, setRebuilding] = useState(false)
+  const [confirmRebuild, setConfirmRebuild] = useState(false)
+
+  const refreshDiag = useCallback(async () => {
+    setDiagLoading(true)
+    try {
+      const next = await sessionIndexDiagnostics()
+      setDiag(next)
+      setDiagError(null)
+    } catch (e) {
+      setDiag(null)
+      setDiagError(String(e))
+    } finally {
+      setDiagLoading(false)
+    }
+  }, [])
+
+  const handleRebuild = useCallback(async () => {
+    setConfirmRebuild(false)
+    setRebuilding(true)
+    try {
+      await rebuildSessionIndex()
+      toast.success("索引已重建，下次打开列表会重新扫描 jsonl / sidecar")
+      await refreshDiag()
+    } catch (e) {
+      toast.error(`重建索引失败: ${String(e)}`)
+    } finally {
+      setRebuilding(false)
+    }
+  }, [refreshDiag])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -119,7 +157,8 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
 
   useEffect(() => {
     refresh()
-  }, [refresh])
+    void refreshDiag()
+  }, [refresh, refreshDiag])
 
   // 按项目分组渲染
   const grouped = useMemo(() => {
@@ -249,6 +288,15 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
             </section>
           ))
         )}
+
+        <SessionIndexDiagnosticsCard
+          diag={diag}
+          error={diagError}
+          loading={diagLoading}
+          rebuilding={rebuilding}
+          onRefresh={() => void refreshDiag()}
+          onRebuildRequest={() => setConfirmRebuild(true)}
+        />
       </SettingsSectionBody>
 
       <ConfirmDialog
@@ -284,7 +332,190 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
         }}
         onUnarchived={handlePreviewUnarchived}
       />
+
+      <ConfirmDialog
+        open={confirmRebuild}
+        onOpenChange={setConfirmRebuild}
+        title="重建会话索引"
+        confirmText={rebuilding ? "重建中…" : "重建"}
+        description={
+          <span>
+            将清空 SQLite 中的派生缓存表（session_index / session_usage / activity_bucket / fts 等），<strong>不会触碰</strong> jsonl 或 sidecar；下次打开列表 / 统计页时会重新扫描磁盘填充。如果列表显示异常或损坏可执行此操作。
+          </span>
+        }
+        onConfirm={handleRebuild}
+      />
     </SettingsSection>
+  )
+}
+
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B"
+  const units = ["B", "KB", "MB", "GB"]
+  let v = n
+  let u = 0
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024
+    u += 1
+  }
+  return `${v.toFixed(v >= 100 || u === 0 ? 0 : 1)} ${units[u]}`
+}
+
+function displayIndexPath(path: string): string {
+  const marker = ".claudinal"
+  const normalized = path.replaceAll("/", "\\")
+  const idx = normalized.toLowerCase().lastIndexOf(`\\${marker}\\`)
+  if (idx >= 0) return normalized.slice(idx + 1)
+  if (normalized.toLowerCase().startsWith(`${marker}\\`)) return normalized
+  return normalized
+}
+
+function SessionIndexDiagnosticsCard({
+  diag,
+  error,
+  loading,
+  rebuilding,
+  onRefresh,
+  onRebuildRequest
+}: {
+  diag: SessionIndexDiagnostics | null
+  error: string | null
+  loading: boolean
+  rebuilding: boolean
+  onRefresh: () => void
+  onRebuildRequest: () => void
+}) {
+  const schemaMismatch =
+    diag != null && diag.schemaVersion !== diag.expectedSchemaVersion
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Database className="size-3.5 text-muted-foreground" />
+        <span className="text-sm font-semibold">会话索引</span>
+        <span className="text-[11px] text-muted-foreground">
+          仅读取缓存，不影响原始会话数据。
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onRefresh}
+            disabled={loading || rebuilding}
+          >
+            <RefreshCw className={loading ? "animate-spin" : ""} />
+            诊断
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onRebuildRequest}
+            disabled={loading || rebuilding}
+          >
+            {rebuilding ? <Loader2 className="animate-spin" /> : <Wrench />}
+            重建索引
+          </Button>
+        </div>
+      </div>
+
+      <div className="rounded-lg border bg-card p-4 space-y-3 text-xs">
+        {error ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive">
+            <div className="font-medium">读取索引失败</div>
+            <div className="mt-1 break-all font-mono">{error}</div>
+            <div className="mt-2 text-muted-foreground">
+              如果索引文件损坏或异常，点击右上「重建索引」即可重置缓存。
+            </div>
+          </div>
+        ) : diag ? (
+          <>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <DiagRow
+                label="数据库路径"
+                value={displayIndexPath(diag.path)}
+                title={diag.path}
+                mono
+              />
+              <DiagRow
+                label="schema 版本"
+                value={diag.schemaVersion.toLocaleString("en-US")}
+                tone={schemaMismatch ? "warn" : "default"}
+              />
+              <DiagRow label="文件大小" value={fmtBytes(diag.fileSizeBytes)} />
+              <DiagRow
+                label="会话索引行"
+                value={diag.sessionIndexRows.toLocaleString("en-US")}
+              />
+              <DiagRow
+                label="用量索引行"
+                value={diag.sessionUsageRows.toLocaleString("en-US")}
+              />
+              <DiagRow
+                label="活跃度数据行"
+                value={diag.activityBucketRows.toLocaleString("en-US")}
+              />
+              <DiagRow
+                label="活跃度扫描进度"
+                value={diag.heatmapProgressRows.toLocaleString("en-US")}
+              />
+              <DiagRow
+                label="全文搜索扫描进度"
+                value={diag.ftsProgressRows.toLocaleString("en-US")}
+              />
+              <DiagRow
+                label="全文索引行"
+                value={diag.sessionTextRows.toLocaleString("en-US")}
+              />
+            </div>
+            {schemaMismatch && (
+              <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
+                schema 版本与当前应用期望不一致，建议重建索引以避免读写错位。
+              </div>
+            )}
+          </>
+        ) : loading ? (
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            读取诊断信息中…
+          </div>
+        ) : (
+          <div className="text-muted-foreground">尚未读取索引诊断信息。</div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DiagRow({
+  label,
+  value,
+  title,
+  mono,
+  tone
+}: {
+  label: string
+  value: string
+  title?: string
+  mono?: boolean
+  tone?: "warn" | "default"
+}) {
+  return (
+    <div className="flex min-w-0 items-baseline gap-2">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span
+        className={[
+          "block min-w-0 flex-1 truncate",
+          mono ? "font-mono" : "tabular-nums",
+          tone === "warn" ? "text-warn" : ""
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        title={title ?? value}
+      >
+        {value}
+      </span>
+    </div>
   )
 }
 

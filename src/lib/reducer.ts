@@ -167,6 +167,7 @@ function reduceAttachment(state: State, ev: Record<string, unknown>, ts: number)
     typeof prompt === "string"
       ? ([{ type: "text", text: prompt }] as UIBlock[])
       : convertContentBlocks(prompt)
+  if (isInternalCommandBlocks(blocks)) return state
   if (blocks.length === 0) return state
   const entry: UIMessage = {
     kind: "message",
@@ -261,6 +262,10 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
       blk.raw = cb
     }
     const i = typeof inner.index === "number" ? inner.index : blocks.length
+    // 若上游 index 跨号（少见但出现过：collab 子 agent stream-json 偶发跳号），
+    // 直接 blocks[i]=blk 会留下 undefined 空槽，下游 for...of 会读到 undefined。
+    // 用 unknown placeholder 填充中间空位，保持数组紧凑。
+    while (blocks.length < i) blocks.push({ type: "unknown" } as UIBlock)
     blocks[i] = blk
     entries[idx] = { ...cur, blocks }
     return { entries }
@@ -379,6 +384,16 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
   if (ev.isMeta === true) return state
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const blocks = convertContentBlocks(msg.content)
+  if (isInternalCommandBlocks(blocks)) return state
+  // CLI 在 stream-json 模式会把发出的 user message 原样 echo 回来。协同模式发出的
+  // 内容带有一段固定 prefix（见 src/App.tsx:buildCollaborationPrompt），UI 上只展示
+  // 用户原文，不展示协同规则样板。
+  for (const b of blocks) {
+    if (b.type === "text" && typeof b.text === "string") {
+      const stripped = stripCollabPrefix(b.text)
+      if (stripped !== null) b.text = stripped
+    }
+  }
   bindImagePlaceholders(blocks)
   const tur = ev.tool_use_result
   if (tur != null) {
@@ -408,6 +423,36 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
 // 一一配对（角标 / lightbox alt 用 #N，与文中字样所见即所得）。
 // `[Image: source: <path>]` 这种含本地路径形态只做剥离，不计入配对（CLI 常和 #N 并列出现，
 // 同一张图配 2 个占位会错位）。fallback 用 basename。
+// 与 src/App.tsx 的 COLLAB_PREFIX_TAG 与 COLLAB_PROMPT_SEPARATOR 保持一致。
+const COLLAB_PREFIX_TAG = "[Claudinal 协同模式]"
+const COLLAB_PROMPT_SEPARATOR = "\n\n用户需求：\n"
+
+function isInternalCommandText(text: string): boolean {
+  const trimmed = text.trimStart()
+  const opening = trimmed.match(/^<(command-name|local-command-[a-z0-9-]+)>/i)
+  if (!opening) return false
+  return trimmed.includes(`</${opening[1]}>`)
+}
+
+function isInternalCommandBlocks(blocks: UIBlock[]): boolean {
+  if (blocks.length === 0) return false
+  let sawInternal = false
+  for (const block of blocks) {
+    if (block.type !== "text" || typeof block.text !== "string") return false
+    if (!block.text.trim()) continue
+    if (!isInternalCommandText(block.text)) return false
+    sawInternal = true
+  }
+  return sawInternal
+}
+
+function stripCollabPrefix(text: string): string | null {
+  if (!text.startsWith(COLLAB_PREFIX_TAG)) return null
+  const idx = text.indexOf(COLLAB_PROMPT_SEPARATOR)
+  if (idx < 0) return null
+  return text.slice(idx + COLLAB_PROMPT_SEPARATOR.length).trim()
+}
+
 function bindImagePlaceholders(blocks: UIBlock[]) {
   const numbered: string[] = []
   const sourceBasenames: string[] = []

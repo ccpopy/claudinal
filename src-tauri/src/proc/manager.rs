@@ -47,6 +47,11 @@ impl Manager {
         let claude = find_claude()?;
         ensure_required_claude_flags(&claude, &opts).await?;
         let session_id = Uuid::new_v4().to_string();
+        let collab_enabled = opts
+            .env
+            .as_ref()
+            .and_then(|env| env.get("CLAUDINAL_COLLAB_ENABLED"))
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
         info!(claude = %claude.display(), session = %session_id, cwd = %opts.cwd.display(), "spawning claude");
 
         let mut cmd = Command::new(&claude);
@@ -151,6 +156,25 @@ impl Manager {
                                         uuid,
                                         "stdout event"
                                     );
+                                    if collab_enabled && event_type == "system" && subtype == "init"
+                                    {
+                                        if let Some(claude_session_id) =
+                                            value.get("session_id").and_then(Value::as_str)
+                                        {
+                                            if let Err(e) =
+                                                crate::collab::store::record_runtime_session(
+                                                    &sid,
+                                                    claude_session_id,
+                                                )
+                                            {
+                                                warn!(
+                                                    session = %sid,
+                                                    claude_session = %claude_session_id,
+                                                    "record collaboration session mapping failed: {e}"
+                                                );
+                                            }
+                                        }
+                                    }
                                     if value
                                         .get("type")
                                         .and_then(Value::as_str)
@@ -276,13 +300,14 @@ impl Manager {
 
 async fn ensure_required_claude_flags(claude: &Path, opts: &SpawnOptions) -> Result<()> {
     let help = claude_help(claude).await?;
+    // --permission-prompt-tool 在 Claude CLI 2.1.x 起从 --help 输出里移除，
+    // 但参数本身仍在用（已实测 2.1.126 直传可正常工作），所以不再做 help 文本检查。
     let mut required = vec![
         "--input-format",
         "--output-format",
         "--include-partial-messages",
         "--include-hook-events",
         "--permission-mode",
-        "--permission-prompt-tool",
     ];
     if opts.model.as_deref().is_some_and(|v| !v.trim().is_empty()) {
         required.push("--model");

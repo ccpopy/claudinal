@@ -4,6 +4,7 @@ import {
   Copy,
   FolderOpen,
   FolderPlus,
+  History as HistoryIcon,
   Loader2,
   MessageSquarePlus,
   Pin,
@@ -57,6 +58,7 @@ interface Props {
   onNewConversation: () => void
   onOpenSettings: () => void
   onOpenPlugins: () => void
+  onOpenHistory?: () => void
   refreshKey?: number
 }
 
@@ -124,6 +126,7 @@ export function Sidebar({
   onNewConversation,
   onOpenSettings,
   onOpenPlugins,
+  onOpenHistory,
   refreshKey = 0
 }: Props) {
   const [searchOpen, setSearchOpen] = useState(false)
@@ -368,6 +371,16 @@ export function Sidebar({
           <Puzzle />
           插件
         </Button>
+        {onOpenHistory && (
+          <Button
+            variant="ghost"
+            className="justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent"
+            onClick={onOpenHistory}
+          >
+            <HistoryIcon />
+            历史会话
+          </Button>
+        )}
       </div>
 
       <ScrollArea className="flex-1 min-h-0 min-w-0 mt-2">

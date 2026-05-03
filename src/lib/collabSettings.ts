@@ -33,15 +33,15 @@ export const DEFAULT_COLLAB_SETTINGS: CollabSettings = {
   },
   providerResponsibilityScopes: {
     claude:
-      "在主会话内承担需求拆解和小范围修改，整合外部 Agent 的输出。",
+      "承担需求拆解和小范围修改，整合各 Agent 的输出。",
     codex:
-      "做代码实现和重构，按 --output-schema 返回结构化结果，写入限定到允许路径。",
+      "负责代码实现和重构，按 --output-schema 返回结构化结果，写入限定于允许路径。",
     gemini:
-      "做长上下文阅读、跨文件分析和评审，默认只读不修改文件。",
+      "负责长上下文阅读、跨文件分析和代码评审，默认只读。",
     opencode:
-      "用已配置的 LLM provider 做替代实现或快速验证，写入限定到允许路径。"
+      "用已配置的 LLM provider 做替代实现或快速验证，写入限定于允许路径。"
   },
-  defaultResponsibilityScope: "只读分析、给出建议，不修改文件。",
+  defaultResponsibilityScope: "只读分析，给出建议，不修改文件。",
   defaultAllowedPaths: []
 }
 
