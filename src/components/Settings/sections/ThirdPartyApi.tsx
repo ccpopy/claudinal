@@ -49,6 +49,7 @@ import {
   type ThirdPartyApiStore
 } from "@/lib/thirdPartyApi"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
+import { formatProxyUrl, loadProxyAsync } from "@/lib/proxy"
 
 interface CliSettings {
   model?: string
@@ -392,12 +393,16 @@ export function ThirdPartyApi() {
     const originalId = editor?.originalId ?? null
     setModelsLoading(true)
     try {
+      const proxy = await loadProxyAsync().catch(() => null)
+      const proxyUrl =
+        proxy?.enabled && proxy.host && proxy.port ? formatProxyUrl(proxy) : null
       const list = await fetchProviderModels({
         requestUrl: editorConfig.requestUrl,
         apiKey: editorConfig.apiKey,
         authField: editorConfig.authField,
         inputFormat: editorConfig.inputFormat,
-        useFullUrl: editorConfig.useFullUrl
+        useFullUrl: editorConfig.useFullUrl,
+        proxyUrl
       })
       setEditor((cur) =>
         cur
@@ -584,9 +589,11 @@ export function ThirdPartyApi() {
                   className="font-mono text-xs"
                   disabled={loading || saving}
                 />
-                <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-                  Anthropic Messages 默认填写基础地址，例如 {ANTHROPIC_API_BASE_URL}；只有打开完整端点 URL 时才填写完整 messages 端点。
-                </div>
+                {editorConfig.inputFormat === "anthropic" && (
+                  <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+                    Anthropic Messages 默认填写基础地址，例如 {ANTHROPIC_API_BASE_URL}；只有打开完整端点 URL 时才填写完整 messages 端点。
+                  </div>
+                )}
               </div>
             </section>
 
@@ -607,24 +614,20 @@ export function ThirdPartyApi() {
                   triggerClassName="max-w-[360px]"
                 />
               </Row>
-              <Row label="认证字段">
-                <Select
-                  value={editorConfig.authField}
-                  onChange={(e) =>
-                    update({
-                      authField: e.target.value as ProviderAuthField
-                    })
-                  }
-                  options={AUTH_FIELD_OPTIONS}
-                  disabled={loading || saving}
-                  triggerClassName="max-w-[360px]"
-                />
-              </Row>
-              {editorConfig.inputFormat === "openai-chat-completions" && (
-                <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-                  Claude CLI 原生发送 Anthropic Messages。OpenAI Chat
-                  Completions 端点需要供应商侧兼容 Claude 请求，或前面有转换代理。
-                </div>
+              {editorConfig.inputFormat === "anthropic" && (
+                <Row label="认证字段">
+                  <Select
+                    value={editorConfig.authField}
+                    onChange={(e) =>
+                      update({
+                        authField: e.target.value as ProviderAuthField
+                      })
+                    }
+                    options={AUTH_FIELD_OPTIONS}
+                    disabled={loading || saving}
+                    triggerClassName="max-w-[360px]"
+                  />
+                </Row>
               )}
             </section>
 

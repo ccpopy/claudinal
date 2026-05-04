@@ -1,6 +1,7 @@
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { toast } from "sonner"
+import { formatProxyUrl, loadProxyAsync } from "@/lib/proxy"
 
 type CheckOptions = {
   silent?: boolean
@@ -32,6 +33,16 @@ function formatProgress(event: DownloadEvent, state: { downloaded: number; total
   return `正在下载更新包... ${percent}%`
 }
 
+async function updaterProxyUrl(): Promise<string | undefined> {
+  try {
+    const proxy = await loadProxyAsync()
+    if (!proxy.enabled || !proxy.host || !proxy.port) return undefined
+    return formatProxyUrl(proxy)
+  } catch {
+    return undefined
+  }
+}
+
 export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Update | null> {
   if (import.meta.env.DEV) {
     if (!options.silent) toast.info("开发模式不会检查应用更新")
@@ -40,7 +51,11 @@ export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Upd
   if (checkInFlight) return null
   checkInFlight = true
   try {
-    const update = await check({ timeout: 30_000 })
+    const proxy = await updaterProxyUrl()
+    const update = await check({
+      timeout: 30_000,
+      ...(proxy ? { proxy } : {})
+    } as Parameters<typeof check>[0])
     if (!update) {
       if (!options.silent) toast.success("当前已是最新版本")
       return null

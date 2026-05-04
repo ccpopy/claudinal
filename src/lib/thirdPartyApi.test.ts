@@ -98,6 +98,7 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("claudinal-proxy")
     expect(env.CLAUDINAL_PROXY_TARGET_URL).toBe("https://api.example.com")
     expect(env.CLAUDINAL_PROXY_API_KEY).toBe("sk-test")
+    expect(env.CLAUDINAL_PROXY_INPUT_FORMAT).toBe("anthropic")
     expect(env.CLAUDINAL_PROXY_AUTH_FIELD).toBe("ANTHROPIC_AUTH_TOKEN")
     expect(env.CLAUDINAL_PROXY_USE_FULL_URL).toBe("0")
   })
@@ -163,8 +164,10 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
       CLAUDE_CODE_SUBAGENT_MODEL: "x",
       CLAUDINAL_PROXY_TARGET_URL: "x",
       CLAUDINAL_PROXY_API_KEY: "x",
+      CLAUDINAL_PROXY_INPUT_FORMAT: "x",
       CLAUDINAL_PROXY_AUTH_FIELD: "x",
       CLAUDINAL_PROXY_USE_FULL_URL: "x",
+      CLAUDINAL_PROXY_OPENAI_REASONING_EFFORT: "x",
       CLAUDINAL_PROXY_MAIN_MODEL: "x",
       CLAUDINAL_PROXY_HAIKU_MODEL: "x",
       CLAUDINAL_PROXY_SONNET_MODEL: "x",

@@ -133,7 +133,7 @@ pub async fn spawn_session(
     }
     let mut env = env.unwrap_or_default();
     let env_remove = Vec::new();
-    if let Some(proxy_config) = take_proxy_config(&mut env) {
+    if let Some(proxy_config) = take_proxy_config(&mut env, effort.as_deref()) {
         let local_base_url = start_api_proxy(proxy_config).await?;
         env.insert("ANTHROPIC_BASE_URL".into(), local_base_url);
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
@@ -330,15 +330,31 @@ fn write_runtime_mcp_config_file(config: &Value) -> Result<String> {
     Ok(path.display().to_string())
 }
 
-fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Option<ProxyConfig> {
+fn take_proxy_config(
+    env: &mut std::collections::HashMap<String, String>,
+    effort: Option<&str>,
+) -> Option<ProxyConfig> {
     let target_url = env.remove("CLAUDINAL_PROXY_TARGET_URL")?;
     let api_key = env.remove("CLAUDINAL_PROXY_API_KEY").unwrap_or_default();
+    let input_format = env
+        .remove("CLAUDINAL_PROXY_INPUT_FORMAT")
+        .unwrap_or_else(|| "anthropic".into());
     let auth_field = env
         .remove("CLAUDINAL_PROXY_AUTH_FIELD")
         .unwrap_or_else(|| "ANTHROPIC_AUTH_TOKEN".into());
     let use_full_url = env
         .remove("CLAUDINAL_PROXY_USE_FULL_URL")
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let openai_reasoning_effort = env
+        .remove("CLAUDINAL_PROXY_OPENAI_REASONING_EFFORT")
+        .or_else(|| effort.map(str::to_string))
+        .unwrap_or_default();
+    let network_proxy_url = session_network_proxy_url(env).unwrap_or_default();
+    let network_no_proxy = env
+        .get("NO_PROXY")
+        .or_else(|| env.get("no_proxy"))
+        .cloned()
+        .unwrap_or_default();
     let main_model = env.remove("CLAUDINAL_PROXY_MAIN_MODEL").unwrap_or_default();
     let haiku_model = env
         .remove("CLAUDINAL_PROXY_HAIKU_MODEL")
@@ -358,14 +374,34 @@ fn take_proxy_config(env: &mut std::collections::HashMap<String, String>) -> Opt
     Some(ProxyConfig {
         target_url,
         api_key,
+        input_format,
         auth_field,
         use_full_url,
+        openai_reasoning_effort,
+        network_proxy_url,
+        network_no_proxy,
         main_model,
         haiku_model,
         sonnet_model,
         opus_model,
         available_models,
     })
+}
+
+fn session_network_proxy_url(env: &std::collections::HashMap<String, String>) -> Option<String> {
+    [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ]
+    .iter()
+    .filter_map(|key| env.get(*key))
+    .map(|value| value.trim())
+    .find(|value| !value.is_empty())
+    .map(str::to_string)
 }
 
 async fn bridge_socks_proxy_env(env: &mut std::collections::HashMap<String, String>) -> Result<()> {
@@ -2529,14 +2565,24 @@ pub async fn fetch_provider_models(
     auth_field: String,
     input_format: String,
     use_full_url: bool,
+    proxy_url: Option<String>,
 ) -> Result<Vec<String>> {
     let urls = provider_models_urls(&request_url, &input_format, use_full_url)?;
     let token = api_key.trim();
     if token.is_empty() {
         return Err(Error::Other("apiKey required".into()));
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20));
+    if let Some(proxy_url) = proxy_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|e| Error::Other(format!("invalid proxy url: {}", error_chain(&e))))?;
+        builder = builder.proxy(proxy);
+    }
+    let client = builder
         .build()
         .map_err(|e| Error::Other(format!("http client: {e}")))?;
     let mut errors = Vec::new();

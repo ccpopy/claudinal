@@ -793,6 +793,7 @@ export interface ProviderModelsRequest {
   authField: string
   inputFormat: string
   useFullUrl: boolean
+  proxyUrl?: string | null
 }
 
 export async function fetchProviderModels(
