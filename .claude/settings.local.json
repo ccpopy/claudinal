@@ -56,7 +56,19 @@
       "Bash(claude setup-token *)",
       "WebFetch(domain:www.npmjs.com)",
       "Bash(npm view *)",
-      "Bash(pnpm why *)"
+      "Bash(pnpm why *)",
+      "Bash(xargs wc *)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:api-docs.deepseek.com)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:opencode.ai)",
+      "Bash(\"C:\\\\Users\\\\13434\\\\.local\\\\bin\\\\claude.exe\" --help)",
+      "Bash(\"C:\\\\Users\\\\13434\\\\.local\\\\bin\\\\claude.exe\" -p --help)",
+      "Bash(pnpm test *)"
     ]
   }
 }
