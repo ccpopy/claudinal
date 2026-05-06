@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import claudinalIconUrl from "@/assets/claudinal-icon.png"
 
 interface Props {
   sidebarVisible: boolean
@@ -117,9 +118,15 @@ export function AppChrome({
 
         <div
           data-tauri-drag-region
-          className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-xs font-medium text-foreground/75"
+          className="pointer-events-none absolute left-1/2 flex -translate-x-1/2 items-center gap-1.5 text-xs font-medium text-foreground/75"
         >
-          Claudinal
+          <img
+            src={claudinalIconUrl}
+            alt=""
+            aria-hidden="true"
+            className="size-4 shrink-0"
+          />
+          <span>Claudinal</span>
         </div>
 
         <div className="flex h-full items-center">

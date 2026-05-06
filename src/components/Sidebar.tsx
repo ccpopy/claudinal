@@ -493,7 +493,10 @@ export function Sidebar({
                         <FolderOpen className="size-3.5 shrink-0 text-sidebar-muted" />
                         <button
                           type="button"
-                          onClick={() => onSelectProject(p)}
+                          onClick={() => {
+                            onSelectProject(p)
+                            toggleExpand(p)
+                          }}
                           className="truncate flex-1 min-w-0 text-left cursor-pointer"
                         >
                           {p.name}

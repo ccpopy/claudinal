@@ -2,7 +2,7 @@ import { emitSettingsBus } from "@/lib/settingsBus"
 
 // 用户可配置的厂商/模型定价表，用于在 Statistics 重算 cost。
 //
-// 数据来源（2026-05-02 抓取的官方价，单位 USD per 1M tokens）：
+// 数据来源（2026-05-06 抓取的官方价，单位 USD per 1M tokens）：
 // - Anthropic: https://platform.claude.com/docs/en/docs/about-claude/pricing
 // - OpenAI:    https://developers.openai.com/api/docs/pricing
 // - DeepSeek:  https://api-docs.deepseek.com/quick_start/pricing
@@ -72,6 +72,15 @@ export const DEFAULT_PRICING: PricingConfig = {
           output: 15,
           cacheRead: 0.3,
           cacheWrite: 3.75,
+          multiplier: 1
+        },
+        {
+          id: "preset-claude-haiku-4-5",
+          pattern: "*claude-haiku-4-5*",
+          input: 1,
+          output: 5,
+          cacheRead: 0.1,
+          cacheWrite: 1.25,
           multiplier: 1
         }
       ]

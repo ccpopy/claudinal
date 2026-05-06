@@ -24,7 +24,7 @@
         "center": true,
         "alwaysOnTop": false,
         "skipTaskbar": true,
-        "backgroundColor": "#f5f2e9"
+        "backgroundColor": "#f7f8ff"
       },
       {
         "label": "main",
@@ -38,7 +38,7 @@
         "resizable": true,
         "focus": false,
         "center": true,
-        "backgroundColor": "#f5f2e9"
+        "backgroundColor": "#f7f8ff"
       }
     ],
     "security": {

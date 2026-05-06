@@ -244,7 +244,7 @@ export function PricingEditor() {
         <section className="rounded-lg border bg-muted/30 p-4 text-xs text-muted-foreground space-y-2">
           <div className="font-medium text-foreground">价格来源</div>
           <div>
-            预设价格于 2026-05-02 从下列官方源校对：
+            预设价格于 2026-05-06 从下列官方源校对：
           </div>
           <div className="flex flex-wrap items-center gap-3">
             {SOURCE_LINKS.map((src) => (

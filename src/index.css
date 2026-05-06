@@ -43,77 +43,77 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Claude 暖色调 light 主题（默认） */
+/* Claudinal light 主题（默认） */
 :root,
 .light {
-  --background: oklch(0.98 0.005 95);
-  --foreground: oklch(0.21 0.005 80);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.005 80);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.005 80);
-  --primary: oklch(0.66 0.13 40);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.95 0.012 90);
-  --secondary-foreground: oklch(0.25 0.005 80);
-  --muted: oklch(0.96 0.01 90);
-  --muted-foreground: oklch(0.52 0.012 90);
-  --accent: oklch(0.94 0.015 85);
-  --accent-foreground: oklch(0.21 0.005 80);
-  --destructive: oklch(0.55 0.2 27);
-  --destructive-foreground: oklch(0.99 0 0);
-  --border: oklch(0.92 0.018 90);
-  --input: oklch(0.92 0.018 90);
-  --ring: oklch(0.66 0.13 40 / 0.4);
+  --background: #f7f8ff;
+  --foreground: #171a2f;
+  --card: #ffffff;
+  --card-foreground: #171a2f;
+  --popover: #ffffff;
+  --popover-foreground: #171a2f;
+  --primary: #5b65f0;
+  --primary-foreground: #ffffff;
+  --secondary: #eef1ff;
+  --secondary-foreground: #252a55;
+  --muted: #f0f2fb;
+  --muted-foreground: #626981;
+  --accent: #ece8ff;
+  --accent-foreground: #25214d;
+  --destructive: #c93f58;
+  --destructive-foreground: #ffffff;
+  --border: #dfe4f7;
+  --input: #dfe4f7;
+  --ring: #5b65f066;
   --radius: 0.625rem;
 
-  --sidebar: oklch(0.96 0.012 90);
-  --sidebar-foreground: oklch(0.21 0.005 80);
-  --sidebar-muted: oklch(0.52 0.012 90);
-  --sidebar-border: oklch(0.9 0.015 90);
-  --sidebar-accent: oklch(0.93 0.015 85);
+  --sidebar: transparent;
+  --sidebar-foreground: #171a2f;
+  --sidebar-muted: #65708f;
+  --sidebar-border: #d8def5;
+  --sidebar-accent: #e7ebff;
 
-  --user: oklch(0.95 0.018 70);
-  --user-foreground: oklch(0.25 0.005 80);
-  --thinking: oklch(0.96 0.018 80);
-  --tool: oklch(0.96 0.02 150);
-  --connected: oklch(0.55 0.13 150);
-  --warn: oklch(0.6 0.13 80);
+  --user: #eef1ff;
+  --user-foreground: #252a55;
+  --thinking: #f2edff;
+  --tool: #edf5ff;
+  --connected: #2f7de1;
+  --warn: #9a6510;
 }
 
 .dark {
-  --background: oklch(0.16 0.005 80);
-  --foreground: oklch(0.96 0.005 80);
-  --card: oklch(0.21 0.005 80);
-  --card-foreground: oklch(0.96 0.005 80);
-  --popover: oklch(0.21 0.005 80);
-  --popover-foreground: oklch(0.96 0.005 80);
-  --primary: oklch(0.7 0.13 40);
-  --primary-foreground: oklch(0.16 0.005 80);
-  --secondary: oklch(0.27 0.005 80);
-  --secondary-foreground: oklch(0.96 0.005 80);
-  --muted: oklch(0.27 0.005 80);
-  --muted-foreground: oklch(0.7 0.005 80);
-  --accent: oklch(0.27 0.005 80);
-  --accent-foreground: oklch(0.96 0.005 80);
-  --destructive: oklch(0.55 0.18 27);
-  --destructive-foreground: oklch(0.96 0.005 80);
-  --border: oklch(0.27 0.005 80);
-  --input: oklch(0.27 0.005 80);
-  --ring: oklch(0.7 0.13 40 / 0.4);
+  --background: #111426;
+  --foreground: #eef1ff;
+  --card: #181c33;
+  --card-foreground: #eef1ff;
+  --popover: #181c33;
+  --popover-foreground: #eef1ff;
+  --primary: #91a4ff;
+  --primary-foreground: #0f1224;
+  --secondary: #242947;
+  --secondary-foreground: #eef1ff;
+  --muted: #242947;
+  --muted-foreground: #a9b0ce;
+  --accent: #2b2753;
+  --accent-foreground: #f0edff;
+  --destructive: #e05a70;
+  --destructive-foreground: #ffffff;
+  --border: #313758;
+  --input: #313758;
+  --ring: #91a4ff66;
 
-  --sidebar: oklch(0.18 0.005 80);
-  --sidebar-foreground: oklch(0.96 0.005 80);
-  --sidebar-muted: oklch(0.55 0.005 80);
-  --sidebar-border: oklch(0.25 0.005 80);
-  --sidebar-accent: oklch(0.24 0.005 80);
+  --sidebar: transparent;
+  --sidebar-foreground: #eef1ff;
+  --sidebar-muted: #9da6ca;
+  --sidebar-border: #2b3150;
+  --sidebar-accent: #242947;
 
-  --user: oklch(0.32 0.06 270);
-  --user-foreground: oklch(0.95 0.005 270);
-  --thinking: oklch(0.27 0.04 320);
-  --tool: oklch(0.25 0.04 150);
-  --connected: oklch(0.62 0.13 150);
-  --warn: oklch(0.62 0.13 80);
+  --user: #242a55;
+  --user-foreground: #eef1ff;
+  --thinking: #291f4a;
+  --tool: #1d2d4a;
+  --connected: #6ab8ff;
+  --warn: #f1c76f;
 }
 
 @theme inline {
