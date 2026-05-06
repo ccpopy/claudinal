@@ -62,52 +62,19 @@ pub struct ClaudeCliVersionInfo {
 #[derive(serde::Serialize)]
 pub struct AppRuntimeInfo {
     pub executable_path: String,
-    pub windows_portable: bool,
-}
-
-#[cfg(target_os = "windows")]
-fn normalize_windows_path_for_prefix(path: &std::path::Path) -> String {
-    let raw = path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase();
-    raw.strip_prefix("//?/")
-        .unwrap_or(&raw)
-        .trim_end_matches('/')
-        .to_string()
-}
-
-#[cfg(target_os = "windows")]
-fn windows_path_starts_with(path: &std::path::Path, root: &std::path::Path) -> bool {
-    let path = normalize_windows_path_for_prefix(path);
-    let root = normalize_windows_path_for_prefix(root);
-    path == root || path.starts_with(&format!("{root}/"))
-}
-
-#[cfg(target_os = "windows")]
-fn is_likely_windows_portable(exe: &std::path::Path) -> bool {
-    let install_roots = ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"]
-        .into_iter()
-        .filter_map(std::env::var_os)
-        .map(std::path::PathBuf::from)
-        .collect::<Vec<_>>();
-    !install_roots
-        .iter()
-        .any(|root| windows_path_starts_with(exe, root))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_likely_windows_portable(_exe: &std::path::Path) -> bool {
-    false
+    pub executable_dir: String,
 }
 
 #[tauri::command]
 pub fn app_runtime_info() -> Result<AppRuntimeInfo> {
     let exe = std::env::current_exe()
         .map_err(|e| Error::Other(format!("无法定位 Claudinal 可执行文件: {e}")))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| Error::Other("无法定位 Claudinal 可执行文件目录".into()))?;
     Ok(AppRuntimeInfo {
         executable_path: exe.display().to_string(),
-        windows_portable: is_likely_windows_portable(&exe),
+        executable_dir: dir.display().to_string(),
     })
 }
 

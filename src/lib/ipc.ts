@@ -4,7 +4,7 @@ import type { ClaudeEvent } from "../types/events"
 
 export interface AppRuntimeInfo {
   executable_path: string
-  windows_portable: boolean
+  executable_dir: string
 }
 
 export async function appRuntimeInfo(): Promise<AppRuntimeInfo> {

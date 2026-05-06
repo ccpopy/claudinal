@@ -19,6 +19,26 @@ use tauri::{
     Manager,
 };
 
+#[cfg(target_os = "windows")]
+fn updater_builder() -> tauri_plugin_updater::Builder {
+    let builder = tauri_plugin_updater::Builder::new();
+    let Ok(exe) = std::env::current_exe() else {
+        return builder;
+    };
+    let Some(dir) = exe.parent() else {
+        return builder;
+    };
+    // NSIS `/D=` must be the last installer argument. The updater plugin appends
+    // builder-level args after config-level args, so this pins updates to the
+    // currently running install directory, including custom directories.
+    builder.installer_arg(format!("/D={}", dir.display()))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn updater_builder() -> tauri_plugin_updater::Builder {
+    tauri_plugin_updater::Builder::new()
+}
+
 pub fn run_permission_mcp_server() -> error::Result<()> {
     permission_mcp::run_stdio_mcp_server()
 }
@@ -39,7 +59,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(updater_builder().build())
         .register_uri_scheme_protocol(startup::PROTOCOL, |_ctx, _request| startup::response())
         .plugin(tauri_plugin_dialog::init())
         .manage(proc::Manager::new())

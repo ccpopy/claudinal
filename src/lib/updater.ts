@@ -1,15 +1,13 @@
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { toast } from "sonner"
-import { appRuntimeInfo, openExternal, type AppRuntimeInfo } from "@/lib/ipc"
+import { appRuntimeInfo, type AppRuntimeInfo } from "@/lib/ipc"
 import { formatProxyUrl, loadProxyAsync } from "@/lib/proxy"
 
 type CheckOptions = {
   silent?: boolean
   throwOnError?: boolean
 }
-
-const RELEASES_URL = "https://github.com/ccpopy/claudinal/releases/latest"
 
 let checkInFlight = false
 let installInFlight = false
@@ -58,21 +56,15 @@ async function updaterProxyUrl(): Promise<string | undefined> {
   }
 }
 
-function portableUpdateDescription(update: Update, runtime: AppRuntimeInfo): string {
+function updateDescription(update: Update, runtime: AppRuntimeInfo | null): string {
   return [
     describeUpdate(update),
-    "当前运行的是 Windows 绿色版，自动更新包是安装版，不会替换当前 exe。",
-    `当前运行路径：${runtime.executable_path}`,
-    "请下载 portable.zip 后覆盖当前目录，或改用安装版。"
+    runtime?.executable_dir
+      ? `自动更新将安装到当前运行目录：${runtime.executable_dir}`
+      : null
   ]
     .filter(Boolean)
     .join("\n")
-}
-
-function closeUpdateQuietly(update: Update): void {
-  void update.close().catch((error) => {
-    console.error("释放 updater resource 失败:", error)
-  })
 }
 
 export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Update | null> {
@@ -93,25 +85,8 @@ export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Upd
       return null
     }
 
-    const runtime = await readRuntimeInfo()
-    if (runtime?.windows_portable) {
-      toast.message(`发现新版本 ${update.version}`, {
-        description: portableUpdateDescription(update, runtime),
-        action: {
-          label: "打开下载页",
-          onClick: () => {
-            void openExternal(RELEASES_URL).catch((error) =>
-              toast.error(String(error))
-            )
-          }
-        }
-      })
-      closeUpdateQuietly(update)
-      return update
-    }
-
     toast.message(`发现新版本 ${update.version}`, {
-      description: describeUpdate(update),
+      description: updateDescription(update, await readRuntimeInfo()),
       action: {
         label: "安装并重启",
         onClick: () => {
@@ -140,21 +115,11 @@ export async function installAppUpdate(update: Update): Promise<void> {
   let toastId: string | number | null = null
   try {
     const runtime = await readRuntimeInfo()
-    if (runtime?.windows_portable) {
-      toast.warning("绿色版不会被自动更新替换", {
-        description: portableUpdateDescription(update, runtime),
-        action: {
-          label: "打开下载页",
-          onClick: () => {
-            void openExternal(RELEASES_URL).catch((error) =>
-              toast.error(String(error))
-            )
-          }
-        }
-      })
-      return
-    }
-    toastId = toast.loading("正在准备更新...")
+    toastId = toast.loading("正在准备更新...", {
+      description: runtime?.executable_dir
+        ? `目标目录：${runtime.executable_dir}`
+        : undefined
+    })
     await update.downloadAndInstall((event) => {
       toast.loading(formatProgress(event, progress), { id: toastId ?? undefined })
     })
