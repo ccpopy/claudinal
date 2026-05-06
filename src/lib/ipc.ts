@@ -2,6 +2,15 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import type { ClaudeEvent } from "../types/events"
 
+export interface AppRuntimeInfo {
+  executable_path: string
+  windows_portable: boolean
+}
+
+export async function appRuntimeInfo(): Promise<AppRuntimeInfo> {
+  return invoke<AppRuntimeInfo>("app_runtime_info")
+}
+
 export type SpawnArgs = {
   cwd: string
   model: string | null

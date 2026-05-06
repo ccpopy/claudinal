@@ -90,6 +90,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             startup::frontend_ready,
             buddy::get_buddy_bones,
+            commands::app_runtime_info,
             commands::detect_claude_cli,
             commands::claude_cli_version_info,
             commands::spawn_session,

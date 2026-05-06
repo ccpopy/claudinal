@@ -5,6 +5,7 @@ import {
   createThirdPartyApiProvider,
   maskSecret,
   normalizeThirdPartyApiConfig,
+  providerModelInputOptions,
   providerModelOptions,
   trimApiUrl,
   type ThirdPartyApiConfig
@@ -184,9 +185,8 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
 })
 
 describe("thirdPartyApi.providerModelOptions", () => {
-  it("merges available + per-role models into a deduped list", () => {
+  it("returns only mapped per-role models in a deduped list", () => {
     const list = providerModelOptions({
-      availableModels: ["m1", "m2", "  m3  "],
       models: {
         mainModel: "m1",
         haikuModel: "m4",
@@ -195,7 +195,23 @@ describe("thirdPartyApi.providerModelOptions", () => {
         subagentModel: ""
       }
     })
-    expect(list).toEqual(["m1", "m2", "m3", "m4"])
+    expect(list).toEqual(["m1", "m4", "m3"])
+  })
+})
+
+describe("thirdPartyApi.providerModelInputOptions", () => {
+  it("merges fetched provider models with mapped models for editor suggestions", () => {
+    const list = providerModelInputOptions({
+      availableModels: ["m1", "m2", "  m3  "],
+      models: {
+        mainModel: "m1",
+        haikuModel: "m4",
+        sonnetModel: "",
+        opusModel: "m3",
+        subagentModel: "m5"
+      }
+    })
+    expect(list).toEqual(["m1", "m2", "m3", "m4", "m5"])
   })
 })
 

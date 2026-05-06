@@ -545,20 +545,41 @@ export function buildClaudeEnv(
   return next
 }
 
-export function providerModelOptions(
-  provider: Pick<ThirdPartyApiConfig, "availableModels" | "models">
+function dedupeModelValues(values: string[]): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  )
+}
+
+function mappedModelValues(
+  provider: Pick<ThirdPartyApiConfig, "models">
 ): string[] {
-  const values = [
-    ...provider.availableModels,
+  return [
     provider.models.mainModel,
     provider.models.haikuModel,
     provider.models.sonnetModel,
     provider.models.opusModel,
     provider.models.subagentModel
   ]
-    .map((value) => value.trim())
-    .filter(Boolean)
-  return Array.from(new Set(values))
+}
+
+export function providerModelOptions(
+  provider: Pick<ThirdPartyApiConfig, "models">
+): string[] {
+  return dedupeModelValues(mappedModelValues(provider))
+}
+
+export function providerModelInputOptions(
+  provider: Pick<ThirdPartyApiConfig, "availableModels" | "models">
+): string[] {
+  return dedupeModelValues([
+    ...provider.availableModels,
+    ...mappedModelValues(provider)
+  ])
 }
 
 export function selectClaudeModelAlias(

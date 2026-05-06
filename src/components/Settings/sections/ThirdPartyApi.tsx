@@ -39,7 +39,7 @@ import {
   loadThirdPartyApiStoreAsync,
   maskSecret,
   OFFICIAL_PROVIDER_ID,
-  providerModelOptions,
+  providerModelInputOptions,
   saveThirdPartyApiStoreAsync,
   trimApiUrl,
   type ModelMapping,
@@ -472,8 +472,9 @@ export function ThirdPartyApi() {
     ? requestUrlPlaceholder(editorConfig.inputFormat, editorConfig.useFullUrl)
     : ANTHROPIC_API_BASE_URL
   const editorModelOptions = editorConfig
-    ? providerModelOptions(editorConfig)
+    ? providerModelInputOptions(editorConfig)
     : []
+  const cachedModelCount = editorConfig?.availableModels.length ?? 0
 
   if (editor && editorConfig) {
     return (
@@ -655,9 +656,9 @@ export function ThirdPartyApi() {
               <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                 获取模型列表会写入当前供应商缓存。下面字段会写入 settings.json 的 env，并在本地代理转发请求时保持一致。
               </div>
-              {editorModelOptions.length > 0 && (
+              {cachedModelCount > 0 && (
                 <div className="text-[11px] text-muted-foreground">
-                  已缓存 {editorModelOptions.length} 个模型，点击输入框可从列表中选择，也可以手动输入。
+                  已缓存 {cachedModelCount} 个模型，点击输入框可从列表中选择，也可以手动输入。
                 </div>
               )}
 
@@ -1005,6 +1006,10 @@ function ModelField({
   options: string[]
 }) {
   const [open, setOpen] = useState(false)
+  const filteredOptions = useMemo(
+    () => filterModelOptions(options, value),
+    [options, value]
+  )
 
   return (
     <StackField label={label}>
@@ -1025,32 +1030,80 @@ function ModelField({
             role="listbox"
             className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover p-1 shadow-lg"
           >
-            {options.map((model) => {
-              const active = model === value
-              return (
-                <button
-                  key={model}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    onChange(model)
-                    setOpen(false)
-                  }}
-                  className={
-                    active
-                      ? "w-full rounded-sm bg-accent px-2 py-2 text-left font-mono text-xs text-accent-foreground"
-                      : "w-full rounded-sm px-2 py-2 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
-                  }
-                >
-                  {model}
-                </button>
-              )
-            })}
+            {filteredOptions.length === 0 ? (
+              <div className="px-2 py-2 text-xs text-muted-foreground">
+                没有匹配的模型
+              </div>
+            ) : (
+              filteredOptions.map((model) => {
+                const active = model === value
+                return (
+                  <button
+                    key={model}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      onChange(model)
+                      setOpen(false)
+                    }}
+                    className={
+                      active
+                        ? "w-full rounded-sm bg-accent px-2 py-2 text-left font-mono text-xs text-accent-foreground"
+                        : "w-full rounded-sm px-2 py-2 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
+                    }
+                  >
+                    {model}
+                  </button>
+                )
+              })
+            )}
           </div>
         )}
       </div>
     </StackField>
   )
+}
+
+function compactModelText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "")
+}
+
+function fuzzyIncludes(model: string, query: string): boolean {
+  const compactModel = compactModelText(model)
+  const compactQuery = compactModelText(query)
+  if (!compactQuery) return true
+  if (compactModel.includes(compactQuery)) return true
+  let index = 0
+  for (const char of compactModel) {
+    if (char === compactQuery[index]) index += 1
+    if (index === compactQuery.length) return true
+  }
+  return false
+}
+
+function modelMatchScore(model: string, query: string): number {
+  const normalizedModel = model.toLowerCase()
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return 0
+  if (normalizedModel === normalizedQuery) return 0
+  if (normalizedModel.startsWith(normalizedQuery)) return 1
+  if (normalizedModel.includes(normalizedQuery)) return 2
+  if (compactModelText(model).includes(compactModelText(query))) return 3
+  return 4
+}
+
+function filterModelOptions(options: string[], query: string): string[] {
+  const trimmed = query.trim()
+  if (!trimmed) return options
+  return options
+    .map((model, index) => ({
+      model,
+      index,
+      score: modelMatchScore(model, trimmed)
+    }))
+    .filter((item) => fuzzyIncludes(item.model, trimmed))
+    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .map((item) => item.model)
 }
