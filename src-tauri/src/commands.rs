@@ -665,6 +665,22 @@ pub struct GitWorktreeList {
     pub worktrees: Vec<GitWorktreeInfo>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCreateWorktreeRequest {
+    pub cwd: String,
+    pub path: String,
+    pub branch: String,
+    pub base: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCreateWorktreeResult {
+    pub path: String,
+    pub branch: String,
+}
+
 fn git_worktree_status_inner(cwd: String) -> Result<GitWorktreeStatus> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
@@ -1017,6 +1033,63 @@ pub async fn git_worktree_list(cwd: String) -> Result<GitWorktreeList> {
 }
 
 #[tauri::command]
+pub async fn git_suggest_worktree_path(cwd: String, branch: String) -> Result<String> {
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    let current_root = git_root(&cwd)?;
+    validate_git_branch_name(branch.trim())?;
+    let repo = std::path::Path::new(&current_root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(sanitize_path_component)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "repo".into());
+    let token = sanitize_path_component(branch.trim());
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("cannot resolve home directory".into()))?;
+    Ok(home
+        .join(".codex")
+        .join("worktrees")
+        .join(token)
+        .join(repo)
+        .display()
+        .to_string())
+}
+
+#[tauri::command]
+pub async fn git_create_worktree(req: GitCreateWorktreeRequest) -> Result<GitCreateWorktreeResult> {
+    if !std::path::Path::new(&req.cwd).is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {}", req.cwd)));
+    }
+    let _current_root = git_root(&req.cwd)?;
+    let branch = req.branch.trim();
+    validate_git_branch_name(branch)?;
+    let base = req
+        .base
+        .as_deref()
+        .map(str::trim)
+        .filter(|base| !base.is_empty())
+        .unwrap_or("HEAD");
+    validate_git_ref_arg(base, "base ref")?;
+    let target = clean_path_arg(&req.path, "worktree path")?;
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+    }
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", &req.cwd, "worktree", "add", "-b", branch, "--"])
+        .arg(&target)
+        .arg(base);
+    command_stdout(&mut cmd).map(|_| GitCreateWorktreeResult {
+        path: target.display().to_string(),
+        branch: branch.to_string(),
+    })
+}
+
+#[tauri::command]
 pub async fn git_remove_worktree(cwd: String, path: String) -> Result<()> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
@@ -1038,6 +1111,19 @@ pub async fn git_remove_worktree(cwd: String, path: String) -> Result<()> {
     cmd.args(["-C", &cwd, "worktree", "remove", "--"])
         .arg(&target);
     command_stdout(&mut cmd).map(|_| ())
+}
+
+#[tauri::command]
+pub async fn normalize_proxy_url_for_http_client(proxy_url: String) -> Result<String> {
+    let proxy_url = proxy_url.trim();
+    if proxy_url.is_empty() {
+        return Err(Error::Other("proxy url required".into()));
+    }
+    reqwest::Url::parse(proxy_url).map_err(|e| Error::Other(format!("invalid proxy url: {e}")))?;
+    if crate::network_proxy::is_socks_proxy_url(proxy_url) {
+        return crate::network_proxy::start_http_connect_bridge(proxy_url).await;
+    }
+    Ok(proxy_url.to_string())
 }
 
 #[tauri::command]
@@ -1165,6 +1251,26 @@ fn command_success(cmd: &mut std::process::Command) -> bool {
     cmd.output().is_ok_and(|out| out.status.success())
 }
 
+fn git_root(cwd: &str) -> Result<String> {
+    let inside = command_stdout(std::process::Command::new("git").args([
+        "-C",
+        cwd,
+        "rev-parse",
+        "--is-inside-work-tree",
+    ]))?;
+    if inside.trim() != "true" {
+        return Err(Error::Other("current project is not a Git worktree".into()));
+    }
+    Ok(command_stdout(std::process::Command::new("git").args([
+        "-C",
+        cwd,
+        "rev-parse",
+        "--show-toplevel",
+    ]))?
+    .trim()
+    .to_string())
+}
+
 fn validate_git_branch_name(branch: &str) -> Result<()> {
     if branch.is_empty()
         || branch.contains('\0')
@@ -1182,6 +1288,38 @@ fn validate_git_branch_name(branch: &str) -> Result<()> {
         return Err(Error::Other(format!("invalid branch name: {branch}")));
     }
     Ok(())
+}
+
+fn validate_git_ref_arg(value: &str, label: &str) -> Result<()> {
+    if value.trim().is_empty() || value.contains('\0') {
+        return Err(Error::Other(format!("{label} required")));
+    }
+    Ok(())
+}
+
+fn sanitize_path_component(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_dash = false;
+    for ch in raw.chars() {
+        let next = if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            last_dash = false;
+            Some(ch.to_ascii_lowercase())
+        } else if last_dash {
+            None
+        } else {
+            last_dash = true;
+            Some('-')
+        };
+        if let Some(ch) = next {
+            out.push(ch);
+        }
+    }
+    let trimmed = out.trim_matches('-').trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "worktree".into()
+    } else {
+        trimmed
+    }
 }
 
 fn clean_path_arg(path: &str, label: &str) -> Result<std::path::PathBuf> {

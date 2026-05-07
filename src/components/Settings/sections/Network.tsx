@@ -277,7 +277,7 @@ export function Network() {
       <SettingsSectionHeader
         icon={NetworkIcon}
         title="网络代理"
-        description="给 Claude CLI 设置网络代理，修改后下次启动会话后生效。"
+        description="给 Claude CLI、GitHub 检测和应用更新设置网络代理。"
       />
 
       <SettingsSectionBody>

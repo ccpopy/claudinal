@@ -883,11 +883,17 @@ export default function App() {
       }
       const uiModel = composerPrefs.model.trim()
       const uiEffort = composerPrefs.effort.trim()
+      const launchEffort =
+        thirdPartyReady &&
+        thirdPartyApi.inputFormat === "openai-chat-completions" &&
+        uiEffort === "max"
+          ? "xhigh"
+          : uiEffort
       const model = uiModel || null
       const id = await spawnSession({
         cwd: project.cwd,
         model,
-        effort: uiEffort || null,
+        effort: launchEffort || null,
         permissionMode: planMode
           ? "plan"
           : sessionPermissionMode || cfg.defaultPermissionMode || "default",
@@ -1724,14 +1730,24 @@ export default function App() {
     [project, selectedSessionId, state]
   )
 
+  const thirdPartyApiConfig = useMemo(
+    () => loadThirdPartyApiConfig(),
+    [thirdPartyApiVersion]
+  )
+
+  const openaiCompatibleProvider =
+    thirdPartyApiConfig.enabled &&
+    thirdPartyApiConfig.inputFormat === "openai-chat-completions"
+
   const modelOptions = useMemo(() => {
-    const cfg = loadThirdPartyApiConfig()
-    if (!cfg.enabled) return [] as Array<{ value: string; label?: string }>
-    return providerModelOptions(cfg).map((model) => ({
+    if (!thirdPartyApiConfig.enabled) {
+      return [] as Array<{ value: string; label?: string }>
+    }
+    return providerModelOptions(thirdPartyApiConfig).map((model) => ({
       value: model,
       label: model
     }))
-  }, [thirdPartyApiVersion])
+  }, [thirdPartyApiConfig])
 
   const modelOptionValues = useMemo(
     () => new Set(modelOptions.map((option) => option.value)),
@@ -1929,6 +1945,7 @@ export default function App() {
 	                          effort={composerPrefs.effort}
 	                          onModelEffortChange={handleModelEffortChange}
 	                          modelOptions={modelOptions}
+	                          openaiCompatibleProvider={openaiCompatibleProvider}
 	                          globalDefault={globalDefault}
 	                          sessionPrefs={sessionComposer}
 	                        />
@@ -1995,6 +2012,7 @@ export default function App() {
                     effort={composerPrefs.effort}
                     onModelEffortChange={handleModelEffortChange}
                     modelOptions={modelOptions}
+                    openaiCompatibleProvider={openaiCompatibleProvider}
                     globalDefault={globalDefault}
                     sessionPrefs={sessionComposer}
                   />

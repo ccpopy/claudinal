@@ -114,7 +114,7 @@ export function Appearance() {
             全部重置
           </Button>
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {Object.entries(PRESETS).map(([id, p]) => {
             const active = activePresetId === id
             return (
@@ -122,7 +122,7 @@ export function Appearance() {
                 key={id}
                 variant={active ? "default" : "outline"}
                 onClick={() => applyPreset(id)}
-                className="h-auto py-3 flex-col gap-1"
+                className="h-auto min-w-0 flex-col gap-1 px-2 py-2.5"
               >
                 <div className="flex gap-1">
                   {[
@@ -133,19 +133,19 @@ export function Appearance() {
                   ].map((c, i) => (
                     <span
                       key={i}
-                      className="size-3 rounded-full border"
+                      className="size-2.5 rounded-full border"
                       style={{ backgroundColor: c }}
                     />
                   ))}
                 </div>
-                <span className="text-xs font-normal">{p.label}</span>
+                <span className="max-w-full truncate text-xs font-normal">{p.label}</span>
               </Button>
             )
           })}
           <Button
             variant={activePresetId === "custom" ? "default" : "outline"}
             onClick={() => setPresetSelection("custom")}
-            className="h-auto py-3 flex-col gap-1"
+            className="h-auto min-w-0 flex-col gap-1 px-2 py-2.5"
             aria-label="切换到自定义配色"
           >
             <div className="flex gap-1">
@@ -157,12 +157,12 @@ export function Appearance() {
               ].map((c, i) => (
                 <span
                   key={i}
-                  className="size-3 rounded-full border transition-colors"
+                  className="size-2.5 rounded-full border transition-colors"
                   style={{ backgroundColor: c }}
                 />
               ))}
             </div>
-            <span className="text-xs font-normal">自定义</span>
+            <span className="max-w-full truncate text-xs font-normal">自定义</span>
           </Button>
         </div>
       </section>

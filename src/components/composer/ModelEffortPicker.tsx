@@ -28,6 +28,7 @@ interface Props {
   effort: string
   onChange: (next: { model?: string; effort?: string }) => void
   modelOptions?: Array<{ value: string; label?: string }>
+  openaiCompatibleProvider?: boolean
   disabled?: boolean
   globalDefault?: ComposerPrefs
   sessionPrefs?: ComposerPrefs | null
@@ -46,15 +47,21 @@ export function ModelEffortPicker({
   effort,
   onChange,
   modelOptions,
+  openaiCompatibleProvider = false,
   disabled,
   globalDefault,
   sessionPrefs
 }: Props) {
   const cap = effortLevelsForModel(model)
   const supportsEffort = !!cap
+  const visibleEfforts = openaiCompatibleProvider
+    ? EFFORT_ORDER.filter((lvl) => lvl !== "max")
+    : EFFORT_ORDER
+  const normalizedEffort =
+    openaiCompatibleProvider && effort === "max" ? "xhigh" : effort
   const safeEffort: EffortLevel =
-    cap && cap.available.includes(effort as EffortLevel)
-      ? (effort as EffortLevel)
+    cap && cap.available.includes(normalizedEffort as EffortLevel)
+      ? (normalizedEffort as EffortLevel)
       : ""
 
   const modelLabel = modelDisplayLabel(model)
@@ -174,8 +181,8 @@ export function ModelEffortPicker({
             该模型不支持思考强度
           </div>
         ) : (
-          EFFORT_ORDER.map((lvl) => {
-            const ok = cap!.available.includes(lvl)
+          visibleEfforts.map((lvl) => {
+            const ok = cap!.available.includes(lvl) && visibleEfforts.includes(lvl)
             const isMax = lvl === "max"
             return (
               <DropdownMenuItem
@@ -209,6 +216,12 @@ export function ModelEffortPicker({
               </DropdownMenuItem>
             )
           })
+        )}
+
+        {supportsEffort && openaiCompatibleProvider && (
+          <div className="mt-1 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
+            OpenAI 兼容接口没有 max；历史会话中的 max 会按 xhigh 发送。
+          </div>
         )}
 
         {supportsEffort && isMaxSelected && (

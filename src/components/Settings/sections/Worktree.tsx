@@ -1,12 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type SetStateAction
+} from "react"
+import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import {
   AlertTriangle,
   Check,
   Copy,
   ExternalLink,
+  FolderOpen,
   FolderGit2,
   GitBranch,
   Loader2,
+  Plus,
   RefreshCw,
   Trash2,
   TreePine
@@ -16,7 +26,20 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
+import {
+  gitCreateWorktree,
   gitRemoveWorktree,
+  gitSuggestWorktreePath,
   gitWorktreeList,
   openPath,
   type GitWorktreeInfo,
@@ -66,13 +89,46 @@ function worktreeSortKey(worktree: GitWorktreeInfo) {
   return `${worktree.branch ?? ""}:${worktree.path}`
 }
 
+function repoName(path: string | null | undefined) {
+  return basename(path).replace(/\s+/g, "-").toLowerCase() || "repo"
+}
+
+function timestampSlug() {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+function defaultBranch(list: GitWorktreeList | null) {
+  return `codex/${repoName(list?.currentRoot)}-${timestampSlug()}`
+}
+
+function currentBaseRef(list: GitWorktreeList | null) {
+  return list?.worktrees.find((worktree) => worktree.current)?.branch ?? "HEAD"
+}
+
+interface CreateDraft {
+  branch: string
+  base: string
+  path: string
+  addProject: boolean
+}
+
 export function Worktree({ cwd, onSelectProject, onProjectsChanged }: Props) {
   const [projects, setProjects] = useState(() => listProjects())
   const [list, setList] = useState<GitWorktreeList | null>(null)
   const [loading, setLoading] = useState(false)
   const [removing, setRemoving] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pendingRemove, setPendingRemove] = useState<GitWorktreeInfo | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createDraft, setCreateDraft] = useState<CreateDraft>(() => ({
+    branch: "",
+    base: "HEAD",
+    path: "",
+    addProject: true
+  }))
 
   const worktrees = useMemo(
     () =>
@@ -129,6 +185,65 @@ export function Worktree({ cwd, onSelectProject, onProjectsChanged }: Props) {
     [onSelectProject, refreshProjects]
   )
 
+  const suggestPath = useCallback(
+    async (branch: string) => {
+      if (!cwd) return
+      const path = await gitSuggestWorktreePath({ cwd, branch })
+      setCreateDraft((cur) => ({ ...cur, path }))
+    },
+    [cwd]
+  )
+
+  const openCreate = useCallback(async () => {
+    if (!cwd || !list?.isRepo) return
+    const branch = defaultBranch(list)
+    const next = {
+      branch,
+      base: currentBaseRef(list),
+      path: "",
+      addProject: true
+    }
+    setCreateDraft(next)
+    setCreateOpen(true)
+    try {
+      const path = await gitSuggestWorktreePath({ cwd, branch })
+      setCreateDraft((cur) =>
+        cur.branch === branch ? { ...cur, path } : cur
+      )
+    } catch (err) {
+      toast.error(`生成默认路径失败: ${String(err)}`)
+    }
+  }, [cwd, list])
+
+  const createWorktree = async () => {
+    if (!cwd || creating) return
+    const branch = createDraft.branch.trim()
+    const path = createDraft.path.trim()
+    const base = createDraft.base.trim() || "HEAD"
+    if (!branch || !path) {
+      toast.error("请填写分支名和工作树路径")
+      return
+    }
+    setCreating(true)
+    try {
+      const result = await gitCreateWorktree({ cwd, branch, path, base })
+      if (createDraft.addProject) {
+        const project = addProject(result.path)
+        refreshProjects()
+        onSelectProject?.(project)
+        toast.success("工作树已创建并添加到项目列表")
+      } else {
+        toast.success("工作树已创建")
+      }
+      setCreateOpen(false)
+      await refresh()
+    } catch (err) {
+      toast.error(`创建工作树失败: ${String(err)}`)
+    } finally {
+      setCreating(false)
+    }
+  }
+
   const removeWorktree = async () => {
     if (!cwd || !pendingRemove || removing) return
     const target = pendingRemove
@@ -158,17 +273,28 @@ export function Worktree({ cwd, onSelectProject, onProjectsChanged }: Props) {
       <SettingsSectionHeader
         icon={TreePine}
         title="工作树"
-        description="查看当前 Git 仓库已经存在的隔离 worktree。"
+        description="为当前 Git 仓库创建和管理隔离 worktree。"
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={refresh}
-            disabled={reading || !cwd}
-          >
-            <RefreshCw className={reading ? "size-3.5 animate-spin" : "size-3.5"} />
-            刷新
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openCreate}
+              disabled={reading || !cwd || !list?.isRepo}
+            >
+              <Plus className="size-3.5" />
+              新建工作树
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={refresh}
+              disabled={reading || !cwd}
+            >
+              <RefreshCw className={reading ? "size-3.5 animate-spin" : "size-3.5"} />
+              刷新
+            </Button>
+          </div>
         }
       />
 
@@ -207,7 +333,7 @@ export function Worktree({ cwd, onSelectProject, onProjectsChanged }: Props) {
                 <Loader2 className="size-4 animate-spin text-muted-foreground" />
               </div>
             ) : empty ? (
-              <EmptyState title="暂无工作树" detail="当前仓库没有除主工作区以外的 Git worktree。" />
+              <EmptyState title="暂无工作树" detail="可以新建一个隔离工作树，然后作为独立项目打开。" />
             ) : (
               <div className="overflow-hidden rounded-lg border bg-card">
                 {worktrees.map((worktree, index) => (
@@ -266,7 +392,168 @@ export function Worktree({ cwd, onSelectProject, onProjectsChanged }: Props) {
         }
         onConfirm={removeWorktree}
       />
+
+      <CreateWorktreeDialog
+        open={createOpen}
+        draft={createDraft}
+        creating={creating}
+        onOpenChange={(open) => {
+          if (!creating) setCreateOpen(open)
+        }}
+        onChange={setCreateDraft}
+        onSuggestPath={() => {
+          suggestPath(createDraft.branch).catch((err) =>
+            toast.error(`生成路径失败: ${String(err)}`)
+          )
+        }}
+        onBrowsePath={async () => {
+          try {
+            const selected = await openDialog({ directory: true, multiple: false })
+            if (typeof selected === "string") {
+              setCreateDraft((cur) => ({
+                ...cur,
+                path: selected.replace(/\\/g, "/")
+              }))
+            }
+          } catch (err) {
+            toast.error(String(err))
+          }
+        }}
+        onConfirm={createWorktree}
+      />
     </SettingsSection>
+  )
+}
+
+function CreateWorktreeDialog({
+  open,
+  draft,
+  creating,
+  onOpenChange,
+  onChange,
+  onSuggestPath,
+  onBrowsePath,
+  onConfirm
+}: {
+  open: boolean
+  draft: CreateDraft
+  creating: boolean
+  onOpenChange: (open: boolean) => void
+  onChange: Dispatch<SetStateAction<CreateDraft>>
+  onSuggestPath: () => void
+  onBrowsePath: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <GitBranch className="size-4" />
+            新建工作树
+          </DialogTitle>
+          <DialogDescription>
+            创建命令为 git worktree add -b 分支 路径 基础引用；Git 报错会直接显示。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor="worktree-branch">新分支</Label>
+            <Input
+              id="worktree-branch"
+              value={draft.branch}
+              onChange={(event) =>
+                onChange((cur) => ({ ...cur, branch: event.target.value }))
+              }
+              className="font-mono text-xs"
+              placeholder="codex/my-task"
+              disabled={creating}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="worktree-base">基础引用</Label>
+            <Input
+              id="worktree-base"
+              value={draft.base}
+              onChange={(event) =>
+                onChange((cur) => ({ ...cur, base: event.target.value }))
+              }
+              className="font-mono text-xs"
+              placeholder="HEAD"
+              disabled={creating}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="worktree-path">工作树路径</Label>
+            <div className="flex gap-2">
+              <Input
+                id="worktree-path"
+                value={draft.path}
+                onChange={(event) =>
+                  onChange((cur) => ({ ...cur, path: event.target.value }))
+                }
+                className="font-mono text-xs"
+                placeholder="C:/Users/me/.codex/worktrees/..."
+                disabled={creating}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onSuggestPath}
+                disabled={creating || !draft.branch.trim()}
+              >
+                生成
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onBrowsePath}
+                disabled={creating}
+              >
+                <FolderOpen className="size-4" />
+                浏览
+              </Button>
+            </div>
+          </div>
+          <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+            <div>
+              <Label htmlFor="worktree-add-project" className="text-sm">
+                创建后添加为项目并打开
+              </Label>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                关闭后只创建 Git worktree，不切换当前项目。
+              </div>
+            </div>
+            <Switch
+              id="worktree-add-project"
+              checked={draft.addProject}
+              onCheckedChange={(addProject) =>
+                onChange((cur) => ({ ...cur, addProject }))
+              }
+              disabled={creating}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={creating}
+          >
+            取消
+          </Button>
+          <Button
+            type="button"
+            onClick={onConfirm}
+            disabled={creating || !draft.branch.trim() || !draft.path.trim()}
+          >
+            {creating ? <Loader2 className="animate-spin" /> : <Plus />}
+            创建
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

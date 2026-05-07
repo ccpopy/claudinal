@@ -1,7 +1,11 @@
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { toast } from "sonner"
-import { appRuntimeInfo, type AppRuntimeInfo } from "@/lib/ipc"
+import {
+  appRuntimeInfo,
+  normalizeProxyUrlForHttpClient,
+  type AppRuntimeInfo
+} from "@/lib/ipc"
 import { formatProxyUrl, loadProxyAsync } from "@/lib/proxy"
 
 type CheckOptions = {
@@ -47,13 +51,9 @@ function formatProgress(event: DownloadEvent, state: { downloaded: number; total
 }
 
 async function updaterProxyUrl(): Promise<string | undefined> {
-  try {
-    const proxy = await loadProxyAsync()
-    if (!proxy.enabled || !proxy.host || !proxy.port) return undefined
-    return formatProxyUrl(proxy)
-  } catch {
-    return undefined
-  }
+  const proxy = await loadProxyAsync()
+  if (!proxy.enabled || !proxy.host || !proxy.port) return undefined
+  return normalizeProxyUrlForHttpClient(formatProxyUrl(proxy))
 }
 
 function updateDescription(update: Update, runtime: AppRuntimeInfo | null): string {

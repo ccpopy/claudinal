@@ -124,6 +124,11 @@ export interface GitWorktreeList {
   worktrees: GitWorktreeInfo[]
 }
 
+export interface GitCreateWorktreeResult {
+  path: string
+  branch: string
+}
+
 export async function detectClaudeCli(): Promise<string> {
   return invoke<string>("detect_claude_cli")
 }
@@ -278,11 +283,40 @@ export async function gitWorktreeList(cwd: string): Promise<GitWorktreeList> {
   return invoke<GitWorktreeList>("git_worktree_list", { cwd })
 }
 
+export async function gitSuggestWorktreePath(args: {
+  cwd: string
+  branch: string
+}): Promise<string> {
+  return invoke<string>("git_suggest_worktree_path", args)
+}
+
+export async function gitCreateWorktree(args: {
+  cwd: string
+  path: string
+  branch: string
+  base?: string | null
+}): Promise<GitCreateWorktreeResult> {
+  return invoke<GitCreateWorktreeResult>("git_create_worktree", {
+    req: {
+      cwd: args.cwd,
+      path: args.path,
+      branch: args.branch,
+      base: args.base ?? null
+    }
+  })
+}
+
 export async function gitRemoveWorktree(args: {
   cwd: string
   path: string
 }): Promise<void> {
   return invoke("git_remove_worktree", args)
+}
+
+export async function normalizeProxyUrlForHttpClient(
+  proxyUrl: string
+): Promise<string> {
+  return invoke<string>("normalize_proxy_url_for_http_client", { proxyUrl })
 }
 
 export async function githubCliStatus(

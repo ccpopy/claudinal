@@ -120,7 +120,10 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
     let openai_chat = config.input_format == "openai-chat-completions";
     let messages_path = is_messages_path(path);
 
-    if content_type.to_ascii_lowercase().contains("application/json") {
+    if content_type
+        .to_ascii_lowercase()
+        .contains("application/json")
+    {
         body = if openai_chat && messages_path {
             anthropic_to_openai_request(&body, &config)?
         } else {
@@ -200,13 +203,7 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
         (response_headers, bytes.to_vec())
     };
 
-    write_response(
-        &mut stream,
-        status.as_u16(),
-        response_headers,
-        bytes,
-    )
-    .await?;
+    write_response(&mut stream, status.as_u16(), response_headers, bytes).await?;
     Ok(())
 }
 
@@ -351,7 +348,10 @@ fn anthropic_to_openai_request(body: &[u8], config: &ProxyConfig) -> Result<Vec<
             out.insert(key.into(), value.clone());
         }
     }
-    if let Some(value) = obj.get("max_completion_tokens").or_else(|| obj.get("max_tokens")) {
+    if let Some(value) = obj
+        .get("max_completion_tokens")
+        .or_else(|| obj.get("max_tokens"))
+    {
         out.insert("max_completion_tokens".into(), value.clone());
     }
     if let Some(value) = obj.get("stop").or_else(|| obj.get("stop_sequences")) {
@@ -461,7 +461,10 @@ fn append_user_openai_messages(out: &mut Vec<Value>, content: &Value) {
 
 fn assistant_content_to_openai(content: &Value) -> Result<(String, Vec<Value>)> {
     let Some(blocks) = content.as_array() else {
-        return Ok((anthropic_content_to_text(content).unwrap_or_default(), Vec::new()));
+        return Ok((
+            anthropic_content_to_text(content).unwrap_or_default(),
+            Vec::new(),
+        ));
     };
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
@@ -548,14 +551,41 @@ fn openai_tool_from_anthropic_tool(tool: &Value) -> Option<Value> {
     }
     function.insert(
         "parameters".into(),
-        tool.get("input_schema")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} })),
+        openai_tool_parameters_from_anthropic_tool(name, tool),
     );
     Some(serde_json::json!({
         "type": "function",
         "function": Value::Object(function)
     }))
+}
+
+fn openai_tool_parameters_from_anthropic_tool(name: &str, tool: &Value) -> Value {
+    let mut schema = tool
+        .get("input_schema")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
+    tighten_known_openai_tool_schema(name, &mut schema);
+    schema
+}
+
+fn tighten_known_openai_tool_schema(name: &str, schema: &mut Value) {
+    if name != "Read" {
+        return;
+    }
+    let Some(pages) = schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .and_then(|properties| properties.get_mut("pages"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    pages
+        .entry("minLength")
+        .or_insert_with(|| Value::Number(1.into()));
+    pages
+        .entry("pattern")
+        .or_insert_with(|| Value::String(r"^[1-9][0-9]*(?:-[1-9][0-9]*)?$".into()));
 }
 
 fn openai_tool_choice(choice: &Value) -> Option<Value> {
@@ -626,7 +656,10 @@ fn convert_openai_response(
     }
     let value = serde_json::from_slice::<Value>(bytes).ok()?;
     let body = serde_json::to_vec(&openai_json_to_anthropic_message(&value)).ok()?;
-    Some((vec![("Content-Type".into(), "application/json".into())], body))
+    Some((
+        vec![("Content-Type".into(), "application/json".into())],
+        body,
+    ))
 }
 
 fn openai_json_to_anthropic_message(value: &Value) -> Value {
@@ -673,13 +706,60 @@ fn anthropic_tool_use_from_openai_tool_call(tool_call: &Value) -> Option<Value> 
         .get("arguments")
         .and_then(Value::as_str)
         .unwrap_or("{}");
-    let input = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| Value::Object(Map::new()));
+    let input =
+        serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| Value::Object(Map::new()));
+    let input = normalize_anthropic_tool_input(name, input);
     Some(serde_json::json!({
         "type": "tool_use",
         "id": id,
         "name": name,
         "input": input
     }))
+}
+
+fn normalize_anthropic_tool_input(name: &str, mut input: Value) -> Value {
+    if name != "Read" {
+        return input;
+    }
+    // OpenAI-compatible providers sometimes serialize an omitted optional page range
+    // as an invalid string such as "" or "/". Claude Code rejects these before
+    // the Read tool runs, and they cannot represent a real 1-indexed page range.
+    if let Some(obj) = input.as_object_mut() {
+        if obj
+            .get("pages")
+            .and_then(Value::as_str)
+            .is_some_and(|pages| !is_valid_read_pages(pages))
+        {
+            obj.remove("pages");
+        }
+    }
+    input
+}
+
+fn is_valid_read_pages(pages: &str) -> bool {
+    let trimmed = pages.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let Some((start, end)) = trimmed.split_once('-') else {
+        return parse_positive_page(trimmed).is_some();
+    };
+    let Some(start) = parse_positive_page(start) else {
+        return false;
+    };
+    let Some(end) = parse_positive_page(end) else {
+        return false;
+    };
+    start <= end
+}
+
+fn parse_positive_page(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let page = trimmed.parse::<u64>().ok()?;
+    (page > 0).then_some(page)
 }
 
 fn anthropic_stop_reason(reason: Option<&str>) -> Value {
@@ -851,7 +931,11 @@ fn openai_stream_to_anthropic_sse(bytes: &[u8]) -> Result<Vec<u8>> {
                     }
                 }
             }
-            if choice.get("finish_reason").and_then(Value::as_str).is_some() {
+            if choice
+                .get("finish_reason")
+                .and_then(Value::as_str)
+                .is_some()
+            {
                 stop_reason = Some(anthropic_stop_reason(
                     choice.get("finish_reason").and_then(Value::as_str),
                 ));
@@ -1187,6 +1271,70 @@ mod tests {
     }
 
     #[test]
+    fn openai_tool_schema_rejects_empty_read_pages() {
+        let tool = serde_json::json!({
+            "name": "Read",
+            "description": "Read a file",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": { "type": "string" },
+                    "pages": { "type": "string" }
+                }
+            }
+        });
+        let converted = openai_tool_from_anthropic_tool(&tool).expect("tool");
+        assert_eq!(
+            converted["function"]["parameters"]["properties"]["pages"]["minLength"],
+            1
+        );
+        assert_eq!(
+            converted["function"]["parameters"]["properties"]["pages"]["pattern"],
+            r"^[1-9][0-9]*(?:-[1-9][0-9]*)?$"
+        );
+    }
+
+    #[test]
+    fn openai_tool_call_removes_invalid_read_pages() {
+        let tool_call = serde_json::json!({
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "Read",
+                "arguments": "{\"file_path\":\"installAntigravity.sh\",\"pages\":\"/\"}"
+            }
+        });
+        let converted = anthropic_tool_use_from_openai_tool_call(&tool_call).expect("tool use");
+        assert_eq!(converted["input"]["file_path"], "installAntigravity.sh");
+        assert!(converted["input"].get("pages").is_none());
+    }
+
+    #[test]
+    fn openai_tool_call_preserves_valid_read_pages() {
+        let tool_call = serde_json::json!({
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "Read",
+                "arguments": "{\"file_path\":\"paper.pdf\",\"pages\":\"10-20\"}"
+            }
+        });
+        let converted = anthropic_tool_use_from_openai_tool_call(&tool_call).expect("tool use");
+        assert_eq!(converted["input"]["pages"], "10-20");
+    }
+
+    #[test]
+    fn read_pages_validation_matches_cli_range_format() {
+        assert!(is_valid_read_pages("3"));
+        assert!(is_valid_read_pages("1-5"));
+        assert!(is_valid_read_pages(" 10-20 "));
+        assert!(!is_valid_read_pages(""));
+        assert!(!is_valid_read_pages("/"));
+        assert!(!is_valid_read_pages("0"));
+        assert!(!is_valid_read_pages("5-1"));
+    }
+
+    #[test]
     fn openai_chat_response_converts_tool_calls_to_anthropic() {
         let body = serde_json::json!({
             "id": "chatcmpl-1",
@@ -1232,8 +1380,8 @@ mod tests {
             "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-5.5\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
             "data: [DONE]\n\n"
         );
-        let converted = String::from_utf8(openai_stream_to_anthropic_sse(stream.as_bytes()).unwrap())
-            .unwrap();
+        let converted =
+            String::from_utf8(openai_stream_to_anthropic_sse(stream.as_bytes()).unwrap()).unwrap();
         assert!(converted.contains("\"type\":\"message_start\""));
         assert!(converted.contains("\"type\":\"tool_use\""));
         assert!(converted.contains("\"partial_json\":\"{\\\"path\\\":\""));
@@ -1248,6 +1396,9 @@ mod tests {
         ));
         assert!(matches_no_proxy("http://127.0.0.1:3000", "127.0.0.1,::1"));
         assert!(matches_no_proxy("http://[::1]:3000", "127.0.0.1,::1"));
-        assert!(!matches_no_proxy("https://api.openai.com/v1/models", "*.example.com"));
+        assert!(!matches_no_proxy(
+            "https://api.openai.com/v1/models",
+            "*.example.com"
+        ));
     }
 }
