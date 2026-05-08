@@ -8,7 +8,6 @@ import {
   Loader2,
   MessageSquarePlus,
   Pin,
-  PinOff,
   Puzzle,
   Search,
   Settings,
@@ -134,6 +133,7 @@ export function Sidebar({
   const [sessionsByProject, setSessionsByProject] = useState<
     Record<string, SessionListState>
   >({})
+  const [timeTick, setTimeTick] = useState(0)
   const [pinned, setPinned] = useState<PinnedRef[]>(() => listPinned())
   const [archived, setArchived] = useState<ArchivedRef[]>(() => listArchived())
   const pinnedProjectIds = useMemo(
@@ -197,6 +197,48 @@ export function Sidebar({
       }))
     }
   }, [])
+
+  const refreshVisibleSessions = useCallback(() => {
+    for (const p of projects) {
+      if (
+        p.id === selectedProjectId ||
+        expanded.has(p.id) ||
+        pinnedProjectIds.has(p.id)
+      ) {
+        void loadSessions(p)
+      }
+    }
+    refreshPinned()
+    refreshArchived()
+  }, [
+    projects,
+    selectedProjectId,
+    expanded,
+    pinnedProjectIds,
+    loadSessions,
+    refreshPinned,
+    refreshArchived
+  ])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setTimeTick((tick) => tick + 1)
+    }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    const onFocus = () => refreshVisibleSessions()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshVisibleSessions()
+    }
+    window.addEventListener("focus", onFocus)
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    return () => {
+      window.removeEventListener("focus", onFocus)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+    }
+  }, [refreshVisibleSessions])
 
   const toggleExpand = useCallback(
     (p: Project) => {
@@ -270,27 +312,8 @@ export function Sidebar({
   // 同时把 pinned / archived 重新读一次，确保 ChatHeader 改动后侧栏立即同步
   useEffect(() => {
     if (refreshKey === 0) return
-    for (const p of projects) {
-      if (
-        p.id === selectedProjectId ||
-        expanded.has(p.id) ||
-        pinnedProjectIds.has(p.id)
-      ) {
-        loadSessions(p)
-      }
-    }
-    refreshPinned()
-    refreshArchived()
-  }, [
-    refreshKey,
-    projects,
-    selectedProjectId,
-    expanded,
-    pinnedProjectIds,
-    loadSessions,
-    refreshPinned,
-    refreshArchived
-  ])
+    refreshVisibleSessions()
+  }, [refreshKey, refreshVisibleSessions])
 
   // 计算置顶 + 过滤后的项目列表（项目里非置顶 session 数 > 0 才显示）
   const archivedSet = new Set(
@@ -336,6 +359,7 @@ export function Sidebar({
     return () => window.removeEventListener("keydown", handler)
   }, [])
 
+  void timeTick
 
   return (
     <aside className="w-64 shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground flex flex-col rounded-lg">
@@ -542,15 +566,15 @@ export function Sidebar({
                           {!sessionsState ||
                           sessionsState.kind === "idle" ||
                           sessionsState.kind === "loading" ? (
-                            <div className="px-2 py-1 text-xs text-sidebar-muted">
+                            <div className="pl-7 pr-2 py-1 text-xs text-sidebar-muted">
                               加载中…
                             </div>
                           ) : sessionsState.kind === "error" ? (
-                            <div className="px-2 py-1 text-xs text-destructive break-all">
+                            <div className="pl-7 pr-2 py-1 text-xs text-destructive break-all">
                               {sessionsState.message}
                             </div>
                           ) : visibleSessions.length === 0 ? (
-                            <div className="px-2 py-1 text-xs text-sidebar-muted">
+                            <div className="pl-7 pr-2 py-1 text-xs text-sidebar-muted">
                               暂无历史会话
                             </div>
                           ) : (
@@ -648,8 +672,8 @@ function SessionRow({
     <div
       onClick={onSelect}
       className={cn(
-        "group/session relative flex h-7 items-center gap-1.5 rounded-md text-xs cursor-pointer transition-colors min-w-0 max-w-full overflow-hidden",
-        indented ? "pl-7 pr-2" : "pl-2 pr-2",
+        "group/session relative flex h-7 items-center gap-1.5 rounded-md text-xs cursor-pointer transition-[padding,background-color,color] min-w-0 max-w-full overflow-hidden",
+        pinned || indented ? "pl-7 pr-8" : "pl-2 pr-8 hover:pl-7",
         active
           ? "bg-sidebar-accent text-sidebar-foreground"
           : "hover:bg-sidebar-accent/60 text-sidebar-foreground/90"
@@ -665,12 +689,13 @@ function SessionRow({
               onTogglePin()
             }}
             className={cn(
-              "absolute top-1/2 z-10 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded bg-sidebar-accent text-sidebar-muted shadow-sm opacity-0 transition-opacity hover:text-sidebar-foreground group-hover/session:opacity-100",
+              "absolute top-1/2 z-10 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded bg-sidebar-accent text-sidebar-muted shadow-sm transition-opacity hover:text-sidebar-foreground",
+              pinned ? "opacity-100" : "opacity-0 group-hover/session:opacity-100",
               indented ? "left-1.5" : "left-1"
             )}
             aria-label={pinned ? "取消置顶" : "置顶会话"}
           >
-            {pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
+            <Pin className="size-3" />
           </button>
         </TooltipTrigger>
         <TooltipContent side="right">

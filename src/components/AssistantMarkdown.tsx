@@ -1,6 +1,9 @@
 import { memo, useDeferredValue, useEffect, useRef, useState } from "react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { toast } from "sonner"
+import { openPath } from "@/lib/ipc"
+import { normalizeOpenablePath } from "@/lib/localPath"
 import { cn } from "@/lib/utils"
 
 interface Props {
@@ -72,14 +75,31 @@ const components: Components = {
       {...props}
     />
   ),
-  a: ({ node: _node, className, ...props }) => (
-    <a
-      className={cn("text-primary underline-offset-4 hover:underline", className)}
-      target="_blank"
-      rel="noreferrer noopener"
-      {...props}
-    />
-  ),
+  a: ({ node: _node, className, href, children, ...props }) => {
+    const localPath = href ? normalizeOpenablePath(href) : null
+    if (localPath) {
+      return (
+        <button
+          type="button"
+          className={cn("text-primary underline-offset-4 hover:underline", className)}
+          onClick={() => void openLocalPath(localPath)}
+        >
+          {children}
+        </button>
+      )
+    }
+    return (
+      <a
+        className={cn("text-primary underline-offset-4 hover:underline", className)}
+        target="_blank"
+        rel="noreferrer noopener"
+        href={href}
+        {...props}
+      >
+        {children}
+      </a>
+    )
+  },
   blockquote: ({ node: _node, className, ...props }) => (
     <blockquote
       className={cn(
@@ -121,6 +141,22 @@ const components: Components = {
   code: ({ node: _node, className, children, ...props }) => {
     const isInline = !className?.includes("language-")
     if (isInline) {
+      const text = String(children)
+      const localPath = normalizeOpenablePath(text)
+      if (localPath) {
+        return (
+          <button
+            type="button"
+            className={cn(
+              "rounded-[5px] bg-muted/70 px-1.5 py-0.5 align-baseline font-mono text-[0.86em] leading-normal text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]",
+              className
+            )}
+            onClick={() => void openLocalPath(localPath)}
+          >
+            {children}
+          </button>
+        )
+      }
       return (
         <code
           className={cn(
@@ -160,6 +196,17 @@ const components: Components = {
   em: ({ node: _node, className, ...props }) => (
     <em className={cn("italic", className)} {...props} />
   )
+}
+
+async function openLocalPath(path: string) {
+  try {
+    const result = await openPath(path)
+    if (result.action === "revealed_parent") {
+      toast.warning("文件未能直接打开，已打开所在目录")
+    }
+  } catch (error) {
+    toast.error(`打开失败: ${String(error)}`)
+  }
 }
 
 // 流式期间用 80ms 节流降低重 parse 频率；完成后立即升级到完整文本。

@@ -38,9 +38,12 @@ export function BlockView({
 function stripImageMetaLines(s: string | undefined): string {
   if (!s) return ""
   // 1) CLI 注入的 <system-reminder>...</system-reminder> → 屏蔽
-  // 2) `[Image: source: <path>]` 含本地路径 → 屏蔽（reducer 已剥，兜底）
-  // 3) `[Image #N]` 保留：与下方缩略图右下角 #N 角标互相参照
+  // 2) CLI 内部本地命令 / 后台任务通知 → 屏蔽（reducer 已剥，兜底）
+  // 3) `[Image: source: <path>]` 含本地路径 → 屏蔽（reducer 已剥，兜底）
+  // 4) `[Image #N]` 保留：与下方缩略图右下角 #N 角标互相参照
   let cleaned = s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+  cleaned = cleaned.replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "")
+  cleaned = cleaned.replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, "")
   cleaned = cleaned.replace(/\[Image\s*:\s*source\s*:\s*[^\]]+\]/gi, "")
   return cleaned.replace(/\n{3,}/g, "\n\n").trim()
 }

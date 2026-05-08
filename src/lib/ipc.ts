@@ -82,6 +82,19 @@ export interface WorktreeFileDiff {
 export interface WorktreeDiff {
   isRepo: boolean
   files: WorktreeFileDiff[]
+  patchError?: string | null
+}
+
+export interface ReviewSnapshotStart {
+  id: string
+  cwd: string
+  fileCount: number
+}
+
+export interface OpenPathResult {
+  action: "opened" | "revealed_parent"
+  path: string
+  fallbackPath?: string | null
 }
 
 export interface GithubCliStatus {
@@ -263,6 +276,16 @@ export async function worktreeDiff(cwd: string): Promise<WorktreeDiff> {
   return invoke<WorktreeDiff>("worktree_diff", { cwd })
 }
 
+export async function reviewSnapshotStart(
+  cwd: string
+): Promise<ReviewSnapshotStart> {
+  return invoke<ReviewSnapshotStart>("review_snapshot_start", { cwd })
+}
+
+export async function reviewSnapshotFinish(id: string): Promise<WorktreeDiff> {
+  return invoke<WorktreeDiff>("review_snapshot_finish", { id })
+}
+
 export async function gitBranchList(cwd: string): Promise<GitBranchList> {
   return invoke<GitBranchList>("git_branch_list", { cwd })
 }
@@ -354,8 +377,8 @@ export async function writeSessionSidecar(
   return invoke("write_session_sidecar", { cwd, sessionId, data })
 }
 
-export async function openPath(path: string): Promise<void> {
-  return invoke("open_path", { path })
+export async function openPath(path: string): Promise<OpenPathResult> {
+  return invoke<OpenPathResult>("open_path", { path })
 }
 
 export interface ProjectActionResult {

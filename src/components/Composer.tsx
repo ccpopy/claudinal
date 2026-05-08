@@ -536,7 +536,7 @@ export function Composer({
         />
         <div
           className={cn(
-            "rounded-[24px] border bg-card p-3 shadow-sm transition-colors",
+            "rounded-[14px] border bg-card p-3 shadow-sm transition-colors",
             dragOver && "bg-accent/40 ring-2 ring-inset ring-ring/50"
           )}
         >

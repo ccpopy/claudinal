@@ -299,6 +299,74 @@ describe("reducer.tool_use_result attachment", () => {
     expect(s.entries).toHaveLength(0)
   })
 
+  it("filters sidechain user prompts from the visible transcript", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        isSidechain: true,
+        message: {
+          role: "user",
+          content: "Explore the source tree and report an architecture map."
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(0)
+  })
+
+  it("strips system reminder sections from mixed user text", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "用户可见\n<system-reminder>internal hint</system-reminder>"
+            }
+          ]
+        }
+      } as never)
+    })
+    const msg = lastMessage(s)
+    expect(msg.blocks[0].text).toBe("用户可见")
+  })
+
+  it("keeps queued prompt attachments but skips internal task notifications", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "attachment",
+        uuid: "queued-visible",
+        attachment: {
+          type: "queued_command",
+          commandMode: "prompt",
+          prompt: "继续按这个方向做"
+        }
+      } as never)
+    })
+    expect(lastMessage(s).blocks[0].text).toBe("继续按这个方向做")
+
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "attachment",
+        uuid: "queued-task",
+        attachment: {
+          type: "queued_command",
+          commandMode: "task-notification",
+          prompt: "<task-notification><summary>done</summary></task-notification>"
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(1)
+  })
+
   it("strips collaboration prompt prefix from user text", () => {
     let s = init()
     s = reduce(s, {

@@ -15,6 +15,10 @@ import {
   type PermissionRequestPayload,
   type PermissionUpdate
 } from "@/lib/ipc"
+import {
+  canRememberExactPermission,
+  rememberExactPermissionRequest
+} from "@/lib/permissionMemory"
 
 interface Props {
   request: PermissionRequestPayload | null
@@ -31,6 +35,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
     () => firstAcceptEditsSuggestion(request),
     [request]
   )
+  const canRememberExact = canRememberExactPermission(request)
   const isEdit = isEditRequest(request)
   const supportsPermissionUpdates = request?.transport !== "mcp"
 
@@ -185,6 +190,24 @@ export function PermissionDialog({ request, onSettled }: Props) {
                 disabled={!request || busy}
               >
                 写入项目本地规则
+              </Button>
+            )}
+            {canRememberExact && (
+              <Button
+                type="button"
+                onClick={() => {
+                  if (!request) return
+                  try {
+                    rememberExactPermissionRequest(request)
+                    toast.success("已记住此项目下的精确命令")
+                    settle(allowResponse(request))
+                  } catch (e) {
+                    toast.error(String(e))
+                  }
+                }}
+                disabled={!request || busy}
+              >
+                以后允许此精确命令
               </Button>
             )}
           </div>

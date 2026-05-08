@@ -125,6 +125,8 @@ pub fn run() {
             commands::list_recent_sessions_all,
             commands::git_worktree_status,
             commands::worktree_diff,
+            commands::review_snapshot_start,
+            commands::review_snapshot_finish,
             commands::git_branch_list,
             commands::git_checkout_branch,
             commands::git_worktree_list,

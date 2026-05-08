@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef } from "react"
-import { MessageSquareDashed } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { ArrowDown, MessageSquareDashed } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Button } from "@/components/ui/button"
+import type { ReviewRunDiff } from "@/lib/diff"
 import type { UIBlock, UIEntry, UIMessage } from "@/types/ui"
 import { MessageCard } from "./MessageCard"
 import { RunGroup, type RunStep } from "./RunGroup"
+import { RunReviewCard } from "./RunReviewCard"
 
 interface Props {
   entries: UIEntry[]
@@ -11,6 +14,8 @@ interface Props {
   /** 默认 true：每次 entries / streaming 变化把 viewport 滚到底部（直播会话用）。
    *  传 false 表示纯只读预览（如归档预览），从顶部开始让用户自行下滚。 */
   autoScroll?: boolean
+  reviews?: ReviewRunDiff[]
+  onShowDiff?: () => void
 }
 
 interface MsgGroup {
@@ -161,9 +166,12 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
 export function MessageStream({
   entries,
   streaming,
-  autoScroll = true
+  autoScroll = true,
+  reviews = [],
+  onShowDiff
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  const [pinnedToBottom, setPinnedToBottom] = useState(true)
 
   useEffect(() => {
     if (!autoScroll) return
@@ -172,8 +180,31 @@ export function MessageStream({
     const viewport = el.querySelector(
       "[data-slot='scroll-area-viewport']"
     ) as HTMLElement | null
-    if (viewport) viewport.scrollTop = viewport.scrollHeight
-  }, [entries, streaming, autoScroll])
+    if (!viewport) return
+    const onScroll = () => {
+      const distance =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+      setPinnedToBottom(distance < 32)
+    }
+    viewport.addEventListener("scroll", onScroll, { passive: true })
+    onScroll()
+    return () => viewport.removeEventListener("scroll", onScroll)
+  }, [autoScroll])
+
+  const scrollToBottom = () => {
+    const el = ref.current
+    const viewport = el?.querySelector(
+      "[data-slot='scroll-area-viewport']"
+    ) as HTMLElement | null
+    if (!viewport) return
+    viewport.scrollTop = viewport.scrollHeight
+    setPinnedToBottom(true)
+  }
+
+  useEffect(() => {
+    if (!autoScroll || !pinnedToBottom) return
+    scrollToBottom()
+  }, [entries, streaming, autoScroll, pinnedToBottom])
 
   const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
 
@@ -191,8 +222,9 @@ export function MessageStream({
     )
   }
 
+  let reviewIndex = 0
   return (
-    <ScrollArea ref={ref} className="flex-1 min-h-0">
+    <ScrollArea ref={ref} className="relative flex-1 min-h-0">
       <div className="flex flex-col gap-5 px-6 py-6 max-w-3xl mx-auto w-full">
         {groups.map((g) => {
           if (g.kind === "msg") {
@@ -210,9 +242,32 @@ export function MessageStream({
               />
             )
           }
+          if (g.entry.kind === "result") {
+            const review = reviews[reviewIndex++]
+            return (
+              <div key={g.key}>
+                <MessageCard entry={g.entry} />
+                {review && (
+                  <RunReviewCard review={review} onShowDiff={onShowDiff} />
+                )}
+              </div>
+            )
+          }
           return <MessageCard key={g.key} entry={g.entry} />
         })}
       </div>
+      {autoScroll && !pinnedToBottom && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="absolute bottom-3 left-1/2 z-10 h-8 -translate-x-1/2 gap-1 rounded-full bg-background/95 px-3 text-xs shadow"
+          onClick={scrollToBottom}
+        >
+          <ArrowDown className="size-3.5" />
+          跳到底部
+        </Button>
+      )}
     </ScrollArea>
   )
 }

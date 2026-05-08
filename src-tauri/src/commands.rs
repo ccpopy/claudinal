@@ -613,6 +613,55 @@ pub struct WorktreeFileDiff {
 pub struct WorktreeDiff {
     pub is_repo: bool,
     pub files: Vec<WorktreeFileDiff>,
+    pub patch_error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSnapshotStart {
+    pub id: String,
+    pub cwd: String,
+    pub file_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPathResult {
+    pub action: String,
+    pub path: String,
+    pub fallback_path: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewSnapshotManifest {
+    cwd: String,
+    files: Vec<ReviewSnapshotFile>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ReviewSnapshotFile {
+    path: String,
+    size: u64,
+    modified_ms: u128,
+    hash: u64,
+    binary: bool,
+    baseline_path: Option<String>,
+}
+
+struct ReviewCurrentFile {
+    size: u64,
+    hash: u64,
+    binary: bool,
+    content: Option<String>,
+}
+
+struct ReviewSnapshotChange {
+    path: String,
+    status: String,
+    before: Option<ReviewSnapshotFile>,
+    after: Option<ReviewCurrentFile>,
 }
 
 #[derive(Serialize)]
@@ -832,6 +881,7 @@ pub async fn worktree_diff(cwd: String) -> Result<WorktreeDiff> {
         return Ok(WorktreeDiff {
             is_repo: false,
             files: vec![],
+            patch_error: None,
         });
     }
 
@@ -907,7 +957,549 @@ pub async fn worktree_diff(cwd: String) -> Result<WorktreeDiff> {
     Ok(WorktreeDiff {
         is_repo: true,
         files,
+        patch_error: None,
     })
+}
+
+#[tauri::command]
+pub async fn review_snapshot_start(cwd: String) -> Result<ReviewSnapshotStart> {
+    let root = std::path::PathBuf::from(&cwd);
+    if !root.is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = review_snapshot_dir(&id)?;
+    std::fs::create_dir_all(dir.join("files")).map_err(Error::from)?;
+    let mut records = Vec::new();
+    scan_review_baseline(&root, &root, &dir, &mut records)?;
+    records.sort_by(|a, b| a.path.cmp(&b.path));
+    let manifest = ReviewSnapshotManifest {
+        cwd: root.display().to_string(),
+        files: records,
+    };
+    let manifest_text = serde_json::to_string_pretty(&manifest)?;
+    atomic_write_str(&dir.join("manifest.json"), &manifest_text)?;
+    Ok(ReviewSnapshotStart {
+        id,
+        cwd: manifest.cwd,
+        file_count: manifest.files.len(),
+    })
+}
+
+#[tauri::command]
+pub async fn review_snapshot_finish(id: String) -> Result<WorktreeDiff> {
+    let dir = review_snapshot_dir(&id)?;
+    let manifest_path = dir.join("manifest.json");
+    if !manifest_path.is_file() {
+        return Err(Error::Other(format!("review snapshot not found: {id}")));
+    }
+    let raw = std::fs::read_to_string(&manifest_path).map_err(Error::from)?;
+    let manifest: ReviewSnapshotManifest = serde_json::from_str(&raw)?;
+    let root = std::path::PathBuf::from(&manifest.cwd);
+    if !root.is_dir() {
+        return Err(Error::Other(format!(
+            "snapshot cwd no longer exists: {}",
+            manifest.cwd
+        )));
+    }
+
+    let mut current = std::collections::HashMap::new();
+    scan_review_current(&root, &root, &mut current)?;
+    let changes = classify_review_snapshot_changes(manifest.files, current);
+    let (files, mut patch_error) = review_snapshot_changes_to_diff(&dir, &changes);
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        record_patch_error(
+            &mut patch_error,
+            format!("清理审查快照临时目录失败: {}: {e}", dir.display()),
+        );
+    }
+    Ok(WorktreeDiff {
+        is_repo: false,
+        files,
+        patch_error,
+    })
+}
+
+fn review_snapshot_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("claudinal-review-snapshots")
+}
+
+fn review_snapshot_dir(id: &str) -> Result<std::path::PathBuf> {
+    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') {
+        return Err(Error::Other(format!("invalid review snapshot id: {id}")));
+    }
+    Ok(review_snapshot_root().join(id))
+}
+
+fn scan_review_baseline(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    snapshot_dir: &std::path::Path,
+    records: &mut Vec<ReviewSnapshotFile>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir).map_err(Error::from)? {
+        let entry = entry.map_err(Error::from)?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        if should_skip_review_path(&file_name.to_string_lossy()) {
+            continue;
+        }
+        let meta = entry.metadata().map_err(Error::from)?;
+        if meta.is_dir() {
+            scan_review_baseline(root, &path, snapshot_dir, records)?;
+            continue;
+        }
+        if !meta.is_file() {
+            continue;
+        }
+        let rel = review_rel_path(root, &path)?;
+        let bytes = std::fs::read(&path).map_err(Error::from)?;
+        let binary = review_is_binary(&bytes);
+        let hash = review_hash(&bytes);
+        let baseline_path = if binary {
+            None
+        } else {
+            let rel_baseline = format!("files/{}.txt", records.len());
+            let target = snapshot_dir.join(&rel_baseline);
+            std::fs::write(&target, &bytes).map_err(Error::from)?;
+            Some(rel_baseline)
+        };
+        records.push(ReviewSnapshotFile {
+            path: rel,
+            size: meta.len(),
+            modified_ms: review_modified_ms(&meta)?,
+            hash,
+            binary,
+            baseline_path,
+        });
+    }
+    Ok(())
+}
+
+fn scan_review_current(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut std::collections::HashMap<String, ReviewCurrentFile>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir).map_err(Error::from)? {
+        let entry = entry.map_err(Error::from)?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        if should_skip_review_path(&file_name.to_string_lossy()) {
+            continue;
+        }
+        let meta = entry.metadata().map_err(Error::from)?;
+        if meta.is_dir() {
+            scan_review_current(root, &path, out)?;
+            continue;
+        }
+        if !meta.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&path).map_err(Error::from)?;
+        let binary = review_is_binary(&bytes);
+        let content = if binary {
+            None
+        } else {
+            Some(String::from_utf8(bytes.clone()).map_err(|e| {
+                Error::Other(format!(
+                    "current file utf-8 decode failed: {}: {e}",
+                    path.display()
+                ))
+            })?)
+        };
+        out.insert(
+            review_rel_path(root, &path)?,
+            ReviewCurrentFile {
+                size: meta.len(),
+                hash: review_hash(&bytes),
+                binary,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn classify_review_snapshot_changes(
+    before: Vec<ReviewSnapshotFile>,
+    mut after: std::collections::HashMap<String, ReviewCurrentFile>,
+) -> Vec<ReviewSnapshotChange> {
+    let mut changes = Vec::new();
+    for file in before {
+        match after.remove(&file.path) {
+            Some(current) => {
+                if file.hash != current.hash || file.size != current.size {
+                    changes.push(ReviewSnapshotChange {
+                        path: file.path.clone(),
+                        status: "M".into(),
+                        before: Some(file),
+                        after: Some(current),
+                    });
+                }
+            }
+            None => changes.push(ReviewSnapshotChange {
+                path: file.path.clone(),
+                status: "D".into(),
+                before: Some(file),
+                after: None,
+            }),
+        }
+    }
+    for (path, current) in after {
+        changes.push(ReviewSnapshotChange {
+            path,
+            status: "A".into(),
+            before: None,
+            after: Some(current),
+        });
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    changes
+}
+
+fn review_snapshot_changes_to_diff(
+    snapshot_dir: &std::path::Path,
+    changes: &[ReviewSnapshotChange],
+) -> (Vec<WorktreeFileDiff>, Option<String>) {
+    if changes.is_empty() {
+        return (Vec::new(), None);
+    }
+
+    let git_available = which::which("git").is_ok();
+    let mut patch_error = if git_available {
+        None
+    } else {
+        Some("未找到 git，无法为无仓库本地文件生成 no-index patch。".to_string())
+    };
+    let empty = snapshot_dir.join("empty");
+    let can_use_git_diff = if git_available {
+        match std::fs::write(&empty, b"") {
+            Ok(()) => true,
+            Err(e) => {
+                record_patch_error(
+                    &mut patch_error,
+                    format!("创建 no-index 空文件失败: {}: {e}", empty.display()),
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    let mut files = Vec::new();
+    for change in changes {
+        let binary = change.before.as_ref().is_some_and(|f| f.binary)
+            || change.after.as_ref().is_some_and(|f| f.binary);
+        if binary || !can_use_git_diff {
+            push_review_fallback_file_diff(
+                &mut files,
+                &mut patch_error,
+                snapshot_dir,
+                change,
+                binary,
+            );
+            continue;
+        }
+
+        let (old_path, new_path, current_tmp) =
+            match review_no_index_paths(snapshot_dir, change, &empty) {
+                Ok(paths) => paths,
+                Err(e) => {
+                    record_patch_error(&mut patch_error, e);
+                    push_review_fallback_file_diff(
+                        &mut files,
+                        &mut patch_error,
+                        snapshot_dir,
+                        change,
+                        false,
+                    );
+                    continue;
+                }
+            };
+        match command_git_no_index_diff(&old_path, &new_path) {
+            Ok(raw) => {
+                let mut parsed = parse_git_patch(&raw);
+                if let Some(mut file) = parsed.pop() {
+                    file.path = change.path.clone();
+                    file.old_path = None;
+                    file.status = change.status.clone();
+                    files.push(file);
+                } else {
+                    record_patch_error(
+                        &mut patch_error,
+                        format!("git diff --no-index 未返回可解析 patch: {}", change.path),
+                    );
+                    push_review_fallback_file_diff(
+                        &mut files,
+                        &mut patch_error,
+                        snapshot_dir,
+                        change,
+                        false,
+                    );
+                }
+            }
+            Err(e) => {
+                record_patch_error(&mut patch_error, e);
+                push_review_fallback_file_diff(
+                    &mut files,
+                    &mut patch_error,
+                    snapshot_dir,
+                    change,
+                    false,
+                );
+            }
+        }
+        if let Some(path) = current_tmp {
+            if let Err(e) = std::fs::remove_file(&path) {
+                record_patch_error(
+                    &mut patch_error,
+                    format!(
+                        "清理 no-index 当前文件临时副本失败: {}: {e}",
+                        path.display()
+                    ),
+                );
+            }
+        }
+    }
+    (files, patch_error)
+}
+
+fn record_patch_error(slot: &mut Option<String>, message: String) {
+    if slot.is_none() {
+        *slot = Some(message);
+    }
+}
+
+fn review_no_index_paths(
+    snapshot_dir: &std::path::Path,
+    change: &ReviewSnapshotChange,
+    empty: &std::path::Path,
+) -> std::result::Result<
+    (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Option<std::path::PathBuf>,
+    ),
+    String,
+> {
+    let old_path = change
+        .before
+        .as_ref()
+        .and_then(|before| before.baseline_path.as_ref())
+        .map(|rel| snapshot_dir.join(rel))
+        .unwrap_or_else(|| empty.to_path_buf());
+
+    let new_path = if let Some(after) = change.after.as_ref() {
+        let content = after.content.as_ref().ok_or_else(|| {
+            format!(
+                "当前文件没有可生成 no-index patch 的文本内容: {}",
+                change.path
+            )
+        })?;
+        let tmp = snapshot_dir
+            .join("files")
+            .join(format!("current-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, content.as_bytes())
+            .map_err(|e| format!("写入 no-index 当前文件临时副本失败: {}: {e}", tmp.display()))?;
+        return Ok((old_path, tmp.clone(), Some(tmp)));
+    } else {
+        empty.to_path_buf()
+    };
+    Ok((old_path, new_path, None))
+}
+
+fn push_review_fallback_file_diff(
+    files: &mut Vec<WorktreeFileDiff>,
+    patch_error: &mut Option<String>,
+    snapshot_dir: &std::path::Path,
+    change: &ReviewSnapshotChange,
+    binary: bool,
+) {
+    match review_fallback_file_diff(snapshot_dir, change, binary) {
+        Ok(file) => files.push(file),
+        Err(e) => {
+            record_patch_error(patch_error, e);
+            files.push(review_file_list_only_diff(change, binary));
+        }
+    }
+}
+
+fn review_file_list_only_diff(change: &ReviewSnapshotChange, binary: bool) -> WorktreeFileDiff {
+    WorktreeFileDiff {
+        path: change.path.clone(),
+        old_path: None,
+        status: change.status.clone(),
+        additions: 0,
+        deletions: 0,
+        binary,
+        hunks: Vec::new(),
+    }
+}
+
+fn review_fallback_file_diff(
+    snapshot_dir: &std::path::Path,
+    change: &ReviewSnapshotChange,
+    binary: bool,
+) -> std::result::Result<WorktreeFileDiff, String> {
+    let (additions, deletions, hunks) = if binary {
+        (0, 0, Vec::new())
+    } else {
+        review_full_file_hunks(snapshot_dir, change)?
+    };
+    Ok(WorktreeFileDiff {
+        path: change.path.clone(),
+        old_path: None,
+        status: change.status.clone(),
+        additions,
+        deletions,
+        binary,
+        hunks,
+    })
+}
+
+fn review_full_file_hunks(
+    snapshot_dir: &std::path::Path,
+    change: &ReviewSnapshotChange,
+) -> std::result::Result<(u32, u32, Vec<DiffHunk>), String> {
+    match (&change.before, &change.after) {
+        (None, Some(after)) => {
+            let Some(content) = after.content.as_ref() else {
+                return Ok((0, 0, Vec::new()));
+            };
+            let lines = text_lines(content);
+            let additions = lines.len() as u32;
+            let hunks = if additions == 0 {
+                Vec::new()
+            } else {
+                vec![DiffHunk {
+                    old_start: 0,
+                    old_lines: 0,
+                    new_start: 1,
+                    new_lines: additions,
+                    lines: lines.into_iter().map(|line| format!("+{line}")).collect(),
+                }]
+            };
+            Ok((additions, 0, hunks))
+        }
+        (Some(before), None) => {
+            let Some(baseline) = before.baseline_path.as_ref() else {
+                return Ok((0, 0, Vec::new()));
+            };
+            let path = snapshot_dir.join(baseline);
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| format!("读取审查基线文本失败: {}: {e}", path.display()))?;
+            let lines = text_lines(&content);
+            let deletions = lines.len() as u32;
+            let hunks = if deletions == 0 {
+                Vec::new()
+            } else {
+                vec![DiffHunk {
+                    old_start: 1,
+                    old_lines: deletions,
+                    new_start: 0,
+                    new_lines: 0,
+                    lines: lines.into_iter().map(|line| format!("-{line}")).collect(),
+                }]
+            };
+            Ok((0, deletions, hunks))
+        }
+        (Some(before), Some(after)) => {
+            let Some(baseline) = before.baseline_path.as_ref() else {
+                return Ok((0, 0, Vec::new()));
+            };
+            let Some(after_content) = after.content.as_ref() else {
+                return Ok((0, 0, Vec::new()));
+            };
+            let baseline_path = snapshot_dir.join(baseline);
+            let before_content = std::fs::read_to_string(&baseline_path)
+                .map_err(|e| format!("读取审查基线文本失败: {}: {e}", baseline_path.display()))?;
+            let before_lines = text_lines(&before_content);
+            let after_lines = text_lines(after_content);
+            let deletions = before_lines.len() as u32;
+            let additions = after_lines.len() as u32;
+            let lines = before_lines
+                .into_iter()
+                .map(|line| format!("-{line}"))
+                .chain(after_lines.into_iter().map(|line| format!("+{line}")))
+                .collect::<Vec<_>>();
+            let hunks = if lines.is_empty() {
+                Vec::new()
+            } else {
+                vec![DiffHunk {
+                    old_start: 1,
+                    old_lines: deletions,
+                    new_start: 1,
+                    new_lines: additions,
+                    lines,
+                }]
+            };
+            Ok((additions, deletions, hunks))
+        }
+        (None, None) => Ok((0, 0, Vec::new())),
+    }
+}
+
+fn command_git_no_index_diff(
+    old_path: &std::path::Path,
+    new_path: &std::path::Path,
+) -> std::result::Result<String, String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args([
+        "diff",
+        "--no-index",
+        "--patch",
+        "--no-color",
+        "--unified=80",
+    ]);
+    cmd.arg(old_path);
+    cmd.arg(new_path);
+    hide_std_window(&mut cmd);
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    let code = out.status.code().unwrap_or(2);
+    if code == 0 || code == 1 {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+fn review_rel_path(root: &std::path::Path, path: &std::path::Path) -> Result<String> {
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|e| Error::Other(format!("path outside review root: {}: {e}", path.display())))?;
+    Ok(rel.to_string_lossy().replace('\\', "/"))
+}
+
+fn review_modified_ms(meta: &std::fs::Metadata) -> Result<u128> {
+    let modified = meta.modified().map_err(Error::from)?;
+    let duration = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| {
+            Error::Other(format!(
+                "file modified time is before unix epoch and cannot be snapshotted: {e}"
+            ))
+        })?;
+    Ok(duration.as_millis())
+}
+
+fn review_hash(bytes: &[u8]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(bytes);
+    hasher.finish()
+}
+
+fn review_is_binary(bytes: &[u8]) -> bool {
+    bytes.iter().any(|b| *b == 0) || std::str::from_utf8(bytes).is_err()
+}
+
+fn should_skip_review_path(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "dist" | "target" | ".cache" | ".next" | "coverage" | "release"
+    )
 }
 
 #[tauri::command]
@@ -1729,6 +2321,65 @@ index 1111111..2222222 100644
         assert_eq!(entries[0].old_path.as_deref(), Some("old name.rs"));
         assert_eq!(entries[1].status, "??");
         assert_eq!(entries[1].path, "notes.txt");
+    }
+
+    #[test]
+    fn review_snapshot_classifies_non_git_local_changes() {
+        let before = vec![ReviewSnapshotFile {
+            path: "src/a.txt".into(),
+            size: 3,
+            modified_ms: 1,
+            hash: 1,
+            binary: false,
+            baseline_path: Some("files/0.txt".into()),
+        }];
+        let mut after = std::collections::HashMap::new();
+        after.insert(
+            "src/a.txt".into(),
+            ReviewCurrentFile {
+                size: 4,
+                hash: 2,
+                binary: false,
+                content: Some("new\n".into()),
+            },
+        );
+        after.insert(
+            "src/b.txt".into(),
+            ReviewCurrentFile {
+                size: 1,
+                hash: 3,
+                binary: false,
+                content: Some("b".into()),
+            },
+        );
+
+        let changes = classify_review_snapshot_changes(before, after);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].path, "src/a.txt");
+        assert_eq!(changes[0].status, "M");
+        assert_eq!(changes[1].path, "src/b.txt");
+        assert_eq!(changes[1].status, "A");
+    }
+
+    #[test]
+    fn git_no_index_diff_generates_patch_when_git_exists() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("claudinal-no-index-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old_path = dir.join("old.txt");
+        let new_path = dir.join("new.txt");
+        std::fs::write(&old_path, "old\n").unwrap();
+        std::fs::write(&new_path, "new\n").unwrap();
+
+        let patch = command_git_no_index_diff(&old_path, &new_path).unwrap();
+        let files = parse_git_patch(&patch);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].additions, 1);
+        assert_eq!(files[0].deletions, 1);
     }
 
     #[test]
@@ -2809,33 +3460,67 @@ async fn fetch_provider_models_from_url(
 }
 
 #[tauri::command]
-pub async fn open_path(path: String) -> Result<()> {
+pub async fn open_path(path: String) -> Result<OpenPathResult> {
     let p = std::path::PathBuf::from(&path);
     if !p.exists() {
         return Err(Error::Other(format!("path not found: {path}")));
     }
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = std::process::Command::new("explorer");
-        cmd.arg(&p);
-        hide_std_window(&mut cmd);
-        cmd.spawn().map_err(Error::from)?;
+    let fallback = if p.is_file() {
+        p.parent().map(std::path::Path::to_path_buf)
+    } else {
+        None
+    };
+    let open_target = |target: &std::path::Path| -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            if target.is_dir() {
+                let mut cmd = std::process::Command::new("explorer");
+                cmd.arg(target);
+                hide_std_window(&mut cmd);
+                cmd.spawn().map_err(Error::from)?;
+            } else {
+                let mut cmd = std::process::Command::new("cmd");
+                cmd.args(["/c", "start", ""]);
+                cmd.arg(target);
+                hide_std_window(&mut cmd);
+                cmd.spawn().map_err(Error::from)?;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg(target)
+                .spawn()
+                .map_err(Error::from)?;
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("xdg-open")
+                .arg(target)
+                .spawn()
+                .map_err(Error::from)?;
+        }
+        Ok(())
+    };
+
+    match open_target(&p) {
+        Ok(()) => Ok(OpenPathResult {
+            action: "opened".into(),
+            path,
+            fallback_path: None,
+        }),
+        Err(err) => {
+            let Some(parent) = fallback else {
+                return Err(err);
+            };
+            open_target(&parent)?;
+            Ok(OpenPathResult {
+                action: "revealed_parent".into(),
+                path,
+                fallback_path: Some(parent.display().to_string()),
+            })
+        }
     }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&p)
-            .spawn()
-            .map_err(Error::from)?;
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&p)
-            .spawn()
-            .map_err(Error::from)?;
-    }
-    Ok(())
 }
 
 #[derive(Serialize)]

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
   Check,
@@ -20,160 +20,13 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { GitWorktreeStatus, WorktreeDiff } from "@/lib/ipc"
-import type { UIEntry, UIMessage } from "@/types/ui"
-
-interface StructuredHunk {
-  oldStart?: number
-  oldLines?: number
-  newStart?: number
-  newLines?: number
-  lines?: string[]
-}
-
-interface FileChange {
-  path: string
-  oldPath?: string | null
-  basename: string
-  kind: "create" | "update" | "delete"
-  source: "session" | "git" | "status"
-  hunks: StructuredHunk[]
-  content?: string
-  binary?: boolean
-  adds: number
-  dels: number
-}
-
-function basename(p?: string): string {
-  if (!p) return ""
-  const m = p.replace(/\\/g, "/").split("/")
-  return m[m.length - 1] || p
-}
-
-function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/")
-}
-
-function relPath(path: string, cwd?: string | null): string {
-  const normalized = normalizePath(path)
-  const root = cwd ? normalizePath(cwd).replace(/\/+$/, "") : ""
-  if (root && normalized.toLowerCase().startsWith(root.toLowerCase() + "/")) {
-    return normalized.slice(root.length + 1)
-  }
-  return normalized
-}
-
-function keyPath(path: string): string {
-  return normalizePath(path).toLowerCase()
-}
-
-function kindFromStatus(status: string): FileChange["kind"] {
-  if (status.includes("D")) return "delete"
-  if (status.includes("?") || status.includes("A")) return "create"
-  return "update"
-}
-
-function collectChanges(
-  entries: UIEntry[],
-  gitStatus?: GitWorktreeStatus | null,
-  worktreeDiff?: WorktreeDiff | null,
-  cwd?: string | null
-): FileChange[] {
-  const map = new Map<string, FileChange>()
-  for (const e of entries) {
-    if (e.kind !== "message") continue
-    const m = e as UIMessage
-    if (m.role !== "user") continue
-    for (const b of m.blocks) {
-      if (b.type !== "tool_result") continue
-      const tur = b.toolUseResult as
-        | {
-            type?: string
-            filePath?: string
-            content?: string
-            structuredPatch?: StructuredHunk[]
-          }
-        | undefined
-      if (!tur) continue
-      const fp = tur.filePath
-      if (!fp) continue
-      const displayPath = relPath(fp, cwd)
-      const key = keyPath(displayPath)
-      const existing = map.get(key)
-      if (tur.type === "update" && tur.structuredPatch) {
-        const adds = tur.structuredPatch.reduce(
-          (acc, h) =>
-            acc + (h.lines ?? []).filter((l) => l.startsWith("+")).length,
-          0
-        )
-        const dels = tur.structuredPatch.reduce(
-          (acc, h) =>
-            acc + (h.lines ?? []).filter((l) => l.startsWith("-")).length,
-          0
-        )
-        if (existing && existing.kind !== "create") {
-          existing.hunks.push(...tur.structuredPatch)
-          existing.adds += adds
-          existing.dels += dels
-        } else if (!existing) {
-          map.set(key, {
-            path: displayPath,
-            basename: basename(displayPath),
-            kind: "update",
-            source: "session",
-            hunks: tur.structuredPatch,
-            adds,
-            dels
-          })
-        }
-      } else if (tur.type === "create") {
-        map.set(key, {
-          path: displayPath,
-          basename: basename(displayPath),
-          kind: "create",
-          source: "session",
-          hunks: [],
-          content: tur.content,
-          adds: (tur.content ?? "").split("\n").length,
-          dels: 0
-        })
-      }
-    }
-  }
-  if (worktreeDiff?.isRepo) {
-    for (const file of worktreeDiff.files) {
-      const key = keyPath(file.path)
-      map.set(key, {
-        path: file.path,
-        oldPath: file.oldPath,
-        basename: basename(file.path),
-        kind: kindFromStatus(file.status),
-        source: "git",
-        hunks: file.hunks,
-        binary: file.binary,
-        adds: file.additions,
-        dels: file.deletions
-      })
-    }
-  }
-  if (gitStatus?.isRepo) {
-    for (const file of gitStatus.files) {
-      const key = keyPath(file.path)
-      if (map.has(key)) continue
-      map.set(key, {
-        path: file.path,
-        basename: basename(file.path),
-        kind: kindFromStatus(file.status),
-        source: "status",
-        hunks: [],
-        adds: file.additions,
-        dels: file.deletions
-      })
-    }
-  }
-  return Array.from(map.values()).sort((a, b) =>
-    a.basename.localeCompare(b.basename)
-  )
-}
+import {
+  collectChanges,
+  formatHunksAsPatch,
+  type FileChange,
+  type StructuredHunk
+} from "@/lib/diff"
+import type { UIEntry } from "@/types/ui"
 
 interface DiffRow {
   kind: "add" | "del" | "ctx" | "meta"
@@ -277,41 +130,20 @@ interface Props {
   entries: UIEntry[]
   gitStatus?: GitWorktreeStatus | null
   worktreeDiff?: WorktreeDiff | null
+  snapshotDiffs?: WorktreeDiff[]
   worktreeDiffLoading?: boolean
   worktreeDiffError?: string | null
   cwd?: string | null
+  initialFilePath?: string | null
 }
 
 type SourceFilter = "all" | FileChange["source"]
 
 const SOURCE_LABEL: Record<FileChange["source"], string> = {
-  session: "会话",
-  git: "Git",
-  status: "状态"
-}
-
-function formatHunksAsPatch(change: FileChange): string {
-  if (change.binary) {
-    return `Binary file ${change.path} differs\n`
-  }
-  if (change.kind === "create" && change.content && change.hunks.length === 0) {
-    const lines = change.content.split("\n").map((l) => `+${l}`).join("\n")
-    return `--- /dev/null\n+++ b/${change.path}\n@@ -0,0 +1,${
-      change.content.split("\n").length
-    } @@\n${lines}\n`
-  }
-  if (change.hunks.length === 0) return ""
-  const header = `--- a/${change.oldPath ?? change.path}\n+++ b/${change.path}\n`
-  const body = change.hunks
-    .map((h) => {
-      const head = `@@ -${h.oldStart ?? 0},${h.oldLines ?? 0} +${
-        h.newStart ?? 0
-      },${h.newLines ?? 0} @@`
-      const lines = (h.lines ?? []).join("\n")
-      return `${head}\n${lines}`
-    })
-    .join("\n")
-  return `${header}${body}\n`
+  session: "本轮",
+  git: "工作树",
+  status: "状态",
+  snapshot: "快照"
 }
 
 async function copyToClipboard(text: string, kind: string) {
@@ -335,20 +167,38 @@ export function DiffOverview({
   entries,
   gitStatus,
   worktreeDiff,
+  snapshotDiffs,
   worktreeDiffLoading,
   worktreeDiffError,
-  cwd
+  cwd,
+  initialFilePath
 }: Props) {
   const allChanges = useMemo(
-    () => collectChanges(entries, gitStatus, worktreeDiff, cwd),
-    [entries, gitStatus, worktreeDiff, cwd]
+    () =>
+      collectChanges({
+        entries,
+        gitStatus,
+        worktreeDiff,
+        snapshotDiffs,
+        cwd
+      }),
+    [entries, gitStatus, worktreeDiff, snapshotDiffs, cwd]
   )
   const [activeIdx, setActiveIdx] = useState(0)
   const [filter, setFilter] = useState<SourceFilter>("all")
   const [copiedAllPatch, setCopiedAllPatch] = useState(false)
 
+  useEffect(() => {
+    if (!open || !initialFilePath) return
+    const target = allChanges.findIndex((c) => c.path === initialFilePath)
+    if (target >= 0) {
+      setFilter("all")
+      setActiveIdx(target)
+    }
+  }, [open, initialFilePath, allChanges])
+
   const sourceCounts = useMemo(() => {
-    const counts = { session: 0, git: 0, status: 0 } as Record<
+    const counts = { session: 0, git: 0, status: 0, snapshot: 0 } as Record<
       FileChange["source"],
       number
     >
@@ -366,6 +216,8 @@ export function DiffOverview({
 
   const safeActiveIdx = Math.min(activeIdx, Math.max(changes.length - 1, 0))
   const active = changes[safeActiveIdx]
+  const snapshotPatchError = snapshotDiffs?.find((diff) => diff.patchError)?.patchError
+  const patchError = worktreeDiffError ?? snapshotPatchError ?? null
 
   const copyActivePath = () => {
     if (!active) return
@@ -462,13 +314,11 @@ export function DiffOverview({
           <div className="flex-1 grid place-items-center px-6 text-center text-muted-foreground text-sm">
             {worktreeDiffLoading
               ? "正在读取文件 diff…"
-              : worktreeDiffError
-                ? `读取文件 diff 失败：${worktreeDiffError}`
+              : patchError
+                ? `读取文件 diff 失败：${patchError}`
                 : allChanges.length > 0
                   ? `当前过滤（${SOURCE_LABEL[filter as FileChange["source"]] ?? "全部"}）下没有文件变更`
-                  : gitStatus?.isRepo === false
-                    ? "当前目录不是 Git 仓库，无法生成文件 diff。"
-                    : "当前会话没有文件变更"}
+                  : "当前会话没有文件变更"}
           </div>
         ) : (
           <div className="flex-1 min-h-0 grid grid-cols-[260px_1fr]">
@@ -502,10 +352,12 @@ export function DiffOverview({
                       <span className="text-destructive">-{c.dels}</span>
                       <span className="text-muted-foreground">
                         {c.source === "git"
-                          ? "Git"
+                          ? SOURCE_LABEL.git
                           : c.source === "session"
-                            ? "会话"
-                            : "状态"}
+                            ? SOURCE_LABEL.session
+                            : c.source === "snapshot"
+                              ? SOURCE_LABEL.snapshot
+                              : SOURCE_LABEL.status}
                       </span>
                     </div>
                   </button>
@@ -515,17 +367,17 @@ export function DiffOverview({
             <ScrollArea key={active?.path ?? "empty"} className="min-h-0">
               {active && (
                 <div className="p-3 space-y-2">
-                  {(worktreeDiffLoading || worktreeDiffError) && (
+                  {(worktreeDiffLoading || patchError) && (
                     <div
                       className={cn(
                         "rounded-md border px-3 py-2 text-xs",
-                        worktreeDiffError
+                        patchError
                           ? "border-destructive/25 bg-destructive/5 text-destructive"
                           : "bg-muted/30 text-muted-foreground"
                       )}
                     >
-                      {worktreeDiffError
-                        ? `读取 Git patch 失败：${worktreeDiffError}`
+                      {patchError
+                        ? `读取 patch 失败：${patchError}`
                         : "正在读取最新文件 diff…"}
                     </div>
                   )}
@@ -622,6 +474,7 @@ function SourceFilterChips({
     { value: "all", label: "全部", count: total },
     { value: "session", label: SOURCE_LABEL.session, count: counts.session },
     { value: "git", label: SOURCE_LABEL.git, count: counts.git },
+    { value: "snapshot", label: SOURCE_LABEL.snapshot, count: counts.snapshot },
     { value: "status", label: SOURCE_LABEL.status, count: counts.status }
   ]
   return (

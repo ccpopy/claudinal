@@ -16,12 +16,15 @@ import {
   type GitWorktreeStatus,
   worktreeDiff,
   type WorktreeDiff,
+  reviewSnapshotStart,
+  reviewSnapshotFinish,
   spawnSession,
   sendUserMessage,
   stopSession,
   listenSessionEvents,
   listenSessionErrors,
   listenPermissionRequests,
+  resolvePermissionRequest,
   readSessionTranscript,
   readSessionSidecar,
   writeSessionSidecar,
@@ -31,6 +34,8 @@ import {
   type PermissionRequestPayload,
   type SessionMeta
 } from "@/lib/ipc"
+import type { ReviewRunDiff } from "@/lib/diff"
+import { findPermissionMemoryMatch } from "@/lib/permissionMemory"
 import {
   buildProxyEnv,
   loadProxyAsync,
@@ -151,6 +156,11 @@ const CollaborationFlow = lazy(() =>
     default: m.CollaborationFlow
   }))
 )
+const RunStatusStrip = lazy(() =>
+  import("@/components/RunReviewCard").then((m) => ({
+    default: m.RunStatusStrip
+  }))
+)
 const PermissionDialog = lazy(() =>
   import("@/components/PermissionDialog").then((m) => ({
     default: m.PermissionDialog
@@ -228,6 +238,8 @@ type RunningSession = {
   composerPrefs: ComposerPrefs
   sessionComposer: ComposerPrefs | null
   collabMcpEnabled: boolean
+  reviewSnapshotId: string | null
+  reviewDiffs: ReviewRunDiff[]
 }
 
 function buildCliBlocks(
@@ -414,6 +426,7 @@ export default function App() {
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
   const [showRename, setShowRename] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
+  const [diffInitialPath, setDiffInitialPath] = useState<string | null>(null)
   const [showCollabFlow, setShowCollabFlow] = useState(false)
   const [collabSettingsTick, setCollabSettingsTick] = useState(0)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -426,6 +439,7 @@ export default function App() {
   const [diffPatch, setDiffPatch] = useState<WorktreeDiff | null>(null)
   const [diffPatchLoading, setDiffPatchLoading] = useState(false)
   const [diffPatchError, setDiffPatchError] = useState<string | null>(null)
+  const [reviewDiffs, setReviewDiffs] = useState<ReviewRunDiff[]>([])
   const [permissionRequests, setPermissionRequests] = useState<
     PermissionRequestPayload[]
   >([])
@@ -536,6 +550,63 @@ export default function App() {
     []
   )
 
+  const beginRunReview = useCallback(async (run: RunningSession | null) => {
+    if (!run) return
+    try {
+      const snapshot = await reviewSnapshotStart(run.project.cwd)
+      run.reviewSnapshotId = snapshot.id
+    } catch (e) {
+      run.reviewSnapshotId = null
+      toast.error(`建立文件审查基线失败: ${String(e)}`)
+    }
+  }, [])
+
+  const finishRunReview = useCallback(async (run: RunningSession) => {
+    const snapshotId = run.reviewSnapshotId
+    run.reviewSnapshotId = null
+    const appendReview = (review: ReviewRunDiff) => {
+      run.reviewDiffs = [...run.reviewDiffs, review]
+      if (activeRuntimeIdRef.current === run.runtimeId) {
+        setReviewDiffs(run.reviewDiffs)
+      }
+      setRunningTick((tick) => tick + 1)
+    }
+    if (!snapshotId) {
+      appendReview({
+        id: `empty-${Date.now()}`,
+        createdAt: Date.now(),
+        diff: { isRepo: false, files: [], patchError: null }
+      })
+      return
+    }
+    try {
+      const diff = await reviewSnapshotFinish(snapshotId)
+      appendReview({
+        id: snapshotId,
+        createdAt: Date.now(),
+        diff
+      })
+    } catch (e) {
+      toast.error(`生成文件审查 diff 失败: ${String(e)}`)
+      appendReview({
+        id: snapshotId,
+        createdAt: Date.now(),
+        diff: { isRepo: false, files: [], patchError: String(e) }
+      })
+    }
+  }, [])
+
+  const discardRunReview = useCallback(async (run: RunningSession | null) => {
+    const snapshotId = run?.reviewSnapshotId
+    if (!run || !snapshotId) return
+    run.reviewSnapshotId = null
+    try {
+      await reviewSnapshotFinish(snapshotId)
+    } catch (e) {
+      toast.error(`清理文件审查基线失败: ${String(e)}`)
+    }
+  }, [])
+
   const closeRunningSession = useCallback(
     async (
       runtimeId: string,
@@ -554,6 +625,7 @@ export default function App() {
           sessionIdRef.current = null
           setSessionId(null)
           setStreaming(false)
+          setReviewDiffs([])
           collabMcpEnabledRef.current = false
         }
         return
@@ -571,6 +643,7 @@ export default function App() {
       }
       run.unlisten.forEach((unlisten) => unlisten())
       run.unlisten = []
+      await discardRunReview(run)
       runningSessionsRef.current.delete(runtimeId)
       networkToastTimestampsRef.current.delete(runtimeId)
       setPermissionRequests((cur) =>
@@ -584,11 +657,12 @@ export default function App() {
         sessionIdRef.current = null
         setSessionId(null)
         setStreaming(false)
+        setReviewDiffs([])
         collabMcpEnabledRef.current = false
       }
       setRunningTick((tick) => tick + 1)
     },
-    [applyRunningAction]
+    [applyRunningAction, discardRunReview]
   )
 
   const detachActiveSession = useCallback(async () => {
@@ -597,6 +671,7 @@ export default function App() {
     sessionIdRef.current = null
     setSessionId(null)
     setStreaming(false)
+    setReviewDiffs([])
     collabMcpEnabledRef.current = false
     if (!runtimeId) return
     const run = runningSessionsRef.current.get(runtimeId)
@@ -670,6 +745,7 @@ export default function App() {
     setSessionComposer(run.sessionComposer)
     setComposerPrefs(run.composerPrefs)
     collabMcpEnabledRef.current = run.collabMcpEnabled
+    setReviewDiffs(run.reviewDiffs)
   }, [flushRunningActions])
 
   const settlePermissionRequest = useCallback(
@@ -722,17 +798,41 @@ export default function App() {
     setProjects(list)
     if (list.length > 0) setProject((cur) => cur ?? list[0])
     listenPermissionRequests((payload) => {
-      const run = runningSessionsRef.current.get(payload.session_id)
-      if (run) {
-        run.pendingPermissionRequestIds.add(payload.request_id)
+      const enqueue = () => {
+        const run = runningSessionsRef.current.get(payload.session_id)
+        if (run) {
+          run.pendingPermissionRequestIds.add(payload.request_id)
+        }
+        setPermissionRequests((cur) =>
+          cur.some((p) => p.request_id === payload.request_id)
+            ? cur
+            : [...cur, payload]
+        )
+        setSidebarRefreshKey((k) => k + 1)
+        setRunningTick((k) => k + 1)
       }
-      setPermissionRequests((cur) =>
-        cur.some((p) => p.request_id === payload.request_id)
-          ? cur
-          : [...cur, payload]
-      )
-      setSidebarRefreshKey((k) => k + 1)
-      setRunningTick((k) => k + 1)
+      const remembered = findPermissionMemoryMatch(payload)
+      if (remembered) {
+        const response: Record<string, unknown> = { behavior: "allow" }
+        if (payload.request.input !== undefined) {
+          response.updatedInput = payload.request.input
+        }
+        resolvePermissionRequest({
+          sessionId: payload.session_id,
+          requestId: payload.request_id,
+          transport: payload.transport ?? null,
+          response
+        })
+          .then(() => {
+            toast.success(`已按精确命令规则允许: ${remembered.label}`)
+          })
+          .catch((e) => {
+            toast.error(`权限记忆规则执行失败: ${String(e)}`)
+            enqueue()
+          })
+        return
+      }
+      enqueue()
     })
       .then((u) => {
         permissionUnlistenRef.current = u
@@ -802,20 +902,44 @@ export default function App() {
       refreshAppSettings()
       refreshComposerDefaults()
     }
+    const resetConversationAfterApiProfileChange = () => {
+      activeRuntimeIdRef.current = null
+      sessionIdRef.current = null
+      setSessionId(null)
+      setStreaming(false)
+      dispatch({ kind: "reset" })
+      setReviewDiffs([])
+      setSelectedSessionId(null)
+      setSelectedSessionMeta(null)
+      sessionComposerRef.current = null
+      setSessionComposer(null)
+      setComposerPrefs(EMPTY_COMPOSER_PREFS)
+      collabMcpEnabledRef.current = false
+    }
     const refreshThirdPartyApi = () => {
       const previousProfileKey = apiProfileKeyRef.current
       const nextProfileKey = currentApiProfileKey()
       apiProfileKeyRef.current = nextProfileKey
       setThirdPartyApiVersion((version) => version + 1)
-      refreshComposerDefaults()
-      if (previousProfileKey !== nextProfileKey && !activeRuntimeIdRef.current) {
-        dispatch({ kind: "reset" })
-        setSelectedSessionId(null)
-        setSelectedSessionMeta(null)
-        sessionComposerRef.current = null
-        setSessionComposer(null)
-        toast.info("API 供应商已切换，已自动创建新会话")
+      if (previousProfileKey !== nextProfileKey) {
+        const runtimeId = activeRuntimeIdRef.current
+        const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+        if (run?.streaming || (run && run.pendingPermissionRequestIds.size > 0)) {
+          toast.warning(
+            "API 供应商已切换；当前运行中的会话仍使用原供应商，结束后新对话会使用新供应商"
+          )
+        } else {
+          if (runtimeId) {
+            void closeRunningSession(runtimeId, { dropQueued: false }).catch((error) =>
+              console.error("关闭旧 API 会话失败:", error)
+            )
+          }
+          resetConversationAfterApiProfileChange()
+          toast.info("API 供应商已切换，已自动创建新会话")
+        }
+        setSidebarRefreshKey((k) => k + 1)
       }
+      refreshComposerDefaults()
       if (!isOfficialApi()) {
         setOauthUsage(null)
         return
@@ -839,7 +963,7 @@ export default function App() {
       off3()
       off4()
     }
-  }, [])
+  }, [closeRunningSession])
 
   const teardown = useCallback(async () => {
     await stopActiveSession()
@@ -874,6 +998,7 @@ export default function App() {
         if (storedProfileKey && storedProfileKey !== apiProfileKey) {
           resumeSessionId = null
           dispatch({ kind: "reset" })
+          setReviewDiffs([])
           setSelectedSessionId(null)
           setSelectedSessionMeta(null)
           sessionComposerRef.current = null
@@ -921,7 +1046,9 @@ export default function App() {
         unlisten: [],
         composerPrefs,
         sessionComposer,
-        collabMcpEnabled: collabCfg.enabled
+        collabMcpEnabled: collabCfg.enabled,
+        reviewSnapshotId: null,
+        reviewDiffs: []
       }
       collabMcpEnabledRef.current = collabCfg.enabled
       runningSessionsRef.current.set(id, run)
@@ -1030,6 +1157,7 @@ export default function App() {
             run.queuedInputs = []
           }
           setRunningSessionStreaming(run, false)
+          void finishRunReview(run)
           setSidebarRefreshKey((k) => k + 1)
           if (activeRuntimeIdRef.current === run.runtimeId) {
             gitWorktreeStatus(run.project.cwd)
@@ -1069,6 +1197,7 @@ export default function App() {
                 }
                 return writeSessionSidecar(run.project.cwd, sid, next)
               })
+              .then(() => setSidebarRefreshKey((k) => k + 1))
               .catch((e) => console.warn("sidecar write failed:", e))
           }
         }
@@ -1099,6 +1228,7 @@ export default function App() {
     sessionPermissionMode,
     applyRunningAction,
     setRunningSessionStreaming,
+    finishRunReview,
     closeRunningSession,
     reportNetworkError
   ])
@@ -1167,6 +1297,7 @@ export default function App() {
       if (trimmed === "/clear" || trimmed === "/reset") {
         await teardown()
         dispatch({ kind: "reset" })
+        setReviewDiffs([])
         setSelectedSessionId(null)
         setSelectedSessionMeta(null)
         toast.success("已清空当前会话")
@@ -1247,6 +1378,7 @@ export default function App() {
       const id = await ensureSession()
       if (!id) return
       const run = runningSessionsRef.current.get(id)
+      await beginRunReview(run ?? null)
       if (run) {
         applyRunningAction(run, { kind: "user_local", blocks: uiBlocks, localId })
         setRunningSessionStreaming(run, true)
@@ -1260,6 +1392,7 @@ export default function App() {
       } catch (e) {
         toast.error(`发送失败: ${String(e)}`)
         if (run) {
+          void discardRunReview(run)
           setRunningSessionStreaming(run, false)
         } else {
           setStreaming(false)
@@ -1272,6 +1405,8 @@ export default function App() {
       teardown,
       applyRunningAction,
       setRunningSessionStreaming,
+      beginRunReview,
+      discardRunReview,
       collaborationMode
     ]
   )
@@ -1323,6 +1458,7 @@ export default function App() {
       await detachActiveSession()
       if (token !== switchTokenRef.current) return
       dispatch({ kind: "reset" })
+      setReviewDiffs([])
       setProject(next)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
@@ -1339,6 +1475,7 @@ export default function App() {
       setLoadingSession(true)
       setCollaborationMode(false)
       dispatch({ kind: "reset" })
+      setReviewDiffs([])
       setProject(p)
       setSelectedSessionId(s.id)
       setSelectedSessionMeta(s)
@@ -1360,6 +1497,7 @@ export default function App() {
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
         dispatch({ kind: "load_transcript", events: merged })
+        setReviewDiffs([])
         // 还原会话级 composer 偏好：sidecar 是 GUI 显式选择；没有 sidecar
         // 时从 Claude CLI jsonl 里的 /model、/effort 和 system/init 反推。
         const transcriptPrefs = pickComposerFromTranscript(events)
@@ -1391,6 +1529,7 @@ export default function App() {
       await detachActiveSession()
       if (token !== switchTokenRef.current) return
       dispatch({ kind: "reset" })
+      setReviewDiffs([])
       setProject(p)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
@@ -1420,6 +1559,7 @@ export default function App() {
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
       dispatch({ kind: "reset" })
+      setReviewDiffs([])
     }
     setPendingRemoveProjectId(null)
     toast.success("项目已从列表移除")
@@ -1438,6 +1578,7 @@ export default function App() {
     await detachActiveSession()
     if (token !== switchTokenRef.current) return
     dispatch({ kind: "reset" })
+    setReviewDiffs([])
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
     // 新对话清掉会话级覆盖，回到全局默认
@@ -1574,6 +1715,7 @@ export default function App() {
     await detachActiveSession()
     if (token !== switchTokenRef.current) return
     dispatch({ kind: "reset" })
+    setReviewDiffs([])
     setProject(null)
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
@@ -1608,6 +1750,7 @@ export default function App() {
       setSessionId(null)
       setStreaming(false)
       dispatch({ kind: "reset" })
+      setReviewDiffs([])
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
       setSidebarRefreshKey((k) => k + 1)
@@ -1631,6 +1774,7 @@ export default function App() {
       unpin(project.id, target)
       await stopRunningSessionForJsonl(project, target)
       dispatch({ kind: "reset" })
+      setReviewDiffs([])
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
       toast.success("会话已归档")
@@ -1681,8 +1825,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningTick, sessionId])
   const diffCount = countDiffFiles(state.entries)
+  const reviewDiffCount = reviewDiffs.reduce(
+    (total, review) => total + review.diff.files.length,
+    0
+  )
   const visibleDiffCount = Math.max(
     diffCount,
+    reviewDiffCount,
     gitStatus?.changedFiles ?? 0,
     diffPatch?.files.length ?? 0
   )
@@ -1974,6 +2123,8 @@ export default function App() {
 	                    key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
 	                    entries={state.entries}
 	                    streaming={streaming}
+                      reviews={reviewDiffs}
+                      onShowDiff={() => setShowDiff(true)}
 	                  />
 	                </Suspense>
                 {project && projectActions.length > 0 && (
@@ -1988,6 +2139,22 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                <div className="shrink-0 bg-background px-6 pt-2 empty:hidden">
+                  <Suspense fallback={null}>
+                    <RunStatusStrip
+                      entries={state.entries}
+                      cwd={project?.cwd ?? null}
+                      gitStatus={gitStatus}
+                      worktreeDiff={diffPatch}
+                      reviews={reviewDiffs}
+                      diffOpen={showDiff}
+                      onShowDiff={(path) => {
+                        setDiffInitialPath(path ?? null)
+                        setShowDiff(true)
+                      }}
+                    />
+                  </Suspense>
+                </div>
 	                <Suspense fallback={<ComposerLoader />}>
 	                  <Composer
                     onSend={send}
@@ -2096,13 +2263,18 @@ export default function App() {
           <Suspense fallback={null}>
             <DiffOverview
               open={showDiff}
-              onOpenChange={setShowDiff}
+              onOpenChange={(value) => {
+                setShowDiff(value)
+                if (!value) setDiffInitialPath(null)
+              }}
               entries={state.entries}
               gitStatus={gitStatus}
               worktreeDiff={diffPatch}
+              snapshotDiffs={reviewDiffs.map((review) => review.diff)}
               worktreeDiffLoading={diffPatchLoading}
               worktreeDiffError={diffPatchError}
               cwd={project?.cwd ?? null}
+              initialFilePath={diffInitialPath}
             />
           </Suspense>
         )}
