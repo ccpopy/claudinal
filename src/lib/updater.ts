@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import {
   appRuntimeInfo,
   normalizeProxyUrlForHttpClient,
+  openExternal,
   type AppRuntimeInfo
 } from "@/lib/ipc"
 import { formatProxyUrl, loadProxyAsync } from "@/lib/proxy"
@@ -16,6 +17,7 @@ type CheckOptions = {
 let checkInFlight = false
 let installInFlight = false
 let runtimeInfoCache: AppRuntimeInfo | null = null
+const RELEASE_TAG_URL = "https://github.com/ccpopy/claudinal/releases/tag"
 
 async function readRuntimeInfo(): Promise<AppRuntimeInfo | null> {
   if (runtimeInfoCache) return runtimeInfoCache
@@ -46,6 +48,19 @@ async function updaterProxyUrl(): Promise<string | undefined> {
   return normalizeProxyUrlForHttpClient(formatProxyUrl(proxy))
 }
 
+function releasePageUrl(version: string): string {
+  const tag = version.trim().startsWith("v") ? version.trim() : `v${version.trim()}`
+  return `${RELEASE_TAG_URL}/${encodeURIComponent(tag)}`
+}
+
+async function openUpdateRelease(version: string): Promise<void> {
+  try {
+    await openExternal(releasePageUrl(version))
+  } catch (error) {
+    toast.error(`打开更新页面失败: ${String(error)}`)
+  }
+}
+
 export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Update | null> {
   if (import.meta.env.DEV) {
     if (!options.silent) toast.info("开发模式不会检查应用更新")
@@ -65,6 +80,12 @@ export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Upd
     }
 
     toast.message(`检测到有更新：${update.version}`, {
+      cancel: {
+        label: "查看更新",
+        onClick: () => {
+          void openUpdateRelease(update.version)
+        }
+      },
       action: {
         label: "安装并重启",
         onClick: () => {
