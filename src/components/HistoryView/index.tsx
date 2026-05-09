@@ -26,6 +26,10 @@ import {
 } from "@/lib/ipc"
 import type { Project } from "@/lib/projects"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
+import {
+  formatSessionAbsoluteTime,
+  formatSessionRelativeTime
+} from "@/lib/sessionTime"
 import { isArchived } from "@/lib/archivedSessions"
 import { cn } from "@/lib/utils"
 
@@ -71,22 +75,6 @@ function basename(p: string): string {
 
 function normalizeCwd(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "")
-}
-
-function fmtRelative(ts: number): string {
-  if (!ts) return ""
-  const now = Date.now()
-  const diff = Math.floor((now - ts * 1000) / 1000)
-  if (diff < 60) return "刚刚"
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
-  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`
-  return new Date(ts * 1000).toLocaleDateString("zh-CN")
-}
-
-function fmtAbsolute(ts: number): string {
-  if (!ts) return ""
-  return new Date(ts * 1000).toLocaleString("zh-CN")
 }
 
 function mapBodyHits(
@@ -534,7 +522,9 @@ function SessionRow({
           <span className="truncate" title={entry.project.cwd}>
             {entry.projectLabel}
           </span>
-          <span title={fmtAbsolute(ts)}>{fmtRelative(ts)}</span>
+          <span title={formatSessionAbsoluteTime(ts)}>
+            {formatSessionRelativeTime(ts)}
+          </span>
           <span>{entry.session.msg_count} 条消息</span>
           <span className="truncate font-mono opacity-70">
             {entry.session.id.slice(0, 8)}

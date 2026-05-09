@@ -12,6 +12,7 @@ import {
   readClaudeSettings,
   writeClaudeSettings
 } from "@/lib/ipc"
+import { emitSettingsBus } from "@/lib/settingsBus"
 import { ConfigExportPage } from "./ConfigExportDialog"
 import {
   SettingsSection,
@@ -76,8 +77,9 @@ export function Config() {
   const save = async () => {
     try {
       await writeClaudeSettings("global", cliSettings as Record<string, unknown>)
+      emitSettingsBus("composerPrefs")
       setDirty(false)
-      toast.success("已保存到 settings.json，下次启动会话生效")
+      toast.success("已保存到 settings.json，下次发送会使用新配置")
     } catch (e) {
       toast.error(`保存失败: ${String(e)}`)
     }

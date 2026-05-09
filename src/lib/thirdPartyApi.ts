@@ -264,19 +264,24 @@ export async function loadThirdPartyApiStoreAsync(): Promise<ThirdPartyApiStore>
   }
   if (!kcOk) return store
   const providers = await Promise.all(
-    store.providers.map(async (provider) => {
-      // 先有明文（legacy / keychain 不可用）就保留，不再去 keychain 读，避免覆盖
-      if (provider.apiKey) return provider
-      let secret = ""
-      try {
-        secret = (await keychainGet(keychainAccountForProvider(provider.id))) ?? ""
-      } catch {
-        secret = ""
-      }
-      return secret ? { ...provider, apiKey: secret, legacyApiKey: false } : provider
-    })
+    store.providers.map((provider) => hydrateProviderApiKey(provider, kcOk))
   )
   return { ...store, providers }
+}
+
+async function hydrateProviderApiKey(
+  provider: ThirdPartyApiProvider,
+  keychainReady: boolean
+): Promise<ThirdPartyApiProvider> {
+  // 先有明文（legacy / keychain 不可用）就保留，不再去 keychain 读，避免覆盖
+  if (provider.apiKey || !keychainReady) return provider
+  let secret = ""
+  try {
+    secret = (await keychainGet(keychainAccountForProvider(provider.id))) ?? ""
+  } catch {
+    secret = ""
+  }
+  return secret ? { ...provider, apiKey: secret, legacyApiKey: false } : provider
 }
 
 interface PersistResult {
@@ -395,7 +400,7 @@ export function loadThirdPartyApiConfig(): ThirdPartyApiConfig {
 }
 
 export async function loadThirdPartyApiConfigAsync(): Promise<ThirdPartyApiConfig> {
-  const store = await loadThirdPartyApiStoreAsync()
+  const store = loadThirdPartyApiStore()
   if (store.activeProviderId === OFFICIAL_PROVIDER_ID) {
     return {
       ...DEFAULT_THIRD_PARTY_API,
@@ -411,7 +416,14 @@ export async function loadThirdPartyApiConfigAsync(): Promise<ThirdPartyApiConfi
       models: { ...DEFAULT_THIRD_PARTY_API.models }
     }
   }
-  return { ...normalizeThirdPartyApiConfig(active), enabled: true }
+  let kcOk = false
+  try {
+    kcOk = await keychainAvailable()
+  } catch {
+    kcOk = false
+  }
+  const hydrated = await hydrateProviderApiKey(active, kcOk)
+  return { ...normalizeThirdPartyApiConfig(hydrated), enabled: true }
 }
 
 /** 单独删除某个 provider 在 keychain 中的密钥；删 provider 时调用，幂等。 */

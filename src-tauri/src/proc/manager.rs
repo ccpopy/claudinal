@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use serde_json::{json, Value};
@@ -36,6 +36,14 @@ struct Session {
 #[derive(Default)]
 pub struct Manager {
     sessions: DashMap<String, Arc<Session>>,
+    claude_help_cache: DashMap<ClaudeHelpCacheKey, String>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ClaudeHelpCacheKey {
+    path: PathBuf,
+    size: Option<u64>,
+    modified_ms: Option<u128>,
 }
 
 impl Manager {
@@ -45,7 +53,7 @@ impl Manager {
 
     pub async fn spawn(&self, app: AppHandle, opts: SpawnOptions) -> Result<String> {
         let claude = find_claude()?;
-        ensure_required_claude_flags(&claude, &opts).await?;
+        ensure_required_claude_flags(&claude, &opts, &self.claude_help_cache).await?;
         let session_id = Uuid::new_v4().to_string();
         let collab_enabled = opts
             .env
@@ -298,8 +306,20 @@ impl Manager {
     }
 }
 
-async fn ensure_required_claude_flags(claude: &Path, opts: &SpawnOptions) -> Result<()> {
-    let help = claude_help(claude).await?;
+async fn ensure_required_claude_flags(
+    claude: &Path,
+    opts: &SpawnOptions,
+    help_cache: &DashMap<ClaudeHelpCacheKey, String>,
+) -> Result<()> {
+    let cache_key = claude_help_cache_key(claude);
+    let help = match help_cache.get(&cache_key) {
+        Some(cached) => cached.clone(),
+        None => {
+            let loaded = claude_help(claude).await?;
+            help_cache.insert(cache_key, loaded.clone());
+            loaded
+        }
+    };
     // --permission-prompt-tool 在 Claude CLI 2.1.x 起从 --help 输出里移除，
     // 但参数本身仍在用（已实测 2.1.126 直传可正常工作），所以不再做 help 文本检查。
     let mut required = vec![
@@ -347,6 +367,21 @@ async fn ensure_required_claude_flags(claude: &Path, opts: &SpawnOptions) -> Res
         claude.display(),
         version.trim()
     )))
+}
+
+fn claude_help_cache_key(claude: &Path) -> ClaudeHelpCacheKey {
+    let meta = std::fs::metadata(claude).ok();
+    let size = meta.as_ref().map(std::fs::Metadata::len);
+    let modified_ms = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis());
+    ClaudeHelpCacheKey {
+        path: claude.to_path_buf(),
+        size,
+        modified_ms,
+    }
 }
 
 async fn claude_help(claude: &Path) -> Result<String> {

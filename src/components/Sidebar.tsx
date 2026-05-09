@@ -36,6 +36,10 @@ import type { Project } from "@/lib/projects"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
 import { listArchived, type ArchivedRef } from "@/lib/archivedSessions"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
+import {
+  formatSessionCompactTime,
+  formatSessionRelativeTime
+} from "@/lib/sessionTime"
 
 const SearchPalette = lazy(() =>
   import("@/components/SearchPalette").then((m) => ({ default: m.SearchPalette }))
@@ -84,29 +88,6 @@ function sameArchivedRefs(a: ArchivedRef[], b: ArchivedRef[]): boolean {
       item.sessionId === b[index]?.sessionId &&
       item.archivedAt === b[index]?.archivedAt
   )
-}
-
-function fmtRelative(ts: number): string {
-  if (!ts) return ""
-  const now = Math.floor(Date.now() / 1000)
-  const diff = now - ts
-  if (diff < 60) return "刚刚"
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
-  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`
-  return new Date(ts * 1000).toLocaleDateString()
-}
-
-function fmtCompactRelative(ts: number): string {
-  if (!ts) return ""
-  const now = Math.floor(Date.now() / 1000)
-  const diff = now - ts
-  if (diff < 60) return "刚刚"
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分`
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时`
-  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天`
-  const d = new Date(ts * 1000)
-  return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
 export function Sidebar({
@@ -666,8 +647,8 @@ function SessionRow({
   onTogglePin: () => void
 }) {
   const title = sessionDisplayTitle(session)
-  const compactTime = fmtCompactRelative(session.modified_ts)
-  const fullTime = fmtRelative(session.modified_ts)
+  const compactTime = formatSessionCompactTime(session.modified_ts)
+  const fullTime = formatSessionRelativeTime(session.modified_ts)
   return (
     <div
       onClick={onSelect}

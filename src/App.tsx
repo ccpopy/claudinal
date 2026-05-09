@@ -364,6 +364,32 @@ function nullableComposerPrefs(prefs: ComposerPrefs): ComposerPrefs | null {
   return prefs.model || prefs.effort ? prefs : null
 }
 
+function sameComposerPrefs(a: ComposerPrefs, b: ComposerPrefs): boolean {
+  return a.model === b.model && a.effort === b.effort
+}
+
+const SEND_STEP_WARN_MS = 1_000
+
+function monotonicMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now()
+}
+
+async function measureSendStep<T>(
+  label: string,
+  task: () => Promise<T>,
+  warnAfterMs = SEND_STEP_WARN_MS
+): Promise<T> {
+  const startedAt = monotonicMs()
+  try {
+    return await task()
+  } finally {
+    const elapsed = monotonicMs() - startedAt
+    if (elapsed >= warnAfterMs) {
+      console.warn(`[send] ${label} took ${Math.round(elapsed)}ms`)
+    }
+  }
+}
+
 function countDiffFiles(
   entries: ReturnType<typeof reducerInit>["entries"]
 ): number {
@@ -456,6 +482,8 @@ export default function App() {
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
   const collabMcpEnabledRef = useRef(false)
   const switchTokenRef = useRef(0)
+  const pendingApiRuntimeRefreshRef = useRef(false)
+  const pendingComposerRuntimeRefreshRef = useRef(false)
   const streamingRefsCacheRef = useRef<{
     key: string
     value: Array<{ projectId: string; sessionId: string }>
@@ -663,6 +691,64 @@ export default function App() {
       setRunningTick((tick) => tick + 1)
     },
     [applyRunningAction, discardRunReview]
+  )
+
+  const refreshActiveThirdPartyRuntime = useCallback(
+    (message = "第三方 API 配置已刷新，下一次发送会使用新配置") => {
+      const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
+      if (!runtimeId) return
+      const run = runningSessionsRef.current.get(runtimeId)
+      const profileKey = run?.apiProfileKey ?? apiProfileKeyRef.current
+      if (profileKey === "official") return
+
+      if (run?.streaming || (run && run.pendingPermissionRequestIds.size > 0)) {
+        pendingApiRuntimeRefreshRef.current = true
+        toast.warning(
+          "第三方 API 配置已保存；当前请求结束后会刷新运行会话，下一次发送会使用新配置"
+        )
+        return
+      }
+
+      pendingApiRuntimeRefreshRef.current = false
+      pendingComposerRuntimeRefreshRef.current = false
+      const sid = run?.jsonlSessionId ?? (run ? findInitSessionId(run.state) : null)
+      if (sid) setSelectedSessionId((cur) => cur ?? sid)
+      void closeRunningSession(runtimeId, { dropQueued: false })
+        .then(() => toast.info(message))
+        .catch((error) => {
+          toast.error(`刷新第三方 API 会话失败: ${String(error)}`)
+        })
+    },
+    [closeRunningSession]
+  )
+
+  const refreshActiveComposerRuntime = useCallback(
+    (message = "会话启动配置已刷新，下一次发送会使用新配置") => {
+      const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
+      if (!runtimeId) {
+        pendingComposerRuntimeRefreshRef.current = false
+        return
+      }
+      const run = runningSessionsRef.current.get(runtimeId)
+      if (run?.streaming || (run && run.pendingPermissionRequestIds.size > 0)) {
+        pendingComposerRuntimeRefreshRef.current = true
+        toast.warning(
+          "会话启动配置已保存；当前请求结束后会刷新运行会话，下一次发送会使用新配置"
+        )
+        return
+      }
+
+      pendingApiRuntimeRefreshRef.current = false
+      pendingComposerRuntimeRefreshRef.current = false
+      const sid = run?.jsonlSessionId ?? (run ? findInitSessionId(run.state) : null)
+      if (sid) setSelectedSessionId((cur) => cur ?? sid)
+      void closeRunningSession(runtimeId, { dropQueued: false })
+        .then(() => toast.info(message))
+        .catch((error) => {
+          toast.error(`刷新会话启动配置失败: ${String(error)}`)
+        })
+    },
+    [closeRunningSession]
   )
 
   const detachActiveSession = useCallback(async () => {
@@ -878,8 +964,13 @@ export default function App() {
       const activeRun = activeRuntimeId
         ? runningSessionsRef.current.get(activeRuntimeId)
         : null
-      if (activeRun && !activeRun.sessionComposer) {
+      if (
+        activeRun &&
+        !activeRun.sessionComposer &&
+        !sameComposerPrefs(activeRun.composerPrefs, next)
+      ) {
         activeRun.composerPrefs = next
+        refreshActiveComposerRuntime()
       }
     }
     const refreshComposerDefaults = () => {
@@ -903,6 +994,8 @@ export default function App() {
       refreshComposerDefaults()
     }
     const resetConversationAfterApiProfileChange = () => {
+      pendingApiRuntimeRefreshRef.current = false
+      pendingComposerRuntimeRefreshRef.current = false
       activeRuntimeIdRef.current = null
       sessionIdRef.current = null
       setSessionId(null)
@@ -938,6 +1031,8 @@ export default function App() {
           toast.info("API 供应商已切换，已自动创建新会话")
         }
         setSidebarRefreshKey((k) => k + 1)
+      } else {
+        refreshActiveThirdPartyRuntime()
       }
       refreshComposerDefaults()
       if (!isOfficialApi()) {
@@ -963,7 +1058,11 @@ export default function App() {
       off3()
       off4()
     }
-  }, [closeRunningSession])
+  }, [
+    closeRunningSession,
+    refreshActiveThirdPartyRuntime,
+    refreshActiveComposerRuntime
+  ])
 
   const teardown = useCallback(async () => {
     await stopActiveSession()
@@ -1200,6 +1299,18 @@ export default function App() {
               .then(() => setSidebarRefreshKey((k) => k + 1))
               .catch((e) => console.warn("sidecar write failed:", e))
           }
+          if (
+            pendingApiRuntimeRefreshRef.current &&
+            activeRuntimeIdRef.current === run.runtimeId &&
+            run.apiProfileKey !== "official"
+          ) {
+            refreshActiveThirdPartyRuntime()
+          } else if (
+            pendingComposerRuntimeRefreshRef.current &&
+            activeRuntimeIdRef.current === run.runtimeId
+          ) {
+            refreshActiveComposerRuntime()
+          }
         }
       })
       const u2 = await listenSessionErrors(id, (line) => {
@@ -1230,7 +1341,9 @@ export default function App() {
     setRunningSessionStreaming,
     finishRunReview,
     closeRunningSession,
-    reportNetworkError
+    reportNetworkError,
+    refreshActiveThirdPartyRuntime,
+    refreshActiveComposerRuntime
   ])
 
   const refreshGitStatus = useCallback(async () => {
@@ -1375,10 +1488,9 @@ export default function App() {
         return
       }
 
-      const id = await ensureSession()
+      const id = await measureSendStep("ensureSession", ensureSession)
       if (!id) return
       const run = runningSessionsRef.current.get(id)
-      await beginRunReview(run ?? null)
       if (run) {
         applyRunningAction(run, { kind: "user_local", blocks: uiBlocks, localId })
         setRunningSessionStreaming(run, true)
@@ -1386,8 +1498,9 @@ export default function App() {
         dispatch({ kind: "user_local", blocks: uiBlocks, localId })
         setStreaming(true)
       }
+      await measureSendStep("beginRunReview", () => beginRunReview(run ?? null))
       try {
-        await sendUserMessage(id, blocks)
+        await measureSendStep("sendUserMessage", () => sendUserMessage(id, blocks))
         if (collaborationMode) setCollaborationMode(false)
       } catch (e) {
         toast.error(`发送失败: ${String(e)}`)
@@ -1462,9 +1575,12 @@ export default function App() {
       setProject(next)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
+      sessionComposerRef.current = null
+      setSessionComposer(null)
+      setComposerPrefs(globalDefault)
       setCollaborationMode(false)
     },
-    [detachActiveSession]
+    [detachActiveSession, globalDefault]
   )
 
   const switchSession = useCallback(
@@ -1533,6 +1649,9 @@ export default function App() {
       setProject(p)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
+      sessionComposerRef.current = null
+      setSessionComposer(null)
+      setComposerPrefs(globalDefault)
       setProjects(listProjects())
       returnViewRef.current = "chat"
       settingsEntryTargetRef.current = null
@@ -1541,7 +1660,7 @@ export default function App() {
       setShowHistory(false)
       toast.success(`项目「${p.name}」已添加`)
     },
-    [detachActiveSession]
+    [detachActiveSession, globalDefault]
   )
 
   const handleRemove = useCallback((id: string) => {
@@ -1558,12 +1677,15 @@ export default function App() {
       setProject(null)
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
+      sessionComposerRef.current = null
+      setSessionComposer(null)
+      setComposerPrefs(globalDefault)
       dispatch({ kind: "reset" })
       setReviewDiffs([])
     }
     setPendingRemoveProjectId(null)
     toast.success("项目已从列表移除")
-  }, [pendingRemoveProjectId, project, stopRunningSessionsForProject])
+  }, [pendingRemoveProjectId, project, stopRunningSessionsForProject, globalDefault])
 
   const pendingRemoveProject = useMemo(
     () =>
@@ -1719,7 +1841,10 @@ export default function App() {
     setProject(null)
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
-  }, [detachActiveSession])
+    sessionComposerRef.current = null
+    setSessionComposer(null)
+    setComposerPrefs(globalDefault)
+  }, [detachActiveSession, globalDefault])
 
   const deleteCurrentSession = useCallback(() => {
     if (!project) return
@@ -1753,12 +1878,15 @@ export default function App() {
       setReviewDiffs([])
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
+      sessionComposerRef.current = null
+      setSessionComposer(null)
+      setComposerPrefs(globalDefault)
       setSidebarRefreshKey((k) => k + 1)
       toast.success("会话已删除")
     } catch (e) {
       toast.error(`删除失败: ${String(e)}`)
     }
-  }, [project, selectedSessionId, state, stopRunningSessionForJsonl])
+  }, [project, selectedSessionId, state, stopRunningSessionForJsonl, globalDefault])
 
   const archiveCurrentSession = useCallback(async () => {
     if (!project) return
@@ -1777,12 +1905,15 @@ export default function App() {
       setReviewDiffs([])
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
+      sessionComposerRef.current = null
+      setSessionComposer(null)
+      setComposerPrefs(globalDefault)
       toast.success("会话已归档")
     } else {
       toast.success("已取消归档")
     }
     setSidebarRefreshKey((k) => k + 1)
-  }, [project, selectedSessionId, state, stopRunningSessionForJsonl])
+  }, [project, selectedSessionId, state, stopRunningSessionForJsonl, globalDefault])
 
   const empty = state.entries.length === 0
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
@@ -1848,6 +1979,7 @@ export default function App() {
           model: next.model !== undefined ? next.model : cur.model,
           effort: next.effort !== undefined ? next.effort : cur.effort
         }
+        if (sameComposerPrefs(cur, updated)) return cur
         // 用户已显式覆盖：标记到 sessionComposer，并尝试写入当前会话的 sidecar。
         // sid 优先级：select 的会话 → reducer init 拿到的 jsonl id（spawn 后第一时间可用）。
         sessionComposerRef.current = updated
@@ -1873,10 +2005,11 @@ export default function App() {
             })
             .catch((e) => console.warn("sidecar composer write failed:", e))
         }
+        refreshActiveComposerRuntime("模型/思考强度已刷新，下一次发送会使用新配置")
         return updated
       })
     },
-    [project, selectedSessionId, state]
+    [project, selectedSessionId, state, refreshActiveComposerRuntime]
   )
 
   const thirdPartyApiConfig = useMemo(

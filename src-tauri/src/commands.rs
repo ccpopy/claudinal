@@ -1037,6 +1037,14 @@ fn scan_review_baseline(
     snapshot_dir: &std::path::Path,
     records: &mut Vec<ReviewSnapshotFile>,
 ) -> Result<()> {
+    if same_path(root, dir) {
+        if let Some(paths) = review_git_candidate_paths(root)? {
+            for path in paths {
+                scan_review_baseline_file(root, &path, snapshot_dir, records)?;
+            }
+            return Ok(());
+        }
+    }
     for entry in std::fs::read_dir(dir).map_err(Error::from)? {
         let entry = entry.map_err(Error::from)?;
         let path = entry.path();
@@ -1052,27 +1060,45 @@ fn scan_review_baseline(
         if !meta.is_file() {
             continue;
         }
-        let rel = review_rel_path(root, &path)?;
-        let bytes = std::fs::read(&path).map_err(Error::from)?;
-        let binary = review_is_binary(&bytes);
-        let hash = review_hash(&bytes);
-        let baseline_path = if binary {
-            None
-        } else {
-            let rel_baseline = format!("files/{}.txt", records.len());
-            let target = snapshot_dir.join(&rel_baseline);
-            std::fs::write(&target, &bytes).map_err(Error::from)?;
-            Some(rel_baseline)
-        };
-        records.push(ReviewSnapshotFile {
-            path: rel,
-            size: meta.len(),
-            modified_ms: review_modified_ms(&meta)?,
-            hash,
-            binary,
-            baseline_path,
-        });
+        scan_review_baseline_file(root, &path, snapshot_dir, records)?;
     }
+    Ok(())
+}
+
+fn scan_review_baseline_file(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    snapshot_dir: &std::path::Path,
+    records: &mut Vec<ReviewSnapshotFile>,
+) -> Result<()> {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(Error::from(err)),
+    };
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let rel = review_rel_path(root, path)?;
+    let bytes = std::fs::read(path).map_err(Error::from)?;
+    let binary = review_is_binary(&bytes);
+    let hash = review_hash(&bytes);
+    let baseline_path = if binary {
+        None
+    } else {
+        let rel_baseline = format!("files/{}.txt", records.len());
+        let target = snapshot_dir.join(&rel_baseline);
+        std::fs::write(&target, &bytes).map_err(Error::from)?;
+        Some(rel_baseline)
+    };
+    records.push(ReviewSnapshotFile {
+        path: rel,
+        size: meta.len(),
+        modified_ms: review_modified_ms(&meta)?,
+        hash,
+        binary,
+        baseline_path,
+    });
     Ok(())
 }
 
@@ -1081,6 +1107,14 @@ fn scan_review_current(
     dir: &std::path::Path,
     out: &mut std::collections::HashMap<String, ReviewCurrentFile>,
 ) -> Result<()> {
+    if same_path(root, dir) {
+        if let Some(paths) = review_git_candidate_paths(root)? {
+            for path in paths {
+                scan_review_current_file(root, &path, out)?;
+            }
+            return Ok(());
+        }
+    }
     for entry in std::fs::read_dir(dir).map_err(Error::from)? {
         let entry = entry.map_err(Error::from)?;
         let path = entry.path();
@@ -1096,29 +1130,94 @@ fn scan_review_current(
         if !meta.is_file() {
             continue;
         }
-        let bytes = std::fs::read(&path).map_err(Error::from)?;
-        let binary = review_is_binary(&bytes);
-        let content = if binary {
-            None
-        } else {
-            Some(String::from_utf8(bytes.clone()).map_err(|e| {
-                Error::Other(format!(
-                    "current file utf-8 decode failed: {}: {e}",
-                    path.display()
-                ))
-            })?)
-        };
-        out.insert(
-            review_rel_path(root, &path)?,
-            ReviewCurrentFile {
-                size: meta.len(),
-                hash: review_hash(&bytes),
-                binary,
-                content,
-            },
-        );
+        scan_review_current_file(root, &path, out)?;
     }
     Ok(())
+}
+
+fn scan_review_current_file(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    out: &mut std::collections::HashMap<String, ReviewCurrentFile>,
+) -> Result<()> {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(Error::from(err)),
+    };
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(path).map_err(Error::from)?;
+    let binary = review_is_binary(&bytes);
+    let content = if binary {
+        None
+    } else {
+        Some(String::from_utf8(bytes.clone()).map_err(|e| {
+            Error::Other(format!(
+                "current file utf-8 decode failed: {}: {e}",
+                path.display()
+            ))
+        })?)
+    };
+    out.insert(
+        review_rel_path(root, path)?,
+        ReviewCurrentFile {
+            size: meta.len(),
+            hash: review_hash(&bytes),
+            binary,
+            content,
+        },
+    );
+    Ok(())
+}
+
+fn review_git_candidate_paths(root: &std::path::Path) -> Result<Option<Vec<std::path::PathBuf>>> {
+    if which::which("git").is_err() {
+        return Ok(None);
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C")
+        .arg(root)
+        .args(["ls-files", "-co", "--exclude-standard", "-z", "--", "."])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    hide_std_window(&mut cmd);
+    let output = cmd.output().map_err(Error::from)?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let mut paths = Vec::new();
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let rel = std::path::PathBuf::from(String::from_utf8_lossy(raw).to_string());
+        if !review_is_safe_relative_path(&rel) {
+            continue;
+        }
+        if rel.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(should_skip_review_path)
+        }) {
+            continue;
+        }
+        paths.push(root.join(rel));
+    }
+    Ok(Some(paths))
+}
+
+fn review_is_safe_relative_path(path: &std::path::Path) -> bool {
+    path.components().all(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
 }
 
 fn classify_review_snapshot_changes(
