@@ -28,16 +28,6 @@ async function readRuntimeInfo(): Promise<AppRuntimeInfo | null> {
   }
 }
 
-function describeUpdate(update: Update): string {
-  const date = update.date ? new Date(update.date) : null
-  const published =
-    date && !Number.isNaN(date.getTime())
-      ? `发布时间：${date.toLocaleString("zh-CN")}`
-      : null
-  const body = update.body?.trim()
-  return [published, body].filter(Boolean).join("\n")
-}
-
 function formatProgress(event: DownloadEvent, state: { downloaded: number; total: number }) {
   if (event.event === "Started") {
     state.downloaded = 0
@@ -54,17 +44,6 @@ async function updaterProxyUrl(): Promise<string | undefined> {
   const proxy = await loadProxyAsync()
   if (!proxy.enabled || !proxy.host || !proxy.port) return undefined
   return normalizeProxyUrlForHttpClient(formatProxyUrl(proxy))
-}
-
-function updateDescription(update: Update, runtime: AppRuntimeInfo | null): string {
-  return [
-    describeUpdate(update),
-    runtime?.executable_dir
-      ? `自动更新将安装到当前运行目录：${runtime.executable_dir}`
-      : null
-  ]
-    .filter(Boolean)
-    .join("\n")
 }
 
 export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Update | null> {
@@ -85,8 +64,7 @@ export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Upd
       return null
     }
 
-    toast.message(`发现新版本 ${update.version}`, {
-      description: updateDescription(update, await readRuntimeInfo()),
+    toast.message(`检测到有更新：${update.version}`, {
       action: {
         label: "安装并重启",
         onClick: () => {
