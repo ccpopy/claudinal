@@ -26,6 +26,7 @@ pub struct SpawnOptions {
     pub env_remove: Vec<String>,
     pub permission_prompt_tool: Option<String>,
     pub mcp_config: Option<String>,
+    pub settings_json: Option<String>,
 }
 
 struct Session {
@@ -86,6 +87,9 @@ impl Manager {
         }
         if let Some(config) = &opts.mcp_config {
             cmd.arg("--mcp-config").arg(config);
+        }
+        if let Some(settings) = &opts.settings_json {
+            cmd.arg("--settings").arg(settings);
         }
         let permission_prompt_tool = opts
             .permission_prompt_tool
@@ -348,6 +352,13 @@ async fn ensure_required_claude_flags(
         .is_some_and(|v| !v.trim().is_empty())
     {
         required.push("--mcp-config");
+    }
+    if opts
+        .settings_json
+        .as_deref()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        required.push("--settings");
     }
 
     let missing: Vec<&str> = required

@@ -26,14 +26,11 @@ import { cn } from "@/lib/utils"
 import {
   claudeSettingsPath,
   fetchProviderModels,
-  openPath,
-  readClaudeSettings,
-  writeClaudeSettings
+  openPath
 } from "@/lib/ipc"
 import {
   buildClaudeEnv,
-  clearManagedClaudeEnv,
-  clearManagedModelOverrides,
+  cleanupManagedGlobalClaudeSettings,
   createThirdPartyApiProvider,
   deleteProviderApiKey,
   loadThirdPartyApiStoreAsync,
@@ -50,13 +47,6 @@ import {
 } from "@/lib/thirdPartyApi"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
 import { formatProxyUrl, loadProxyAsync } from "@/lib/proxy"
-
-interface CliSettings {
-  model?: string
-  env?: Record<string, string>
-  modelOverrides?: Record<string, string>
-  [k: string]: unknown
-}
 
 interface ProviderEditorState {
   mode: "new" | "edit"
@@ -108,7 +98,6 @@ export function ThirdPartyApi() {
     OFFICIAL_PROVIDER_ID
   )
   const [editor, setEditor] = useState<ProviderEditorState | null>(null)
-  const [cliSettings, setCliSettings] = useState<CliSettings>({})
   const [filePath, setFilePath] = useState("")
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -141,8 +130,6 @@ export function ThirdPartyApi() {
       setDirty(false)
       const path = await claudeSettingsPath("global")
       setFilePath(path)
-      const raw = (await readClaudeSettings("global")) as CliSettings | null
-      setCliSettings(raw ?? {})
     } catch (e) {
       toast.error(`读取配置失败: ${String(e)}`)
     } finally {
@@ -341,25 +328,16 @@ export function ThirdPartyApi() {
     return true
   }
 
-  const applyProviderToClaude = async (providerId: string) => {
+  const activateProvider = async (providerId: string) => {
     setSaving(true)
     try {
       if (providerId === OFFICIAL_PROVIDER_ID) {
-        const nextSettings: CliSettings = {
-          ...cliSettings,
-          env: clearManagedClaudeEnv(cliSettings.env),
-          modelOverrides: clearManagedModelOverrides(cliSettings.modelOverrides)
-        }
-        delete nextSettings.model
-        await writeClaudeSettings("global", nextSettings as Record<string, unknown>)
+        await cleanupManagedGlobalClaudeSettings()
         await persistStore({ ...store, activeProviderId: OFFICIAL_PROVIDER_ID })
-        setCliSettings(nextSettings)
-        toast.success("已恢复默认，下次启动会话生效")
+        toast.success("已恢复 Claude 官方，新会话不会注入第三方 API")
         return
       }
 
-      // 应用 provider 时需要明文 apiKey 写进 settings.json env，
-      // 因此从 keychain 同步取一次（store 同步副本可能不含密钥）。
       const refreshed = await loadThirdPartyApiStoreAsync()
       const target = refreshed.providers.find((provider) => provider.id === providerId)
       if (!target) {
@@ -368,18 +346,10 @@ export function ThirdPartyApi() {
       }
       if (!validate(target)) return
 
-      const nextEnv = buildClaudeEnv(target, cliSettings.env)
-      const nextSettings: CliSettings = {
-        ...cliSettings,
-        env: nextEnv,
-        modelOverrides: clearManagedModelOverrides(cliSettings.modelOverrides)
-      }
-      delete nextSettings.model
-      await writeClaudeSettings("global", nextSettings as Record<string, unknown>)
+      await cleanupManagedGlobalClaudeSettings()
       await persistStore({ ...refreshed, activeProviderId: providerId })
       setSelectedProviderId(providerId)
-      setCliSettings(nextSettings)
-      toast.success("已启用该供应商，下次启动会话生效")
+      toast.success("已启用该供应商，新会话会使用运行时配置")
     } catch (e) {
       toast.error(`应用失败: ${String(e)}`)
     } finally {
@@ -443,7 +413,7 @@ export function ThirdPartyApi() {
 
   const preview = useMemo(() => {
     const target = editorConfig ?? activeConfig
-    const env = buildClaudeEnv(target, cliSettings.env)
+    const env = buildClaudeEnv(target)
     const maskedEnv = Object.fromEntries(
       Object.entries(env).map(([key, value]) => [
         key,
@@ -457,7 +427,7 @@ export function ThirdPartyApi() {
       null,
       2
     )
-  }, [activeConfig, cliSettings.env, editorConfig])
+  }, [activeConfig, editorConfig])
 
   const activeTitle = activeOfficial
     ? "Claude Official"
@@ -639,7 +609,7 @@ export function ThirdPartyApi() {
                     使用模型
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
-                    按 Claude Code 官方环境变量映射模型；计划模式配合 opusplan 使用 Opus 映射，执行阶段使用 Sonnet 映射。
+                    按 Claude Code 官方环境变量映射模型；这些值只在 Claudinal 启动新会话时注入。
                   </div>
                 </div>
                 <Button
@@ -654,7 +624,7 @@ export function ThirdPartyApi() {
               </div>
 
               <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                获取模型列表会写入当前供应商缓存。下面字段会写入 settings.json 的 env，并在本地代理转发请求时保持一致。
+                获取模型列表会写入当前供应商缓存。下面字段会进入本次会话的运行时配置，并在本地代理转发请求时保持一致。
               </div>
               {cachedModelCount > 0 && (
                 <div className="text-[11px] text-muted-foreground">
@@ -698,7 +668,7 @@ export function ThirdPartyApi() {
 
             <section className="rounded-lg border bg-muted/40 p-5 space-y-3">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                Claude 映射预览
+                Claude 运行时环境预览
               </div>
               <pre className="max-h-64 overflow-auto rounded-md bg-background border p-3 text-xs font-mono leading-relaxed">
                 {preview}
@@ -734,7 +704,7 @@ export function ThirdPartyApi() {
             第三方 API
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            保存供应商参数，并映射到 Claude settings.json 的 env / model。
+            保存供应商参数；启用后只影响 Claudinal 新会话，不写入全局 settings.json。
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -770,7 +740,7 @@ export function ThirdPartyApi() {
                   供应商列表
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  管理可用供应商；启用后，新启动会话会通过本地代理转发。
+                  管理可用供应商；启用后，新启动会话会通过运行时配置和本地代理转发。
                 </div>
               </div>
             </div>
@@ -792,7 +762,7 @@ export function ThirdPartyApi() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => applyProviderToClaude(OFFICIAL_PROVIDER_ID)}
+                  onClick={() => activateProvider(OFFICIAL_PROVIDER_ID)}
                   disabled={loading || saving}
                 >
                   恢复默认
@@ -826,7 +796,7 @@ export function ThirdPartyApi() {
                     active={store.activeProviderId === provider.id}
                     selected={selectedProviderId === provider.id}
                     onSelect={() => selectProvider(provider.id)}
-                    onApply={() => applyProviderToClaude(provider.id)}
+                    onApply={() => activateProvider(provider.id)}
                     applyLabel={
                       store.activeProviderId === provider.id
                         ? "重新启用"

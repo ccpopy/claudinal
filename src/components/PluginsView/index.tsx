@@ -95,6 +95,7 @@ type PluginsTab = "installed" | "discover" | "marketplaces"
 interface Props {
   cwd?: string | null
   onBack: () => void
+  onSkillsChanged?: (skills: Skill[]) => void
 }
 
 const SCOPE_OPTIONS: Array<{ value: PluginScope; label: string }> = [
@@ -125,7 +126,7 @@ const BUILTIN_SKILL_INSTALLERS: BuiltinSkillInstaller[] = [
   }
 ]
 
-export function PluginsView({ cwd, onBack }: Props) {
+export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
   const [tab, setTab] = useState<TopTab>("plugins")
   const [pluginsTab, setPluginsTab] = useState<PluginsTab>("installed")
 
@@ -159,12 +160,13 @@ export function PluginsView({ cwd, onBack }: Props) {
       setInstalled(inst)
       setMarketplaces(marks)
       setSkills(sk)
+      onSkillsChanged?.(sk)
     } catch (e) {
       toast.error(`读取失败: ${String(e)}`)
     } finally {
       setLoading(false)
     }
-  }, [cwd])
+  }, [cwd, onSkillsChanged])
 
   useEffect(() => {
     refresh()

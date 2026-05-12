@@ -3,6 +3,36 @@
 
 const KEY = "claudinal.slash-commands.cache"
 
+export interface SlashCommandSkill {
+  name: string
+  user_invocable: boolean
+}
+
+function cleanSlashCommand(value: string): string {
+  return value.trim().replace(/^\/+/, "")
+}
+
+export function mergeSlashCommands(...lists: string[][]): string[] {
+  return Array.from(
+    new Set(
+      lists
+        .flat()
+        .map(cleanSlashCommand)
+        .filter(Boolean)
+    )
+  )
+}
+
+export function slashCommandsFromSkills(
+  skills: SlashCommandSkill[]
+): string[] {
+  return mergeSlashCommands(
+    skills
+      .filter((skill) => skill.user_invocable)
+      .map((skill) => skill.name)
+  )
+}
+
 export function loadSlashCommandsCache(): string[] {
   try {
     const raw = localStorage.getItem(KEY)
@@ -19,7 +49,7 @@ export function loadSlashCommandsCache(): string[] {
 
 export function saveSlashCommandsCache(commands: string[]) {
   try {
-    const uniq = Array.from(new Set(commands.map((s) => s.trim()).filter(Boolean)))
+    const uniq = mergeSlashCommands(commands)
     localStorage.setItem(KEY, JSON.stringify(uniq))
   } catch {
     // ignore

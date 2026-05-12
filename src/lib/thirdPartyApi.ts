@@ -2,7 +2,9 @@ import {
   keychainAvailable,
   keychainDelete,
   keychainGet,
-  keychainSet
+  keychainSet,
+  readClaudeSettings,
+  writeClaudeSettings
 } from "@/lib/ipc"
 import { emitSettingsBus } from "@/lib/settingsBus"
 
@@ -106,6 +108,29 @@ const MANAGED_ENV_KEYS = [
   "CLAUDINAL_PROXY_OPUS_MODEL",
   "CLAUDINAL_PROXY_AVAILABLE_MODELS"
 ]
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function normalizeEnvRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => {
+      return typeof entry[1] === "string"
+    })
+  )
+}
+
+function hasClaudinalManagedThirdPartyEnv(
+  env: Record<string, string> | undefined
+): boolean {
+  if (!env) return false
+  return (
+    env.ANTHROPIC_AUTH_TOKEN === "claudinal-proxy" ||
+    Object.keys(env).some((key) => key.startsWith("CLAUDINAL_PROXY_"))
+  )
+}
 
 function asInputFormat(value: unknown): ProviderInputFormat {
   return value === "openai-chat-completions"
@@ -493,6 +518,30 @@ export function clearManagedClaudeEnv(
   const next = { ...(env ?? {}) }
   for (const key of MANAGED_ENV_KEYS) delete next[key]
   return next
+}
+
+/**
+ * 旧版第三方 API 会把 Claudinal 代理变量写进 ~/.claude/settings.json。
+ * 现在供应商配置只由 Claudinal 管理；这里仅在发现明确的 Claudinal 哨兵变量时清理旧残留。
+ */
+export async function cleanupManagedGlobalClaudeSettings(): Promise<boolean> {
+  const raw = await readClaudeSettings("global")
+  if (!isRecord(raw)) return false
+  const rawEnv = isRecord(raw.env) ? raw.env : {}
+  const env = normalizeEnvRecord(raw.env)
+  if (!hasClaudinalManagedThirdPartyEnv(env)) return false
+
+  const next: Record<string, unknown> = { ...raw }
+  const cleanedEnv = { ...rawEnv }
+  for (const key of MANAGED_ENV_KEYS) delete cleanedEnv[key]
+  if (Object.keys(cleanedEnv).length > 0) {
+    next.env = cleanedEnv
+  } else {
+    delete next.env
+  }
+  await writeClaudeSettings("global", next)
+  emitSettingsBus("composerPrefs")
+  return true
 }
 
 export function clearManagedModelOverrides(

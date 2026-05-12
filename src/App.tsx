@@ -60,9 +60,15 @@ import {
 } from "@/lib/collabSettings"
 import { getProjectEnv, loadProjectEnvStore } from "@/lib/projectEnv"
 import { saveMcpStatusCache } from "@/lib/mcp"
-import { saveSlashCommandsCache } from "@/lib/slashCommands"
+import {
+  mergeSlashCommands,
+  saveSlashCommandsCache,
+  slashCommandsFromSkills
+} from "@/lib/slashCommands"
+import { listSkills, type Skill } from "@/lib/plugins"
 import {
   buildClaudeEnv,
+  cleanupManagedGlobalClaudeSettings,
   loadThirdPartyApiConfig,
   loadThirdPartyApiConfigAsync,
   loadThirdPartyApiStore,
@@ -339,15 +345,20 @@ const FALLBACK_SLASH = [
 ]
 
 function findSlashCommands(
-  state: ReturnType<typeof reducerInit>
+  state: ReturnType<typeof reducerInit>,
+  installedSkillCommands: string[] = []
 ): string[] {
+  let latestSkills: string[] = []
   for (let i = state.entries.length - 1; i >= 0; i--) {
     const e = state.entries[i]
+    if (e.kind === "system_init" && e.skills?.length && latestSkills.length === 0) {
+      latestSkills = e.skills
+    }
     if (e.kind === "system_init" && e.slashCommands?.length) {
-      return e.slashCommands
+      return mergeSlashCommands(e.slashCommands, latestSkills, installedSkillCommands)
     }
   }
-  return FALLBACK_SLASH
+  return mergeSlashCommands(FALLBACK_SLASH, latestSkills, installedSkillCommands)
 }
 
 function applyComposerPatch(
@@ -455,6 +466,7 @@ export default function App() {
   const [diffInitialPath, setDiffInitialPath] = useState<string | null>(null)
   const [showCollabFlow, setShowCollabFlow] = useState(false)
   const [collabSettingsTick, setCollabSettingsTick] = useState(0)
+  const [installedSkillCommands, setInstalledSkillCommands] = useState<string[]>([])
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [pendingRemoveProjectId, setPendingRemoveProjectId] = useState<
     string | null
@@ -481,6 +493,7 @@ export default function App() {
   const settingsEntryTargetRef = useRef<ChatReturnTarget | null>(null)
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
   const collabMcpEnabledRef = useRef(false)
+  const installedSkillCommandsRef = useRef<string[]>([])
   const switchTokenRef = useRef(0)
   const pendingApiRuntimeRefreshRef = useRef(false)
   const pendingComposerRuntimeRefreshRef = useRef(false)
@@ -496,6 +509,30 @@ export default function App() {
   useEffect(() => {
     stateRef.current = state
   }, [state])
+
+  useEffect(() => {
+    installedSkillCommandsRef.current = installedSkillCommands
+  }, [installedSkillCommands])
+
+  const applyInstalledSkills = useCallback((skills: Skill[]) => {
+    const commands = slashCommandsFromSkills(skills)
+    installedSkillCommandsRef.current = commands
+    setInstalledSkillCommands(commands)
+    saveSlashCommandsCache(findSlashCommands(stateRef.current, commands))
+  }, [])
+
+  const refreshInstalledSkills = useCallback(async () => {
+    try {
+      const skills = await listSkills(project?.cwd ?? null)
+      applyInstalledSkills(skills)
+    } catch (error) {
+      console.warn("读取技能列表失败:", error)
+    }
+  }, [applyInstalledSkills, project?.cwd])
+
+  useEffect(() => {
+    void refreshInstalledSkills()
+  }, [refreshInstalledSkills])
 
   useEffect(() => {
     sessionComposerRef.current = sessionComposer
@@ -860,6 +897,12 @@ export default function App() {
     // 一次性迁移：旧版 localStorage 里的明文代理密码 / 第三方 API Key → keychain（keychain 可用时静默执行）
     void migrateLegacyProxyPassword()
     void migrateLegacyThirdPartyApiKeys()
+    cleanupManagedGlobalClaudeSettings().catch((error) => {
+      console.error("清理旧版第三方 API 全局配置失败:", error)
+      toast.warning("旧版第三方 API 全局配置清理失败", {
+        description: String(error)
+      })
+    })
     loadGlobalDefault()
       .then((p) => {
         setGlobalDefault(p)
@@ -1210,10 +1253,23 @@ export default function App() {
             }
           }
           const slash = (ev as { slash_commands?: unknown }).slash_commands
-          if (Array.isArray(slash)) {
-            saveSlashCommandsCache(
-              (slash as unknown[]).filter(
+          const skills = (ev as { skills?: unknown }).skills
+          const eventSlashCommands = Array.isArray(slash)
+            ? (slash as unknown[]).filter(
                 (s): s is string => typeof s === "string"
+              )
+            : []
+          const eventSkillCommands = Array.isArray(skills)
+            ? (skills as unknown[]).filter(
+                (s): s is string => typeof s === "string"
+              )
+            : []
+          if (eventSlashCommands.length > 0 || eventSkillCommands.length > 0) {
+            saveSlashCommandsCache(
+              mergeSlashCommands(
+                eventSlashCommands,
+                eventSkillCommands,
+                installedSkillCommandsRef.current
               )
             )
           }
@@ -1966,7 +2022,7 @@ export default function App() {
     gitStatus?.changedFiles ?? 0,
     diffPatch?.files.length ?? 0
   )
-  const slashCommands = findSlashCommands(state)
+  const slashCommands = findSlashCommands(state, installedSkillCommands)
   const activePermissionRequest =
     permissionRequests.find((request) => request.session_id === sessionId) ??
     null
@@ -2130,6 +2186,7 @@ export default function App() {
                 <PluginsView
                   cwd={project?.cwd ?? null}
                   onBack={returnToChat}
+                  onSkillsChanged={applyInstalledSkills}
                 />
               </Suspense>
             ) : showHistory ? (

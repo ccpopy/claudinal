@@ -152,11 +152,13 @@ pub async fn spawn_session(
     }
     let mut env = env.unwrap_or_default();
     let env_remove = Vec::new();
+    let mut use_runtime_claude_settings = false;
     if let Some(proxy_config) = take_proxy_config(&mut env, effort.as_deref()) {
         let local_base_url = start_api_proxy(proxy_config).await?;
         env.insert("ANTHROPIC_BASE_URL".into(), local_base_url);
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
         env.remove("ANTHROPIC_API_KEY");
+        use_runtime_claude_settings = true;
     }
     bridge_socks_proxy_env(&mut env).await?;
     if let Some(model) = model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -184,6 +186,11 @@ pub async fn spawn_session(
                 });
         }
     }
+    let settings_json = if use_runtime_claude_settings {
+        runtime_claude_settings_json(&env)?
+    } else {
+        None
+    };
     let (permission_prompt_tool, permission_mcp_config) = if permission_mcp_enabled.unwrap_or(false)
     {
         env.extend(permission_bridge.env(app.clone()).await?);
@@ -235,6 +242,7 @@ pub async fn spawn_session(
         env_remove,
         permission_prompt_tool,
         mcp_config,
+        settings_json,
     };
     manager.spawn(app, opts).await
 }
@@ -347,6 +355,43 @@ fn write_runtime_mcp_config_file(config: &Value) -> Result<String> {
     let text = serde_json::to_string_pretty(config)?;
     std::fs::write(&path, text).map_err(Error::from)?;
     Ok(path.display().to_string())
+}
+
+const RUNTIME_CLAUDE_SETTINGS_ENV_KEYS: &[&str] = &[
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
+];
+
+fn runtime_claude_settings_json(
+    env: &std::collections::HashMap<String, String>,
+) -> Result<Option<String>> {
+    let mut runtime_env = std::collections::BTreeMap::new();
+    for key in RUNTIME_CLAUDE_SETTINGS_ENV_KEYS {
+        let Some(value) = env.get(*key) else {
+            continue;
+        };
+        if value.trim().is_empty() {
+            continue;
+        }
+        runtime_env.insert(*key, value.clone());
+    }
+    if runtime_env.is_empty() {
+        return Ok(None);
+    }
+    let settings = serde_json::json!({ "env": runtime_env });
+    serde_json::to_string(&settings)
+        .map(Some)
+        .map_err(Error::from)
 }
 
 fn take_proxy_config(
@@ -2382,6 +2427,49 @@ fn text_lines(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_claude_settings_contains_only_cli_env_overrides() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:1234".into());
+        env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
+        env.insert("CLAUDINAL_PROXY_API_KEY".into(), "sk-secret".into());
+        env.insert("HTTP_PROXY".into(), "http://proxy.local:8080".into());
+        env.insert("ANTHROPIC_MODEL".into(), "provider-main".into());
+
+        let raw = runtime_claude_settings_json(&env)
+            .expect("settings json")
+            .expect("settings present");
+        let value: Value = serde_json::from_str(&raw).expect("valid json");
+        let env = value
+            .get("env")
+            .and_then(Value::as_object)
+            .expect("env object");
+
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(Value::as_str),
+            Some("http://127.0.0.1:1234")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+            Some("claudinal-proxy")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_MODEL").and_then(Value::as_str),
+            Some("provider-main")
+        );
+        assert!(env.get("CLAUDINAL_PROXY_API_KEY").is_none());
+        assert!(env.get("HTTP_PROXY").is_none());
+    }
+
+    #[test]
+    fn runtime_claude_settings_skips_empty_env_values() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".into(), "   ".into());
+
+        let raw = runtime_claude_settings_json(&env).expect("settings json");
+        assert!(raw.is_none());
+    }
 
     #[test]
     fn parse_git_patch_extracts_file_hunks() {
