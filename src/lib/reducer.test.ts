@@ -390,6 +390,43 @@ describe("reducer.tool_use_result attachment", () => {
   })
 })
 
+describe("reducer.local queue metadata", () => {
+  it("tracks queued followups and clears metadata when delivered", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "user_local",
+      localId: "local-followup",
+      blocks: [{ type: "text", text: "继续补充" }],
+      queued: true,
+      queueMode: "followup",
+      queueStatus: "pending"
+    })
+    let msg = lastMessage(s)
+    expect(msg.queued).toBe(true)
+    expect(msg.queueMode).toBe("followup")
+    expect(msg.queueStatus).toBe("pending")
+
+    s = reduce(s, {
+      kind: "update_local_queue",
+      localId: "local-followup",
+      queueMode: "guide",
+      queueStatus: "sent"
+    })
+    msg = lastMessage(s)
+    expect(msg.queueMode).toBe("guide")
+    expect(msg.queueStatus).toBe("sent")
+
+    s = reduce(s, {
+      kind: "unqueue_local",
+      localId: "local-followup"
+    })
+    msg = lastMessage(s)
+    expect(msg.queued).toBe(false)
+    expect(msg.queueMode).toBeUndefined()
+    expect(msg.queueStatus).toBeUndefined()
+  })
+})
+
 describe("reducer.unknown preservation", () => {
   it("keeps unknown event types as raw entries instead of dropping them", () => {
     let s = init()

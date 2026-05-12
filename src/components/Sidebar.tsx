@@ -33,6 +33,7 @@ import {
   type SessionMeta
 } from "@/lib/ipc"
 import type { Project } from "@/lib/projects"
+import { isEditableShortcutTarget } from "@/lib/keyboard"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
 import { listArchived, type ArchivedRef } from "@/lib/archivedSessions"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
@@ -330,6 +331,7 @@ export function Sidebar({
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (isEditableShortcutTarget(event.target)) return
       if (!(event.ctrlKey || event.metaKey)) return
       if (event.key.toLowerCase() === "g") {
         event.preventDefault()

@@ -114,6 +114,7 @@ import {
   type NetworkErrorTopic
 } from "@/lib/networkErrorHints"
 import { isAskUserQuestionRequest } from "@/lib/askUserQuestion"
+import { isEditableShortcutTarget } from "@/lib/keyboard"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -229,7 +230,14 @@ function SidebarLoader() {
   )
 }
 
-type QueuedInput = { localId: string }
+type QueuedInputMode = "guide" | "followup"
+type QueuedInput = {
+  localId: string
+  mode: QueuedInputMode
+  text: string
+  images: ImagePayload[]
+  cliBlocks: Array<Record<string, unknown>>
+}
 type ReturnView = "chat" | "plugins" | "history"
 type ChatReturnTarget =
   | { kind: "project"; project: Project }
@@ -464,6 +472,7 @@ export default function App() {
   const [thirdPartyApiVersion, setThirdPartyApiVersion] = useState(0)
   const [oauthUsage, setOauthUsage] = useState<OauthUsage | null>(null)
   const [draft, setDraft] = useState("")
+  const [draftImages, setDraftImages] = useState<ImagePayload[]>([])
   const [pinTick, setPinTick] = useState(0)
   const [titleTick, setTitleTick] = useState(0)
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
@@ -678,6 +687,22 @@ export default function App() {
     }
   }, [])
 
+  const restoreQueuedInputsToDraft = useCallback((items: QueuedInput[]) => {
+    if (items.length === 0) return
+    const text = items
+      .map((item) => item.text.trim())
+      .filter(Boolean)
+      .join("\n\n")
+    const images = items.flatMap((item) => item.images)
+    if (text) setDraft(text)
+    setDraftImages(images)
+    toast.info(
+      items.length === 1
+        ? "已把队列消息取回到聊天框"
+        : `已把 ${items.length} 条队列消息取回到聊天框`
+    )
+  }, [])
+
   const closeRunningSession = useCallback(
     async (
       runtimeId: string,
@@ -816,6 +841,8 @@ export default function App() {
   const stopActiveSession = useCallback(async () => {
     const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
     if (runtimeId) {
+      const run = runningSessionsRef.current.get(runtimeId)
+      if (run) restoreQueuedInputsToDraft(run.queuedInputs)
       await closeRunningSession(runtimeId)
       return
     }
@@ -824,7 +851,7 @@ export default function App() {
     setSessionId(null)
     setStreaming(false)
     collabMcpEnabledRef.current = false
-  }, [closeRunningSession])
+  }, [closeRunningSession, restoreQueuedInputsToDraft])
 
   const findRunningSession = useCallback(
     (p: Project, jsonlSessionId: string): RunningSession | null => {
@@ -986,6 +1013,7 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (isEditableShortcutTarget(e.target)) return
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
         e.preventDefault()
         returnViewRef.current = "chat"
@@ -1116,6 +1144,37 @@ export default function App() {
   const teardown = useCallback(async () => {
     await stopActiveSession()
   }, [stopActiveSession])
+
+  const sendQueuedFollowup = useCallback(
+    async (run: RunningSession): Promise<boolean> => {
+      const item = run.queuedInputs.find((queued) => queued.mode === "followup")
+      if (!item) return false
+      await beginRunReview(run)
+      try {
+        await sendUserMessage(run.runtimeId, item.cliBlocks)
+        run.queuedInputs = run.queuedInputs.filter(
+          (queued) => queued.localId !== item.localId
+        )
+        applyRunningAction(run, {
+          kind: "unqueue_local",
+          localId: item.localId
+        })
+        setRunningSessionStreaming(run, true)
+        setRunningTick((tick) => tick + 1)
+        return true
+      } catch (error) {
+        await discardRunReview(run)
+        toast.error(`发送跟进消息失败: ${String(error)}`)
+        return false
+      }
+    },
+    [
+      applyRunningAction,
+      beginRunReview,
+      discardRunReview,
+      setRunningSessionStreaming
+    ]
+  )
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
     if (!project) {
@@ -1307,18 +1366,22 @@ export default function App() {
               reportNetworkError(run.runtimeId, "result", text)
             }
           }
-          const queued = run.queuedInputs
-          if (queued.length > 0) {
-            for (const item of queued) {
+          const guideInputs = run.queuedInputs.filter(
+            (item) => item.mode === "guide"
+          )
+          if (guideInputs.length > 0) {
+            for (const item of guideInputs) {
               applyRunningAction(run, {
                 kind: "unqueue_local",
                 localId: item.localId
               })
             }
-            run.queuedInputs = []
+            run.queuedInputs = run.queuedInputs.filter(
+              (item) => item.mode !== "guide"
+            )
           }
           setRunningSessionStreaming(run, false)
-          void finishRunReview(run)
+          void finishRunReview(run).then(() => sendQueuedFollowup(run))
           setSidebarRefreshKey((k) => k + 1)
           if (activeRuntimeIdRef.current === run.runtimeId) {
             gitWorktreeStatus(run.project.cwd)
@@ -1402,6 +1465,7 @@ export default function App() {
     applyRunningAction,
     setRunningSessionStreaming,
     finishRunReview,
+    sendQueuedFollowup,
     closeRunningSession,
     reportNetworkError,
     refreshActiveThirdPartyRuntime,
@@ -1466,7 +1530,11 @@ export default function App() {
   }, [showDiff, refreshWorktreeDiff, sidebarRefreshKey])
 
   const send = useCallback(
-    async (text: string, images: ImagePayload[]) => {
+    async (
+      text: string,
+      images: ImagePayload[],
+      options: { mode?: QueuedInputMode } = {}
+    ) => {
       // 客户端可处理的斜杠命令直接拦截，不投递给 CLI
       const trimmed = text.trim()
       if (trimmed === "/clear" || trimmed === "/reset") {
@@ -1510,6 +1578,7 @@ export default function App() {
       }
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
       const blocks = buildCliBlocks(cliText, images)
+      const mode = options.mode ?? "guide"
 
       if (streaming) {
         const id = sessionIdRef.current ?? (await ensureSession())
@@ -1517,21 +1586,40 @@ export default function App() {
         if (!id) {
           return
         }
+        if (!run && mode === "followup") {
+          toast.error("无法排入跟进消息：当前运行会话不存在")
+          return
+        }
+        const queuedInput: QueuedInput = {
+          localId,
+          mode,
+          text,
+          images,
+          cliBlocks: blocks
+        }
         if (run) {
           applyRunningAction(run, {
             kind: "user_local",
             blocks: uiBlocks,
             queued: true,
+            queueMode: mode,
+            queueStatus: mode === "guide" ? "sent" : "pending",
             localId
           })
-          run.queuedInputs = [...run.queuedInputs, { localId }]
+          run.queuedInputs = [...run.queuedInputs, queuedInput]
         } else {
           dispatch({
             kind: "user_local",
             blocks: uiBlocks,
             queued: true,
+            queueMode: mode,
+            queueStatus: mode === "guide" ? "sent" : "pending",
             localId
           })
+        }
+        if (mode === "followup") {
+          if (collaborationMode) setCollaborationMode(false)
+          return
         }
         try {
           await sendUserMessage(id, blocks)
@@ -1589,6 +1677,84 @@ export default function App() {
   const stop = useCallback(async () => {
     await teardown()
   }, [teardown])
+
+  const findQueuedInput = useCallback((localId: string) => {
+    for (const run of runningSessionsRef.current.values()) {
+      const item = run.queuedInputs.find((queued) => queued.localId === localId)
+      if (item) return { run, item }
+    }
+    return null
+  }, [])
+
+  const recallQueuedInput = useCallback(
+    (localId: string) => {
+      const found = findQueuedInput(localId)
+      if (!found) return
+      if (found.item.mode === "guide") {
+        toast.warning("引导消息已经送达 Claude；请中止当前过程后取回")
+        return
+      }
+      found.run.queuedInputs = found.run.queuedInputs.filter(
+        (item) => item.localId !== localId
+      )
+      applyRunningAction(found.run, { kind: "drop_local", localId })
+      restoreQueuedInputsToDraft([found.item])
+      setRunningTick((tick) => tick + 1)
+    },
+    [applyRunningAction, findQueuedInput, restoreQueuedInputsToDraft]
+  )
+
+  const deleteQueuedInput = useCallback(
+    (localId: string) => {
+      const found = findQueuedInput(localId)
+      if (!found) return
+      if (found.item.mode === "guide") {
+        toast.warning("引导消息已经送达 Claude，不能从本地删除")
+        return
+      }
+      found.run.queuedInputs = found.run.queuedInputs.filter(
+        (item) => item.localId !== localId
+      )
+      applyRunningAction(found.run, { kind: "drop_local", localId })
+      setRunningTick((tick) => tick + 1)
+    },
+    [applyRunningAction, findQueuedInput]
+  )
+
+  const promoteQueuedInputToGuide = useCallback(
+    async (localId: string) => {
+      const found = findQueuedInput(localId)
+      if (!found) return
+      if (found.item.mode === "guide") return
+      try {
+        await sendUserMessage(found.run.runtimeId, found.item.cliBlocks)
+        found.item.mode = "guide"
+        applyRunningAction(found.run, {
+          kind: "update_local_queue",
+          localId,
+          queueMode: "guide",
+          queueStatus: "sent"
+        })
+        setRunningTick((tick) => tick + 1)
+      } catch (error) {
+        toast.error(`发送引导消息失败: ${String(error)}`)
+      }
+    },
+    [applyRunningAction, findQueuedInput]
+  )
+
+  const recallLatestQueuedInput = useCallback(() => {
+    const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+    const item = run
+      ? [...run.queuedInputs].reverse().find((queued) => queued.mode === "followup")
+      : null
+    if (!item) {
+      toast.info("没有可取回的跟进消息")
+      return
+    }
+    recallQueuedInput(item.localId)
+  }, [recallQueuedInput])
 
   const handlePermissionModeChange = useCallback(
     (mode: AppSettings["defaultPermissionMode"]) => {
@@ -1885,6 +2051,7 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (isEditableShortcutTarget(e.target)) return
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
         e.preventDefault()
         newConversationFromChrome()
@@ -2259,12 +2426,15 @@ export default function App() {
                     project={project}
                     onAddProject={() => setShowAdd(true)}
                     suggestions={project ? SUGGESTIONS : undefined}
-                    onPickSuggestion={(s) => setDraft(s)}
+                    onPickSuggestion={(s) => {
+                      setDraft(s)
+                      setDraftImages([])
+                    }}
                   />
                 </div>
                 {project && (
-	                  <div className="shrink-0 px-6 pb-6">
-	                    <div className="mx-auto max-w-3xl space-y-2">
+                  <div className="shrink-0 px-6 pb-6">
+                    <div className="mx-auto max-w-3xl space-y-2">
                         {projectActions.length > 0 && (
                           <Suspense fallback={null}>
                             <ProjectActionsBar
@@ -2273,64 +2443,72 @@ export default function App() {
                             />
                           </Suspense>
                         )}
-		                      <Suspense fallback={<ComposerLoader />}>
-		                        <Composer
-	                          onSend={send}
-	                          onStop={stop}
-	                          streaming={streaming}
-	                          disabled={!cliPath}
-	                          centered
-	                          externalText={draft}
-	                          onExternalTextConsumed={() => setDraft("")}
-	                          cwd={project.cwd}
-	                          slashCommands={slashCommands}
-	                          planMode={planMode}
-	                          onPlanModeChange={handlePlanModeChange}
-	                          permissionMode={sessionPermissionMode}
-	                          onPermissionModeChange={handlePermissionModeChange}
-	                          gitStatus={gitStatus}
-	                          onGitStatusRefresh={refreshGitStatus}
-	                          onOpenPlugins={openPlugins}
+                      <Suspense fallback={<ComposerLoader />}>
+                        <Composer
+                          onSend={send}
+                          onStop={stop}
+                            onRecallQueued={recallLatestQueuedInput}
+                          streaming={streaming}
+                          disabled={!cliPath}
+                          centered
+                          externalText={draft}
+                            externalImages={draftImages}
+                          onExternalTextConsumed={() => {
+                              setDraft("")
+                              setDraftImages([])
+                            }}
+                          cwd={project.cwd}
+                          slashCommands={slashCommands}
+                          planMode={planMode}
+                          onPlanModeChange={handlePlanModeChange}
+                          permissionMode={sessionPermissionMode}
+                          onPermissionModeChange={handlePermissionModeChange}
+                          gitStatus={gitStatus}
+                          onGitStatusRefresh={refreshGitStatus}
+                          onOpenPlugins={openPlugins}
                             collaborationMode={collaborationMode}
                             onCollaborationModeChange={handleCollaborationModeChange}
-	                          oauthUsage={oauthUsage}
-	                          model={composerPrefs.model}
-	                          effort={composerPrefs.effort}
-	                          onModelEffortChange={handleModelEffortChange}
-	                          modelOptions={modelOptions}
-	                          openaiCompatibleProvider={openaiCompatibleProvider}
-	                          globalDefault={globalDefault}
-	                          sessionPrefs={sessionComposer}
-	                        />
-	                      </Suspense>
-	                      <div className="flex justify-start">
-	                        <Suspense fallback={null}>
-	                          <ProjectPicker
-	                            projects={projects}
-	                            current={project}
-	                            onSelect={(p) => {
-	                              if (p.id !== project.id) switchProject(p)
-	                            }}
-	                            onAdd={() => setShowAdd(true)}
-	                            onClear={clearProject}
-	                          />
-	                        </Suspense>
-	                      </div>
+                          oauthUsage={oauthUsage}
+                          model={composerPrefs.model}
+                          effort={composerPrefs.effort}
+                          onModelEffortChange={handleModelEffortChange}
+                          modelOptions={modelOptions}
+                          openaiCompatibleProvider={openaiCompatibleProvider}
+                          globalDefault={globalDefault}
+                          sessionPrefs={sessionComposer}
+                        />
+                      </Suspense>
+                      <div className="flex justify-start">
+                        <Suspense fallback={null}>
+                          <ProjectPicker
+                            projects={projects}
+                            current={project}
+                            onSelect={(p) => {
+                              if (p.id !== project.id) switchProject(p)
+                            }}
+                            onAdd={() => setShowAdd(true)}
+                            onClear={clearProject}
+                          />
+                        </Suspense>
+                      </div>
                     </div>
                   </div>
                 )}
               </div>
             ) : (
-	              <>
-	                <Suspense fallback={<PaneLoader label="正在加载会话…" />}>
-	                  <MessageStream
-	                    key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
-	                    entries={state.entries}
-	                    streaming={streaming}
+              <>
+                <Suspense fallback={<PaneLoader label="正在加载会话…" />}>
+                  <MessageStream
+                    key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
+                    entries={state.entries}
+                    streaming={streaming}
                       reviews={reviewDiffs}
                       onShowDiff={() => setShowDiff(true)}
-	                  />
-	                </Suspense>
+                      onQueuedGuide={promoteQueuedInputToGuide}
+                      onQueuedRecall={recallQueuedInput}
+                      onQueuedDelete={deleteQueuedInput}
+                  />
+                </Suspense>
                 {project && projectActions.length > 0 && (
                   <div className="shrink-0 bg-background px-6 pt-2">
                     <div className="mx-auto max-w-3xl">
@@ -2359,14 +2537,19 @@ export default function App() {
                     />
                   </Suspense>
                 </div>
-	                <Suspense fallback={<ComposerLoader />}>
-	                  <Composer
+                <Suspense fallback={<ComposerLoader />}>
+                  <Composer
                     onSend={send}
                     onStop={stop}
+                    onRecallQueued={recallLatestQueuedInput}
                     streaming={streaming}
                     disabled={!cliPath || !project}
                     externalText={draft}
-                    onExternalTextConsumed={() => setDraft("")}
+                    externalImages={draftImages}
+                    onExternalTextConsumed={() => {
+                      setDraft("")
+                      setDraftImages([])
+                    }}
                     cwd={project?.cwd ?? null}
                     slashCommands={slashCommands}
                     planMode={planMode}

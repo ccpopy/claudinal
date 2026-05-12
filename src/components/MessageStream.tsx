@@ -16,6 +16,9 @@ interface Props {
   autoScroll?: boolean
   reviews?: ReviewRunDiff[]
   onShowDiff?: () => void
+  onQueuedGuide?: (localId: string) => void | Promise<void>
+  onQueuedRecall?: (localId: string) => void
+  onQueuedDelete?: (localId: string) => void
 }
 
 interface MsgGroup {
@@ -168,7 +171,10 @@ export function MessageStream({
   streaming,
   autoScroll = true,
   reviews = [],
-  onShowDiff
+  onShowDiff,
+  onQueuedGuide,
+  onQueuedRecall,
+  onQueuedDelete
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [pinnedToBottom, setPinnedToBottom] = useState(true)
@@ -228,7 +234,15 @@ export function MessageStream({
       <div className="flex flex-col gap-5 px-6 py-6 max-w-3xl mx-auto w-full">
         {groups.map((g) => {
           if (g.kind === "msg") {
-            return <MessageCard key={g.key} entry={g.msg} />
+            return (
+              <MessageCard
+                key={g.key}
+                entry={g.msg}
+                onQueuedGuide={onQueuedGuide}
+                onQueuedRecall={onQueuedRecall}
+                onQueuedDelete={onQueuedDelete}
+              />
+            )
           }
           if (g.kind === "run") {
             return (

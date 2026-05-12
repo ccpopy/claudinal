@@ -7,7 +7,20 @@ export interface State {
 
 export type Action =
   | { kind: "event"; event: ClaudeEvent }
-  | { kind: "user_local"; blocks: UIBlock[]; queued?: boolean; localId?: string }
+  | {
+      kind: "user_local"
+      blocks: UIBlock[]
+      queued?: boolean
+      queueMode?: UIMessage["queueMode"]
+      queueStatus?: UIMessage["queueStatus"]
+      localId?: string
+    }
+  | {
+      kind: "update_local_queue"
+      localId: string
+      queueMode?: UIMessage["queueMode"]
+      queueStatus?: UIMessage["queueStatus"]
+    }
   | { kind: "unqueue_local"; localId: string }
   | { kind: "drop_local"; localId: string }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
@@ -30,9 +43,25 @@ export function reduce(state: State, action: Action): State {
       blocks: action.blocks,
       streaming: false,
       queued: action.queued,
+      queueMode: action.queueMode,
+      queueStatus: action.queueStatus,
       ts
     }
     return { entries: [...state.entries, msg] }
+  }
+  if (action.kind === "update_local_queue") {
+    return {
+      entries: state.entries.map((entry) => {
+        if (entry.kind !== "message" || entry.id !== action.localId) {
+          return entry
+        }
+        return {
+          ...entry,
+          queueMode: action.queueMode ?? entry.queueMode,
+          queueStatus: action.queueStatus ?? entry.queueStatus
+        }
+      })
+    }
   }
   if (action.kind === "unqueue_local") {
     // 插话发送时会先挂在当前 run 中间。CLI 真正处理它后，把它挪到
@@ -54,7 +83,7 @@ export function reduce(state: State, action: Action): State {
     return {
       entries: [
         ...filtered.slice(0, insertAt),
-        { ...cur, queued: false },
+        { ...cur, queued: false, queueMode: undefined, queueStatus: undefined },
         ...filtered.slice(insertAt)
       ]
     }

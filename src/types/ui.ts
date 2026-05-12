@@ -50,6 +50,8 @@ export interface UIMessage {
   stopReason?: string | null
   streaming: boolean
   queued?: boolean
+  queueMode?: "guide" | "followup"
+  queueStatus?: "pending" | "sent"
   ts: number
   stopTs?: number
 }

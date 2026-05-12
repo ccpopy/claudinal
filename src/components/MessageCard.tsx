@@ -3,26 +3,47 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  CornerDownRight,
   Cog,
   DollarSign,
   FileWarning,
   Gauge,
   Loader2,
+  RotateCcw,
   ShieldAlert,
   Timer,
+  Trash2,
   Webhook
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { UIEntry, UIMessage } from "@/types/ui"
 import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
 
 interface Props {
   entry: UIEntry
+  onQueuedGuide?: (localId: string) => void | Promise<void>
+  onQueuedRecall?: (localId: string) => void
+  onQueuedDelete?: (localId: string) => void
 }
 
-export function MessageCard({ entry }: Props) {
-  if (entry.kind === "message") return <MessageView msg={entry} />
+export function MessageCard({
+  entry,
+  onQueuedGuide,
+  onQueuedRecall,
+  onQueuedDelete
+}: Props) {
+  if (entry.kind === "message") {
+    return (
+      <MessageView
+        msg={entry}
+        onQueuedGuide={onQueuedGuide}
+        onQueuedRecall={onQueuedRecall}
+        onQueuedDelete={onQueuedDelete}
+      />
+    )
+  }
   if (entry.kind === "system_init") return <SystemInitView e={entry} />
   if (entry.kind === "system_status") return null
   if (entry.kind === "result") return <ResultView e={entry} />
@@ -37,7 +58,17 @@ export function MessageCard({ entry }: Props) {
   return null
 }
 
-function MessageView({ msg }: { msg: UIMessage }) {
+function MessageView({
+  msg,
+  onQueuedGuide,
+  onQueuedRecall,
+  onQueuedDelete
+}: {
+  msg: UIMessage
+  onQueuedGuide?: (localId: string) => void | Promise<void>
+  onQueuedRecall?: (localId: string) => void
+  onQueuedDelete?: (localId: string) => void
+}) {
   if (msg.blocks.length === 0 && msg.streaming) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -57,10 +88,74 @@ function MessageView({ msg }: { msg: UIMessage }) {
         <BlockView key={i} role={msg.role} block={b} />
       ))}
       {msg.queued && msg.role === "user" && (
-        <div className="self-end inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-          <Clock className="size-3" />
-          <span>已交给 Claude，等待当前步骤后处理</span>
-        </div>
+        <QueuedMessageActions
+          msg={msg}
+          onQueuedGuide={onQueuedGuide}
+          onQueuedRecall={onQueuedRecall}
+          onQueuedDelete={onQueuedDelete}
+        />
+      )}
+    </div>
+  )
+}
+
+function QueuedMessageActions({
+  msg,
+  onQueuedGuide,
+  onQueuedRecall,
+  onQueuedDelete
+}: {
+  msg: UIMessage
+  onQueuedGuide?: (localId: string) => void | Promise<void>
+  onQueuedRecall?: (localId: string) => void
+  onQueuedDelete?: (localId: string) => void
+}) {
+  const isFollowup = msg.queueMode === "followup"
+  return (
+    <div className="self-end flex max-w-[80%] flex-wrap items-center justify-end gap-2 rounded-full border bg-card px-2.5 py-1 text-xs text-muted-foreground shadow-xs">
+      <span className="inline-flex min-w-0 items-center gap-1">
+        <Clock className="size-3" />
+        <span className="truncate">
+          {isFollowup
+            ? "跟进 · 当前工作完成后送达"
+            : "引导 · 当前工具完成后尽快生效"}
+        </span>
+      </span>
+      {isFollowup && (
+        <span className="inline-flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 rounded-full px-2 text-xs"
+            onClick={() => onQueuedGuide?.(msg.id)}
+          >
+            <CornerDownRight className="size-3" />
+            引导
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-6 rounded-full"
+            title="取回到聊天框"
+            aria-label="取回到聊天框"
+            onClick={() => onQueuedRecall?.(msg.id)}
+          >
+            <RotateCcw className="size-3" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-6 rounded-full"
+            title="删除队列消息"
+            aria-label="删除队列消息"
+            onClick={() => onQueuedDelete?.(msg.id)}
+          >
+            <Trash2 className="size-3" />
+          </Button>
+        </span>
       )}
     </div>
   )

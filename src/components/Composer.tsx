@@ -15,10 +15,11 @@ import {
   Bot,
   Check,
   ChevronDown,
+  Clock3,
+  CornerDownRight,
   FileText,
   GitBranch,
   Image as ImageIcon,
-  ListPlus,
   ListTodo,
   Package,
   Paperclip,
@@ -74,12 +75,18 @@ import { ImageLightbox } from "./ImageLightbox"
 import { ModelEffortPicker } from "./composer/ModelEffortPicker"
 
 interface Props {
-  onSend: (text: string, images: ImagePayload[]) => void | Promise<void>
+  onSend: (
+    text: string,
+    images: ImagePayload[],
+    options?: { mode?: "guide" | "followup" }
+  ) => void | Promise<void>
   onStop: () => void | Promise<void>
+  onRecallQueued?: () => void
   streaming: boolean
   disabled?: boolean
   centered?: boolean
   externalText?: string
+  externalImages?: ImagePayload[]
   onExternalTextConsumed?: () => void
   cwd?: string | null
   slashCommands?: string[]
@@ -237,10 +244,12 @@ function buildOutgoingText(text: string, files: TextAttachment[]) {
 export function Composer({
   onSend,
   onStop,
+  onRecallQueued,
   streaming,
   disabled,
   centered,
   externalText,
+  externalImages,
   onExternalTextConsumed,
   cwd,
   slashCommands,
@@ -375,12 +384,23 @@ export function Composer({
   }, [text])
 
   useEffect(() => {
-    if (externalText !== undefined && externalText !== "") {
-      setText(externalText)
-      onExternalTextConsumed?.()
-      requestAnimationFrame(() => ref.current?.focus())
+    const hasText = externalText !== undefined && externalText !== ""
+    const hasImages = !!externalImages && externalImages.length > 0
+    if (!hasText && !hasImages) return
+    if (hasText) setText(externalText)
+    if (hasImages) {
+      setImages(
+        externalImages.map((image, index) => ({
+          ...image,
+          id: makeId(),
+          name: `queued-image-${index + 1}`,
+          size: Math.ceil((image.data.length * 3) / 4)
+        }))
+      )
     }
-  }, [externalText, onExternalTextConsumed])
+    onExternalTextConsumed?.()
+    requestAnimationFrame(() => ref.current?.focus())
+  }, [externalImages, externalText, onExternalTextConsumed])
 
   // 打开 + 菜单时再拉一次已安装插件，避免 GUI 启动时阻塞
   useEffect(() => {
@@ -390,13 +410,14 @@ export function Composer({
       .catch(() => setInstalledPlugins([]))
   }, [plusOpen])
 
-  const send = () => {
+  const send = (mode?: "guide" | "followup") => {
     const t = text.trim()
     const outgoingText = buildOutgoingText(t, textFiles)
     if (!outgoingText && images.length === 0) return
     onSend(
       outgoingText,
-      images.map((i) => ({ data: i.data, mime: i.mime }))
+      images.map((i) => ({ data: i.data, mime: i.mime })),
+      mode ? { mode } : undefined
     )
     setText("")
     setImages([])
@@ -405,18 +426,46 @@ export function Composer({
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      e.key === "ArrowUp" &&
+      e.altKey &&
+      streaming &&
+      !e.nativeEvent.isComposing
+    ) {
+      e.preventDefault()
+      onRecallQueued?.()
+      return
+    }
+    if (
+      e.key === "Enter" &&
+      e.altKey &&
+      !e.shiftKey &&
+      streaming &&
+      !e.nativeEvent.isComposing
+    ) {
+      e.preventDefault()
+      send("followup")
+      return
+    }
     if (trigger && items.length > 0) {
-      if (e.key === "ArrowDown") {
+      if (e.key === "ArrowDown" && !e.altKey) {
         e.preventDefault()
         setActiveIdx((i) => (i + 1) % items.length)
         return
       }
-      if (e.key === "ArrowUp") {
+      if (e.key === "ArrowUp" && !e.altKey) {
         e.preventDefault()
         setActiveIdx((i) => (i - 1 + items.length) % items.length)
         return
       }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+      if (
+        e.key === "Tab" ||
+        (e.key === "Enter" &&
+          !e.shiftKey &&
+          !e.altKey &&
+          !e.ctrlKey &&
+          !e.metaKey)
+      ) {
         e.preventDefault()
         applySuggestion(activeIdx)
         return
@@ -428,9 +477,16 @@ export function Composer({
         return
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.nativeEvent.isComposing
+    ) {
       e.preventDefault()
-      send()
+      send("guide")
     } else if (e.key === "Escape" && streaming) {
       e.preventDefault()
       onStop()
@@ -785,17 +841,41 @@ export function Composer({
                   <Square fill="currentColor" className="size-3" />
                 </Button>
               )}
+              {streaming && (
+                <Button
+                  onClick={() => send("followup")}
+                  disabled={disabled || !canSend}
+                  variant="outline"
+                  size="sm"
+                  aria-label="排入跟进消息"
+                  title="排入跟进消息，当前工作全部完成后送达 (Alt+Enter)"
+                  className="h-8 rounded-lg px-2.5 text-xs"
+                >
+                  <Clock3 className="size-3.5" />
+                  跟进
+                </Button>
+              )}
               <Button
-                onClick={send}
+                onClick={() => send(streaming ? "guide" : undefined)}
                 disabled={disabled || !canSend}
                 variant={streaming ? "secondary" : "default"}
-                size="icon"
-                aria-label={streaming ? "交给 Claude 排队" : "发送"}
-                title={streaming ? "交给 Claude 排队" : "发送"}
-                className="size-8 rounded-lg shadow-sm"
+                size={streaming ? "sm" : "icon"}
+                aria-label={streaming ? "发送引导消息" : "发送"}
+                title={
+                  streaming
+                    ? "发送引导消息，当前工具完成后尽快送达 (Enter)"
+                    : "发送"
+                }
+                className={cn(
+                  "h-8 rounded-lg shadow-sm",
+                  streaming ? "px-2.5 text-xs" : "w-8"
+                )}
               >
                 {streaming ? (
-                  <ListPlus className="size-4" />
+                  <>
+                    <CornerDownRight className="size-3.5" />
+                    引导
+                  </>
                 ) : (
                   <ArrowUp className="size-4" />
                 )}
