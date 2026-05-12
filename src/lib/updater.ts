@@ -18,6 +18,7 @@ let checkInFlight = false
 let installInFlight = false
 let runtimeInfoCache: AppRuntimeInfo | null = null
 const RELEASE_TAG_URL = "https://github.com/ccpopy/claudinal/releases/tag"
+const COMPACT_UPDATE_ACTION_BUTTON_STYLE = { marginLeft: 4, marginRight: 0 }
 
 async function readRuntimeInfo(): Promise<AppRuntimeInfo | null> {
   if (runtimeInfoCache) return runtimeInfoCache
@@ -91,7 +92,8 @@ export async function checkForAppUpdate(options: CheckOptions = {}): Promise<Upd
         onClick: () => {
           void installAppUpdate(update)
         }
-      }
+      },
+      actionButtonStyle: COMPACT_UPDATE_ACTION_BUTTON_STYLE
     })
     return update
   } catch (error) {
