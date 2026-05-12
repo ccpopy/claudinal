@@ -113,6 +113,7 @@ import {
   detectNetworkError,
   type NetworkErrorTopic
 } from "@/lib/networkErrorHints"
+import { isAskUserQuestionRequest } from "@/lib/askUserQuestion"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -170,6 +171,11 @@ const RunStatusStrip = lazy(() =>
 const PermissionDialog = lazy(() =>
   import("@/components/PermissionDialog").then((m) => ({
     default: m.PermissionDialog
+  }))
+)
+const UserInputDialog = lazy(() =>
+  import("@/components/UserInputDialog").then((m) => ({
+    default: m.UserInputDialog
   }))
 )
 const ProjectPicker = lazy(() =>
@@ -2026,6 +2032,14 @@ export default function App() {
   const activePermissionRequest =
     permissionRequests.find((request) => request.session_id === sessionId) ??
     null
+  const activeUserInputRequest =
+    activePermissionRequest && isAskUserQuestionRequest(activePermissionRequest)
+      ? activePermissionRequest
+      : null
+  const activeToolPermissionRequest =
+    activePermissionRequest && !activeUserInputRequest
+      ? activePermissionRequest
+      : null
   void titleTick
 
   const handleModelEffortChange = useCallback(
@@ -2478,10 +2492,18 @@ export default function App() {
             />
           </Suspense>
         )}
-        {activePermissionRequest && (
+        {activeUserInputRequest && (
+          <Suspense fallback={null}>
+            <UserInputDialog
+              request={activeUserInputRequest}
+              onSettled={settlePermissionRequest}
+            />
+          </Suspense>
+        )}
+        {activeToolPermissionRequest && (
           <Suspense fallback={null}>
             <PermissionDialog
-              request={activePermissionRequest}
+              request={activeToolPermissionRequest}
               onSettled={settlePermissionRequest}
             />
           </Suspense>
