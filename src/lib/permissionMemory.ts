@@ -18,6 +18,8 @@ export interface PermissionMemoryCategory {
   id: string
   label: string
   description: string
+  scope: string
+  risk: string
 }
 
 interface Store {
@@ -281,7 +283,11 @@ function classifyPackageManagerCommand(
   return {
     id: "bash:project-checks",
     label: "Bash 项目检查/构建命令",
-    description: "允许常见的 build、test、check、lint、typecheck 命令"
+    description: "允许常见的 build、test、check、lint、typecheck 命令",
+    scope:
+      "npm、pnpm、yarn、bun 的 build/test/check/lint/typecheck，以及 cargo build/check/clippy/test。",
+    risk:
+      "项目脚本可能写入缓存、生成产物或更新测试快照；只在信任当前项目脚本时启用。"
   }
 }
 
@@ -293,7 +299,11 @@ function classifyCargoCommand(tokens: string[]): PermissionMemoryCategory | null
   return {
     id: "bash:project-checks",
     label: "Bash 项目检查/构建命令",
-    description: "允许常见的 build、test、check、lint、typecheck 命令"
+    description: "允许常见的 build、test、check、lint、typecheck 命令",
+    scope:
+      "npm、pnpm、yarn、bun 的 build/test/check/lint/typecheck，以及 cargo build/check/clippy/test。",
+    risk:
+      "项目脚本可能写入缓存、生成产物或更新测试快照；只在信任当前项目脚本时启用。"
   }
 }
 
@@ -308,7 +318,9 @@ function classifyGitReadCommand(
   return {
     id: "bash:git-read",
     label: "Bash Git 只读查询命令",
-    description: "允许 git status、diff、log、show 等只读查询"
+    description: "允许 git status、diff、log、show 等只读查询",
+    scope: "git status、diff、log、show、branch 列表、remote 查询等只读查询。",
+    risk: "不会覆盖 git remote add、git branch -D、git diff --output 等会改仓库或写文件的命令。"
   }
 }
 
@@ -367,7 +379,9 @@ function classifyFileReadCommand(
   return {
     id: "bash:file-read",
     label: "Bash 文件只读查看命令",
-    description: "允许 ls、cat、rg、grep、find 等只读查看"
+    description: "允许 ls、cat、rg、grep、find 等只读查看",
+    scope: "ls、cat、rg、grep、head、tail、wc、find 等文件查看命令。",
+    risk: "find -delete、find -exec 等可能修改文件或执行命令的形式不会归类。"
   }
 }
 

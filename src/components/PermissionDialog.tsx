@@ -123,6 +123,24 @@ export function PermissionDialog({ request, onSettled }: Props) {
               <div className="text-xs text-muted-foreground mb-1">参数</div>
               <ToolInputView input={request.request.input} />
             </div>
+            {canRememberCategory && permissionCategory && (
+              <div className="rounded-md border bg-muted/30 px-3 py-2">
+                <div className="mb-1 text-xs text-muted-foreground">
+                  可记住的权限分类
+                </div>
+                <div className="font-medium">{permissionCategory.label}</div>
+                <div className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
+                  <div>
+                    <span className="font-medium text-foreground">范围：</span>
+                    {permissionCategory.scope}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">风险：</span>
+                    {permissionCategory.risk}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -208,7 +226,6 @@ export function PermissionDialog({ request, onSettled }: Props) {
               <Button
                 type="button"
                 variant="outline"
-                title={permissionCategory?.description}
                 onClick={() => {
                   if (!request) return
                   try {
@@ -221,7 +238,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
                 }}
                 disabled={!request || busy}
               >
-                以后允许此类命令
+                以后允许此分类
               </Button>
             )}
             {canRememberExact && (
