@@ -100,7 +100,11 @@ export function UserInputDialog({ request, onSettled }: Props) {
         if (!open && request && !busy) decline()
       }}
     >
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
+      <DialogContent
+        className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
+        onInteractOutside={(event) => event.preventDefault()}
+        onPointerDownOutside={(event) => event.preventDefault()}
+      >
         <DialogHeader className="shrink-0 pr-6">
           <DialogTitle className="flex items-center gap-2">
             <CircleHelp className="size-5 text-primary" />

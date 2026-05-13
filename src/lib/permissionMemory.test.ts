@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { PermissionRequestPayload } from "./ipc"
 import {
+  canRememberCategoryPermission,
   canRememberExactPermission,
+  classifyPermissionRequestCategory,
   findPermissionMemoryMatch,
+  rememberCategoryPermissionRequest,
   rememberExactPermissionRequest
 } from "./permissionMemory"
 
@@ -70,5 +73,90 @@ describe("permissionMemory", () => {
       }
     ]
     expect(canRememberExactPermission(payload)).toBe(false)
+  })
+
+  it("remembers project check command categories in the same cwd", () => {
+    const payload = request("pnpm build")
+    expect(classifyPermissionRequestCategory(payload)?.id).toBe(
+      "bash:project-checks"
+    )
+    expect(canRememberCategoryPermission(payload)).toBe(true)
+    rememberCategoryPermissionRequest(payload)
+
+    expect(findPermissionMemoryMatch(request("pnpm test"))?.kind).toBe(
+      "category"
+    )
+    expect(findPermissionMemoryMatch(request("pnpm run test"))?.kind).toBe(
+      "category"
+    )
+    expect(findPermissionMemoryMatch(request("cargo check"))?.kind).toBe(
+      "category"
+    )
+    expect(
+      findPermissionMemoryMatch(request("pnpm test", "F:\\project\\other"))
+    ).toBeNull()
+  })
+
+  it("does not offer category memory when Claude provides an allow rule", () => {
+    const payload = request("pnpm build")
+    payload.request.permission_suggestions = [
+      {
+        type: "addRules",
+        behavior: "allow",
+        rules: [{ ruleContent: "Bash(pnpm build)" }]
+      }
+    ]
+
+    expect(canRememberCategoryPermission(payload)).toBe(false)
+  })
+
+  it("offers category memory for MCP requests because Claude project rules cannot be updated", () => {
+    const payload = request("pnpm build")
+    payload.transport = "mcp"
+    payload.request.permission_suggestions = [
+      {
+        type: "addRules",
+        behavior: "allow",
+        rules: [{ ruleContent: "Bash(pnpm build)" }]
+      }
+    ]
+
+    expect(canRememberCategoryPermission(payload)).toBe(true)
+  })
+
+  it("does not categorize chained or destructive-looking commands", () => {
+    expect(
+      classifyPermissionRequestCategory(request("pnpm test && rm -rf dist"))
+    ).toBeNull()
+    expect(
+      classifyPermissionRequestCategory(request("git branch -D stale"))
+    ).toBeNull()
+    expect(
+      classifyPermissionRequestCategory(request("git remote add origin repo"))
+    ).toBeNull()
+    expect(
+      classifyPermissionRequestCategory(request("git diff --output=patch.txt"))
+    ).toBeNull()
+    expect(
+      classifyPermissionRequestCategory(request("find . -delete"))
+    ).toBeNull()
+    expect(
+      classifyPermissionRequestCategory(request("find . -exec rm {} ;"))
+    ).toBeNull()
+  })
+
+  it("categorizes read-only git and file inspection commands", () => {
+    expect(classifyPermissionRequestCategory(request("git status"))?.id).toBe(
+      "bash:git-read"
+    )
+    expect(classifyPermissionRequestCategory(request("git remote -v"))?.id).toBe(
+      "bash:git-read"
+    )
+    expect(
+      classifyPermissionRequestCategory(request("git remote show origin"))?.id
+    ).toBe("bash:git-read")
+    expect(classifyPermissionRequestCategory(request("rg Permission"))?.id).toBe(
+      "bash:file-read"
+    )
   })
 })

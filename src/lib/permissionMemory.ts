@@ -1,14 +1,23 @@
 import type { PermissionRequestPayload } from "@/lib/ipc"
 
 const KEY = "claudinal.permission-memory.v1"
+const UNSAFE_CATEGORY_COMMAND_PATTERN = /(\|\||&&|[;|<>`]|[$]\()/
 
 export interface PermissionMemoryRule {
   id: string
   cwd: string
   toolName: string
-  command: string
+  kind: "exact" | "category"
+  command?: string
+  category?: string
   createdAt: number
   label: string
+}
+
+export interface PermissionMemoryCategory {
+  id: string
+  label: string
+  description: string
 }
 
 interface Store {
@@ -36,7 +45,10 @@ function loadStore(): Store {
     const parsed = JSON.parse(raw) as Partial<Store>
     return {
       rules: Array.isArray(parsed.rules)
-        ? parsed.rules.filter(isPermissionMemoryRule)
+        ? parsed.rules.flatMap((rule) => {
+            const normalized = normalizePermissionMemoryRule(rule)
+            return normalized ? [normalized] : []
+          })
         : []
     }
   } catch (error) {
@@ -49,17 +61,44 @@ function saveStore(store: Store) {
   localStorage.setItem(KEY, JSON.stringify(store))
 }
 
-function isPermissionMemoryRule(value: unknown): value is PermissionMemoryRule {
-  if (!value || typeof value !== "object") return false
+function normalizePermissionMemoryRule(
+  value: unknown
+): PermissionMemoryRule | null {
+  if (!value || typeof value !== "object") return null
   const rule = value as Partial<PermissionMemoryRule>
-  return (
-    typeof rule.id === "string" &&
-    typeof rule.cwd === "string" &&
-    typeof rule.toolName === "string" &&
-    typeof rule.command === "string" &&
-    typeof rule.createdAt === "number" &&
-    typeof rule.label === "string"
-  )
+  const { id, cwd, toolName, createdAt, label } = rule
+  const baseValid =
+    typeof id === "string" &&
+    typeof cwd === "string" &&
+    typeof toolName === "string" &&
+    typeof createdAt === "number" &&
+    typeof label === "string"
+  if (!baseValid) return null
+  const kind = rule.kind === "category" ? "category" : "exact"
+  if (kind === "category") {
+    const { category } = rule
+    if (typeof category !== "string" || !category) return null
+    return {
+      id,
+      cwd,
+      toolName,
+      kind,
+      category,
+      createdAt,
+      label
+    }
+  }
+  const { command } = rule
+  if (typeof command !== "string" || !command) return null
+  return {
+    id,
+    cwd,
+    toolName,
+    kind,
+    command,
+    createdAt,
+    label
+  }
 }
 
 export function canRememberExactPermission(
@@ -69,6 +108,18 @@ export function canRememberExactPermission(
   if (request.transport === "mcp") return false
   if (hasPermissionSuggestion(request)) return false
   return !!requestCommand(request) && !!requestToolName(request) && !!request.cwd
+}
+
+export function canRememberCategoryPermission(
+  request: PermissionRequestPayload | null
+): boolean {
+  if (!request) return false
+  if (request.transport !== "mcp" && hasAllowRuleSuggestion(request)) return false
+  return (
+    !!classifyPermissionRequestCategory(request) &&
+    !!requestToolName(request) &&
+    !!request.cwd
+  )
 }
 
 function hasPermissionSuggestion(
@@ -112,9 +163,36 @@ export function rememberExactPermissionRequest(
     id,
     cwd,
     toolName,
+    kind: "exact",
     command,
     createdAt: Date.now(),
     label
+  }
+  saveStore({ rules: [...store.rules, rule] })
+  return rule
+}
+
+export function rememberCategoryPermissionRequest(
+  request: PermissionRequestPayload
+): PermissionMemoryRule {
+  const category = classifyPermissionRequestCategory(request)
+  const toolName = requestToolName(request)
+  const cwd = normalizeCwd(request.cwd)
+  if (!category || !toolName || !cwd) {
+    throw new Error("当前权限请求不能保存为分类规则")
+  }
+  const id = `${cwd}::${toolName}::category::${category.id}`
+  const store = loadStore()
+  const existing = store.rules.find((rule) => rule.id === id)
+  if (existing) return existing
+  const rule: PermissionMemoryRule = {
+    id,
+    cwd,
+    toolName,
+    kind: "category",
+    category: category.id,
+    createdAt: Date.now(),
+    label: category.label
   }
   saveStore({ rules: [...store.rules, rule] })
   return rule
@@ -126,13 +204,184 @@ export function findPermissionMemoryMatch(
   const command = requestCommand(request)
   const toolName = requestToolName(request)
   const cwd = normalizeCwd(request.cwd)
-  if (!command || !toolName || !cwd) return null
-  return (
-    loadStore().rules.find(
+  if (!toolName || !cwd) return null
+  const rules = loadStore().rules
+  if (command) {
+    const exact = rules.find(
       (rule) =>
+        rule.kind === "exact" &&
         rule.cwd === cwd &&
         rule.toolName === toolName &&
         rule.command === command
+    )
+    if (exact) return exact
+  }
+  const category = classifyPermissionRequestCategory(request)
+  if (!category) return null
+  return (
+    rules.find(
+      (rule) =>
+        rule.kind === "category" &&
+        rule.cwd === cwd &&
+        rule.toolName === toolName &&
+        rule.category === category.id
     ) ?? null
+  )
+}
+
+export function classifyPermissionRequestCategory(
+  request: PermissionRequestPayload | null
+): PermissionMemoryCategory | null {
+  const toolName = requestToolName(request)
+  if (toolName !== "bash") return null
+  const command = requestCommand(request)
+  if (!command || !isSimpleCommand(command)) return null
+  const tokens = tokenizeCommand(command)
+  if (tokens.length === 0) return null
+  return (
+    classifyPackageManagerCommand(tokens) ??
+    classifyCargoCommand(tokens) ??
+    classifyGitReadCommand(tokens) ??
+    classifyFileReadCommand(tokens)
+  )
+}
+
+function isSimpleCommand(command: string): boolean {
+  return !UNSAFE_CATEGORY_COMMAND_PATTERN.test(command)
+}
+
+function tokenizeCommand(command: string): string[] {
+  return command
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.replace(/^["']|["']$/g, "").toLowerCase())
+    .filter(Boolean)
+}
+
+function classifyPackageManagerCommand(
+  tokens: string[]
+): PermissionMemoryCategory | null {
+  const manager = tokens[0]
+  if (!["npm", "pnpm", "yarn", "bun"].includes(manager)) return null
+  const action = tokens[1] === "run" ? tokens[2] : tokens[1]
+  if (!action) return null
+  if (
+    ![
+      "build",
+      "check",
+      "lint",
+      "test",
+      "test:unit",
+      "typecheck",
+      "type-check"
+    ].includes(action)
+  ) {
+    return null
+  }
+  return {
+    id: "bash:project-checks",
+    label: "Bash 项目检查/构建命令",
+    description: "允许常见的 build、test、check、lint、typecheck 命令"
+  }
+}
+
+function classifyCargoCommand(tokens: string[]): PermissionMemoryCategory | null {
+  if (tokens[0] !== "cargo") return null
+  if (!["build", "check", "clippy", "test"].includes(tokens[1] ?? "")) {
+    return null
+  }
+  return {
+    id: "bash:project-checks",
+    label: "Bash 项目检查/构建命令",
+    description: "允许常见的 build、test、check、lint、typecheck 命令"
+  }
+}
+
+function classifyGitReadCommand(
+  tokens: string[]
+): PermissionMemoryCategory | null {
+  if (tokens[0] !== "git") return null
+  const subcommand = tokens[1] ?? ""
+  if (!isReadOnlyGitCommand(subcommand, tokens.slice(2))) {
+    return null
+  }
+  return {
+    id: "bash:git-read",
+    label: "Bash Git 只读查询命令",
+    description: "允许 git status、diff、log、show 等只读查询"
+  }
+}
+
+function isReadOnlyGitCommand(subcommand: string, args: string[]): boolean {
+  if (args.some((arg) => arg === "--output" || arg.startsWith("--output="))) {
+    return false
+  }
+  if (
+    [
+      "diff",
+      "log",
+      "ls-files",
+      "rev-list",
+      "rev-parse",
+      "show",
+      "status"
+    ].includes(subcommand)
+  ) {
+    return true
+  }
+  if (subcommand === "branch") {
+    return args.every((arg) =>
+      [
+        "-a",
+        "-r",
+        "-v",
+        "-vv",
+        "--all",
+        "--list",
+        "--remotes",
+        "--show-current",
+        "--verbose"
+      ].includes(arg)
+    )
+  }
+  if (subcommand === "remote") {
+    if (args.length === 0) return true
+    if (args.length === 1) return args[0] === "-v"
+    return ["show", "get-url"].includes(args[0] ?? "")
+  }
+  return false
+}
+
+function classifyFileReadCommand(
+  tokens: string[]
+): PermissionMemoryCategory | null {
+  const command = tokens[0]
+  if (
+    !["cat", "find", "grep", "head", "ls", "pwd", "rg", "tail", "wc"].includes(
+      command
+    )
+  ) {
+    return null
+  }
+  if (command === "find" && hasMutatingFindPredicate(tokens)) return null
+  return {
+    id: "bash:file-read",
+    label: "Bash 文件只读查看命令",
+    description: "允许 ls、cat、rg、grep、find 等只读查看"
+  }
+}
+
+function hasMutatingFindPredicate(tokens: string[]): boolean {
+  return tokens.some((token) =>
+    [
+      "-delete",
+      "-exec",
+      "-execdir",
+      "-ok",
+      "-okdir",
+      "-fls",
+      "-fprint",
+      "-fprintf"
+    ].includes(token)
   )
 }

@@ -17,6 +17,9 @@ import {
 } from "@/lib/ipc"
 import {
   canRememberExactPermission,
+  canRememberCategoryPermission,
+  classifyPermissionRequestCategory,
+  rememberCategoryPermissionRequest,
   rememberExactPermissionRequest
 } from "@/lib/permissionMemory"
 
@@ -36,6 +39,11 @@ export function PermissionDialog({ request, onSettled }: Props) {
     [request]
   )
   const canRememberExact = canRememberExactPermission(request)
+  const canRememberCategory = canRememberCategoryPermission(request)
+  const permissionCategory = useMemo(
+    () => classifyPermissionRequestCategory(request),
+    [request]
+  )
   const isEdit = isEditRequest(request)
   const supportsPermissionUpdates = request?.transport !== "mcp"
 
@@ -73,7 +81,11 @@ export function PermissionDialog({ request, onSettled }: Props) {
         if (!open && request && !busy) deny()
       }}
     >
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
+      <DialogContent
+        className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
+        onInteractOutside={(event) => event.preventDefault()}
+        onPointerDownOutside={(event) => event.preventDefault()}
+      >
         <DialogHeader className="shrink-0 pr-6">
           <DialogTitle className="flex items-center gap-2">
             <ShieldAlert className="size-5 text-warn" />
@@ -189,12 +201,33 @@ export function PermissionDialog({ request, onSettled }: Props) {
                 }}
                 disabled={!request || busy}
               >
-                写入项目本地规则
+                以后允许此类工具
+              </Button>
+            )}
+            {canRememberCategory && (
+              <Button
+                type="button"
+                variant="outline"
+                title={permissionCategory?.description}
+                onClick={() => {
+                  if (!request) return
+                  try {
+                    const rule = rememberCategoryPermissionRequest(request)
+                    toast.success(`已记住此项目下的分类规则: ${rule.label}`)
+                    settle(allowResponse(request))
+                  } catch (e) {
+                    toast.error(String(e))
+                  }
+                }}
+                disabled={!request || busy}
+              >
+                以后允许此类命令
               </Button>
             )}
             {canRememberExact && (
               <Button
                 type="button"
+                variant="outline"
                 onClick={() => {
                   if (!request) return
                   try {

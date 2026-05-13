@@ -986,7 +986,7 @@ export default function App() {
           response
         })
           .then(() => {
-            toast.success(`已按精确命令规则允许: ${remembered.label}`)
+            toast.success(`已按权限记忆允许: ${remembered.label}`)
           })
           .catch((e) => {
             toast.error(`权限记忆规则执行失败: ${String(e)}`)
