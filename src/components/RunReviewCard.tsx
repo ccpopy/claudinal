@@ -50,7 +50,7 @@ export function RunStatusStrip({
   const [open, setOpen] = useState(false)
   if (summary.files === 0) return null
   return (
-    <div className="mx-auto max-w-3xl rounded-md border bg-background/95 text-xs shadow-sm">
+    <div className="mx-auto max-w-3xl rounded-xl border bg-card/95 text-xs shadow-xs backdrop-blur-sm">
       <div className="flex h-8 items-center justify-between gap-3 px-3">
         <button
           type="button"

@@ -62,6 +62,7 @@ export interface UIMessage {
   usage?: Record<string, unknown>
   stopReason?: string | null
   streaming: boolean
+  delivery?: "guide"
   ts: number
   stopTs?: number
 }

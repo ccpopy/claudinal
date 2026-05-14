@@ -475,6 +475,16 @@ describe("reducer.local message lifecycle", () => {
     expect(lastMessage(s).id).toBe("local-1")
   })
 
+  it("preserves guide delivery metadata for same-turn input", () => {
+    const s = reduce(init(), {
+      kind: "user_local",
+      blocks: [{ type: "text", text: "steer now" }],
+      delivery: "guide",
+      localId: "guide-1"
+    })
+    expect(lastMessage(s).delivery).toBe("guide")
+  })
+
   it("reset wipes the entire entry list", () => {
     let s = init()
     s = reduce(s, {

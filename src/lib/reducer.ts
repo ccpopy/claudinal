@@ -11,6 +11,7 @@ export type Action =
   | {
       kind: "user_local"
       blocks: UIBlock[]
+      delivery?: UIMessage["delivery"]
       localId?: string
     }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
@@ -32,6 +33,7 @@ export function reduce(state: State, action: Action): State {
       role: "user",
       blocks: action.blocks,
       streaming: false,
+      delivery: action.delivery,
       ts
     }
     return { entries: [...state.entries, msg] }

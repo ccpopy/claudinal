@@ -1740,20 +1740,23 @@ export default function App() {
           documents,
           cliBlocks: blocks
         }
-        run.queuedInputs = [...run.queuedInputs, queuedInput]
-        setRunningTick((tick) => tick + 1)
         if (mode === "followup") {
+          run.queuedInputs = [...run.queuedInputs, queuedInput]
+          setRunningTick((tick) => tick + 1)
           if (collaborationMode) setCollaborationMode(false)
           return
         }
         try {
           await sendUserMessage(id, blocks)
+          applyRunningAction(run, {
+            kind: "user_local",
+            blocks: queuedInputUiBlocks(queuedInput),
+            delivery: "guide",
+            localId
+          })
+          setRunningTick((tick) => tick + 1)
           if (collaborationMode) setCollaborationMode(false)
         } catch (e) {
-          run.queuedInputs = run.queuedInputs.filter(
-            (item) => item.localId !== localId
-          )
-          setRunningTick((tick) => tick + 1)
           toast.error(`发送失败: ${String(e)}`)
         }
         return
@@ -1848,13 +1851,21 @@ export default function App() {
       if (found.item.mode === "guide") return
       try {
         await sendUserMessage(found.run.runtimeId, found.item.cliBlocks)
-        found.item.mode = "guide"
+        found.run.queuedInputs = found.run.queuedInputs.filter(
+          (item) => item.localId !== localId
+        )
+        applyRunningAction(found.run, {
+          kind: "user_local",
+          blocks: queuedInputUiBlocks(found.item),
+          delivery: "guide",
+          localId
+        })
         setRunningTick((tick) => tick + 1)
       } catch (error) {
         toast.error(`发送引导消息失败: ${String(error)}`)
       }
     },
-    [findQueuedInput]
+    [applyRunningAction, findQueuedInput]
   )
 
   const recallLatestQueuedInput = useCallback(() => {
@@ -2391,12 +2402,13 @@ export default function App() {
   const composerBarItems = useMemo(() => {
     const runtimeId = activeRuntimeIdRef.current ?? sessionId
     const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
-    if (!run) return [] as Array<{ localId: string; mode: QueuedInputMode; preview: string }>
-    return run.queuedInputs.map((q) => ({
-      localId: q.localId,
-      mode: q.mode,
-      preview: derivePreviewFromQueuedInput(q)
-    }))
+    if (!run) return [] as Array<{ localId: string; preview: string }>
+    return run.queuedInputs
+      .filter((q) => q.mode === "followup")
+      .map((q) => ({
+        localId: q.localId,
+        preview: derivePreviewFromQueuedInput(q)
+      }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningTick, sessionId])
   const activePermissionRequest =
@@ -2740,7 +2752,7 @@ export default function App() {
                   </Suspense>
                 </div>
                 {composerBarItems.length > 0 && (
-                  <div className="shrink-0 bg-background">
+                  <div className="shrink-0 bg-background px-6 pt-2">
                     <Suspense fallback={null}>
                       <QueuedComposerBar
                         items={composerBarItems}

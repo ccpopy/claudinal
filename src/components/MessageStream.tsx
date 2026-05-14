@@ -99,6 +99,14 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
           stamp(m.ts)
         }
         if (userVisible.length > 0) {
+          if (m.delivery === "guide") {
+            groups.push({
+              kind: "msg",
+              key: `msg-${m.id}`,
+              msg: { ...m, blocks: userVisible }
+            })
+            continue
+          }
           if (state.current) state.current.running = false
           state.current = null
           groups.push({

@@ -16,7 +16,6 @@ import {
 
 export interface QueuedComposerBarItem {
   localId: string
-  mode: "guide" | "followup"
   preview: string
 }
 
@@ -35,7 +34,7 @@ export function QueuedComposerBar({
 }: QueuedComposerBarProps) {
   if (items.length === 0) return null
   return (
-    <div className="mx-auto max-w-3xl px-6 pt-2 empty:hidden">
+    <div className="mx-auto max-w-3xl empty:hidden">
       <div className="flex flex-col gap-1.5">
         {items.map((item) => (
           <QueuedRow
@@ -62,7 +61,6 @@ function QueuedRow({
   onRecall: (localId: string) => void
   onDelete: (localId: string) => void
 }) {
-  const isFollowup = item.mode === "followup"
   return (
     <div className="flex items-center gap-2 rounded-xl border bg-card/95 px-2.5 py-1.5 shadow-xs backdrop-blur-sm">
       <GripVertical
@@ -70,43 +68,35 @@ function QueuedRow({
         className="size-3.5 shrink-0 text-muted-foreground/60"
       />
       <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
-        {isFollowup ? (
-          <Clock3 className="size-3" />
-        ) : (
-          <CornerDownRight className="size-3" />
-        )}
-        {isFollowup ? "排队" : "引导 · 已送达"}
+        <Clock3 className="size-3" />
+        排队
       </span>
       <span className="min-w-0 flex-1 truncate text-sm text-foreground/80">
         {item.preview}
       </span>
       <div className="flex shrink-0 items-center gap-0.5">
-        {isFollowup && (
-          <>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-7 gap-1 rounded-md px-2 text-xs"
-              title="当前工具完成后立即送达，并中断后续未执行工具"
-              onClick={() => onPromoteGuide(item.localId)}
-            >
-              <CornerDownRight className="size-3.5" />
-              引导
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="size-7 rounded-md"
-              title="关闭排队"
-              aria-label="关闭排队"
-              onClick={() => onDelete(item.localId)}
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          </>
-        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1 rounded-md px-2 text-xs"
+          title="当前工具完成后立即送达，并中断后续未执行工具"
+          onClick={() => onPromoteGuide(item.localId)}
+        >
+          <CornerDownRight className="size-3.5" />
+          引导
+        </Button>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="size-7 rounded-md"
+          title="关闭排队"
+          aria-label="关闭排队"
+          onClick={() => onDelete(item.localId)}
+        >
+          <Trash2 className="size-3.5" />
+        </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -120,23 +110,14 @@ function QueuedRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={6} className="min-w-[10rem]">
-            {isFollowup ? (
-              <>
-                <DropdownMenuItem onSelect={() => onRecall(item.localId)}>
-                  <Pencil className="size-3.5" />
-                  编辑消息
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onDelete(item.localId)}>
-                  <Trash2 className="size-3.5" />
-                  关闭排队
-                </DropdownMenuItem>
-              </>
-            ) : (
-              <DropdownMenuItem onSelect={() => onRecall(item.localId)}>
-                <Pencil className="size-3.5" />
-                复制文本到编辑器
-              </DropdownMenuItem>
-            )}
+            <DropdownMenuItem onSelect={() => onRecall(item.localId)}>
+              <Pencil className="size-3.5" />
+              编辑消息
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onDelete(item.localId)}>
+              <Trash2 className="size-3.5" />
+              关闭排队
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
