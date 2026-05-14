@@ -17,7 +17,6 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Kbd, KbdGroup } from "@/components/ui/kbd"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import {
   Tooltip,
   TooltipContent,
@@ -242,16 +241,17 @@ export function Sidebar({
   )
 
   useEffect(() => {
-    if (!selectedProjectId) return
-    setExpanded((cur) => {
-      if (cur.has(selectedProjectId)) return cur
-      const next = new Set(cur)
-      next.add(selectedProjectId)
-      return next
-    })
-    const selected = projects.find((p) => p.id === selectedProjectId)
-    if (selected && !sessionsByProject[selected.id]) {
-      loadSessions(selected)
+    if (selectedProjectId && selectedSessionId) {
+      setExpanded((cur) => {
+        if (cur.has(selectedProjectId)) return cur
+        const next = new Set(cur)
+        next.add(selectedProjectId)
+        return next
+      })
+      const selected = projects.find((p) => p.id === selectedProjectId)
+      if (selected && !sessionsByProject[selected.id]) {
+        loadSessions(selected)
+      }
     }
     for (const p of projects) {
       if (pinnedProjectIds.has(p.id) && !sessionsByProject[p.id]) {
@@ -260,6 +260,7 @@ export function Sidebar({
     }
   }, [
     selectedProjectId,
+    selectedSessionId,
     projects,
     sessionsByProject,
     loadSessions,
@@ -345,56 +346,59 @@ export function Sidebar({
   void timeTick
 
   return (
-    <aside className="w-64 shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground flex flex-col rounded-lg">
-      <div className="px-3 pt-3 flex flex-col gap-2">
-        <Button
-          variant="ghost"
-          className="justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent"
-          onClick={onNewConversation}
-        >
-          <MessageSquarePlus />
-          新对话
-        </Button>
-        <Button
-          variant="ghost"
-          className="group justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent"
-          onClick={() => setSearchOpen(true)}
-        >
-          <Search />
-          <span>搜索</span>
-          <KbdGroup className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-            <Kbd>Ctrl</Kbd>
-            <Kbd>G</Kbd>
-          </KbdGroup>
-        </Button>
-        <Button
-          variant="ghost"
-          className={cn(
-            "justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent",
-            inPlugins && "bg-sidebar-accent text-sidebar-foreground"
-          )}
-          onClick={onOpenPlugins}
-        >
-          <Puzzle />
-          插件
-        </Button>
-        {onOpenHistory && (
+    <aside className="w-64 shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground flex flex-col">
+      <div className="px-2 pt-2 flex flex-col">
+        <div className="flex h-7 items-center px-2 text-xs font-medium text-sidebar-foreground/60">
+          导航
+        </div>
+        <div className="flex flex-col gap-0.5">
           <Button
             variant="ghost"
-            className="justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent"
-            onClick={onOpenHistory}
+            className="justify-start gap-2 h-8 px-2 text-sm font-medium hover:bg-sidebar-accent/50 hover:text-sidebar-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
+            onClick={onNewConversation}
           >
-            <HistoryIcon />
-            历史会话
+            <MessageSquarePlus />
+            新对话
           </Button>
-        )}
+          <Button
+            variant="ghost"
+            className="group justify-start gap-2 h-8 px-2 text-sm font-medium hover:bg-sidebar-accent/50 hover:text-sidebar-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
+            onClick={() => setSearchOpen(true)}
+          >
+            <Search />
+            <span>搜索</span>
+            <KbdGroup className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              <Kbd>Ctrl</Kbd>
+              <Kbd>G</Kbd>
+            </KbdGroup>
+          </Button>
+          <Button
+            variant="ghost"
+            data-active={inPlugins ? "true" : undefined}
+            className="justify-start gap-2 h-8 px-2 text-sm font-medium hover:bg-sidebar-accent/50 hover:text-sidebar-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
+            onClick={onOpenPlugins}
+          >
+            <Puzzle />
+            插件
+          </Button>
+          {onOpenHistory && (
+            <Button
+              variant="ghost"
+              className="justify-start gap-2 h-8 px-2 text-sm font-medium hover:bg-sidebar-accent/50 hover:text-sidebar-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
+              onClick={onOpenHistory}
+            >
+              <HistoryIcon />
+              历史会话
+            </Button>
+          )}
+        </div>
       </div>
 
       <ScrollArea className="flex-1 min-h-0 min-w-0 mt-2">
-        <div className="px-2 pb-3 flex flex-col gap-3 min-w-0 max-w-full overflow-hidden">
+        <div className="px-2 pb-2 flex flex-col gap-2 min-w-0 max-w-full overflow-hidden">
           {pinnedItems.length > 0 && (
             <div className="flex flex-col">
-              <div className="px-1 pb-1 text-xs uppercase tracking-wider text-sidebar-muted">
+              <div className="flex h-7 items-center px-2 text-xs font-medium text-sidebar-foreground/60">
                 置顶
               </div>
               <div className="flex flex-col gap-0.5">
@@ -425,27 +429,27 @@ export function Sidebar({
           )}
 
           <div className="flex flex-col">
-            <div className="flex items-center justify-between px-1 pb-1">
-              <span className="text-xs uppercase tracking-wider text-sidebar-muted">
+            <div className="flex items-center justify-between">
+              <div className="flex h-7 items-center px-2 text-xs font-medium text-sidebar-foreground/60">
                 项目
-              </span>
+              </div>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-6 hover:bg-sidebar-accent"
+                  <button
+                    type="button"
                     onClick={onAdd}
+                    className="inline-flex size-5 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                    aria-label="添加项目"
                   >
                     <FolderPlus className="size-3.5" />
-                  </Button>
+                  </button>
                 </TooltipTrigger>
                 <TooltipContent side="right">添加项目 (Ctrl+O)</TooltipContent>
               </Tooltip>
             </div>
             <div className="flex flex-col gap-0.5">
               {filtered.length === 0 ? (
-                <div className="px-2 py-6 text-center text-xs text-sidebar-muted">
+                <div className="px-2 py-6 text-center text-xs text-sidebar-foreground/60">
                   {projects.length === 0 ? "暂无项目，点击 + 添加" : "无匹配"}
                 </div>
               ) : (
@@ -474,10 +478,10 @@ export function Sidebar({
                     <div key={p.id} className="flex flex-col min-w-0">
                       <div
                         className={cn(
-                          "group flex items-center gap-1 pl-1 pr-1 py-1.5 rounded-md text-sm transition-colors min-w-0",
+                          "group relative flex items-center h-8 px-2 gap-1.5 rounded-md text-sm transition-colors min-w-0",
                           isProjectSelected
-                            ? "bg-sidebar-accent text-sidebar-foreground"
-                            : "hover:bg-sidebar-accent/60"
+                            ? "bg-sidebar-accent text-sidebar-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-r before:bg-primary before:content-['']"
+                            : "hover:bg-sidebar-accent/50"
                         )}
                         title={p.cwd}
                       >
@@ -487,7 +491,7 @@ export function Sidebar({
                             e.stopPropagation()
                             toggleExpand(p)
                           }}
-                          className="size-5 inline-flex items-center justify-center text-sidebar-muted hover:text-sidebar-foreground"
+                          className="size-5 inline-flex items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground"
                           aria-label={isExpanded ? "折叠" : "展开"}
                         >
                           <ChevronRight
@@ -497,13 +501,10 @@ export function Sidebar({
                             )}
                           />
                         </button>
-                        <FolderOpen className="size-3.5 shrink-0 text-sidebar-muted" />
+                        <FolderOpen className="size-3.5 shrink-0 text-sidebar-foreground/60" />
                         <button
                           type="button"
-                          onClick={() => {
-                            onSelectProject(p)
-                            toggleExpand(p)
-                          }}
+                          onClick={() => onSelectProject(p)}
                           className="truncate flex-1 min-w-0 text-left cursor-pointer"
                         >
                           {p.name}
@@ -518,7 +519,7 @@ export function Sidebar({
                                   toast.error(`打开失败: ${String(err)}`)
                                 )
                               }}
-                              className="size-5 inline-flex items-center justify-center rounded text-sidebar-muted opacity-0 group-hover:opacity-100 hover:text-sidebar-foreground transition-opacity"
+                              className="size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 group-hover:opacity-100 hover:text-sidebar-foreground transition-opacity"
                               aria-label="在资源管理器中打开"
                             >
                               <FolderOpen className="size-3.5" />
@@ -545,19 +546,19 @@ export function Sidebar({
                       </div>
 
                       {isExpanded && (
-                        <div className="mt-0.5 flex flex-col gap-0.5 min-w-0 max-w-full overflow-hidden">
+                        <div className="mt-0.5 ml-3.5 pl-2.5 border-l border-sidebar-border/60 flex flex-col gap-0.5 min-w-0 max-w-full overflow-hidden">
                           {!sessionsState ||
                           sessionsState.kind === "idle" ||
                           sessionsState.kind === "loading" ? (
-                            <div className="pl-7 pr-2 py-1 text-xs text-sidebar-muted">
+                            <div className="px-2 py-1 text-xs text-sidebar-foreground/60">
                               加载中…
                             </div>
                           ) : sessionsState.kind === "error" ? (
-                            <div className="pl-7 pr-2 py-1 text-xs text-destructive break-all">
+                            <div className="px-2 py-1 text-xs text-destructive break-all">
                               {sessionsState.message}
                             </div>
                           ) : visibleSessions.length === 0 ? (
-                            <div className="pl-7 pr-2 py-1 text-xs text-sidebar-muted">
+                            <div className="px-2 py-1 text-xs text-sidebar-foreground/60">
                               暂无历史会话
                             </div>
                           ) : (
@@ -595,11 +596,10 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      <Separator className="bg-sidebar-border" />
-      <div className="p-2">
+      <div className="border-t border-sidebar-border/60 mx-2 px-0 py-2">
         <Button
           variant="ghost"
-          className="w-full justify-start gap-2 h-8 px-2 hover:bg-sidebar-accent"
+          className="w-full justify-start gap-2 h-8 px-2 text-sm font-medium hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
           onClick={onOpenSettings}
         >
           <Settings />
@@ -651,15 +651,15 @@ function SessionRow({
   const title = sessionDisplayTitle(session)
   const compactTime = formatSessionCompactTime(session.modified_ts)
   const fullTime = formatSessionRelativeTime(session.modified_ts)
+  void indented
   return (
     <div
       onClick={onSelect}
       className={cn(
-        "group/session relative flex h-7 items-center gap-1.5 rounded-md text-xs cursor-pointer transition-[padding,background-color,color] min-w-0 max-w-full overflow-hidden",
-        pinned || indented ? "pl-7 pr-8" : "pl-2 pr-8 hover:pl-7",
+        "group/session relative flex h-8 items-center gap-1 rounded-md text-xs cursor-pointer transition-colors min-w-0 max-w-full overflow-hidden pl-2 pr-1.5",
         active
           ? "bg-sidebar-accent text-sidebar-foreground"
-          : "hover:bg-sidebar-accent/60 text-sidebar-foreground/90"
+          : "hover:bg-sidebar-accent/50 text-sidebar-foreground/90"
       )}
       title={`${title}\n${project.name} · ${session.msg_count} msg · ${fullTime}\n${session.id}`}
     >
@@ -672,9 +672,8 @@ function SessionRow({
               onTogglePin()
             }}
             className={cn(
-              "absolute top-1/2 z-10 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded bg-sidebar-accent text-sidebar-muted shadow-sm transition-opacity hover:text-sidebar-foreground",
-              pinned ? "opacity-100" : "opacity-0 group-hover/session:opacity-100",
-              indented ? "left-1.5" : "left-1"
+              "inline-flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-opacity",
+              pinned ? "opacity-100" : "opacity-0 group-hover/session:opacity-100"
             )}
             aria-label={pinned ? "取消置顶" : "置顶会话"}
           >
@@ -687,37 +686,35 @@ function SessionRow({
       </Tooltip>
       <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
       {waiting ? (
-        <span className="ml-1 shrink-0 rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary transition-opacity group-hover/session:opacity-0">
+        <span className="shrink-0 rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary transition-opacity group-hover/session:opacity-0">
           等待中
         </span>
       ) : streaming ? (
         <Loader2
           aria-label="运行中"
-          className="ml-1 size-3 shrink-0 animate-spin text-primary transition-opacity group-hover/session:opacity-0"
+          className="size-3 shrink-0 animate-spin text-primary transition-opacity group-hover/session:opacity-0"
         />
       ) : (
-        <span className="ml-1 w-12 shrink-0 text-right text-[11px] tabular-nums text-sidebar-muted transition-opacity group-hover/session:opacity-0">
+        <span className="shrink-0 text-right text-[11px] tabular-nums text-sidebar-foreground/60 transition-opacity group-hover/session:opacity-0">
           {compactTime}
         </span>
       )}
-      <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/session:opacity-100">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              className="inline-flex size-5 items-center justify-center rounded text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
-              aria-label="复制会话 ID"
-              onClick={(e) => {
-                e.stopPropagation()
-                onCopyId()
-              }}
-            >
-              <Copy className="size-3" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">复制会话 ID</TooltipContent>
-        </Tooltip>
-      </div>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/60 opacity-0 group-hover/session:opacity-100 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-opacity"
+            aria-label="复制会话 ID"
+            onClick={(e) => {
+              e.stopPropagation()
+              onCopyId()
+            }}
+          >
+            <Copy className="size-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">复制会话 ID</TooltipContent>
+      </Tooltip>
     </div>
   )
 }
