@@ -186,9 +186,11 @@ export function UserInputDialog({ request, onSettled }: Props) {
                           </span>
                           <span className="min-w-0">
                             <span className="block font-medium">{option.label}</span>
-                            <span className="block text-xs leading-relaxed text-muted-foreground">
-                              {option.description}
-                            </span>
+                            {option.description && (
+                              <span className="block text-xs leading-relaxed text-muted-foreground">
+                                {option.description}
+                              </span>
+                            )}
                             {option.preview && (
                               <span className="mt-2 block whitespace-pre-wrap rounded border bg-muted/40 p-2 font-mono text-[11px] text-muted-foreground">
                                 {option.preview}

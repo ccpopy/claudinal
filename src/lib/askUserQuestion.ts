@@ -4,7 +4,7 @@ export const ASK_USER_QUESTION_TOOL = "AskUserQuestion"
 
 export interface AskUserQuestionOption {
   label: string
-  description: string
+  description?: string
   preview?: string
 }
 
@@ -94,11 +94,13 @@ function parseOption(
     value.label,
     `问题「${question}」的第 ${index + 1} 个选项缺少 label`
   )
-  const description = requiredString(
+  const description = optionalString(
     value.description,
-    `选项「${label}」缺少 description`
+    `选项「${label}」的 description 必须是字符串`
   )
-  const option: AskUserQuestionOption = { label, description }
+  const option: AskUserQuestionOption = description
+    ? { label, description }
+    : { label }
   if (typeof value.preview === "string" && value.preview.trim()) {
     option.preview = value.preview
   }
@@ -110,6 +112,17 @@ function requiredString(value: unknown, message: string): string {
     throw new Error(message)
   }
   return value.trim()
+}
+
+function optionalString(value: unknown, message: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value !== "string") {
+    throw new Error(message)
+  }
+  const trimmed = value.trim()
+  return trimmed || undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

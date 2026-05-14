@@ -43,6 +43,26 @@ describe("askUserQuestion", () => {
     expect(input.questions[0].multiSelect).toBe(false)
   })
 
+  it("accepts options without descriptions", () => {
+    const input = parseAskUserQuestionInput({
+      questions: [
+        {
+          question: "需要改到哪一层？",
+          header: "范围",
+          options: [
+            { label: "仅设计系统层 (tokens + globals.css)" },
+            { label: "完整组件层", description: "包含组件实现" }
+          ],
+          multiSelect: false
+        }
+      ]
+    })
+
+    expect(input.questions[0].options[0]).toEqual({
+      label: "仅设计系统层 (tokens + globals.css)"
+    })
+  })
+
   it("returns answers in the format Claude expects", () => {
     const input = parseAskUserQuestionInput({
       questions: [
@@ -77,5 +97,23 @@ describe("askUserQuestion", () => {
     expect(() => parseAskUserQuestionInput({ questions: [] })).toThrow(
       "AskUserQuestion 必须包含 1 到 4 个问题"
     )
+  })
+
+  it("rejects non-string option descriptions explicitly", () => {
+    expect(() =>
+      parseAskUserQuestionInput({
+        questions: [
+          {
+            question: "需要改到哪一层？",
+            header: "范围",
+            options: [
+              { label: "仅设计系统层", description: 1 },
+              { label: "完整组件层" }
+            ],
+            multiSelect: false
+          }
+        ]
+      })
+    ).toThrow("选项「仅设计系统层」的 description 必须是字符串")
   })
 })
