@@ -416,7 +416,6 @@ export function Sidebar({
                       streamingSet.has(`${project.id}::${session.id}`)
                     }
                     waiting={waitingSet.has(`${project.id}::${session.id}`)}
-                    indented={false}
                     onSelect={() => onSelectSession(project, session)}
                     onCopyId={() => copyText(session.id, "会话 ID")}
                     onTogglePin={() =>
@@ -576,7 +575,6 @@ export function Sidebar({
                                   streamingSet.has(`${p.id}::${s.id}`)
                                 }
                                 waiting={waitingSet.has(`${p.id}::${s.id}`)}
-                                indented
                                 onSelect={() => onSelectSession(p, s)}
                                 onCopyId={() => copyText(s.id, "会话 ID")}
                                 onTogglePin={() =>
@@ -632,7 +630,6 @@ function SessionRow({
   active,
   streaming,
   waiting,
-  indented,
   onSelect,
   onCopyId,
   onTogglePin
@@ -643,7 +640,6 @@ function SessionRow({
   active: boolean
   streaming: boolean
   waiting: boolean
-  indented: boolean
   onSelect: () => void
   onCopyId: () => void
   onTogglePin: () => void
@@ -656,7 +652,7 @@ function SessionRow({
       onClick={onSelect}
       className={cn(
         "group/session relative flex h-8 items-center gap-1 rounded-md text-xs cursor-pointer transition-[background-color,color] min-w-0 max-w-full overflow-hidden pr-1.5",
-        pinned ? "pl-2" : indented ? "pl-14" : "pl-8",
+        pinned ? "pl-2" : "pl-8",
         active
           ? "bg-sidebar-accent text-sidebar-foreground"
           : "hover:bg-sidebar-accent/50 text-sidebar-foreground/90"
