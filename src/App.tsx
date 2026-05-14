@@ -116,6 +116,11 @@ import {
 } from "@/lib/networkErrorHints"
 import { isAskUserQuestionRequest } from "@/lib/askUserQuestion"
 import { autoApprovePermissionRequest } from "@/lib/permissionPolicy"
+import {
+  mergeSidecarPermissionMode,
+  pickPermissionModeFromSidecar,
+  type SessionPermissionModeSource
+} from "@/lib/sessionPermissionMode"
 import { isEditableShortcutTarget } from "@/lib/keyboard"
 
 const SUGGESTIONS = [
@@ -259,6 +264,7 @@ type RunningSession = {
   queuedInputs: QueuedInput[]
   unlisten: UnlistenFn[]
   permissionMode: AppSettings["defaultPermissionMode"]
+  permissionModeSource: SessionPermissionModeSource
   composerPrefs: ComposerPrefs
   sessionComposer: ComposerPrefs | null
   collabMcpEnabled: boolean
@@ -520,7 +526,8 @@ export default function App() {
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
   const apiProfileKeyRef = useRef(currentApiProfileKey())
-  const permissionModeTouchedRef = useRef(false)
+  const permissionModeSourceRef =
+    useRef<SessionPermissionModeSource>("default")
   const returnViewRef = useRef<ReturnView>("chat")
   const settingsEntryTargetRef = useRef<ChatReturnTarget | null>(null)
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null)
@@ -545,6 +552,22 @@ export default function App() {
   useEffect(() => {
     installedSkillCommandsRef.current = installedSkillCommands
   }, [installedSkillCommands])
+
+  const applyPermissionModeState = useCallback(
+    (
+      mode: AppSettings["defaultPermissionMode"],
+      source: SessionPermissionModeSource
+    ) => {
+      permissionModeSourceRef.current = source
+      setSessionPermissionMode(mode)
+      setPlanMode(mode === "plan")
+    },
+    []
+  )
+
+  const applyDefaultPermissionModeState = useCallback(() => {
+    applyPermissionModeState(loadSettings().defaultPermissionMode, "default")
+  }, [applyPermissionModeState])
 
   const applyInstalledSkills = useCallback((skills: Skill[]) => {
     const commands = slashCommandsFromSkills(skills)
@@ -838,6 +861,29 @@ export default function App() {
     [closeRunningSession]
   )
 
+  const writeCurrentPermissionModeSidecar = useCallback(
+    (mode: AppSettings["defaultPermissionMode"] | null) => {
+      const activeRuntimeId = activeRuntimeIdRef.current
+      const run = activeRuntimeId
+        ? runningSessionsRef.current.get(activeRuntimeId)
+        : null
+      const cwd = run?.project.cwd ?? project?.cwd
+      const sid =
+        run?.jsonlSessionId ??
+        (run ? findInitSessionId(run.state) : null) ??
+        selectedSessionId ??
+        findInitSessionId(stateRef.current)
+      if (!cwd || !sid) return
+
+      readSessionSidecar(cwd, sid)
+        .then((existing) =>
+          writeSessionSidecar(cwd, sid, mergeSidecarPermissionMode(existing, mode))
+        )
+        .catch((e) => console.warn("sidecar permission mode write failed:", e))
+    },
+    [project?.cwd, selectedSessionId]
+  )
+
   const detachActiveSession = useCallback(async () => {
     const runtimeId = activeRuntimeIdRef.current
     activeRuntimeIdRef.current = null
@@ -919,9 +965,10 @@ export default function App() {
     sessionComposerRef.current = run.sessionComposer
     setSessionComposer(run.sessionComposer)
     setComposerPrefs(run.composerPrefs)
+    applyPermissionModeState(run.permissionMode, run.permissionModeSource)
     collabMcpEnabledRef.current = run.collabMcpEnabled
     setReviewDiffs(run.reviewDiffs)
-  }, [flushRunningActions])
+  }, [applyPermissionModeState, flushRunningActions])
 
   const settlePermissionRequest = useCallback(
     (requestId: string) => {
@@ -965,8 +1012,7 @@ export default function App() {
         // 读 settings.json 失败不致命；保持默认 auto
       })
     const settings = loadSettings()
-    setSessionPermissionMode(settings.defaultPermissionMode)
-    setPlanMode(settings.defaultPermissionMode === "plan")
+    applyPermissionModeState(settings.defaultPermissionMode, "default")
     if (settings.autoCheckUpdate) {
       void checkForAppUpdate({ silent: true })
     }
@@ -1096,19 +1142,26 @@ export default function App() {
         })
     }
     const refreshAppSettings = () => {
-      if (permissionModeTouchedRef.current) return
       const settings = loadSettings()
-      setSessionPermissionMode(settings.defaultPermissionMode)
-      setPlanMode(settings.defaultPermissionMode === "plan")
+      if (permissionModeSourceRef.current === "default") {
+        applyPermissionModeState(settings.defaultPermissionMode, "default")
+      }
       const activeRuntimeId = activeRuntimeIdRef.current
-      const activeRun = activeRuntimeId
-        ? runningSessionsRef.current.get(activeRuntimeId)
-        : null
-      if (
-        activeRun &&
-        activeRun.permissionMode !== settings.defaultPermissionMode
-      ) {
-        activeRun.permissionMode = settings.defaultPermissionMode
+      let shouldRefreshActiveRun = false
+      let updatedRunningSession = false
+      for (const run of runningSessionsRef.current.values()) {
+        if (run.permissionModeSource !== "default") continue
+        if (run.permissionMode === settings.defaultPermissionMode) continue
+        run.permissionMode = settings.defaultPermissionMode
+        updatedRunningSession = true
+        if (run.runtimeId === activeRuntimeId) {
+          shouldRefreshActiveRun = true
+        }
+      }
+      if (updatedRunningSession) {
+        setRunningTick((tick) => tick + 1)
+      }
+      if (shouldRefreshActiveRun) {
         refreshActiveComposerRuntime("默认权限模式已刷新，下一次发送会使用新配置")
       }
     }
@@ -1130,6 +1183,7 @@ export default function App() {
       sessionComposerRef.current = null
       setSessionComposer(null)
       setComposerPrefs(EMPTY_COMPOSER_PREFS)
+      applyDefaultPermissionModeState()
       collabMcpEnabledRef.current = false
     }
     const refreshThirdPartyApi = () => {
@@ -1182,6 +1236,8 @@ export default function App() {
       off4()
     }
   }, [
+    applyDefaultPermissionModeState,
+    applyPermissionModeState,
     closeRunningSession,
     refreshActiveThirdPartyRuntime,
     refreshActiveComposerRuntime
@@ -1256,6 +1312,7 @@ export default function App() {
           setSelectedSessionMeta(null)
           sessionComposerRef.current = null
           setSessionComposer(null)
+          applyDefaultPermissionModeState()
           toast.info("当前会话属于另一个 API 供应商，已自动创建新会话")
         }
       }
@@ -1299,6 +1356,7 @@ export default function App() {
         queuedInputs: [],
         unlisten: [],
         permissionMode: launchPermissionMode,
+        permissionModeSource: permissionModeSourceRef.current,
         composerPrefs,
         sessionComposer,
         collabMcpEnabled: collabCfg.enabled,
@@ -1467,6 +1525,9 @@ export default function App() {
                 if (run.sessionComposer && !base.composer) {
                   next.composer = run.sessionComposer
                 }
+                if (run.permissionModeSource === "session") {
+                  next.permissionMode = run.permissionMode
+                }
                 return writeSessionSidecar(run.project.cwd, sid, next)
               })
               .then(() => setSidebarRefreshKey((k) => k + 1))
@@ -1517,7 +1578,8 @@ export default function App() {
     closeRunningSession,
     reportNetworkError,
     refreshActiveThirdPartyRuntime,
-    refreshActiveComposerRuntime
+    refreshActiveComposerRuntime,
+    applyDefaultPermissionModeState
   ])
 
   const refreshGitStatus = useCallback(async () => {
@@ -1592,6 +1654,7 @@ export default function App() {
         setReviewDiffs([])
         setSelectedSessionId(null)
         setSelectedSessionMeta(null)
+        applyDefaultPermissionModeState()
         toast.success("已清空当前会话")
         return
       }
@@ -1723,7 +1786,8 @@ export default function App() {
       setRunningSessionStreaming,
       beginRunReview,
       discardRunReview,
-      collaborationMode
+      collaborationMode,
+      applyDefaultPermissionModeState
     ]
   )
 
@@ -1811,29 +1875,61 @@ export default function App() {
 
   const handlePermissionModeChange = useCallback(
     (mode: AppSettings["defaultPermissionMode"]) => {
-      permissionModeTouchedRef.current = true
       const changed = mode !== sessionPermissionMode || (mode === "plan") !== planMode
-      setSessionPermissionMode(mode)
-      setPlanMode(mode === "plan")
+      applyPermissionModeState(mode, "session")
       const activeRuntimeId = activeRuntimeIdRef.current
       const activeRun = activeRuntimeId
         ? runningSessionsRef.current.get(activeRuntimeId)
         : null
       if (activeRun) {
         activeRun.permissionMode = mode
+        activeRun.permissionModeSource = "session"
       }
+      writeCurrentPermissionModeSidecar(mode)
       if (changed) {
         refreshActiveComposerRuntime("权限模式已刷新，下一次发送会使用新配置")
       }
     },
-    [planMode, refreshActiveComposerRuntime, sessionPermissionMode]
+    [
+      applyPermissionModeState,
+      planMode,
+      refreshActiveComposerRuntime,
+      sessionPermissionMode,
+      writeCurrentPermissionModeSidecar
+    ]
   )
 
-  const handlePlanModeChange = useCallback((enabled: boolean) => {
-    handlePermissionModeChange(
-      enabled ? "plan" : loadSettings().defaultPermissionMode
-    )
-  }, [handlePermissionModeChange])
+  const handlePlanModeChange = useCallback(
+    (enabled: boolean) => {
+      if (enabled) {
+        handlePermissionModeChange("plan")
+        return
+      }
+      const mode = loadSettings().defaultPermissionMode
+      const changed = mode !== sessionPermissionMode || planMode
+      applyPermissionModeState(mode, "default")
+      const activeRuntimeId = activeRuntimeIdRef.current
+      const activeRun = activeRuntimeId
+        ? runningSessionsRef.current.get(activeRuntimeId)
+        : null
+      if (activeRun) {
+        activeRun.permissionMode = mode
+        activeRun.permissionModeSource = "default"
+      }
+      writeCurrentPermissionModeSidecar(null)
+      if (changed) {
+        refreshActiveComposerRuntime("权限模式已恢复默认，下一次发送会使用新配置")
+      }
+    },
+    [
+      applyPermissionModeState,
+      handlePermissionModeChange,
+      planMode,
+      refreshActiveComposerRuntime,
+      sessionPermissionMode,
+      writeCurrentPermissionModeSidecar
+    ]
+  )
 
   const handleCollaborationModeChange = useCallback((enabled: boolean) => {
     if (!enabled) {
@@ -1868,9 +1964,10 @@ export default function App() {
       sessionComposerRef.current = null
       setSessionComposer(null)
       setComposerPrefs(globalDefault)
+      applyDefaultPermissionModeState()
       setCollaborationMode(false)
     },
-    [detachActiveSession, globalDefault]
+    [applyDefaultPermissionModeState, detachActiveSession, globalDefault]
   )
 
   const switchSession = useCallback(
@@ -1897,9 +1994,18 @@ export default function App() {
         if (token !== switchTokenRef.current) return
         // sidecar 里持久化的 result 事件追加到末尾，恢复 ✓ 完成 chip
         const sidecar = (await readSessionSidecar(p.cwd, s.id)) as
-          | { result?: ClaudeEvent; composer?: { model?: string; effort?: string } }
+          | {
+              result?: ClaudeEvent
+              composer?: { model?: string; effort?: string }
+              permissionMode?: unknown
+            }
           | null
         if (token !== switchTokenRef.current) return
+        const sidecarPermissionMode = pickPermissionModeFromSidecar(sidecar)
+        applyPermissionModeState(
+          sidecarPermissionMode ?? loadSettings().defaultPermissionMode,
+          sidecarPermissionMode ? "session" : "default"
+        )
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
         dispatch({ kind: "load_transcript", events: merged })
@@ -1922,6 +2028,7 @@ export default function App() {
       }
     },
     [
+      applyPermissionModeState,
       detachActiveSession,
       findRunningSession,
       activateRunningSession,
@@ -1942,6 +2049,7 @@ export default function App() {
       sessionComposerRef.current = null
       setSessionComposer(null)
       setComposerPrefs(globalDefault)
+      applyDefaultPermissionModeState()
       setProjects(listProjects())
       returnViewRef.current = "chat"
       settingsEntryTargetRef.current = null
@@ -1950,7 +2058,7 @@ export default function App() {
       setShowHistory(false)
       toast.success(`项目「${p.name}」已添加`)
     },
-    [detachActiveSession, globalDefault]
+    [applyDefaultPermissionModeState, detachActiveSession, globalDefault]
   )
 
   const handleRemove = useCallback((id: string) => {
@@ -1970,12 +2078,19 @@ export default function App() {
       sessionComposerRef.current = null
       setSessionComposer(null)
       setComposerPrefs(globalDefault)
+      applyDefaultPermissionModeState()
       dispatch({ kind: "reset" })
       setReviewDiffs([])
     }
     setPendingRemoveProjectId(null)
     toast.success("项目已从列表移除")
-  }, [pendingRemoveProjectId, project, stopRunningSessionsForProject, globalDefault])
+  }, [
+    applyDefaultPermissionModeState,
+    pendingRemoveProjectId,
+    project,
+    stopRunningSessionsForProject,
+    globalDefault
+  ])
 
   const pendingRemoveProject = useMemo(
     () =>
@@ -1997,8 +2112,9 @@ export default function App() {
     sessionComposerRef.current = null
     setSessionComposer(null)
     setComposerPrefs(globalDefault)
+    applyDefaultPermissionModeState()
     setCollaborationMode(false)
-  }, [detachActiveSession, globalDefault])
+  }, [applyDefaultPermissionModeState, detachActiveSession, globalDefault])
 
   const openSettings = useCallback((section: string = "general") => {
     if (!showSettings) {
@@ -2135,7 +2251,8 @@ export default function App() {
     sessionComposerRef.current = null
     setSessionComposer(null)
     setComposerPrefs(globalDefault)
-  }, [detachActiveSession, globalDefault])
+    applyDefaultPermissionModeState()
+  }, [applyDefaultPermissionModeState, detachActiveSession, globalDefault])
 
   const deleteCurrentSession = useCallback(() => {
     if (!project) return
@@ -2172,12 +2289,20 @@ export default function App() {
       sessionComposerRef.current = null
       setSessionComposer(null)
       setComposerPrefs(globalDefault)
+      applyDefaultPermissionModeState()
       setSidebarRefreshKey((k) => k + 1)
       toast.success("会话已删除")
     } catch (e) {
       toast.error(`删除失败: ${String(e)}`)
     }
-  }, [project, selectedSessionId, state, stopRunningSessionForJsonl, globalDefault])
+  }, [
+    applyDefaultPermissionModeState,
+    project,
+    selectedSessionId,
+    state,
+    stopRunningSessionForJsonl,
+    globalDefault
+  ])
 
   const archiveCurrentSession = useCallback(async () => {
     if (!project) return
@@ -2199,12 +2324,20 @@ export default function App() {
       sessionComposerRef.current = null
       setSessionComposer(null)
       setComposerPrefs(globalDefault)
+      applyDefaultPermissionModeState()
       toast.success("会话已归档")
     } else {
       toast.success("已取消归档")
     }
     setSidebarRefreshKey((k) => k + 1)
-  }, [project, selectedSessionId, state, stopRunningSessionForJsonl, globalDefault])
+  }, [
+    applyDefaultPermissionModeState,
+    project,
+    selectedSessionId,
+    state,
+    stopRunningSessionForJsonl,
+    globalDefault
+  ])
 
   const empty = state.entries.length === 0
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
