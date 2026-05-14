@@ -174,7 +174,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
 
   if (t === "message_start") {
     const msg = (inner.message as Record<string, unknown>) ?? {}
-    const role = (msg.role as "user" | "assistant" | undefined) ?? "assistant"
+    const role = msg.role as "user" | "assistant" | undefined
     if (role !== "assistant") {
       return { ...state, hiddenStream: true }
     }
@@ -206,6 +206,9 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
   if (t === "content_block_start") {
     const cb = (inner.content_block as Record<string, unknown>) ?? {}
     const blkType = (cb.type as string) ?? "unknown"
+    if (blkType === "text" && isSkillMetaPromptText(cb.text as string | undefined)) {
+      return removeStreamingMessageAndHide(state)
+    }
     const blk: UIBlock = { type: blkType as UIBlock["type"], partial: true }
     if (blkType === "text") blk.text = (cb.text as string) ?? ""
     else if (blkType === "thinking") {
@@ -244,6 +247,9 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
         ((cb as UIBlock & { _partialJson?: string })._partialJson ?? "") +
         ((d.partial_json as string) ?? "")
       ;(next as UIBlock & { _partialJson?: string })._partialJson = partial
+    }
+    if (next.type === "text" && isSkillMetaPromptText(next.text)) {
+      return removeStreamingMessageAndHide(state)
     }
     blocks[i] = next
     entries[idx] = { ...cur, blocks }
@@ -405,7 +411,7 @@ function isSkillMetaPromptText(text: string | undefined): boolean {
 function isMetaSkillPromptEvent(ev: ClaudeEvent): boolean {
   if (!ev || typeof ev !== "object") return false
   const obj = ev as Record<string, unknown>
-  if (obj.type !== "user" || obj.isMeta !== true) return false
+  if (obj.type !== "user") return false
   const msg = (obj.message as Record<string, unknown> | undefined) ?? {}
   return convertContentBlocks(msg.content).some(
     (block) => block.type === "text" && isSkillMetaPromptText(block.text)
@@ -415,7 +421,7 @@ function isMetaSkillPromptEvent(ev: ClaudeEvent): boolean {
 function removeLeakedSkillMetaPrompt(state: State): State {
   for (let i = state.entries.length - 1; i >= 0; i--) {
     const entry = state.entries[i]
-    if (entry.kind !== "message" || entry.role !== "user") continue
+    if (entry.kind !== "message") continue
     const hasSkillMeta = entry.blocks.some(
       (block) => block.type === "text" && isSkillMetaPromptText(block.text)
     )
@@ -425,6 +431,14 @@ function removeLeakedSkillMetaPrompt(state: State): State {
     return { ...state, entries, hiddenStream: false }
   }
   return { ...state, hiddenStream: false }
+}
+
+function removeStreamingMessageAndHide(state: State): State {
+  const idx = findStreamingIdx(state.entries)
+  if (idx < 0) return { ...state, hiddenStream: true }
+  const entries = state.entries.slice()
+  entries.splice(idx, 1)
+  return { entries, hiddenStream: true }
 }
 
 function normalizeUserBlocks(blocks: UIBlock[]): UIBlock[] {

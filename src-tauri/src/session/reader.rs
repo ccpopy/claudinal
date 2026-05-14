@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
+const SKILL_META_PROMPT_PREFIX: &str = "Base directory for this skill:";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionMeta {
     pub id: String,
@@ -269,7 +271,8 @@ fn remove_tag_section(input: String, tag: &str) -> String {
 fn title_candidate(s: &str, max_chars: usize) -> Option<String> {
     let cleaned = strip_internal_text_sections(s);
     let trimmed = cleaned.trim();
-    if trimmed.is_empty() || is_internal_command_text(trimmed) {
+    let internal = is_internal_command_text(trimmed) || is_skill_meta_prompt_text(trimmed);
+    if trimmed.is_empty() || internal {
         return None;
     }
     Some(truncate_chars(trimmed, max_chars))
@@ -280,6 +283,33 @@ pub(crate) fn is_internal_generated_event(v: &serde_json::Value) -> bool {
         || v.get("isSidechain")
             .and_then(|x| x.as_bool())
             .unwrap_or(false)
+        || is_skill_meta_prompt_event(v)
+}
+
+fn is_skill_meta_prompt_text(s: &str) -> bool {
+    s.trim_start().starts_with(SKILL_META_PROMPT_PREFIX)
+}
+
+fn is_skill_meta_prompt_event(v: &serde_json::Value) -> bool {
+    if v.get("type").and_then(|x| x.as_str()) != Some("user") {
+        return false;
+    }
+    let Some(content) = v.pointer("/message/content") else {
+        return false;
+    };
+    if let Some(s) = content.as_str() {
+        return is_skill_meta_prompt_text(s);
+    }
+    let Some(items) = content.as_array() else {
+        return false;
+    };
+    items.iter().any(|item| {
+        item.get("type").and_then(|x| x.as_str()) == Some("text")
+            && item
+                .get("text")
+                .and_then(|x| x.as_str())
+                .is_some_and(is_skill_meta_prompt_text)
+    })
 }
 
 pub(crate) fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>) {
@@ -519,6 +549,46 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
         assert_eq!(msg_count, 2);
+        assert_eq!(first_user_text, Some("真实用户消息".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_jsonl_skips_skill_prompt_even_without_meta_flag() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-skill-prefix-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("skill-prefix.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+                    }]
+                },
+                "sourceToolUseID": "toolu_skill"
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": "真实用户消息" }
+            }),
+        ];
+        let body = lines
+            .into_iter()
+            .map(|line| serde_json::to_string(&line))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        std::fs::write(&path, body)?;
+
+        let (msg_count, _, first_user_text) = scan_jsonl(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        assert_eq!(msg_count, 1);
         assert_eq!(first_user_text, Some("真实用户消息".to_string()));
         Ok(())
     }

@@ -70,6 +70,102 @@ describe("reducer.partial streaming", () => {
     expect(s.entries).toHaveLength(0)
   })
 
+  it("does not render streamed skill prompts when the partial stream omits the user role", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "meta-user-without-role" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "text_delta",
+            text: "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design"
+          }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: { type: "message_stop" }
+      })
+    })
+
+    expect(s.entries).toHaveLength(0)
+  })
+
+  it("removes a streamed skill prompt if it was misclassified as assistant text", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "meta-as-assistant", role: "assistant" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "text_delta",
+            text: "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design"
+          }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: { type: "message_stop" }
+      })
+    })
+
+    expect(s.entries).toHaveLength(0)
+  })
+
   it("removes a leaked visible skill meta prompt when the final meta event arrives", () => {
     let s = reduce(init(), {
       kind: "user_local",
@@ -100,6 +196,68 @@ describe("reducer.partial streaming", () => {
         }
       } as never)
     })
+    expect(s.entries).toHaveLength(0)
+  })
+
+  it("removes a leaked assistant-shaped skill prompt when the final meta event arrives", () => {
+    let s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "leaked-asst-meta",
+          content: [
+            {
+              type: "text",
+              text: "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design"
+            }
+          ]
+        } as never
+      })
+    })
+    expect(s.entries).toHaveLength(1)
+
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        isMeta: true,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+            }
+          ]
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(0)
+  })
+
+  it("filters skill prompt user events even when isMeta is missing", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+            }
+          ]
+        },
+        sourceToolUseID: "toolu_skill"
+      } as never)
+    })
+
     expect(s.entries).toHaveLength(0)
   })
 
