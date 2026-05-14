@@ -78,12 +78,13 @@ export function PermissionDialog({ request, onSettled }: Props) {
   return (
     <Dialog
       open={!!request}
-      onOpenChange={() => {}}
+      onOpenChange={(open) => {
+        if (!open && request && !busy) deny()
+      }}
     >
       <DialogContent
         ref={contentRef}
         tabIndex={-1}
-        showCloseButton={false}
         className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
