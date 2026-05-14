@@ -589,7 +589,7 @@ export function Sidebar({
                               {sessionsState.message}
                             </div>
                           ) : visibleSessions.length === 0 ? (
-                            <div className="px-2 py-1 text-xs text-sidebar-foreground/60">
+                            <div className="py-1 pl-8 pr-2 text-xs text-sidebar-foreground/60">
                               暂无历史会话
                             </div>
                           ) : (
