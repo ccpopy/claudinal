@@ -252,11 +252,14 @@ jobs:
 
           tag="${GITHUB_REF_NAME}"
           previous_tag="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
+          tag_body="$(git for-each-ref "refs/tags/${tag}" --format='%(contents:body)' || true)"
 
           {
             echo "## Changes"
             echo
-            if [ -n "$previous_tag" ]; then
+            if [ -n "$(printf '%s' "$tag_body" | tr -d '[:space:]')" ]; then
+              printf "%s\n" "$tag_body"
+            elif [ -n "$previous_tag" ]; then
               echo "本版本包含以下改动："
               echo
               git log --pretty=format:'- %s (`%h`)' "${previous_tag}..${tag}"
