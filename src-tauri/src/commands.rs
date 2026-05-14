@@ -539,6 +539,18 @@ pub async fn send_user_message(
 }
 
 #[tauri::command]
+pub async fn send_skill_invocation(
+    manager: State<'_, Manager>,
+    session_id: String,
+    command_text: String,
+    meta_text: String,
+) -> Result<()> {
+    manager
+        .send_skill_invocation(&session_id, command_text, meta_text)
+        .await
+}
+
+#[tauri::command]
 pub async fn stop_session(manager: State<'_, Manager>, session_id: String) -> Result<()> {
     manager.stop(&session_id).await
 }

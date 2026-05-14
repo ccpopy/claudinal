@@ -231,6 +231,14 @@ export async function sendUserMessage(
   return invoke("send_user_message", { sessionId, contentBlocks })
 }
 
+export async function sendSkillInvocation(
+  sessionId: string,
+  commandText: string,
+  metaText: string
+): Promise<void> {
+  return invoke("send_skill_invocation", { sessionId, commandText, metaText })
+}
+
 export async function stopSession(sessionId: string): Promise<void> {
   return invoke("stop_session", { sessionId })
 }

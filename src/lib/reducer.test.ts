@@ -299,6 +299,30 @@ describe("reducer.tool_use_result attachment", () => {
     expect(s.entries).toHaveLength(0)
   })
 
+  it("renders skill command echo blocks as visible slash commands", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "<command-message>frontend-design:frontend-design</command-message>\n<command-name>/frontend-design:frontend-design</command-name>\n<command-args>可以主题切换，因为有用户反映：眼要瞎了</command-args>"
+            }
+          ]
+        }
+      } as never)
+    })
+    const msg = lastMessage(s)
+    expect(msg.blocks[0].text).toBe(
+      "/frontend-design 可以主题切换，因为有用户反映：眼要瞎了"
+    )
+  })
+
   it("filters sidechain user prompts from the visible transcript", () => {
     let s = init()
     s = reduce(s, {

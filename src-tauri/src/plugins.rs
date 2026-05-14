@@ -69,6 +69,15 @@ pub struct Skill {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInvocation {
+    pub name: String,
+    pub arguments: String,
+    pub command_text: String,
+    pub meta_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SkillInstallEntry {
     pub name: String,
     pub path: String,
@@ -355,6 +364,105 @@ fn scan_skill_dir(root: &Path, source: String, out: &mut Vec<Skill>) {
     }
 }
 
+fn collect_skills(cwd: Option<&str>) -> Result<Vec<Skill>> {
+    let mut out = Vec::new();
+    // 用户级
+    let user_dir = home()?.join(".claude").join("skills");
+    scan_skill_dir(&user_dir, "user".to_string(), &mut out);
+    // 项目级
+    if let Some(cwd) = cwd {
+        let proj_dir = Path::new(cwd).join(".claude").join("skills");
+        scan_skill_dir(&proj_dir, "project".to_string(), &mut out);
+    }
+    // 已安装插件携带的技能（扫 cache 下每个插件的 skills/）
+    let plugins_cache = home()?.join(".claude").join("plugins").join("cache");
+    if plugins_cache.is_dir() {
+        // cache/<marketplace>/<plugin>/<version>/skills/...
+        if let Ok(market_iter) = std::fs::read_dir(&plugins_cache) {
+            for market in market_iter.flatten() {
+                if !market.path().is_dir() {
+                    continue;
+                }
+                let market_name = market.file_name().to_string_lossy().to_string();
+                if let Ok(plugin_iter) = std::fs::read_dir(market.path()) {
+                    for plugin in plugin_iter.flatten() {
+                        if !plugin.path().is_dir() {
+                            continue;
+                        }
+                        let plugin_name = plugin.file_name().to_string_lossy().to_string();
+                        // 进一步进入版本目录
+                        if let Ok(ver_iter) = std::fs::read_dir(plugin.path()) {
+                            for ver in ver_iter.flatten() {
+                                let skills_dir = ver.path().join("skills");
+                                if skills_dir.is_dir() {
+                                    let src = format!("plugin:{plugin_name}@{market_name}");
+                                    scan_skill_dir(&skills_dir, src, &mut out);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+fn parse_skill_command(text: &str) -> Option<(String, String)> {
+    let rest = text.trim_start().strip_prefix('/')?;
+    let split_at = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let raw_command = rest[..split_at].trim();
+    let command = raw_command.split(':').next().unwrap_or(raw_command).trim();
+    if command.is_empty() {
+        return None;
+    }
+    let arguments = rest[split_at..].trim_start().to_string();
+    Some((command.to_string(), arguments))
+}
+
+fn strip_skill_frontmatter(raw: &str) -> &str {
+    let trimmed = raw.trim_start_matches('\u{feff}').trim_start();
+    if !trimmed.starts_with("---") {
+        return raw;
+    }
+    let after_open = &trimmed[3..];
+    let Some(end) = after_open
+        .find("\n---")
+        .or_else(|| after_open.find("\r\n---"))
+    else {
+        return raw;
+    };
+    let closing = &trimmed[3 + end..];
+    let rest = closing
+        .strip_prefix("\r\n---")
+        .or_else(|| closing.strip_prefix("\n---"));
+    let Some(rest) = rest else {
+        return raw;
+    };
+    rest.strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'))
+        .unwrap_or(rest)
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn skill_source_priority(source: &str) -> u8 {
+    match source {
+        "project" => 0,
+        "user" => 1,
+        source if source.starts_with("plugin:") => 2,
+        _ => 3,
+    }
+}
+
 fn is_valid_skill_dir_name(name: &str) -> bool {
     let trimmed = name.trim();
     !trimmed.is_empty()
@@ -436,48 +544,53 @@ fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
 
 #[tauri::command]
 pub async fn list_skills(cwd: Option<String>) -> Result<Vec<Skill>> {
-    let mut out = Vec::new();
-    // 用户级
-    let user_dir = home()?.join(".claude").join("skills");
-    scan_skill_dir(&user_dir, "user".to_string(), &mut out);
-    // 项目级
-    if let Some(cwd) = cwd.as_deref() {
-        let proj_dir = Path::new(cwd).join(".claude").join("skills");
-        scan_skill_dir(&proj_dir, "project".to_string(), &mut out);
+    collect_skills(cwd.as_deref())
+}
+
+#[tauri::command]
+pub async fn expand_skill_command(
+    cwd: Option<String>,
+    text: String,
+) -> Result<Option<SkillInvocation>> {
+    let Some((requested_name, arguments)) = parse_skill_command(&text) else {
+        return Ok(None);
+    };
+    let mut matches = collect_skills(cwd.as_deref())?
+        .into_iter()
+        .filter(|skill| {
+            skill.user_invocable && skill.name.eq_ignore_ascii_case(requested_name.as_str())
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(None);
     }
-    // 已安装插件携带的技能（扫 cache 下每个插件的 skills/）
-    let plugins_cache = home()?.join(".claude").join("plugins").join("cache");
-    if plugins_cache.is_dir() {
-        // cache/<marketplace>/<plugin>/<version>/skills/...
-        if let Ok(market_iter) = std::fs::read_dir(&plugins_cache) {
-            for market in market_iter.flatten() {
-                if !market.path().is_dir() {
-                    continue;
-                }
-                let market_name = market.file_name().to_string_lossy().to_string();
-                if let Ok(plugin_iter) = std::fs::read_dir(market.path()) {
-                    for plugin in plugin_iter.flatten() {
-                        if !plugin.path().is_dir() {
-                            continue;
-                        }
-                        let plugin_name = plugin.file_name().to_string_lossy().to_string();
-                        // 进一步进入版本目录
-                        if let Ok(ver_iter) = std::fs::read_dir(plugin.path()) {
-                            for ver in ver_iter.flatten() {
-                                let skills_dir = ver.path().join("skills");
-                                if skills_dir.is_dir() {
-                                    let src = format!("plugin:{plugin_name}@{market_name}");
-                                    scan_skill_dir(&skills_dir, src, &mut out);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(out)
+    matches.sort_by(|a, b| {
+        skill_source_priority(&a.source)
+            .cmp(&skill_source_priority(&b.source))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    let skill = matches.remove(0);
+    let skill_path = PathBuf::from(&skill.path);
+    let raw = std::fs::read_to_string(&skill_path)?;
+    let body = strip_skill_frontmatter(&raw).trim();
+    let base_dir = skill_path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let escaped_name = xml_escape(&skill.name);
+    let escaped_arguments = xml_escape(&arguments);
+    let command_text = format!(
+        "<command-message>{0}:{0}</command-message>\n<command-name>/{0}:{0}</command-name>\n<command-args>{1}</command-args>",
+        escaped_name, escaped_arguments
+    );
+    let meta_text =
+        format!("Base directory for this skill: {base_dir}\n\n{body}\n\nARGUMENTS: {arguments}");
+    Ok(Some(SkillInvocation {
+        name: skill.name,
+        arguments,
+        command_text,
+        meta_text,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -690,4 +803,43 @@ pub async fn run_plugin_command(args: PluginCommand) -> Result<PluginCommandResu
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         exit_code,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_skill_command, strip_skill_frontmatter, xml_escape};
+
+    #[test]
+    fn parses_skill_command_arguments() {
+        let parsed =
+            parse_skill_command("  /frontend-design 可以主题切换，因为有用户反映：眼要瞎了")
+                .expect("skill command");
+
+        assert_eq!(parsed.0, "frontend-design");
+        assert_eq!(parsed.1, "可以主题切换，因为有用户反映：眼要瞎了");
+    }
+
+    #[test]
+    fn parses_scoped_skill_command_name() {
+        let parsed = parse_skill_command("/frontend-design:frontend-design 优化界面")
+            .expect("skill command");
+
+        assert_eq!(parsed.0, "frontend-design");
+        assert_eq!(parsed.1, "优化界面");
+    }
+
+    #[test]
+    fn strips_skill_frontmatter() {
+        let raw = "---\nname: frontend-design\ndescription: test\n---\n# Body\nARG";
+
+        assert_eq!(strip_skill_frontmatter(raw), "# Body\nARG");
+    }
+
+    #[test]
+    fn escapes_command_xml_text() {
+        assert_eq!(
+            xml_escape("主题 <dark> & \"light\""),
+            "主题 &lt;dark&gt; &amp; &quot;light&quot;"
+        );
+    }
 }

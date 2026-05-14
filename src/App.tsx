@@ -20,6 +20,7 @@ import {
   reviewSnapshotFinish,
   spawnSession,
   sendUserMessage,
+  sendSkillInvocation,
   stopSession,
   listenSessionEvents,
   listenSessionErrors,
@@ -66,7 +67,12 @@ import {
   slashCommandsFromSkills
 } from "@/lib/slashCommands"
 import { splitUploadedFileText } from "@/lib/fileAttachments"
-import { listSkills, type Skill } from "@/lib/plugins"
+import {
+  expandSkillCommand,
+  listSkills,
+  type Skill,
+  type SkillInvocation
+} from "@/lib/plugins"
 import {
   buildClaudeEnv,
   cleanupManagedGlobalClaudeSettings,
@@ -250,6 +256,7 @@ type QueuedInput = {
   images: ImagePayload[]
   documents: DocumentPayload[]
   cliBlocks: Array<Record<string, unknown>>
+  skillInvocation?: SkillInvocation | null
 }
 type ReturnView = "chat" | "plugins" | "history"
 type ChatReturnTarget =
@@ -302,6 +309,22 @@ function buildCliBlocks(
     })
   }
   return blocks
+}
+
+async function sendCliInput(
+  sessionId: string,
+  blocks: Array<Record<string, unknown>>,
+  skillInvocation?: SkillInvocation | null
+): Promise<void> {
+  if (skillInvocation) {
+    await sendSkillInvocation(
+      sessionId,
+      skillInvocation.commandText,
+      skillInvocation.metaText
+    )
+    return
+  }
+  await sendUserMessage(sessionId, blocks)
 }
 
 const QUEUED_PREVIEW_LIMIT = 80
@@ -1284,7 +1307,7 @@ export default function App() {
       if (!item) return false
       await beginRunReview(run)
       try {
-        await sendUserMessage(run.runtimeId, item.cliBlocks)
+        await sendCliInput(run.runtimeId, item.cliBlocks, item.skillInvocation)
         run.queuedInputs = run.queuedInputs.filter(
           (queued) => queued.localId !== item.localId
         )
@@ -1685,17 +1708,24 @@ export default function App() {
         toast.success("已清空当前会话")
         return
       }
-      if (
-        trimmed.startsWith("/") &&
-        images.length === 0 &&
-        documents.length === 0
-      ) {
+      const isTextOnlySlash =
+        trimmed.startsWith("/") && images.length === 0 && documents.length === 0
+      let skillInvocation: SkillInvocation | null = null
+      if (isTextOnlySlash) {
+        try {
+          skillInvocation = await expandSkillCommand(project?.cwd ?? null, text)
+        } catch (error) {
+          toast.error(`读取技能命令失败: ${String(error)}`)
+          return
+        }
+      }
+      if (isTextOnlySlash && !skillInvocation) {
         // 其他斜杠命令是 TUI 专属（/usage、/permissions、/login 等），桌面端做不了
         // 仍把文本发给 CLI（CLI 会当普通文本处理），同时给一次性提醒
         toast.info("斜杠命令是 CLI TUI 专属，GUI 中作普通文本处理")
       }
       let cliText = text
-      if (collaborationMode) {
+      if (collaborationMode && !skillInvocation) {
         const cfg = loadCollabSettings()
         if (!cfg.enabled) {
           setSettingsSection("collaboration")
@@ -1738,7 +1768,8 @@ export default function App() {
           text,
           images,
           documents,
-          cliBlocks: blocks
+          cliBlocks: blocks,
+          skillInvocation
         }
         if (mode === "followup") {
           run.queuedInputs = [...run.queuedInputs, queuedInput]
@@ -1747,7 +1778,7 @@ export default function App() {
           return
         }
         try {
-          await sendUserMessage(id, blocks)
+          await sendCliInput(id, blocks, skillInvocation)
           applyRunningAction(run, {
             kind: "user_local",
             blocks: queuedInputUiBlocks(queuedInput),
@@ -1774,7 +1805,9 @@ export default function App() {
       }
       await measureSendStep("beginRunReview", () => beginRunReview(run ?? null))
       try {
-        await measureSendStep("sendUserMessage", () => sendUserMessage(id, blocks))
+        await measureSendStep("sendCliInput", () =>
+          sendCliInput(id, blocks, skillInvocation)
+        )
         if (collaborationMode) setCollaborationMode(false)
       } catch (e) {
         toast.error(`发送失败: ${String(e)}`)
@@ -1850,7 +1883,11 @@ export default function App() {
       if (!found) return
       if (found.item.mode === "guide") return
       try {
-        await sendUserMessage(found.run.runtimeId, found.item.cliBlocks)
+        await sendCliInput(
+          found.run.runtimeId,
+          found.item.cliBlocks,
+          found.item.skillInvocation
+        )
         found.run.queuedInputs = found.run.queuedInputs.filter(
           (item) => item.localId !== localId
         )

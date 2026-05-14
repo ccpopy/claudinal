@@ -393,11 +393,34 @@ function normalizeUserBlocks(blocks: UIBlock[]): UIBlock[] {
       out.push(block)
       continue
     }
-    const text = stripInternalTextSections(block.text)
+    const commandText = commandXmlToSlashText(block.text)
+    const text = commandText ?? stripInternalTextSections(block.text)
     if (!text.trim()) continue
     out.push(...splitUploadedFileText(text))
   }
   return out
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+}
+
+function commandXmlToSlashText(text: string | undefined): string | null {
+  if (!text) return null
+  const commandName = text.match(/<command-name>\s*\/([\s\S]*?)<\/command-name>/i)
+  if (!commandName) return null
+  const rawNameWithScope = decodeXmlText(commandName[1]).trim()
+  if (!rawNameWithScope.includes(':')) return null
+  const rawName = rawNameWithScope.split(':')[0].trim()
+  if (!rawName) return null
+  const commandArgs = text.match(/<command-args>([\s\S]*?)<\/command-args>/i)
+  const args = commandArgs ? decodeXmlText(commandArgs[1]).trim() : ""
+  return args ? `/${rawName} ${args}` : `/${rawName}`
 }
 
 function stripInternalTextSections(text: string | undefined): string {

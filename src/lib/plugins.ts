@@ -42,6 +42,13 @@ export interface Skill {
   user_invocable: boolean
 }
 
+export interface SkillInvocation {
+  name: string
+  arguments: string
+  commandText: string
+  metaText: string
+}
+
 export interface PluginCommandResult {
   stdout: string
   stderr: string
@@ -78,6 +85,16 @@ export async function listMarketplaces(): Promise<Marketplace[]> {
 
 export async function listSkills(cwd?: string | null): Promise<Skill[]> {
   return invoke<Skill[]>("list_skills", { cwd: cwd ?? null })
+}
+
+export async function expandSkillCommand(
+  cwd: string | null | undefined,
+  text: string
+): Promise<SkillInvocation | null> {
+  return invoke<SkillInvocation | null>("expand_skill_command", {
+    cwd: cwd ?? null,
+    text
+  })
 }
 
 export async function installSkillFromPath(

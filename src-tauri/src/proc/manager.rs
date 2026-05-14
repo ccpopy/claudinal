@@ -261,7 +261,37 @@ impl Manager {
                 "content": content_blocks
             }
         });
-        self.write_json_line(session_id, payload).await
+        self.write_json_lines(session_id, vec![payload]).await
+    }
+
+    pub async fn send_skill_invocation(
+        &self,
+        session_id: &str,
+        command_text: String,
+        meta_text: String,
+    ) -> Result<()> {
+        let command_payload = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": command_text
+            }
+        });
+        let meta_payload = json!({
+            "type": "user",
+            "isMeta": true,
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": meta_text
+                    }
+                ]
+            }
+        });
+        self.write_json_lines(session_id, vec![command_payload, meta_payload])
+            .await
     }
 
     pub async fn resolve_control_request(
@@ -282,16 +312,24 @@ impl Manager {
     }
 
     async fn write_json_line(&self, session_id: &str, payload: Value) -> Result<()> {
+        self.write_json_lines(session_id, vec![payload]).await
+    }
+
+    async fn write_json_lines(&self, session_id: &str, payloads: Vec<Value>) -> Result<()> {
         let session = self
             .sessions
             .get(session_id)
             .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?
             .clone();
-        let mut line = serde_json::to_string(&payload)?;
-        debug!(session = %session_id, "stdin <- {} bytes", line.len());
-        line.push('\n');
+        let mut body = String::new();
+        for payload in payloads {
+            let line = serde_json::to_string(&payload)?;
+            debug!(session = %session_id, "stdin <- {} bytes", line.len());
+            body.push_str(&line);
+            body.push('\n');
+        }
         let mut stdin = session.stdin.lock().await;
-        stdin.write_all(line.as_bytes()).await?;
+        stdin.write_all(body.as_bytes()).await?;
         stdin.flush().await?;
         Ok(())
     }
