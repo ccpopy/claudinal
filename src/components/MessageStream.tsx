@@ -1,9 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, MessageSquareDashed } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
+import {
+  chatTimelinePreview,
+  chatTimelineRoleLabel,
+  formatTimelineTime
+} from "@/lib/chatTimeline"
 import type { ReviewRunDiff } from "@/lib/diff"
 import type { UIBlock, UIEntry, UIMessage } from "@/types/ui"
+import { ChatTimelineNav, type ChatTimelineItem } from "./ChatTimelineNav"
 import { MessageCard } from "./MessageCard"
 import { RunGroup, type RunStep } from "./RunGroup"
 import { RunReviewCard } from "./RunReviewCard"
@@ -177,10 +183,76 @@ export function MessageStream({
   onQueuedDelete
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const activeTimelineIdRef = useRef<string | null>(null)
   const [pinnedToBottom, setPinnedToBottom] = useState(true)
+  const [activeTimelineId, setActiveTimelineId] = useState<string | null>(null)
+  const [timelineVisible, setTimelineVisible] = useState(false)
+
+  const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
+
+  const timelineItems = useMemo<ChatTimelineItem[]>(
+    () =>
+      groups.flatMap((g) =>
+        g.kind === "msg"
+          ? [
+              {
+                id: g.key,
+                role: g.msg.role,
+                label: chatTimelineRoleLabel(g.msg.role),
+                preview: chatTimelinePreview(g.msg),
+                time: formatTimelineTime(g.msg.stopTs ?? g.msg.ts),
+                queued: g.msg.queued
+              }
+            ]
+          : []
+      ),
+    [groups]
+  )
 
   useEffect(() => {
-    if (!autoScroll) return
+    const validIds = new Set(timelineItems.map((item) => item.id))
+    for (const id of timelineTargetRefs.current.keys()) {
+      if (!validIds.has(id)) timelineTargetRefs.current.delete(id)
+    }
+    if (!activeTimelineIdRef.current || !validIds.has(activeTimelineIdRef.current)) {
+      const next = timelineItems[0]?.id ?? null
+      activeTimelineIdRef.current = next
+      setActiveTimelineId(next)
+    }
+  }, [timelineItems])
+
+  const setTimelineTargetRef = useCallback(
+    (id: string, node: HTMLDivElement | null) => {
+      if (node) {
+        timelineTargetRefs.current.set(id, node)
+      } else {
+        timelineTargetRefs.current.delete(id)
+      }
+    },
+    []
+  )
+
+  const updateActiveTimeline = useCallback(() => {
+    const el = ref.current
+    const viewport = el?.querySelector(
+      "[data-slot='scroll-area-viewport']"
+    ) as HTMLElement | null
+    if (!viewport || timelineItems.length === 0) return
+    const anchorTop = viewport.scrollTop + viewport.clientHeight * 0.32
+    let next = timelineItems[0].id
+    for (const item of timelineItems) {
+      const target = timelineTargetRefs.current.get(item.id)
+      if (!target) continue
+      if (target.offsetTop <= anchorTop) next = item.id
+      else break
+    }
+    if (next === activeTimelineIdRef.current) return
+    activeTimelineIdRef.current = next
+    setActiveTimelineId(next)
+  }, [timelineItems])
+
+  useEffect(() => {
     const el = ref.current
     if (!el) return
     const viewport = el.querySelector(
@@ -190,12 +262,14 @@ export function MessageStream({
     const onScroll = () => {
       const distance =
         viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
-      setPinnedToBottom(distance < 32)
+      setTimelineVisible(viewport.scrollHeight > viewport.clientHeight)
+      if (autoScroll) setPinnedToBottom(distance < 32)
+      updateActiveTimeline()
     }
     viewport.addEventListener("scroll", onScroll, { passive: true })
     onScroll()
     return () => viewport.removeEventListener("scroll", onScroll)
-  }, [autoScroll])
+  }, [autoScroll, updateActiveTimeline])
 
   const scrollToBottom = () => {
     const el = ref.current
@@ -205,6 +279,7 @@ export function MessageStream({
     if (!viewport) return
     viewport.scrollTop = viewport.scrollHeight
     setPinnedToBottom(true)
+    updateActiveTimeline()
   }
 
   useEffect(() => {
@@ -212,7 +287,20 @@ export function MessageStream({
     scrollToBottom()
   }, [entries, streaming, autoScroll, pinnedToBottom])
 
-  const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
+  const scrollToTimelineItem = useCallback((id: string) => {
+    const el = ref.current
+    const viewport = el?.querySelector(
+      "[data-slot='scroll-area-viewport']"
+    ) as HTMLElement | null
+    const target = timelineTargetRefs.current.get(id)
+    if (!viewport || !target) return
+    viewport.scrollTo({
+      top: Math.max(target.offsetTop - 24, 0),
+      behavior: "smooth"
+    })
+    activeTimelineIdRef.current = id
+    setActiveTimelineId(id)
+  }, [])
 
   if (entries.length === 0) {
     return (
@@ -235,13 +323,19 @@ export function MessageStream({
         {groups.map((g) => {
           if (g.kind === "msg") {
             return (
-              <MessageCard
+              <div
                 key={g.key}
-                entry={g.msg}
-                onQueuedGuide={onQueuedGuide}
-                onQueuedRecall={onQueuedRecall}
-                onQueuedDelete={onQueuedDelete}
-              />
+                ref={(node) => setTimelineTargetRef(g.key, node)}
+                data-timeline-target={g.key}
+                className="scroll-mt-6"
+              >
+                <MessageCard
+                  entry={g.msg}
+                  onQueuedGuide={onQueuedGuide}
+                  onQueuedRecall={onQueuedRecall}
+                  onQueuedDelete={onQueuedDelete}
+                />
+              </div>
             )
           }
           if (g.kind === "run") {
@@ -270,6 +364,11 @@ export function MessageStream({
           return <MessageCard key={g.key} entry={g.entry} />
         })}
       </div>
+      <ChatTimelineNav
+        items={timelineVisible ? timelineItems : []}
+        activeId={activeTimelineId}
+        onSelect={scrollToTimelineItem}
+      />
       {autoScroll && !pinnedToBottom && (
         <Button
           type="button"
