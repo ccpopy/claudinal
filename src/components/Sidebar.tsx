@@ -40,6 +40,10 @@ import {
   formatSessionCompactTime,
   formatSessionRelativeTime
 } from "@/lib/sessionTime"
+import {
+  listSidebarExpandedProjectIds,
+  saveSidebarExpandedProjectIds
+} from "@/lib/sidebarState"
 
 const SearchPalette = lazy(() =>
   import("@/components/SearchPalette").then((m) => ({ default: m.SearchPalette }))
@@ -90,6 +94,14 @@ function sameArchivedRefs(a: ArchivedRef[], b: ArchivedRef[]): boolean {
   )
 }
 
+function sameStringSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const value of a) {
+    if (!b.has(value)) return false
+  }
+  return true
+}
+
 export function Sidebar({
   projects,
   selectedProjectId,
@@ -110,7 +122,9 @@ export function Sidebar({
   refreshKey = 0
 }: Props) {
   const [searchOpen, setSearchOpen] = useState(false)
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(listSidebarExpandedProjectIds())
+  )
   const [sessionsByProject, setSessionsByProject] = useState<
     Record<string, SessionListState>
   >({})
@@ -207,6 +221,20 @@ export function Sidebar({
     }, 30_000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    saveSidebarExpandedProjectIds(expanded)
+  }, [expanded])
+
+  useEffect(() => {
+    const validProjectIds = new Set(projects.map((project) => project.id))
+    setExpanded((cur) => {
+      const next = new Set(
+        [...cur].filter((projectId) => validProjectIds.has(projectId))
+      )
+      return sameStringSet(cur, next) ? cur : next
+    })
+  }, [projects])
 
   useEffect(() => {
     const onFocus = () => refreshVisibleSessions()
