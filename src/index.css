@@ -197,6 +197,15 @@
   *::-webkit-scrollbar-corner {
     background: transparent;
   }
+  [data-slot="scroll-area-viewport"] {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  [data-slot="scroll-area-viewport"]::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
   code,
   pre,
   kbd,
