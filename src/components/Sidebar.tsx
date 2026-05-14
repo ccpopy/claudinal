@@ -282,7 +282,10 @@ export function Sidebar({
       }
     }
     for (const p of projects) {
-      if (pinnedProjectIds.has(p.id) && !sessionsByProject[p.id]) {
+      if (
+        (expanded.has(p.id) || pinnedProjectIds.has(p.id)) &&
+        !sessionsByProject[p.id]
+      ) {
         loadSessions(p)
       }
     }
@@ -292,6 +295,7 @@ export function Sidebar({
     projects,
     sessionsByProject,
     loadSessions,
+    expanded,
     pinnedProjectIds
   ])
 
