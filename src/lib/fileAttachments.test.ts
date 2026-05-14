@@ -6,9 +6,12 @@ import {
   isPdfFile,
   isSupportedUploadFile,
   isTextLikeFile,
+  pastedTextFileName,
+  shouldAttachPastedText,
   splitUploadedFileText,
   supportedImageMime,
-  SUPPORTED_ATTACHMENT_ACCEPT
+  SUPPORTED_ATTACHMENT_ACCEPT,
+  utf8ByteLength
 } from "./fileAttachments"
 
 describe("fileAttachments.isTextLikeFile", () => {
@@ -125,6 +128,26 @@ describe("fileAttachments.formatAttachmentType", () => {
   it("labels legacy DOC files distinctly from DOCX", () => {
     expect(formatAttachmentType("legacy.doc", "application/msword")).toBe(
       "旧版 Word 文档"
+    )
+  })
+})
+
+describe("fileAttachments.pasted text helpers", () => {
+  it("keeps ordinary pasted text inline", () => {
+    expect(shouldAttachPastedText("short prompt")).toBe(false)
+  })
+
+  it("turns long or many-line pasted text into an attachment", () => {
+    expect(shouldAttachPastedText("x".repeat(4000))).toBe(true)
+    expect(
+      shouldAttachPastedText(Array.from({ length: 80 }, () => "line").join("\n"))
+    ).toBe(true)
+  })
+
+  it("computes UTF-8 byte size and stable pasted text names", () => {
+    expect(utf8ByteLength("中文")).toBe(6)
+    expect(pastedTextFileName(new Date("2026-05-14T03:04:05"))).toBe(
+      "pasted-text-20260514-030405.txt"
     )
   })
 })

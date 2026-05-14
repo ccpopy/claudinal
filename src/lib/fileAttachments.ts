@@ -46,6 +46,9 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/webp"
 ])
 
+export const LONG_PASTE_TEXT_MIN_CHARS = 4000
+export const LONG_PASTE_TEXT_MIN_LINES = 80
+
 const IMAGE_EXTENSION_MIME_TYPES = new Map([
   ["gif", "image/gif"],
   ["jpeg", "image/jpeg"],
@@ -227,6 +230,30 @@ export function formatAttachmentType(name?: string, mime?: string): string {
 
   if (normalizedMime?.startsWith("text/")) return "文本文件"
   return "附件"
+}
+
+export function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
+export function shouldAttachPastedText(text: string): boolean {
+  if (!text.trim()) return false
+  if (text.length >= LONG_PASTE_TEXT_MIN_CHARS) return true
+  return text.split(/\r\n|\r|\n/).length >= LONG_PASTE_TEXT_MIN_LINES
+}
+
+export function pastedTextFileName(now = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0")
+  const stamp = [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+    "-",
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds())
+  ].join("")
+  return `pasted-text-${stamp}.txt`
 }
 
 function decodeAttr(value: string): string {

@@ -71,8 +71,11 @@ import {
   isLegacyWordDocFile,
   isPdfFile,
   isSupportedUploadFile,
+  pastedTextFileName,
+  shouldAttachPastedText,
   supportedImageMime,
-  SUPPORTED_ATTACHMENT_ACCEPT
+  SUPPORTED_ATTACHMENT_ACCEPT,
+  utf8ByteLength
 } from "@/lib/fileAttachments"
 import { extractDocxText } from "@/lib/docxText"
 import { shortResets, fiveHourPercent } from "@/lib/oauthUsage"
@@ -626,9 +629,34 @@ export function Composer({
     }
   }
 
+  const attachPastedText = (body: string) => {
+    const size = utf8ByteLength(body)
+    if (size > MAX_TEXT_FILE_BYTES) {
+      toast.warning(
+        `粘贴文本超过 ${formatBytes(MAX_TEXT_FILE_BYTES)}，未添加附件`
+      )
+      return
+    }
+    setFileAttachments((cur) => [
+      ...cur,
+      {
+        id: makeId(),
+        name: pastedTextFileName(),
+        mime: "text/plain",
+        size,
+        text: body,
+        contentMode: "inline"
+      }
+    ])
+    setTrigger(null)
+    setItems([])
+    toast.success("已将长文本作为 txt 附件添加")
+  }
+
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items
-    if (!items) return
+    const clipboard = e.clipboardData
+    if (!clipboard) return
+    const items = clipboard.items
     const files: File[] = []
     for (const it of Array.from(items)) {
       if (it.kind === "file") {
@@ -638,7 +666,13 @@ export function Composer({
     }
     if (files.length) {
       e.preventDefault()
-      handleFiles(files)
+      void handleFiles(files)
+      return
+    }
+    const pastedText = clipboard.getData("text/plain")
+    if (shouldAttachPastedText(pastedText)) {
+      e.preventDefault()
+      attachPastedText(pastedText)
     }
   }
 
