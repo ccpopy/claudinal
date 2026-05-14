@@ -254,15 +254,19 @@ jobs:
           previous_tag="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
 
           {
-            echo "## 最近提交"
+            echo "## Changes"
             echo
             if [ -n "$previous_tag" ]; then
-              git log --pretty=format:'- `%h` %s' "${previous_tag}..${tag}"
+              echo "本版本包含以下改动："
+              echo
+              git log --pretty=format:'- %s (`%h`)' "${previous_tag}..${tag}"
               echo
               echo
               echo "[完整变更](https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${tag})"
             else
-              git log -10 --pretty=format:'- `%h` %s' "$tag"
+              echo "本版本包含以下改动："
+              echo
+              git log -10 --pretty=format:'- %s (`%h`)' "$tag"
             fi
             echo
           } > release-notes.md
