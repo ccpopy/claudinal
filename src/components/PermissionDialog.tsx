@@ -257,7 +257,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
                   if (!request) return
                   try {
                     rememberExactPermissionRequest(request)
-                    toast.success("已记住此项目下的精确命令")
+                    toast.success("已记录此项目下该命令")
                     settle(allowResponse(request))
                   } catch (e) {
                     toast.error(String(e))
@@ -265,7 +265,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
                 }}
                 disabled={!request || busy}
               >
-                以后允许此精确命令
+                以后允许此类命令
               </Button>
             )}
           </div>

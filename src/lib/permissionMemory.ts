@@ -154,7 +154,7 @@ export function rememberExactPermissionRequest(
   const toolName = requestToolName(request)
   const cwd = normalizeCwd(request.cwd)
   if (!command || !toolName || !cwd) {
-    throw new Error("当前权限请求不能保存为精确命令规则")
+    throw new Error("当前权限请求不能保存该命令规则")
   }
   const id = `${cwd}::${toolName}::${command}`
   const label = `${toolName}: ${command.split("\n")[0]}`
