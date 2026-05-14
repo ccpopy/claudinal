@@ -15,6 +15,94 @@ function lastMessage(state: ReturnType<typeof init>): UIMessage {
 }
 
 describe("reducer.partial streaming", () => {
+  it("does not render streamed user meta skill prompts", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "meta-user", role: "user" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "text",
+            text: "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design"
+          }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: { type: "message_stop" }
+      })
+    })
+    expect(s.entries).toHaveLength(0)
+
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        isMeta: true,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+            }
+          ]
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(0)
+  })
+
+  it("removes a leaked visible skill meta prompt when the final meta event arrives", () => {
+    let s = reduce(init(), {
+      kind: "user_local",
+      blocks: [
+        {
+          type: "text",
+          text: "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design"
+        }
+      ],
+      localId: "leaked-meta"
+    })
+    expect(s.entries).toHaveLength(1)
+
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        isMeta: true,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+            }
+          ]
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(0)
+  })
+
   it("accumulates text deltas and finalizes on message_stop", () => {
     let s = init()
     s = reduce(s, {
