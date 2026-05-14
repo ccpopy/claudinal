@@ -546,7 +546,7 @@ export function Sidebar({
                       </div>
 
                       {isExpanded && (
-                        <div className="mt-0.5 pl-6 flex flex-col gap-0.5 min-w-0 max-w-full overflow-hidden">
+                        <div className="mt-0.5 flex flex-col gap-0.5 min-w-0 max-w-full overflow-hidden">
                           {!sessionsState ||
                           sessionsState.kind === "idle" ||
                           sessionsState.kind === "loading" ? (
@@ -651,13 +651,12 @@ function SessionRow({
   const title = sessionDisplayTitle(session)
   const compactTime = formatSessionCompactTime(session.modified_ts)
   const fullTime = formatSessionRelativeTime(session.modified_ts)
-  void indented
   return (
     <div
       onClick={onSelect}
       className={cn(
-        "group/session relative flex h-8 items-center gap-1 rounded-md text-xs cursor-pointer transition-[padding-left,background-color,color] min-w-0 max-w-full overflow-hidden pr-1.5",
-        pinned ? "pl-2" : "pl-2 group-hover/session:pl-7",
+        "group/session relative flex h-8 items-center gap-1 rounded-md text-xs cursor-pointer transition-[background-color,color] min-w-0 max-w-full overflow-hidden pr-1.5",
+        pinned ? "pl-2" : indented ? "pl-14" : "pl-8",
         active
           ? "bg-sidebar-accent text-sidebar-foreground"
           : "hover:bg-sidebar-accent/50 text-sidebar-foreground/90"
@@ -676,7 +675,7 @@ function SessionRow({
               "inline-flex size-5 items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-opacity",
               pinned
                 ? "shrink-0 opacity-100"
-                : "absolute left-1.5 top-1/2 -translate-y-1/2 z-10 opacity-0 group-hover/session:opacity-100"
+                : "absolute left-2 top-1/2 -translate-y-1/2 z-10 opacity-0 group-hover/session:opacity-100"
             )}
             aria-label={pinned ? "取消置顶" : "置顶会话"}
           >
