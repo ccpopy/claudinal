@@ -15,7 +15,6 @@ import {
   Bot,
   Check,
   ChevronDown,
-  Clock3,
   CornerDownRight,
   FileText,
   GitBranch,
@@ -504,7 +503,7 @@ export function Composer({
       !e.nativeEvent.isComposing
     ) {
       e.preventDefault()
-      send("guide")
+      send(streaming ? "followup" : undefined)
     } else if (e.key === "Escape" && streaming) {
       e.preventDefault()
       onStop()
@@ -973,29 +972,15 @@ export function Composer({
                   <Square fill="currentColor" className="size-3" />
                 </Button>
               )}
-              {streaming && (
-                <Button
-                  onClick={() => send("followup")}
-                  disabled={disabled || !canSend}
-                  variant="outline"
-                  size="sm"
-                  aria-label="排入跟进消息"
-                  title="排入跟进消息，当前工作全部完成后送达 (Alt+Enter)"
-                  className="h-8 rounded-lg px-2.5 text-xs"
-                >
-                  <Clock3 className="size-3.5" />
-                  跟进
-                </Button>
-              )}
               <Button
-                onClick={() => send(streaming ? "guide" : undefined)}
+                onClick={() => send(streaming ? "followup" : undefined)}
                 disabled={disabled || !canSend}
-                variant={streaming ? "secondary" : "default"}
+                variant={streaming ? "outline" : "default"}
                 size={streaming ? "sm" : "icon"}
-                aria-label={streaming ? "发送引导消息" : "发送"}
+                aria-label={streaming ? "排入后续消息" : "发送"}
                 title={
                   streaming
-                    ? "发送引导消息，当前工具完成后尽快送达 (Enter)"
+                    ? "排入后续消息，当前工作全部完成后送达 (Enter)"
                     : "发送"
                 }
                 className={cn(
@@ -1006,7 +991,7 @@ export function Composer({
                 {streaming ? (
                   <>
                     <CornerDownRight className="size-3.5" />
-                    引导
+                    排队
                   </>
                 ) : (
                   <ArrowUp className="size-4" />

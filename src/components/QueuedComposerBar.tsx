@@ -75,7 +75,7 @@ function QueuedRow({
         ) : (
           <CornerDownRight className="size-3" />
         )}
-        {isFollowup ? "跟进" : "引导 · 已送达"}
+        {isFollowup ? "排队" : "引导 · 已送达"}
       </span>
       <span className="min-w-0 flex-1 truncate text-sm text-foreground/80">
         {item.preview}
@@ -88,6 +88,7 @@ function QueuedRow({
               size="sm"
               variant="ghost"
               className="h-7 gap-1 rounded-md px-2 text-xs"
+              title="当前工具完成后立即送达，并中断后续未执行工具"
               onClick={() => onPromoteGuide(item.localId)}
             >
               <CornerDownRight className="size-3.5" />

@@ -99,24 +99,15 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
           stamp(m.ts)
         }
         if (userVisible.length > 0) {
-          if (m.queued) {
-            // 已提交给 CLI 的后续 user 消息先挂在当前 run 后面，不关掉当前 run。
-            groups.push({
-              kind: "msg",
-              key: `msg-${m.id}`,
-              msg: { ...m, blocks: userVisible }
-            })
-          } else {
-            if (state.current) state.current.running = false
-            state.current = null
-            groups.push({
-              kind: "msg",
-              key: `msg-${m.id}`,
-              msg: { ...m, blocks: userVisible }
-            })
-            // 立即开一个新的 run，给"处理中…"占位让用户可见秒表
-            ensureRun(m.ts)
-          }
+          if (state.current) state.current.running = false
+          state.current = null
+          groups.push({
+            kind: "msg",
+            key: `msg-${m.id}`,
+            msg: { ...m, blocks: userVisible }
+          })
+          // 立即开一个新的 run，给"处理中…"占位让用户可见秒表
+          ensureRun(m.ts)
         }
       } else {
         const stepBlocks: UIBlock[] = []
@@ -195,8 +186,7 @@ export function MessageStream({
                 role: g.msg.role,
                 label: chatTimelineRoleLabel(g.msg.role),
                 preview: chatTimelinePreview(g.msg),
-                time: formatTimelineTime(g.msg.stopTs ?? g.msg.ts),
-                queued: g.msg.queued
+                time: formatTimelineTime(g.msg.stopTs ?? g.msg.ts)
               }
             ]
           : []

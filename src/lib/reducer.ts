@@ -11,19 +11,8 @@ export type Action =
   | {
       kind: "user_local"
       blocks: UIBlock[]
-      queued?: boolean
-      queueMode?: UIMessage["queueMode"]
-      queueStatus?: UIMessage["queueStatus"]
       localId?: string
     }
-  | {
-      kind: "update_local_queue"
-      localId: string
-      queueMode?: UIMessage["queueMode"]
-      queueStatus?: UIMessage["queueStatus"]
-    }
-  | { kind: "unqueue_local"; localId: string }
-  | { kind: "drop_local"; localId: string }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
   | { kind: "replace_state"; state: State }
   | { kind: "reset" }
@@ -43,58 +32,9 @@ export function reduce(state: State, action: Action): State {
       role: "user",
       blocks: action.blocks,
       streaming: false,
-      queued: action.queued,
-      queueMode: action.queueMode,
-      queueStatus: action.queueStatus,
       ts
     }
     return { entries: [...state.entries, msg] }
-  }
-  if (action.kind === "update_local_queue") {
-    return {
-      entries: state.entries.map((entry) => {
-        if (entry.kind !== "message" || entry.id !== action.localId) {
-          return entry
-        }
-        return {
-          ...entry,
-          queueMode: action.queueMode ?? entry.queueMode,
-          queueStatus: action.queueStatus ?? entry.queueStatus
-        }
-      })
-    }
-  }
-  if (action.kind === "unqueue_local") {
-    // 插话发送时会先挂在当前 run 中间。CLI 真正处理它后，把它挪到
-    // 当前工具结果之后、后续 assistant 输出之前，避免 UI 显示成助手先答、用户后问。
-    const idx = state.entries.findIndex(
-      (e) => e.kind === "message" && e.id === action.localId
-    )
-    if (idx < 0) return state
-    const cur = state.entries[idx] as UIMessage
-    const filtered = state.entries.filter((_, i) => i !== idx)
-    let insertAt = filtered.length
-    for (let i = idx; i < filtered.length; i++) {
-      const e = filtered[i]
-      if (e.kind === "message" && (e as UIMessage).role === "assistant") {
-        insertAt = i
-        break
-      }
-    }
-    return {
-      entries: [
-        ...filtered.slice(0, insertAt),
-        { ...cur, queued: false, queueMode: undefined, queueStatus: undefined },
-        ...filtered.slice(insertAt)
-      ]
-    }
-  }
-  if (action.kind === "drop_local") {
-    return {
-      entries: state.entries.filter(
-        (e) => !(e.kind === "message" && e.id === action.localId)
-      )
-    }
   }
   if (action.kind === "load_transcript") {
     let s: State = init()
@@ -103,7 +43,7 @@ export function reduce(state: State, action: Action): State {
       // 过滤 jsonl 内部事件：queue-operation / attachment / ai-title
       if (
         t === "queue-operation" ||
-        (t === "attachment" && !isQueuedCommandAttachment(ev)) ||
+        t === "attachment" ||
         t === "ai-title" ||
         t === "deferred_tools_delta" ||
         t === "skill_listing" ||
@@ -179,40 +119,10 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   return appendUnknown(state, ev, ts)
 }
 
-function isQueuedCommandAttachment(ev: ClaudeEvent): boolean {
-  if (!ev || typeof ev !== "object") return false
-  return (
-    (ev as Record<string, unknown>).type === "attachment" &&
-    ((ev as Record<string, unknown>).attachment as Record<string, unknown> | undefined)?.type ===
-      "queued_command"
-  )
-}
-
 function reduceAttachment(state: State, ev: Record<string, unknown>, ts: number): State {
   const attachment = ev.attachment as Record<string, unknown> | undefined
-  if (attachment?.type !== "queued_command") {
-    return appendUnknown(state, ev as ClaudeEvent, ts)
-  }
-  const commandMode =
-    typeof attachment.commandMode === "string" ? attachment.commandMode : "prompt"
-  if (commandMode !== "prompt") return state
-  const prompt = attachment.prompt
-  const blocks =
-    typeof prompt === "string"
-      ? ([{ type: "text", text: prompt }] as UIBlock[])
-      : convertContentBlocks(prompt)
-  const visibleBlocks = normalizeUserBlocks(blocks)
-  if (isInternalCommandBlocks(visibleBlocks)) return state
-  if (visibleBlocks.length === 0) return state
-  const entry: UIMessage = {
-    kind: "message",
-    id: (ev.uuid as string | undefined) ?? `queued-${state.entries.length}-${ts}`,
-    role: "user",
-    blocks: visibleBlocks,
-    streaming: false,
-    ts
-  }
-  return { entries: [...state.entries, entry] }
+  if (attachment?.type === "queued_command") return state
+  return appendUnknown(state, ev as ClaudeEvent, ts)
 }
 
 function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): State {

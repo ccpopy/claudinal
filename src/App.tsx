@@ -319,6 +319,18 @@ function derivePreviewFromQueuedInput(q: QueuedInput): string {
   return "（空消息）"
 }
 
+function queuedInputUiBlocks(item: QueuedInput): UIBlock[] {
+  const blocks: UIBlock[] = item.text ? splitUploadedFileText(item.text) : []
+  for (const image of item.images) {
+    blocks.push({
+      type: "image",
+      imageMediaType: image.mime,
+      imageData: image.data
+    })
+  }
+  return blocks
+}
+
 // Collab prefix sentinel：reduceUser 用它识别并在 UI 里隐藏这段协同包装，
 // 只显示真正的用户原文。修改 sentinel 时同步更新 src/lib/reducer.ts:stripCollabPrefix。
 const COLLAB_PREFIX_TAG = "[Claudinal 协同模式]"
@@ -747,7 +759,10 @@ export default function App() {
     }
   }, [])
 
-  const restoreQueuedInputsToDraft = useCallback((items: QueuedInput[]) => {
+  const restoreQueuedInputsToDraft = useCallback((
+    items: QueuedInput[],
+    action: "restore" | "copy" = "restore"
+  ) => {
     if (items.length === 0) return
     const text = items
       .map((item) => item.text.trim())
@@ -759,9 +774,11 @@ export default function App() {
     setDraftImages(images)
     setDraftDocuments(documents)
     toast.info(
-      items.length === 1
-        ? "已把队列消息取回到聊天框"
-        : `已把 ${items.length} 条队列消息取回到聊天框`
+      action === "copy"
+        ? "已复制文本到编辑器"
+        : items.length === 1
+          ? "已把队列消息取回到聊天框"
+          : `已把 ${items.length} 条队列消息取回到聊天框`
     )
   }, [])
 
@@ -791,12 +808,6 @@ export default function App() {
 
       const isActive = activeRuntimeIdRef.current === runtimeId
       if (opts.dropQueued !== false && run.queuedInputs.length > 0) {
-        for (const item of run.queuedInputs) {
-          applyRunningAction(run, {
-            kind: "drop_local",
-            localId: item.localId
-          })
-        }
         run.queuedInputs = []
       }
       run.unlisten.forEach((unlisten) => unlisten())
@@ -1278,7 +1289,8 @@ export default function App() {
           (queued) => queued.localId !== item.localId
         )
         applyRunningAction(run, {
-          kind: "unqueue_local",
+          kind: "user_local",
+          blocks: queuedInputUiBlocks(item),
           localId: item.localId
         })
         setRunningSessionStreaming(run, true)
@@ -1496,15 +1508,10 @@ export default function App() {
             (item) => item.mode === "guide"
           )
           if (guideInputs.length > 0) {
-            for (const item of guideInputs) {
-              applyRunningAction(run, {
-                kind: "unqueue_local",
-                localId: item.localId
-              })
-            }
             run.queuedInputs = run.queuedInputs.filter(
               (item) => item.mode !== "guide"
             )
+            setRunningTick((tick) => tick + 1)
           }
           setRunningSessionStreaming(run, false)
           void finishRunReview(run).then(() => sendQueuedFollowup(run))
@@ -1713,7 +1720,7 @@ export default function App() {
       }
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
       const blocks = buildCliBlocks(cliText, images, documents)
-      const mode = options.mode ?? "guide"
+      const mode = options.mode ?? (streaming ? "followup" : "guide")
 
       if (streaming) {
         const id = sessionIdRef.current ?? (await ensureSession())
@@ -1721,8 +1728,8 @@ export default function App() {
         if (!id) {
           return
         }
-        if (!run && mode === "followup") {
-          toast.error("无法排入跟进消息：当前运行会话不存在")
+        if (!run) {
+          toast.error("无法排入消息：当前运行会话不存在")
           return
         }
         const queuedInput: QueuedInput = {
@@ -1733,26 +1740,8 @@ export default function App() {
           documents,
           cliBlocks: blocks
         }
-        if (run) {
-          applyRunningAction(run, {
-            kind: "user_local",
-            blocks: uiBlocks,
-            queued: true,
-            queueMode: mode,
-            queueStatus: mode === "guide" ? "sent" : "pending",
-            localId
-          })
-          run.queuedInputs = [...run.queuedInputs, queuedInput]
-        } else {
-          dispatch({
-            kind: "user_local",
-            blocks: uiBlocks,
-            queued: true,
-            queueMode: mode,
-            queueStatus: mode === "guide" ? "sent" : "pending",
-            localId
-          })
-        }
+        run.queuedInputs = [...run.queuedInputs, queuedInput]
+        setRunningTick((tick) => tick + 1)
         if (mode === "followup") {
           if (collaborationMode) setCollaborationMode(false)
           return
@@ -1761,14 +1750,10 @@ export default function App() {
           await sendUserMessage(id, blocks)
           if (collaborationMode) setCollaborationMode(false)
         } catch (e) {
-          if (run) {
-            run.queuedInputs = run.queuedInputs.filter(
-              (item) => item.localId !== localId
-            )
-            applyRunningAction(run, { kind: "drop_local", localId })
-          } else {
-            dispatch({ kind: "drop_local", localId })
-          }
+          run.queuedInputs = run.queuedInputs.filter(
+            (item) => item.localId !== localId
+          )
+          setRunningTick((tick) => tick + 1)
           toast.error(`发送失败: ${String(e)}`)
         }
         return
@@ -1828,17 +1813,16 @@ export default function App() {
       const found = findQueuedInput(localId)
       if (!found) return
       if (found.item.mode === "guide") {
-        toast.warning("引导消息已经送达 Claude；请中止当前过程后取回")
+        restoreQueuedInputsToDraft([found.item], "copy")
         return
       }
       found.run.queuedInputs = found.run.queuedInputs.filter(
         (item) => item.localId !== localId
       )
-      applyRunningAction(found.run, { kind: "drop_local", localId })
       restoreQueuedInputsToDraft([found.item])
       setRunningTick((tick) => tick + 1)
     },
-    [applyRunningAction, findQueuedInput, restoreQueuedInputsToDraft]
+    [findQueuedInput, restoreQueuedInputsToDraft]
   )
 
   const deleteQueuedInput = useCallback(
@@ -1852,10 +1836,9 @@ export default function App() {
       found.run.queuedInputs = found.run.queuedInputs.filter(
         (item) => item.localId !== localId
       )
-      applyRunningAction(found.run, { kind: "drop_local", localId })
       setRunningTick((tick) => tick + 1)
     },
-    [applyRunningAction, findQueuedInput]
+    [findQueuedInput]
   )
 
   const promoteQueuedInputToGuide = useCallback(
@@ -1866,18 +1849,12 @@ export default function App() {
       try {
         await sendUserMessage(found.run.runtimeId, found.item.cliBlocks)
         found.item.mode = "guide"
-        applyRunningAction(found.run, {
-          kind: "update_local_queue",
-          localId,
-          queueMode: "guide",
-          queueStatus: "sent"
-        })
         setRunningTick((tick) => tick + 1)
       } catch (error) {
         toast.error(`发送引导消息失败: ${String(error)}`)
       }
     },
-    [applyRunningAction, findQueuedInput]
+    [findQueuedInput]
   )
 
   const recallLatestQueuedInput = useCallback(() => {
@@ -1887,7 +1864,7 @@ export default function App() {
       ? [...run.queuedInputs].reverse().find((queued) => queued.mode === "followup")
       : null
     if (!item) {
-      toast.info("没有可取回的跟进消息")
+      toast.info("没有可取回的排队消息")
       return
     }
     recallQueuedInput(item.localId)

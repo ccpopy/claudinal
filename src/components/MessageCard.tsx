@@ -48,12 +48,7 @@ function MessageView({ msg }: { msg: UIMessage }) {
     )
   }
   return (
-    <div
-      className={cn(
-        "flex flex-col gap-2 items-stretch",
-        msg.queued && "opacity-70"
-      )}
-    >
+    <div className="flex flex-col gap-2 items-stretch">
       {msg.blocks.map((b, i) => (
         <BlockView key={i} role={msg.role} block={b} />
       ))}

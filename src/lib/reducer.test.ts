@@ -388,7 +388,7 @@ describe("reducer.tool_use_result attachment", () => {
     ])
   })
 
-  it("keeps queued prompt attachments but skips internal task notifications", () => {
+  it("skips queued command attachments because pending input is not chat history", () => {
     let s = init()
     s = reduce(s, {
       kind: "event",
@@ -402,7 +402,7 @@ describe("reducer.tool_use_result attachment", () => {
         }
       } as never)
     })
-    expect(lastMessage(s).blocks[0].text).toBe("继续按这个方向做")
+    expect(s.entries).toHaveLength(0)
 
     s = reduce(s, {
       kind: "event",
@@ -416,7 +416,7 @@ describe("reducer.tool_use_result attachment", () => {
         }
       } as never)
     })
-    expect(s.entries).toHaveLength(1)
+    expect(s.entries).toHaveLength(0)
   })
 
   it("strips collaboration prompt prefix from user text", () => {
@@ -439,43 +439,6 @@ describe("reducer.tool_use_result attachment", () => {
     })
     const msg = lastMessage(s)
     expect(msg.blocks[0].text).toBe("请帮我实现 X")
-  })
-})
-
-describe("reducer.local queue metadata", () => {
-  it("tracks queued followups and clears metadata when delivered", () => {
-    let s = init()
-    s = reduce(s, {
-      kind: "user_local",
-      localId: "local-followup",
-      blocks: [{ type: "text", text: "继续补充" }],
-      queued: true,
-      queueMode: "followup",
-      queueStatus: "pending"
-    })
-    let msg = lastMessage(s)
-    expect(msg.queued).toBe(true)
-    expect(msg.queueMode).toBe("followup")
-    expect(msg.queueStatus).toBe("pending")
-
-    s = reduce(s, {
-      kind: "update_local_queue",
-      localId: "local-followup",
-      queueMode: "guide",
-      queueStatus: "sent"
-    })
-    msg = lastMessage(s)
-    expect(msg.queueMode).toBe("guide")
-    expect(msg.queueStatus).toBe("sent")
-
-    s = reduce(s, {
-      kind: "unqueue_local",
-      localId: "local-followup"
-    })
-    msg = lastMessage(s)
-    expect(msg.queued).toBe(false)
-    expect(msg.queueMode).toBeUndefined()
-    expect(msg.queueStatus).toBeUndefined()
   })
 })
 
@@ -502,64 +465,14 @@ describe("reducer.unknown preservation", () => {
 })
 
 describe("reducer.local message lifecycle", () => {
-  it("user_local appends and drop_local removes the message", () => {
-    let s = init()
-    s = reduce(s, {
+  it("user_local appends the visible submitted message", () => {
+    const s = reduce(init(), {
       kind: "user_local",
       blocks: [{ type: "text", text: "hi" }],
       localId: "local-1"
     })
     expect(s.entries).toHaveLength(1)
-    s = reduce(s, { kind: "drop_local", localId: "local-1" })
-    expect(s.entries).toHaveLength(0)
-  })
-
-  it("unqueue_local moves queued message ahead of the next assistant turn", () => {
-    let s = init()
-    // 先有一段 assistant 输出
-    s = reduce(s, {
-      kind: "event",
-      event: event({
-        type: "assistant",
-        message: {
-          role: "assistant",
-          id: "asst-old",
-          content: [{ type: "text", text: "previous reply" }]
-        } as never
-      })
-    })
-    // 用户排队插入消息
-    s = reduce(s, {
-      kind: "user_local",
-      blocks: [{ type: "text", text: "next ask" }],
-      localId: "local-2",
-      queued: true
-    })
-    // 假设后续 assistant 正在输出（未真正完成 unqueue）
-    s = reduce(s, {
-      kind: "event",
-      event: event({
-        type: "assistant",
-        message: {
-          role: "assistant",
-          id: "asst-new",
-          content: [{ type: "text", text: "new reply" }]
-        } as never
-      })
-    })
-    s = reduce(s, { kind: "unqueue_local", localId: "local-2" })
-
-    // queued 标记应被清除，且 local message 排在 asst-new 之前
-    const idsAndQueued = s.entries.map((e) => {
-      if (e.kind !== "message") return null
-      const m = e as UIMessage
-      return [m.id, m.queued ?? false] as const
-    })
-    expect(idsAndQueued).toEqual([
-      ["asst-old", false],
-      ["local-2", false],
-      ["asst-new", false]
-    ])
+    expect(lastMessage(s).id).toBe("local-1")
   })
 
   it("reset wipes the entire entry list", () => {

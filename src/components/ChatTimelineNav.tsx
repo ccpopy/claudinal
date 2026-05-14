@@ -12,7 +12,6 @@ export interface ChatTimelineItem {
   label: string
   preview: string
   time: string
-  queued?: boolean
 }
 
 interface Props {
@@ -41,8 +40,7 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
                   aria-current={active ? "location" : undefined}
                   onClick={() => onSelect(item.id)}
                   className={cn(
-                    "group ml-auto flex h-3 w-full items-center justify-end rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-                    item.queued && "opacity-60"
+                    "group ml-auto flex h-3 w-full items-center justify-end rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                   )}
                 >
                   <span
