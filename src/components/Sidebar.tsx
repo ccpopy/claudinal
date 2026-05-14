@@ -546,7 +546,7 @@ export function Sidebar({
                       </div>
 
                       {isExpanded && (
-                        <div className="mt-0.5 ml-3.5 pl-2.5 border-l border-sidebar-border/60 flex flex-col gap-0.5 min-w-0 max-w-full overflow-hidden">
+                        <div className="mt-0.5 pl-6 flex flex-col gap-0.5 min-w-0 max-w-full overflow-hidden">
                           {!sessionsState ||
                           sessionsState.kind === "idle" ||
                           sessionsState.kind === "loading" ? (
