@@ -74,7 +74,6 @@ pub struct SkillInvocation {
     pub name: String,
     pub arguments: String,
     pub command_text: String,
-    pub meta_text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -421,30 +420,6 @@ fn parse_skill_command(text: &str) -> Option<(String, String)> {
     Some((command.to_string(), arguments))
 }
 
-fn strip_skill_frontmatter(raw: &str) -> &str {
-    let trimmed = raw.trim_start_matches('\u{feff}').trim_start();
-    if !trimmed.starts_with("---") {
-        return raw;
-    }
-    let after_open = &trimmed[3..];
-    let Some(end) = after_open
-        .find("\n---")
-        .or_else(|| after_open.find("\r\n---"))
-    else {
-        return raw;
-    };
-    let closing = &trimmed[3 + end..];
-    let rest = closing
-        .strip_prefix("\r\n---")
-        .or_else(|| closing.strip_prefix("\n---"));
-    let Some(rest) = rest else {
-        return raw;
-    };
-    rest.strip_prefix("\r\n")
-        .or_else(|| rest.strip_prefix('\n'))
-        .unwrap_or(rest)
-}
-
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -570,26 +545,16 @@ pub async fn expand_skill_command(
             .then_with(|| a.path.cmp(&b.path))
     });
     let skill = matches.remove(0);
-    let skill_path = PathBuf::from(&skill.path);
-    let raw = std::fs::read_to_string(&skill_path)?;
-    let body = strip_skill_frontmatter(&raw).trim();
-    let base_dir = skill_path
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
     let escaped_name = xml_escape(&skill.name);
     let escaped_arguments = xml_escape(&arguments);
     let command_text = format!(
         "<command-message>{0}:{0}</command-message>\n<command-name>/{0}:{0}</command-name>\n<command-args>{1}</command-args>",
         escaped_name, escaped_arguments
     );
-    let meta_text =
-        format!("Base directory for this skill: {base_dir}\n\n{body}\n\nARGUMENTS: {arguments}");
     Ok(Some(SkillInvocation {
         name: skill.name,
         arguments,
         command_text,
-        meta_text,
     }))
 }
 
@@ -807,7 +772,7 @@ pub async fn run_plugin_command(args: PluginCommand) -> Result<PluginCommandResu
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_skill_command, strip_skill_frontmatter, xml_escape};
+    use super::{parse_skill_command, xml_escape};
 
     #[test]
     fn parses_skill_command_arguments() {
@@ -826,13 +791,6 @@ mod tests {
 
         assert_eq!(parsed.0, "frontend-design");
         assert_eq!(parsed.1, "优化界面");
-    }
-
-    #[test]
-    fn strips_skill_frontmatter() {
-        let raw = "---\nname: frontend-design\ndescription: test\n---\n# Body\nARG";
-
-        assert_eq!(strip_skill_frontmatter(raw), "# Body\nARG");
     }
 
     #[test]

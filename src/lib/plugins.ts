@@ -46,7 +46,6 @@ export interface SkillInvocation {
   name: string
   arguments: string
   commandText: string
-  metaText: string
 }
 
 export interface PluginCommandResult {

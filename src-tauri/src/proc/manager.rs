@@ -268,7 +268,6 @@ impl Manager {
         &self,
         session_id: &str,
         command_text: String,
-        meta_text: String,
     ) -> Result<()> {
         let command_payload = json!({
             "type": "user",
@@ -277,20 +276,7 @@ impl Manager {
                 "content": command_text
             }
         });
-        let meta_payload = json!({
-            "type": "user",
-            "isMeta": true,
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": meta_text
-                    }
-                ]
-            }
-        });
-        self.write_json_lines(session_id, vec![command_payload, meta_payload])
+        self.write_json_lines(session_id, vec![command_payload])
             .await
     }
 

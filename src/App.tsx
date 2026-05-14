@@ -317,11 +317,7 @@ async function sendCliInput(
   skillInvocation?: SkillInvocation | null
 ): Promise<void> {
   if (skillInvocation) {
-    await sendSkillInvocation(
-      sessionId,
-      skillInvocation.commandText,
-      skillInvocation.metaText
-    )
+    await sendSkillInvocation(sessionId, skillInvocation.commandText)
     return
   }
   await sendUserMessage(sessionId, blocks)

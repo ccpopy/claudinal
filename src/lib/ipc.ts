@@ -233,10 +233,9 @@ export async function sendUserMessage(
 
 export async function sendSkillInvocation(
   sessionId: string,
-  commandText: string,
-  metaText: string
+  commandText: string
 ): Promise<void> {
-  return invoke("send_skill_invocation", { sessionId, commandText, metaText })
+  return invoke("send_skill_invocation", { sessionId, commandText })
 }
 
 export async function stopSession(sessionId: string): Promise<void> {

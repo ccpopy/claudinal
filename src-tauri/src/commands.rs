@@ -543,10 +543,9 @@ pub async fn send_skill_invocation(
     manager: State<'_, Manager>,
     session_id: String,
     command_text: String,
-    meta_text: String,
 ) -> Result<()> {
     manager
-        .send_skill_invocation(&session_id, command_text, meta_text)
+        .send_skill_invocation(&session_id, command_text)
         .await
 }
 
