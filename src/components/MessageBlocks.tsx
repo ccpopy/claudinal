@@ -14,6 +14,7 @@ import {
   type LucideIcon
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { formatAttachmentType, formatBytes } from "@/lib/fileAttachments"
 import { cn } from "@/lib/utils"
 import type { UIBlock } from "@/types/ui"
 import { AssistantMarkdown } from "./AssistantMarkdown"
@@ -30,6 +31,7 @@ export function BlockView({
   if (block.type === "text") return <TextBlock role={role} block={block} />
   if (block.type === "thinking") return <ThinkingBlock block={block} />
   if (block.type === "image") return <ImageBlock role={role} block={block} />
+  if (block.type === "attachment") return <AttachmentBlock role={role} block={block} />
   if (block.type === "tool_use") return <ToolUseBlock block={block} />
   if (block.type === "tool_result") return <ToolResultBlock block={block} />
   return null
@@ -141,6 +143,49 @@ function ImageBlock({
       </button>
       <ImageLightbox open={open} src={src} alt={alt} onClose={() => setOpen(false)} />
     </>
+  )
+}
+
+function AttachmentBlock({
+  role,
+  block
+}: {
+  role: "user" | "assistant"
+  block: UIBlock
+}) {
+  const name = block.attachmentName?.trim() || "未命名附件"
+  const fileType = formatAttachmentType(name, block.attachmentMime)
+  const size =
+    typeof block.attachmentSize === "number" ? formatBytes(block.attachmentSize) : null
+  const mode =
+    block.attachmentContentMode === "metadata-only"
+      ? "仅展示信息"
+      : block.attachmentContentMode === "document"
+        ? "PDF 已附加"
+        : "文本已附加"
+  return (
+    <div
+      className={cn(
+        "group/file max-w-[80%] min-w-0 rounded-xl border bg-muted text-foreground px-3 py-2 shadow-xs",
+        role === "user" ? "self-end" : "self-start bg-card"
+      )}
+    >
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-background/80 text-muted-foreground">
+          <FileText className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium" title={name}>
+            {name}
+          </span>
+          <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+            <span>{fileType}</span>
+            {size && <span className="font-mono">{size}</span>}
+            <span>{mode}</span>
+          </span>
+        </span>
+      </div>
+    </div>
   )
 }
 

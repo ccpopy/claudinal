@@ -1,5 +1,6 @@
 import type { ClaudeEvent, ContentBlock } from "../types/events"
 import type { UIBlock, UIEntry, UIMessage } from "../types/ui"
+import { splitUploadedFileText } from "./fileAttachments"
 
 export interface State {
   entries: UIEntry[]
@@ -482,7 +483,7 @@ function normalizeUserBlocks(blocks: UIBlock[]): UIBlock[] {
     }
     const text = stripInternalTextSections(block.text)
     if (!text.trim()) continue
-    out.push({ ...block, text })
+    out.push(...splitUploadedFileText(text))
   }
   return out
 }

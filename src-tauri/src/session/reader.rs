@@ -306,16 +306,19 @@ pub(crate) fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>)
             Err(_) => continue,
         };
         let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        match t {
-            "user" | "assistant" | "message" => count += 1,
-            _ => {}
+        let internal = is_internal_generated_event(&v);
+        if !internal {
+            match t {
+                "user" | "assistant" | "message" => count += 1,
+                _ => {}
+            }
         }
         if ai_title.is_none() && t == "ai-title" {
             if let Some(s) = v.get("aiTitle").and_then(|x| x.as_str()) {
                 ai_title = title_candidate(s, 120);
             }
         }
-        if first_user_text.is_none() && t == "user" && !is_internal_generated_event(&v) {
+        if first_user_text.is_none() && t == "user" && !internal {
             if let Some(content) = v.pointer("/message/content") {
                 if let Some(arr) = content.as_array() {
                     for c in arr {
@@ -469,6 +472,53 @@ mod tests {
         let (_, _, first_user_text) = scan_jsonl(&path);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+        assert_eq!(first_user_text, Some("真实用户消息".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_jsonl_skips_meta_skill_prompts_from_count_and_first_user_text() -> Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("claudinal-reader-meta-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("meta-skill.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "user",
+                "isMeta": true,
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": "真实用户消息" }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "isMeta": true,
+                "message": { "role": "assistant", "content": "internal assistant note" }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": "可见回复" }
+            }),
+        ];
+        let body = lines
+            .into_iter()
+            .map(|line| serde_json::to_string(&line))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        std::fs::write(&path, body)?;
+
+        let (msg_count, _, first_user_text) = scan_jsonl(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        assert_eq!(msg_count, 2);
         assert_eq!(first_user_text, Some("真实用户消息".to_string()));
         Ok(())
     }

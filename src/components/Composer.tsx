@@ -65,8 +65,18 @@ import type { ComposerPrefs } from "@/lib/composerPrefs"
 import type { AppSettings } from "@/lib/settings"
 import { listInstalledPlugins, type InstalledPlugin } from "@/lib/plugins"
 import { loadSettings } from "@/lib/settings"
+import {
+  formatBytes,
+  isDocxFile,
+  isLegacyWordDocFile,
+  isPdfFile,
+  isSupportedUploadFile,
+  supportedImageMime,
+  SUPPORTED_ATTACHMENT_ACCEPT
+} from "@/lib/fileAttachments"
+import { extractDocxText } from "@/lib/docxText"
 import { shortResets, fiveHourPercent } from "@/lib/oauthUsage"
-import type { ImagePayload } from "@/types/ui"
+import type { DocumentPayload, ImagePayload } from "@/types/ui"
 import {
   SuggestionPanel,
   type SuggestionItem
@@ -78,6 +88,7 @@ interface Props {
   onSend: (
     text: string,
     images: ImagePayload[],
+    documents: DocumentPayload[],
     options?: { mode?: "guide" | "followup" }
   ) => void | Promise<void>
   onStop: () => void | Promise<void>
@@ -87,6 +98,7 @@ interface Props {
   centered?: boolean
   externalText?: string
   externalImages?: ImagePayload[]
+  externalDocuments?: DocumentPayload[]
   onExternalTextConsumed?: () => void
   cwd?: string | null
   slashCommands?: string[]
@@ -139,66 +151,20 @@ function parseTrigger(text: string, caret: number): TriggerInfo | null {
 }
 
 const MAX_TEXT_FILE_BYTES = 1024 * 1024
-const TEXT_EXTENSIONS = new Set([
-  "css",
-  "csv",
-  "env",
-  "go",
-  "html",
-  "ini",
-  "java",
-  "js",
-  "json",
-  "jsx",
-  "log",
-  "md",
-  "properties",
-  "py",
-  "rs",
-  "scss",
-  "sql",
-  "toml",
-  "ts",
-  "tsx",
-  "txt",
-  "xml",
-  "yaml",
-  "yml"
-])
-
 type Thumb = ImagePayload & { id: string; name: string; size: number }
+type DocumentThumb = DocumentPayload & { id: string }
 
-interface TextAttachment {
+interface FileAttachment {
   id: string
   name: string
   mime: string
   size: number
-  text: string
+  text: string | null
+  contentMode: "inline" | "document" | "metadata-only"
 }
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-function isTextFile(file: File) {
-  if (file.type.startsWith("text/")) return true
-  if (
-    file.type.includes("json") ||
-    file.type.includes("xml") ||
-    file.type.includes("yaml") ||
-    file.type.includes("javascript") ||
-    file.type.includes("typescript")
-  ) {
-    return true
-  }
-  const ext = file.name.split(".").pop()?.toLowerCase()
-  return !!ext && TEXT_EXTENSIONS.has(ext)
 }
 
 function readAsDataUrlPayload(file: File) {
@@ -223,17 +189,39 @@ function readAsTextPayload(file: File) {
   })
 }
 
-function escapeAttr(value: string) {
-  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;")
+function readAsArrayBufferPayload(file: File) {
+  return new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error)
+    reader.onload = () => resolve(reader.result as ArrayBuffer)
+    reader.readAsArrayBuffer(file)
+  })
 }
 
-function buildOutgoingText(text: string, files: TextAttachment[]) {
+function escapeAttr(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+}
+
+function buildOutgoingText(text: string, files: FileAttachment[]) {
   const parts = [text.trim()].filter(Boolean)
   for (const file of files) {
+    const mime = file.mime || "application/octet-stream"
+    const contentAttr =
+      file.contentMode === "inline" ? "" : ` content="${file.contentMode}"`
+    const body =
+      file.contentMode === "metadata-only"
+        ? "[binary file content not included]"
+        : file.contentMode === "document"
+          ? "[pdf document attached separately]"
+          : (file.text ?? "")
     parts.push(
       [
-        `<uploaded_file name="${escapeAttr(file.name)}" mime="${escapeAttr(file.mime || "text/plain")}" size="${file.size}">`,
-        file.text,
+        `<uploaded_file name="${escapeAttr(file.name)}" mime="${escapeAttr(mime)}" size="${file.size}"${contentAttr}>`,
+        body,
         "</uploaded_file>"
       ].join("\n")
     )
@@ -250,6 +238,7 @@ export function Composer({
   centered,
   externalText,
   externalImages,
+  externalDocuments,
   onExternalTextConsumed,
   cwd,
   slashCommands,
@@ -273,7 +262,8 @@ export function Composer({
 }: Props) {
   const [text, setText] = useState("")
   const [images, setImages] = useState<Thumb[]>([])
-  const [textFiles, setTextFiles] = useState<TextAttachment[]>([])
+  const [documents, setDocuments] = useState<DocumentThumb[]>([])
+  const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [plusOpen, setPlusOpen] = useState(false)
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([])
@@ -386,7 +376,8 @@ export function Composer({
   useEffect(() => {
     const hasText = externalText !== undefined && externalText !== ""
     const hasImages = !!externalImages && externalImages.length > 0
-    if (!hasText && !hasImages) return
+    const hasDocuments = !!externalDocuments && externalDocuments.length > 0
+    if (!hasText && !hasImages && !hasDocuments) return
     if (hasText) setText(externalText)
     if (hasImages) {
       setImages(
@@ -398,9 +389,26 @@ export function Composer({
         }))
       )
     }
+    if (hasDocuments) {
+      const restoredDocuments = externalDocuments.map((document) => ({
+        ...document,
+        id: makeId()
+      }))
+      setDocuments(restoredDocuments)
+      setFileAttachments(
+        restoredDocuments.map((document) => ({
+          id: document.id,
+          name: document.name,
+          mime: document.mime,
+          size: document.size,
+          text: null,
+          contentMode: "document"
+        }))
+      )
+    }
     onExternalTextConsumed?.()
     requestAnimationFrame(() => ref.current?.focus())
-  }, [externalImages, externalText, onExternalTextConsumed])
+  }, [externalDocuments, externalImages, externalText, onExternalTextConsumed])
 
   // 打开 + 菜单时再拉一次已安装插件，避免 GUI 启动时阻塞
   useEffect(() => {
@@ -412,16 +420,23 @@ export function Composer({
 
   const send = (mode?: "guide" | "followup") => {
     const t = text.trim()
-    const outgoingText = buildOutgoingText(t, textFiles)
-    if (!outgoingText && images.length === 0) return
+    const outgoingText = buildOutgoingText(t, fileAttachments)
+    if (!outgoingText && images.length === 0 && documents.length === 0) return
     onSend(
       outgoingText,
       images.map((i) => ({ data: i.data, mime: i.mime })),
+      documents.map((document) => ({
+        data: document.data,
+        mime: document.mime,
+        name: document.name,
+        size: document.size
+      })),
       mode ? { mode } : undefined
     )
     setText("")
     setImages([])
-    setTextFiles([])
+    setDocuments([])
+    setFileAttachments([])
     if (collaborationMode) onCollaborationModeChange?.(false)
   }
 
@@ -495,48 +510,118 @@ export function Composer({
 
   const handleFiles = async (files: FileList | File[]) => {
     const nextImages: Thumb[] = []
-    const nextTextFiles: TextAttachment[] = []
+    const nextDocuments: DocumentThumb[] = []
+    const nextFileAttachments: FileAttachment[] = []
     let skipped = 0
+    const skippedDetails: string[] = []
 
     for (const file of Array.from(files)) {
       try {
-        if (file.type.startsWith("image/")) {
+        if (isLegacyWordDocFile(file)) {
+          skipped += 1
+          skippedDetails.push(
+            `${file.name || "document.doc"} 是旧版 .doc 格式，请另存为 .docx 或 PDF 后上传`
+          )
+          continue
+        }
+
+        if (!isSupportedUploadFile(file)) {
+          skipped += 1
+          skippedDetails.push(
+            `${file.name || "文件"} 类型不支持；仅支持图片、PDF、DOCX 和文本文件`
+          )
+          continue
+        }
+
+        const imageMime = supportedImageMime(file)
+        if (imageMime) {
           const data = await readAsDataUrlPayload(file)
           nextImages.push({
             id: makeId(),
             data,
-            mime: file.type,
+            mime: imageMime,
             name: file.name || "image",
             size: file.size
           })
           continue
         }
 
-        if (!isTextFile(file) || file.size > MAX_TEXT_FILE_BYTES) {
+        if (isPdfFile(file)) {
+          const id = makeId()
+          const data = await readAsDataUrlPayload(file)
+          const name = file.name || "document.pdf"
+          const mime = "application/pdf"
+          nextDocuments.push({
+            id,
+            data,
+            mime,
+            name,
+            size: file.size
+          })
+          nextFileAttachments.push({
+            id,
+            name,
+            mime,
+            size: file.size,
+            text: null,
+            contentMode: "document"
+          })
+          continue
+        }
+
+        if (isDocxFile(file)) {
+          const body = await extractDocxText(await readAsArrayBufferPayload(file))
+          if (!body.trim()) {
+            throw new Error("Word 文档中没有可提取的文本")
+          }
+          nextFileAttachments.push({
+            id: makeId(),
+            name: file.name || "document.docx",
+            mime:
+              file.type ||
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size: file.size,
+            text: body,
+            contentMode: "inline"
+          })
+          continue
+        }
+
+        if (file.size > MAX_TEXT_FILE_BYTES) {
           skipped += 1
+          skippedDetails.push(
+            `${file.name || "文本文件"} 超过 ${formatBytes(MAX_TEXT_FILE_BYTES)}`
+          )
           continue
         }
 
         const body = await readAsTextPayload(file)
-        nextTextFiles.push({
+        nextFileAttachments.push({
           id: makeId(),
           name: file.name || "file.txt",
           mime: file.type || "text/plain",
           size: file.size,
-          text: body
+          text: body,
+          contentMode: "inline"
         })
-      } catch {
+      } catch (error) {
         skipped += 1
+        skippedDetails.push(`${file.name || "文件"}：${String(error)}`)
       }
     }
 
     if (nextImages.length) setImages((cur) => [...cur, ...nextImages])
-    if (nextTextFiles.length) {
-      setTextFiles((cur) => [...cur, ...nextTextFiles])
+    if (nextDocuments.length) {
+      setDocuments((cur) => [...cur, ...nextDocuments])
+    }
+    if (nextFileAttachments.length) {
+      setFileAttachments((cur) => [...cur, ...nextFileAttachments])
     }
     if (skipped > 0) {
       toast.warning(
-        `已跳过 ${skipped} 个文件：仅支持图片或 ${formatBytes(MAX_TEXT_FILE_BYTES)} 内文本文件`
+        skippedDetails.length > 0
+          ? `已跳过 ${skipped} 个文件：${skippedDetails.slice(0, 2).join("；")}`
+          : `已跳过 ${skipped} 个文件`
       )
     }
   }
@@ -564,7 +649,8 @@ export function Composer({
     if (files && files.length) handleFiles(files)
   }
 
-  const canSend = !!text.trim() || images.length > 0 || textFiles.length > 0
+  const canSend =
+    !!text.trim() || images.length > 0 || fileAttachments.length > 0
 
   return (
     <div
@@ -600,6 +686,7 @@ export function Composer({
             ref={inputRef}
             type="file"
             multiple
+            accept={SUPPORTED_ATTACHMENT_ACCEPT}
             className="sr-only"
             onChange={(e) => {
               const files = e.currentTarget.files
@@ -608,7 +695,9 @@ export function Composer({
             }}
           />
 
-          {(images.length > 0 || textFiles.length > 0 || collaborationMode) && (
+          {(images.length > 0 ||
+            fileAttachments.length > 0 ||
+            collaborationMode) && (
             <div className="mb-2 flex flex-wrap gap-2">
               {collaborationMode && (
                 <AttachmentChip
@@ -630,17 +719,26 @@ export function Composer({
                   }
                 />
               ))}
-              {textFiles.map((file) => (
+              {fileAttachments.map((file) => (
                 <AttachmentChip
                   key={file.id}
                   icon={<FileText className="size-3.5" />}
                   label={file.name}
-                  meta={formatBytes(file.size)}
-                  onRemove={() =>
-                    setTextFiles((cur) =>
+                  meta={
+                    file.contentMode === "metadata-only"
+                      ? `${formatBytes(file.size)} · 仅信息`
+                      : file.contentMode === "document"
+                        ? `${formatBytes(file.size)} · PDF`
+                        : formatBytes(file.size)
+                  }
+                  onRemove={() => {
+                    setFileAttachments((cur) =>
                       cur.filter((item) => item.id !== file.id)
                     )
-                  }
+                    setDocuments((cur) =>
+                      cur.filter((item) => item.id !== file.id)
+                    )
+                  }}
                 />
               ))}
             </div>

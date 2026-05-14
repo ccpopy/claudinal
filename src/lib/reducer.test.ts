@@ -315,6 +315,28 @@ describe("reducer.tool_use_result attachment", () => {
     expect(s.entries).toHaveLength(0)
   })
 
+  it("filters meta skill prompts from live events", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        isMeta: true,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+            }
+          ]
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(0)
+  })
+
   it("strips system reminder sections from mixed user text", () => {
     let s = init()
     s = reduce(s, {
@@ -334,6 +356,36 @@ describe("reducer.tool_use_result attachment", () => {
     })
     const msg = lastMessage(s)
     expect(msg.blocks[0].text).toBe("用户可见")
+  })
+
+  it("extracts uploaded file tags from user text into attachment blocks", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                '请看\n\n<uploaded_file name="report.txt" mime="text/plain" size="5">\nhello\n</uploaded_file>'
+            }
+          ]
+        }
+      } as never)
+    })
+    const msg = lastMessage(s)
+    expect(msg.blocks).toMatchObject([
+      { type: "text", text: "请看" },
+      {
+        type: "attachment",
+        attachmentName: "report.txt",
+        attachmentMime: "text/plain",
+        attachmentSize: 5
+      }
+    ])
   })
 
   it("keeps queued prompt attachments but skips internal task notifications", () => {
@@ -546,5 +598,35 @@ describe("reducer.load_transcript filters internal events", () => {
     expect(msg.id).toBe("kept")
     // load_transcript 收尾时所有 message 的 streaming 都置 false
     expect(msg.streaming).toBe(false)
+  })
+
+  it("ignores meta skill prompts from historical transcripts", () => {
+    const events: ClaudeEvent[] = [
+      event({
+        type: "user",
+        isMeta: true,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Base directory for this skill: C:\\Users\\me\\.claude\\skills\\frontend-design\n\nARGUMENTS: 优化前端"
+            }
+          ]
+        }
+      } as never),
+      event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "/frontend-design 优化前端" }]
+        }
+      } as never)
+    ]
+    const s = reduce(init(), { kind: "load_transcript", events })
+    expect(s.entries).toHaveLength(1)
+    const msg = s.entries[0] as UIMessage
+    expect(msg.blocks[0].text).toBe("/frontend-design 优化前端")
   })
 })

@@ -65,6 +65,7 @@ import {
   saveSlashCommandsCache,
   slashCommandsFromSkills
 } from "@/lib/slashCommands"
+import { splitUploadedFileText } from "@/lib/fileAttachments"
 import { listSkills, type Skill } from "@/lib/plugins"
 import {
   buildClaudeEnv,
@@ -89,7 +90,7 @@ import {
   removeProject as removeProjectStore,
   type Project
 } from "@/lib/projects"
-import type { ImagePayload, UIBlock } from "@/types/ui"
+import type { DocumentPayload, ImagePayload, UIBlock } from "@/types/ui"
 import type { ClaudeEvent } from "@/types/events"
 import { Welcome } from "@/components/Welcome"
 import { BuddyLoader } from "@/components/BuddyLoader"
@@ -236,6 +237,7 @@ type QueuedInput = {
   mode: QueuedInputMode
   text: string
   images: ImagePayload[]
+  documents: DocumentPayload[]
   cliBlocks: Array<Record<string, unknown>>
 }
 type ReturnView = "chat" | "plugins" | "history"
@@ -264,9 +266,21 @@ type RunningSession = {
 
 function buildCliBlocks(
   text: string,
-  images: ImagePayload[]
+  images: ImagePayload[],
+  documents: DocumentPayload[]
 ): Array<Record<string, unknown>> {
   const blocks: Array<Record<string, unknown>> = []
+  for (const document of documents) {
+    blocks.push({
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: document.mime,
+        data: document.data
+      },
+      title: document.name
+    })
+  }
   if (text) blocks.push({ type: "text", text })
   for (const image of images) {
     blocks.push({
@@ -473,6 +487,7 @@ export default function App() {
   const [oauthUsage, setOauthUsage] = useState<OauthUsage | null>(null)
   const [draft, setDraft] = useState("")
   const [draftImages, setDraftImages] = useState<ImagePayload[]>([])
+  const [draftDocuments, setDraftDocuments] = useState<DocumentPayload[]>([])
   const [pinTick, setPinTick] = useState(0)
   const [titleTick, setTitleTick] = useState(0)
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
@@ -694,8 +709,10 @@ export default function App() {
       .filter(Boolean)
       .join("\n\n")
     const images = items.flatMap((item) => item.images)
+    const documents = items.flatMap((item) => item.documents)
     if (text) setDraft(text)
     setDraftImages(images)
+    setDraftDocuments(documents)
     toast.info(
       items.length === 1
         ? "已把队列消息取回到聊天框"
@@ -1533,6 +1550,7 @@ export default function App() {
     async (
       text: string,
       images: ImagePayload[],
+      documents: DocumentPayload[],
       options: { mode?: QueuedInputMode } = {}
     ) => {
       // 客户端可处理的斜杠命令直接拦截，不投递给 CLI
@@ -1546,7 +1564,11 @@ export default function App() {
         toast.success("已清空当前会话")
         return
       }
-      if (trimmed.startsWith("/") && images.length === 0) {
+      if (
+        trimmed.startsWith("/") &&
+        images.length === 0 &&
+        documents.length === 0
+      ) {
         // 其他斜杠命令是 TUI 专属（/usage、/permissions、/login 等），桌面端做不了
         // 仍把文本发给 CLI（CLI 会当普通文本处理），同时给一次性提醒
         toast.info("斜杠命令是 CLI TUI 专属，GUI 中作普通文本处理")
@@ -1567,8 +1589,7 @@ export default function App() {
         }
         cliText = buildCollaborationPrompt(text, cfg)
       }
-      const uiBlocks: UIBlock[] = []
-      if (text) uiBlocks.push({ type: "text", text })
+      const uiBlocks: UIBlock[] = text ? splitUploadedFileText(text) : []
       for (const image of images) {
         uiBlocks.push({
           type: "image",
@@ -1577,7 +1598,7 @@ export default function App() {
         })
       }
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      const blocks = buildCliBlocks(cliText, images)
+      const blocks = buildCliBlocks(cliText, images, documents)
       const mode = options.mode ?? "guide"
 
       if (streaming) {
@@ -1595,6 +1616,7 @@ export default function App() {
           mode,
           text,
           images,
+          documents,
           cliBlocks: blocks
         }
         if (run) {
@@ -2453,9 +2475,11 @@ export default function App() {
                           centered
                           externalText={draft}
                             externalImages={draftImages}
+                            externalDocuments={draftDocuments}
                           onExternalTextConsumed={() => {
                               setDraft("")
                               setDraftImages([])
+                              setDraftDocuments([])
                             }}
                           cwd={project.cwd}
                           slashCommands={slashCommands}
@@ -2546,9 +2570,11 @@ export default function App() {
                     disabled={!cliPath || !project}
                     externalText={draft}
                     externalImages={draftImages}
+                    externalDocuments={draftDocuments}
                     onExternalTextConsumed={() => {
                       setDraft("")
                       setDraftImages([])
+                      setDraftDocuments([])
                     }}
                     cwd={project?.cwd ?? null}
                     slashCommands={slashCommands}

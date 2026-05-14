@@ -4,6 +4,7 @@ export type UIBlockType =
   | "tool_use"
   | "tool_result"
   | "image"
+  | "attachment"
   | "unknown"
 
 export interface UIBlock {
@@ -18,6 +19,11 @@ export interface UIBlock {
   imageMediaType?: string
   imageData?: string
   imageAlt?: string
+  attachmentName?: string
+  attachmentMime?: string
+  attachmentSize?: number
+  attachmentText?: string
+  attachmentContentMode?: "inline" | "document" | "metadata-only"
   partial?: boolean
   raw?: unknown
   startedAt?: number
@@ -27,6 +33,13 @@ export interface UIBlock {
 export interface ImagePayload {
   data: string
   mime: string
+}
+
+export interface DocumentPayload {
+  data: string
+  mime: string
+  name: string
+  size: number
 }
 
 export interface ContextUsage {
