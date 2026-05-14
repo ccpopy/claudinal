@@ -20,6 +20,14 @@ src-tauri/updater.key*
 .env
 .env.local
 
+# agent
+.agents/
+.claude/
+.codex/
+.trellis/
+.kiro/
+AGENTS.md
+
 # IDE
 .vscode/*
 !.vscode/extensions.json
