@@ -115,6 +115,7 @@ import {
   type NetworkErrorTopic
 } from "@/lib/networkErrorHints"
 import { isAskUserQuestionRequest } from "@/lib/askUserQuestion"
+import { autoApprovePermissionRequest } from "@/lib/permissionPolicy"
 import { isEditableShortcutTarget } from "@/lib/keyboard"
 
 const SUGGESTIONS = [
@@ -257,6 +258,7 @@ type RunningSession = {
   pendingActions: ReducerAction[]
   queuedInputs: QueuedInput[]
   unlisten: UnlistenFn[]
+  permissionMode: AppSettings["defaultPermissionMode"]
   composerPrefs: ComposerPrefs
   sessionComposer: ComposerPrefs | null
   collabMcpEnabled: boolean
@@ -990,6 +992,22 @@ export default function App() {
         setSidebarRefreshKey((k) => k + 1)
         setRunningTick((k) => k + 1)
       }
+      const run = runningSessionsRef.current.get(payload.session_id)
+      const permissionMode =
+        run?.permissionMode ?? loadSettings().defaultPermissionMode
+      const autoApproval = autoApprovePermissionRequest(payload, permissionMode)
+      if (autoApproval) {
+        resolvePermissionRequest({
+          sessionId: payload.session_id,
+          requestId: payload.request_id,
+          transport: payload.transport ?? null,
+          response: autoApproval.response
+        }).catch((e) => {
+          toast.error(`自动处理权限请求失败: ${String(e)}`)
+          enqueue()
+        })
+        return
+      }
       const remembered = findPermissionMemoryMatch(payload)
       if (remembered) {
         const response: Record<string, unknown> = { behavior: "allow" }
@@ -1082,6 +1100,17 @@ export default function App() {
       const settings = loadSettings()
       setSessionPermissionMode(settings.defaultPermissionMode)
       setPlanMode(settings.defaultPermissionMode === "plan")
+      const activeRuntimeId = activeRuntimeIdRef.current
+      const activeRun = activeRuntimeId
+        ? runningSessionsRef.current.get(activeRuntimeId)
+        : null
+      if (
+        activeRun &&
+        activeRun.permissionMode !== settings.defaultPermissionMode
+      ) {
+        activeRun.permissionMode = settings.defaultPermissionMode
+        refreshActiveComposerRuntime("默认权限模式已刷新，下一次发送会使用新配置")
+      }
     }
     const refreshSettings = () => {
       refreshAppSettings()
@@ -1239,13 +1268,14 @@ export default function App() {
           ? "xhigh"
           : uiEffort
       const model = uiModel || null
+      const launchPermissionMode = planMode
+        ? "plan"
+        : sessionPermissionMode || cfg.defaultPermissionMode || "default"
       const id = await spawnSession({
         cwd: project.cwd,
         model,
         effort: launchEffort || null,
-        permissionMode: planMode
-          ? "plan"
-          : sessionPermissionMode || cfg.defaultPermissionMode || "default",
+        permissionMode: launchPermissionMode,
         resumeSessionId,
         env: Object.keys(env).length > 0 ? env : null,
         permissionMcpEnabled: cfg.permissionMcpEnabled,
@@ -1268,6 +1298,7 @@ export default function App() {
         pendingActions: [],
         queuedInputs: [],
         unlisten: [],
+        permissionMode: launchPermissionMode,
         composerPrefs,
         sessionComposer,
         collabMcpEnabled: collabCfg.enabled,
@@ -1781,19 +1812,28 @@ export default function App() {
   const handlePermissionModeChange = useCallback(
     (mode: AppSettings["defaultPermissionMode"]) => {
       permissionModeTouchedRef.current = true
+      const changed = mode !== sessionPermissionMode || (mode === "plan") !== planMode
       setSessionPermissionMode(mode)
       setPlanMode(mode === "plan")
+      const activeRuntimeId = activeRuntimeIdRef.current
+      const activeRun = activeRuntimeId
+        ? runningSessionsRef.current.get(activeRuntimeId)
+        : null
+      if (activeRun) {
+        activeRun.permissionMode = mode
+      }
+      if (changed) {
+        refreshActiveComposerRuntime("权限模式已刷新，下一次发送会使用新配置")
+      }
     },
-    []
+    [planMode, refreshActiveComposerRuntime, sessionPermissionMode]
   )
 
   const handlePlanModeChange = useCallback((enabled: boolean) => {
-    permissionModeTouchedRef.current = true
-    setPlanMode(enabled)
-    setSessionPermissionMode(
+    handlePermissionModeChange(
       enabled ? "plan" : loadSettings().defaultPermissionMode
     )
-  }, [])
+  }, [handlePermissionModeChange])
 
   const handleCollaborationModeChange = useCallback((enabled: boolean) => {
     if (!enabled) {
