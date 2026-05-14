@@ -150,6 +150,11 @@ const MessageStream = lazy(() =>
     default: m.MessageStream
   }))
 )
+const QueuedComposerBar = lazy(() =>
+  import("@/components/QueuedComposerBar").then((m) => ({
+    default: m.QueuedComposerBar
+  }))
+)
 const PluginsView = lazy(() =>
   import("@/components/PluginsView").then((m) => ({ default: m.PluginsView }))
 )
@@ -297,6 +302,21 @@ function buildCliBlocks(
     })
   }
   return blocks
+}
+
+const QUEUED_PREVIEW_LIMIT = 80
+
+function derivePreviewFromQueuedInput(q: QueuedInput): string {
+  const compacted = (q.text ?? "").replace(/\s+/g, " ").trim()
+  if (compacted) {
+    if (compacted.length <= QUEUED_PREVIEW_LIMIT) return compacted
+    return `${compacted.slice(0, QUEUED_PREVIEW_LIMIT - 1).trimEnd()}…`
+  }
+  const docName = q.documents?.[0]?.name
+  if (docName) return `附件：${docName}`
+  if (q.images?.length) return `图片 × ${q.images.length}`
+  if (q.documents?.length) return `附件 × ${q.documents.length}`
+  return "（空消息）"
 }
 
 // Collab prefix sentinel：reduceUser 用它识别并在 UI 里隐藏这段协同包装，
@@ -2391,6 +2411,17 @@ export default function App() {
     diffPatch?.files.length ?? 0
   )
   const slashCommands = findSlashCommands(state, installedSkillCommands)
+  const composerBarItems = useMemo(() => {
+    const runtimeId = activeRuntimeIdRef.current ?? sessionId
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+    if (!run) return [] as Array<{ localId: string; mode: QueuedInputMode; preview: string }>
+    return run.queuedInputs.map((q) => ({
+      localId: q.localId,
+      mode: q.mode,
+      preview: derivePreviewFromQueuedInput(q)
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningTick, sessionId])
   const activePermissionRequest =
     permissionRequests.find((request) => request.session_id === sessionId) ??
     null
@@ -2701,9 +2732,6 @@ export default function App() {
                     streaming={streaming}
                       reviews={reviewDiffs}
                       onShowDiff={() => setShowDiff(true)}
-                      onQueuedGuide={promoteQueuedInputToGuide}
-                      onQueuedRecall={recallQueuedInput}
-                      onQueuedDelete={deleteQueuedInput}
                   />
                 </Suspense>
                 {project && projectActions.length > 0 && (
@@ -2734,6 +2762,18 @@ export default function App() {
                     />
                   </Suspense>
                 </div>
+                {composerBarItems.length > 0 && (
+                  <div className="shrink-0 bg-background">
+                    <Suspense fallback={null}>
+                      <QueuedComposerBar
+                        items={composerBarItems}
+                        onPromoteGuide={promoteQueuedInputToGuide}
+                        onRecall={recallQueuedInput}
+                        onDelete={deleteQueuedInput}
+                      />
+                    </Suspense>
+                  </div>
+                )}
                 <Suspense fallback={<ComposerLoader />}>
                   <Composer
                     onSend={send}

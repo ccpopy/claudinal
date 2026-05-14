@@ -25,11 +25,12 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
   return (
     <nav
       aria-label="对话时间线导航"
-      className="pointer-events-none absolute right-[max(1rem,calc(50%-26rem))] top-1/2 z-20 hidden max-h-[min(60vh,360px)] -translate-y-1/2 lg:flex"
+      className="pointer-events-none absolute right-[max(1rem,calc(50%-26rem))] top-1/2 z-20 hidden max-h-[min(60vh,360px)] w-7 -translate-y-1/2 lg:flex"
     >
-      <div className="pointer-events-auto flex max-h-[inherit] w-10 flex-col items-center gap-1 overflow-y-auto rounded-full border border-border/60 bg-background/75 px-1.5 py-2 shadow-sm backdrop-blur-md scrollbar-thin">
+      <div className="pointer-events-auto flex max-h-[inherit] w-full flex-col items-stretch gap-1 overflow-y-auto scrollbar-thin">
         {items.map((item) => {
           const active = item.id === activeId
+          const isUser = item.role === "user"
           return (
             <Tooltip key={item.id}>
               <TooltipTrigger asChild>
@@ -39,14 +40,20 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
                   aria-current={active ? "location" : undefined}
                   onClick={() => onSelect(item.id)}
                   className={cn(
-                    "h-1.5 rounded-full outline-none transition-all focus-visible:ring-2 focus-visible:ring-ring/60",
-                    item.role === "user"
-                      ? "ml-auto w-5 bg-primary/55 hover:w-7 hover:bg-primary"
-                      : "mr-auto w-4 bg-muted-foreground/35 hover:w-7 hover:bg-muted-foreground/70",
-                    item.queued && "opacity-60",
-                    active && "w-7 bg-primary ring-2 ring-primary/20"
+                    "group ml-auto flex h-3 w-full items-center justify-end rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                    item.queued && "opacity-60"
                   )}
-                />
+                >
+                  <span
+                    className={cn(
+                      "h-0.5 rounded-full transition-all duration-150 ease-out",
+                      isUser
+                        ? "w-6 bg-muted-foreground/55 group-hover:w-7 group-hover:bg-foreground/70"
+                        : "w-3.5 bg-muted-foreground/35 group-hover:w-6 group-hover:bg-foreground/70",
+                      active && "w-7 bg-foreground/85 group-hover:bg-foreground/85"
+                    )}
+                  />
+                </button>
               </TooltipTrigger>
               <TooltipContent
                 side="left"

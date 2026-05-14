@@ -22,9 +22,6 @@ interface Props {
   autoScroll?: boolean
   reviews?: ReviewRunDiff[]
   onShowDiff?: () => void
-  onQueuedGuide?: (localId: string) => void | Promise<void>
-  onQueuedRecall?: (localId: string) => void
-  onQueuedDelete?: (localId: string) => void
 }
 
 interface MsgGroup {
@@ -177,10 +174,7 @@ export function MessageStream({
   streaming,
   autoScroll = true,
   reviews = [],
-  onShowDiff,
-  onQueuedGuide,
-  onQueuedRecall,
-  onQueuedDelete
+  onShowDiff
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -329,12 +323,7 @@ export function MessageStream({
                 data-timeline-target={g.key}
                 className="scroll-mt-6"
               >
-                <MessageCard
-                  entry={g.msg}
-                  onQueuedGuide={onQueuedGuide}
-                  onQueuedRecall={onQueuedRecall}
-                  onQueuedDelete={onQueuedDelete}
-                />
+                <MessageCard entry={g.msg} />
               </div>
             )
           }
