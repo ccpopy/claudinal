@@ -66,7 +66,7 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
                     <span>{item.label}</span>
                     {item.time && <span className="font-mono">{item.time}</span>}
                   </div>
-                  <div className="max-h-20 overflow-hidden text-sm leading-relaxed text-card-foreground">
+                  <div className="max-h-20 overflow-y-auto overscroll-contain pr-1 text-sm leading-relaxed text-card-foreground scrollbar-thin">
                     {item.preview}
                   </div>
                 </div>
