@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ShieldAlert, ShieldCheck, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -30,6 +30,7 @@ interface Props {
 
 export function PermissionDialog({ request, onSettled }: Props) {
   const [busy, setBusy] = useState(false)
+  const contentRef = useRef<HTMLDivElement | null>(null)
   const addRulesSuggestion = useMemo(
     () => firstAddRulesSuggestion(request),
     [request]
@@ -77,12 +78,18 @@ export function PermissionDialog({ request, onSettled }: Props) {
   return (
     <Dialog
       open={!!request}
-      onOpenChange={(open) => {
-        if (!open && request && !busy) deny()
-      }}
+      onOpenChange={() => {}}
     >
       <DialogContent
+        ref={contentRef}
+        tabIndex={-1}
+        showCloseButton={false}
         className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault()
+          contentRef.current?.focus({ preventScroll: true })
+        }}
+        onEscapeKeyDown={(event) => event.preventDefault()}
         onInteractOutside={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
       >
