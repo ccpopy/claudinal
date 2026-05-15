@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 1
-- **Last Active**: 2026-05-12
+- **Total Sessions**: 2
+- **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~44 | Active |
+| `journal-1.md` | ~77 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 2 | 2026-05-15 | 保留 Composer 会话草稿 | `2b3d7d7` | `main` |
 | 1 | 2026-05-12 | 消息队列、结构化提问与 0.2.7 发布 | `af32ae3`, `4e0af4b`, `128fdf2`, `151aef4`, `2efc666` | `main` |
 <!-- @@@/auto:session-history -->
 
