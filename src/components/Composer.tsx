@@ -51,6 +51,14 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import {
+  cloneComposerDraft,
+  emptyComposerDraft,
+  type ComposerDraft,
+  type ComposerDraftDocument,
+  type ComposerDraftFileAttachment,
+  type ComposerDraftImage
+} from "@/lib/composerDrafts"
+import {
   gitBranchList,
   gitCheckoutBranch,
   gitWorktreeStatus,
@@ -98,6 +106,9 @@ interface Props {
   streaming: boolean
   disabled?: boolean
   centered?: boolean
+  draftKey?: string
+  initialDraft?: ComposerDraft
+  onDraftChange?: (draft: ComposerDraft) => void
   externalText?: string
   externalImages?: ImagePayload[]
   externalDocuments?: DocumentPayload[]
@@ -153,17 +164,9 @@ function parseTrigger(text: string, caret: number): TriggerInfo | null {
 }
 
 const MAX_TEXT_FILE_BYTES = 1024 * 1024
-type Thumb = ImagePayload & { id: string; name: string; size: number }
-type DocumentThumb = DocumentPayload & { id: string }
-
-interface FileAttachment {
-  id: string
-  name: string
-  mime: string
-  size: number
-  text: string | null
-  contentMode: "inline" | "document" | "metadata-only"
-}
+type Thumb = ComposerDraftImage
+type DocumentThumb = ComposerDraftDocument
+type FileAttachment = ComposerDraftFileAttachment
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -238,6 +241,9 @@ export function Composer({
   streaming,
   disabled,
   centered,
+  draftKey,
+  initialDraft,
+  onDraftChange,
   externalText,
   externalImages,
   externalDocuments,
@@ -271,6 +277,8 @@ export function Composer({
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([])
   const ref = useRef<HTMLTextAreaElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const initialDraftRef = useRef<ComposerDraft | undefined>(initialDraft)
+  const skipNextDraftReportRef = useRef(true)
   const [trigger, setTrigger] = useState<TriggerInfo | null>(null)
   const [items, setItems] = useState<SuggestionItem[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
@@ -367,6 +375,33 @@ export function Composer({
     },
     [trigger, items, text]
   )
+
+  useEffect(() => {
+    initialDraftRef.current = initialDraft
+  }, [initialDraft])
+
+  useEffect(() => {
+    const restored = cloneComposerDraft(
+      initialDraftRef.current ?? emptyComposerDraft()
+    )
+    skipNextDraftReportRef.current = true
+    setText(restored.text)
+    setImages(restored.images)
+    setDocuments(restored.documents)
+    setFileAttachments(restored.fileAttachments)
+    setTrigger(null)
+    setItems([])
+    setActiveIdx(0)
+    setPreviewIdx(null)
+  }, [draftKey])
+
+  useEffect(() => {
+    if (skipNextDraftReportRef.current) {
+      skipNextDraftReportRef.current = false
+      return
+    }
+    onDraftChange?.({ text, images, documents, fileAttachments })
+  }, [fileAttachments, images, documents, onDraftChange, text])
 
   useEffect(() => {
     const el = ref.current

@@ -55,6 +55,12 @@ import {
   type ComposerPrefs
 } from "@/lib/composerPrefs"
 import {
+  cloneComposerDraft,
+  composerDraftKey,
+  isComposerDraftEmpty,
+  type ComposerDraft
+} from "@/lib/composerDrafts"
+import {
   enabledProviderList,
   loadCollabSettings,
   providerPathEnv
@@ -576,6 +582,7 @@ export default function App() {
   const activeRuntimeIdRef = useRef<string | null>(null)
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
+  const composerDraftsRef = useRef<Map<string, ComposerDraft>>(new Map())
   const apiProfileKeyRef = useRef(currentApiProfileKey())
   const permissionModeSourceRef =
     useRef<SessionPermissionModeSource>("default")
@@ -800,6 +807,18 @@ export default function App() {
           : `已把 ${items.length} 条队列消息取回到聊天框`
     )
   }, [])
+
+  const rememberComposerDraft = useCallback(
+    (key: string | undefined, next: ComposerDraft) => {
+      if (!key) return
+      if (isComposerDraftEmpty(next)) {
+        composerDraftsRef.current.delete(key)
+        return
+      }
+      composerDraftsRef.current.set(key, cloneComposerDraft(next))
+    },
+    []
+  )
 
   const closeRunningSession = useCallback(
     async (
@@ -2382,6 +2401,18 @@ export default function App() {
 
   const empty = state.entries.length === 0
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
+  const activeComposerDraftKey = project
+    ? composerDraftKey(project.id, jsonlSessionId)
+    : undefined
+  const activeComposerDraft = activeComposerDraftKey
+    ? composerDraftsRef.current.get(activeComposerDraftKey)
+    : undefined
+  const handleComposerDraftChange = useCallback(
+    (next: ComposerDraft) => {
+      rememberComposerDraft(activeComposerDraftKey, next)
+    },
+    [activeComposerDraftKey, rememberComposerDraft]
+  )
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const streamingSessionRefs = useMemo(() => {
     const refs: Array<{ projectId: string; sessionId: string }> = []
@@ -2677,6 +2708,7 @@ export default function App() {
                     onPickSuggestion={(s) => {
                       setDraft(s)
                       setDraftImages([])
+                      setDraftDocuments([])
                     }}
                   />
                 </div>
@@ -2699,6 +2731,9 @@ export default function App() {
                           streaming={streaming}
                           disabled={!cliPath}
                           centered
+                          draftKey={activeComposerDraftKey}
+                          initialDraft={activeComposerDraft}
+                          onDraftChange={handleComposerDraftChange}
                           externalText={draft}
                             externalImages={draftImages}
                             externalDocuments={draftDocuments}
@@ -2803,6 +2838,9 @@ export default function App() {
                     onRecallQueued={recallLatestQueuedInput}
                     streaming={streaming}
                     disabled={!cliPath || !project}
+                    draftKey={activeComposerDraftKey}
+                    initialDraft={activeComposerDraft}
+                    onDraftChange={handleComposerDraftChange}
                     externalText={draft}
                     externalImages={draftImages}
                     externalDocuments={draftDocuments}
