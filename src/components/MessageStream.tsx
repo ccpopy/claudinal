@@ -310,7 +310,7 @@ export function MessageStream({
 
   let reviewIndex = 0
   return (
-    <ScrollArea ref={ref} className="relative flex-1 min-h-0">
+    <ScrollArea ref={ref} className="relative flex-1 min-h-0 overflow-hidden">
       <div className="flex flex-col gap-5 px-6 py-6 max-w-3xl mx-auto w-full">
         {groups.map((g) => {
           if (g.kind === "msg") {
