@@ -186,7 +186,7 @@ export function Environment({ cwd, onSelectProject, onProjectsChanged }: Props) 
         description="本地环境用于保存项目脚本和操作命令。"
         eyebrow={
           editor ? (
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <button
               type="button"
               onClick={() => setEditor(null)}

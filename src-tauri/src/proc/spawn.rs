@@ -9,5 +9,14 @@ pub fn find_claude() -> Result<PathBuf> {
             return Ok(pb);
         }
     }
+    if let Some(home) = dirs::home_dir() {
+        #[cfg(target_os = "windows")]
+        let native = home.join(".local").join("bin").join("claude.exe");
+        #[cfg(not(target_os = "windows"))]
+        let native = home.join(".local").join("bin").join("claude");
+        if native.is_file() {
+            return Ok(native);
+        }
+    }
     which::which("claude").map_err(Error::from)
 }

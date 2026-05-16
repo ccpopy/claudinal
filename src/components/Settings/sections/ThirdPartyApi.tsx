@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import {
   claudeSettingsPath,
@@ -29,13 +30,14 @@ import {
   openPath
 } from "@/lib/ipc"
 import {
-  buildClaudeEnv,
+  buildClaudeRuntimeSettingsPreview,
   cleanupManagedGlobalClaudeSettings,
   createThirdPartyApiProvider,
   deleteProviderApiKey,
   loadThirdPartyApiStoreAsync,
   maskSecret,
   OFFICIAL_PROVIDER_ID,
+  parseRuntimeSettingsJson,
   providerModelInputOptions,
   saveThirdPartyApiStoreAsync,
   trimApiUrl,
@@ -87,6 +89,29 @@ function providerExists(store: ThirdPartyApiStore, id: string | null) {
     id === OFFICIAL_PROVIDER_ID ||
     store.providers.some((provider) => provider.id === id)
   )
+}
+
+function maskRuntimeSettingsValue(value: unknown, key = ""): unknown {
+  if (typeof value === "string") {
+    const upper = key.toUpperCase()
+    return upper.includes("KEY") ||
+      upper.includes("TOKEN") ||
+      upper.includes("SECRET")
+      ? maskSecret(value)
+      : value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => maskRuntimeSettingsValue(item, key))
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [
+        childKey,
+        maskRuntimeSettingsValue(childValue, childKey)
+      ])
+    )
+  }
+  return value
 }
 
 export function ThirdPartyApi() {
@@ -264,6 +289,12 @@ export function ThirdPartyApi() {
         toast.error("请填写 API Key")
         return
       }
+      try {
+        parseRuntimeSettingsJson(provider.runtimeSettingsJson)
+      } catch (error) {
+        toast.error(String(error))
+        return
+      }
       const providers =
         editor.mode === "new"
           ? [...store.providers, provider]
@@ -323,6 +354,12 @@ export function ThirdPartyApi() {
     }
     if (!target.apiKey.trim()) {
       toast.error("请填写 API Key")
+      return false
+    }
+    try {
+      parseRuntimeSettingsJson(target.runtimeSettingsJson)
+    } catch (error) {
+      toast.error(String(error))
       return false
     }
     return true
@@ -413,20 +450,15 @@ export function ThirdPartyApi() {
 
   const preview = useMemo(() => {
     const target = editorConfig ?? activeConfig
-    const env = buildClaudeEnv(target)
-    const maskedEnv = Object.fromEntries(
-      Object.entries(env).map(([key, value]) => [
-        key,
-        key.includes("KEY") || key.includes("TOKEN") ? maskSecret(value) : value
-      ])
-    )
-    return JSON.stringify(
-      {
-        env: maskedEnv
-      },
-      null,
-      2
-    )
+    try {
+      return JSON.stringify(
+        maskRuntimeSettingsValue(buildClaudeRuntimeSettingsPreview(target)),
+        null,
+        2
+      )
+    } catch (error) {
+      return `配置错误：${String(error)}`
+    }
   }, [activeConfig, editorConfig])
 
   const activeTitle = activeOfficial
@@ -450,7 +482,7 @@ export function ThirdPartyApi() {
     return (
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="px-8 pt-8 pb-4 shrink-0">
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <button
               type="button"
               onClick={closeEditor}
@@ -562,7 +594,7 @@ export function ThirdPartyApi() {
                 />
                 {editorConfig.inputFormat === "anthropic" && (
                   <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-                    Anthropic Messages 默认填写基础地址，例如 {ANTHROPIC_API_BASE_URL}；只有打开完整端点 URL 时才填写完整 messages 端点。
+                    默认填写基础地址（如 {ANTHROPIC_API_BASE_URL}）。如需直接指向 messages 端点，请打开「完整端点 URL」。
                   </div>
                 )}
               </div>
@@ -609,7 +641,7 @@ export function ThirdPartyApi() {
                     使用模型
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
-                    按 Claude Code 官方环境变量映射模型；这些值只在 Claudinal 启动新会话时注入。
+                    映射到 Claude Code 官方环境变量，新会话启动时注入。
                   </div>
                 </div>
                 <Button
@@ -624,7 +656,7 @@ export function ThirdPartyApi() {
               </div>
 
               <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                获取模型列表会写入当前供应商缓存。下面字段会进入本次会话的运行时配置，并在本地代理转发请求时保持一致。
+                列表会缓存到当前供应商。下方字段同时用于运行时配置与本地代理转发。
               </div>
               {cachedModelCount > 0 && (
                 <div className="text-[11px] text-muted-foreground">
@@ -666,9 +698,30 @@ export function ThirdPartyApi() {
               </div>
             </section>
 
+            <section className="rounded-lg border bg-card p-5 space-y-4">
+              <div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Claude settings 覆盖
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  通过 --settings 注入到本供应商的新会话。
+                </div>
+              </div>
+              <Textarea
+                value={editorConfig.runtimeSettingsJson}
+                onChange={(e) => update({ runtimeSettingsJson: e.target.value })}
+                placeholder={`{\n  "model": "opus[1m]",\n  "alwaysThinkingEnabled": true\n}`}
+                className="min-h-32 font-mono text-xs"
+                disabled={loading || saving}
+              />
+              <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                env 字段仅用于追加自定义环境变量。ANTHROPIC_*、CLAUDINAL_PROXY_* 及 API Key 由上方字段统一管理。
+              </div>
+            </section>
+
             <section className="rounded-lg border bg-muted/40 p-5 space-y-3">
               <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                Claude 运行时环境预览
+                Claude 运行时 settings 预览
               </div>
               <pre className="max-h-64 overflow-auto rounded-md bg-background border p-3 text-xs font-mono leading-relaxed">
                 {preview}

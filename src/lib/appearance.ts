@@ -133,6 +133,7 @@ const CLAUDE_DEFAULT: Appearance = {
     accent: "#cc7d5e",
     background: "#f9f9f7",
     foreground: "#2d2d2b",
+    translucentSidebar: true,
     fontUI: CLAUDE_FONT_UI,
     fontMono: CLAUDE_FONT_MONO,
     palette: {
@@ -167,6 +168,7 @@ const CLAUDE_DEFAULT: Appearance = {
     accent: "#cc7d5e",
     background: "#2d2d2b",
     foreground: "#f9f9f7",
+    translucentSidebar: true,
     fontUI: CLAUDE_FONT_UI,
     fontMono: CLAUDE_FONT_MONO,
     palette: {
@@ -286,6 +288,7 @@ export const PRESETS: Record<string, { label: string; appearance: Appearance }> 
         accent: "#0969da",
         background: "#ffffff",
         foreground: "#1f2328",
+        translucentSidebar: true,
         palette: {
           "--card": "#ffffff",
           "--card-foreground": "#1f2328",
@@ -318,6 +321,7 @@ export const PRESETS: Record<string, { label: string; appearance: Appearance }> 
         accent: "#1f6feb",
         background: "#0d1117",
         foreground: "#e6edf3",
+        translucentSidebar: true,
         palette: {
           "--card": "#161b22",
           "--card-foreground": "#e6edf3",
@@ -446,6 +450,14 @@ export function loadAppearance(): Appearance {
       for (const mode of ["light", "dark"] as const) {
         if (!merged[mode].palette && preset.appearance[mode].palette) {
           merged[mode].palette = { ...preset.appearance[mode].palette }
+          migrated = true
+        }
+        if (
+          merged[mode].translucentSidebar === undefined &&
+          preset.appearance[mode].translucentSidebar !== undefined
+        ) {
+          merged[mode].translucentSidebar =
+            preset.appearance[mode].translucentSidebar
           migrated = true
         }
       }

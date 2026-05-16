@@ -56,15 +56,27 @@ interface SectionProps {
   onProjectsChanged?: () => void
 }
 
+type SectionGroupKey = "app" | "model" | "tooling" | "data"
+
 interface SectionDef {
   id: string
   label: string
   icon: LucideIcon
+  group: SectionGroupKey
   Component:
     | ComponentType<SectionProps>
     | LazyExoticComponent<ComponentType<SectionProps>>
   load?: () => Promise<unknown>
 }
+
+const GROUP_LABELS: Record<SectionGroupKey, string> = {
+  app: "应用",
+  model: "模型与会话",
+  tooling: "工程工具",
+  data: "数据"
+}
+
+const GROUP_ORDER: SectionGroupKey[] = ["app", "model", "tooling", "data"]
 
 const loadGeneral = () => import("./sections/General")
 const loadAppearance = () => import("./sections/Appearance")
@@ -121,6 +133,7 @@ const SECTIONS: SectionDef[] = [
     id: "general",
     label: "常规",
     icon: Cog,
+    group: "app",
     Component: General,
     load: loadGeneral
   },
@@ -128,13 +141,23 @@ const SECTIONS: SectionDef[] = [
     id: "appearance",
     label: "外观",
     icon: Sliders,
+    group: "app",
     Component: Appearance,
     load: loadAppearance
+  },
+  {
+    id: "network",
+    label: "网络代理",
+    icon: NetworkIcon,
+    group: "app",
+    Component: Network,
+    load: loadNetwork
   },
   {
     id: "config",
     label: "配置",
     icon: Settings2,
+    group: "model",
     Component: Config,
     load: loadConfig
   },
@@ -142,6 +165,7 @@ const SECTIONS: SectionDef[] = [
     id: "third-party-api",
     label: "第三方 API",
     icon: Key,
+    group: "model",
     Component: ThirdPartyApi,
     load: loadThirdPartyApi
   },
@@ -149,6 +173,7 @@ const SECTIONS: SectionDef[] = [
     id: "personalization",
     label: "个性化",
     icon: UserCircle,
+    group: "model",
     Component: Personalization,
     load: loadPersonalization
   },
@@ -156,6 +181,7 @@ const SECTIONS: SectionDef[] = [
     id: "mcp",
     label: "MCP 服务器",
     icon: Plug,
+    group: "model",
     Component: McpServers,
     load: loadMcpServers
   },
@@ -163,6 +189,7 @@ const SECTIONS: SectionDef[] = [
     id: "collaboration",
     label: "协同",
     icon: Bot,
+    group: "model",
     Component: Collaboration,
     load: loadCollaboration
   },
@@ -170,6 +197,7 @@ const SECTIONS: SectionDef[] = [
     id: "git",
     label: "Git",
     icon: GitBranch,
+    group: "tooling",
     Component: Git,
     load: loadGit
   },
@@ -177,6 +205,7 @@ const SECTIONS: SectionDef[] = [
     id: "env",
     label: "环境",
     icon: SlidersHorizontal,
+    group: "tooling",
     Component: Environment,
     load: loadEnvironment
   },
@@ -184,6 +213,7 @@ const SECTIONS: SectionDef[] = [
     id: "worktree",
     label: "工作树",
     icon: TreePine,
+    group: "tooling",
     Component: Worktree,
     load: loadWorktree
   },
@@ -191,20 +221,15 @@ const SECTIONS: SectionDef[] = [
     id: "browser",
     label: "浏览器使用",
     icon: Globe,
+    group: "tooling",
     Component: Browser,
     load: loadBrowser
-  },
-  {
-    id: "archive",
-    label: "已归档对话",
-    icon: Archive,
-    Component: ArchiveSection,
-    load: loadArchive
   },
   {
     id: "account",
     label: "账户和使用情况",
     icon: Monitor,
+    group: "data",
     Component: Account,
     load: loadAccount
   },
@@ -212,15 +237,17 @@ const SECTIONS: SectionDef[] = [
     id: "statistics",
     label: "统计",
     icon: BarChart3,
+    group: "data",
     Component: Statistics,
     load: loadStatistics
   },
   {
-    id: "network",
-    label: "网络代理",
-    icon: NetworkIcon,
-    Component: Network,
-    load: loadNetwork
+    id: "archive",
+    label: "已归档对话",
+    icon: Archive,
+    group: "data",
+    Component: ArchiveSection,
+    load: loadArchive
   }
 ]
 
@@ -258,27 +285,43 @@ export function SettingsWorkspace({
       {sidebarVisible && (
         <aside className="w-64 shrink-0 overflow-hidden rounded-lg bg-sidebar text-sidebar-foreground">
           <ScrollArea className="h-full">
-            <nav className="flex flex-col gap-0.5 px-2 py-3">
-              {SECTIONS.map((s) => {
-                const Icon = s.icon
-                const active = s.id === section
+            <nav className="flex flex-col px-2 py-3">
+              {GROUP_ORDER.map((groupKey, groupIdx) => {
+                const items = SECTIONS.filter((s) => s.group === groupKey)
+                if (items.length === 0) return null
                 return (
-	                  <button
-	                    key={s.id}
-	                    type="button"
-	                    onMouseEnter={() => void s.load?.()}
-	                    onFocus={() => void s.load?.()}
-	                    onClick={() => setSection(s.id)}
-                    className={cn(
-                      "flex h-9 cursor-pointer items-center gap-3 rounded-md px-3 text-left text-sm font-medium transition-colors",
-                      active
-                        ? "bg-sidebar-accent text-sidebar-foreground"
-                        : "text-sidebar-foreground/85 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
-                    )}
+                  <div
+                    key={groupKey}
+                    className={cn("flex flex-col", groupIdx > 0 && "mt-2")}
                   >
-                    <Icon className="size-4 shrink-0" />
-                    <span className="truncate">{s.label}</span>
-                  </button>
+                    <div className="flex h-7 items-center px-2 text-xs font-medium text-sidebar-foreground/60">
+                      {GROUP_LABELS[groupKey]}
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      {items.map((s) => {
+                        const Icon = s.icon
+                        const active = s.id === section
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onMouseEnter={() => void s.load?.()}
+                            onFocus={() => void s.load?.()}
+                            onClick={() => setSection(s.id)}
+                            className={cn(
+                              "flex h-9 cursor-pointer items-center gap-3 rounded-md px-3 text-left text-sm font-medium transition-colors",
+                              active
+                                ? "bg-sidebar-accent text-sidebar-foreground"
+                                : "text-sidebar-foreground/85 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
+                            )}
+                          >
+                            <Icon className="size-4 shrink-0" />
+                            <span className="truncate">{s.label}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
                 )
               })}
             </nav>

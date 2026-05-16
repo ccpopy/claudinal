@@ -164,11 +164,7 @@ export function Git() {
           typeof data.prUrlTemplate === "string" ? data.prUrlTemplate : undefined
       }
       setCur(sub)
-      setDirty(
-        data.attribution === undefined ||
-          data.includeGitInstructions === undefined ||
-          data.includeCoAuthoredBy !== undefined
-      )
+      setDirty(false)
     } catch (e) {
       toast.error(`读取失败: ${String(e)}`)
     } finally {

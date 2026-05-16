@@ -21,8 +21,10 @@ use crate::session::{
 
 const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
 const CLAUDE_UPDATE_COMMAND: &str = "claude update";
+const CLAUDE_RUNTIME_SETTINGS_ENV_KEY: &str = "CLAUDINAL_RUNTIME_SETTINGS_JSON";
 const CLAUDE_CLI_REFERENCE_URL: &str =
     "https://docs.anthropic.com/en/docs/claude-code/cli-reference";
+const CLAUDE_CLI_SETUP_URL: &str = "https://code.claude.com/docs/en/setup";
 
 /// 把字符串内容原子写入磁盘：先写到 `<path>.tmp.<pid>`，再 rename 到目标路径。
 /// 这样即使写入过程中崩溃 / 断电，也不会留下半截文件。所有 GUI 直接管理的
@@ -51,12 +53,23 @@ fn atomic_write_str(path: &std::path::Path, contents: &str) -> Result<()> {
 
 #[derive(Serialize)]
 pub struct ClaudeCliVersionInfo {
-    pub path: String,
-    pub version: String,
+    pub installed: bool,
+    pub path: Option<String>,
+    pub version: Option<String>,
     pub min_supported_version: String,
     pub supported: bool,
     pub update_command: String,
+    pub install_command: String,
     pub docs_url: String,
+    pub setup_url: String,
+}
+
+#[derive(Serialize)]
+pub struct ClaudeCliCommandResult {
+    pub command: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
 }
 
 #[derive(serde::Serialize)]
@@ -89,7 +102,19 @@ pub async fn claude_cli_version_info() -> Result<ClaudeCliVersionInfo> {
     use tokio::process::Command as AsyncCommand;
     use tokio::time::{timeout, Duration};
 
-    let path = crate::proc::spawn::find_claude()?;
+    let Some(path) = find_claude_optional()? else {
+        return Ok(ClaudeCliVersionInfo {
+            installed: false,
+            path: None,
+            version: None,
+            min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
+            supported: false,
+            update_command: CLAUDE_UPDATE_COMMAND.into(),
+            install_command: claude_install_command_display(),
+            docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
+            setup_url: CLAUDE_CLI_SETUP_URL.into(),
+        });
+    };
     let mut cmd = AsyncCommand::new(&path);
     cmd.arg("--version");
     cmd.kill_on_drop(true);
@@ -120,13 +145,115 @@ pub async fn claude_cli_version_info() -> Result<ClaudeCliVersionInfo> {
         .ok_or_else(|| Error::Other(format!("无法解析 Claude CLI 版本号：{version}")))?;
 
     Ok(ClaudeCliVersionInfo {
-        path: path.display().to_string(),
-        version,
+        installed: true,
+        path: Some(path.display().to_string()),
+        version: Some(version),
         min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
         supported,
         update_command: CLAUDE_UPDATE_COMMAND.into(),
+        install_command: claude_install_command_display(),
         docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
+        setup_url: CLAUDE_CLI_SETUP_URL.into(),
     })
+}
+
+#[tauri::command]
+pub async fn install_claude_cli() -> Result<ClaudeCliCommandResult> {
+    run_command_spec(claude_install_command_spec()).await
+}
+
+#[tauri::command]
+pub async fn update_claude_cli() -> Result<ClaudeCliCommandResult> {
+    let path = crate::proc::spawn::find_claude()?;
+    run_command_spec(CommandSpec {
+        program: path.display().to_string(),
+        args: vec!["update".into()],
+        display: CLAUDE_UPDATE_COMMAND.into(),
+    })
+    .await
+}
+
+fn find_claude_optional() -> Result<Option<std::path::PathBuf>> {
+    match crate::proc::spawn::find_claude() {
+        Ok(path) => Ok(Some(path)),
+        Err(Error::Which(which::Error::CannotFindBinaryPath)) | Err(Error::CliNotFound) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+struct CommandSpec {
+    program: String,
+    args: Vec<String>,
+    display: String,
+}
+
+fn claude_install_command_display() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        "irm https://claude.ai/install.ps1 | iex".into()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "curl -fsSL https://claude.ai/install.sh | bash".into()
+    }
+}
+
+fn claude_install_command_spec() -> CommandSpec {
+    #[cfg(target_os = "windows")]
+    {
+        CommandSpec {
+            program: "powershell.exe".into(),
+            args: vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-Command".into(),
+                claude_install_command_display(),
+            ],
+            display: claude_install_command_display(),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        CommandSpec {
+            program: "sh".into(),
+            args: vec!["-lc".into(), claude_install_command_display()],
+            display: claude_install_command_display(),
+        }
+    }
+}
+
+async fn run_command_spec(spec: CommandSpec) -> Result<ClaudeCliCommandResult> {
+    use tokio::process::Command as AsyncCommand;
+
+    let mut cmd = AsyncCommand::new(&spec.program);
+    cmd.args(&spec.args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    hide_tokio_window(&mut cmd);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| Error::Other(format!("运行 `{}` 失败：{e}", spec.display)))?;
+    let result = ClaudeCliCommandResult {
+        command: spec.display,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    };
+    if !output.status.success() {
+        return Err(Error::Other(format!(
+            "`{}` 失败，exit {}，stderr: {}，stdout: {}",
+            result.command,
+            result.exit_code,
+            result.stderr.trim(),
+            result.stdout.trim()
+        )));
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -152,7 +279,8 @@ pub async fn spawn_session(
     }
     let mut env = env.unwrap_or_default();
     let env_remove = Vec::new();
-    let mut use_runtime_claude_settings = false;
+    let runtime_settings = take_runtime_settings_json(&mut env)?;
+    let mut use_runtime_claude_settings = runtime_settings.is_some();
     if let Some(proxy_config) = take_proxy_config(&mut env, effort.as_deref()) {
         let local_base_url = start_api_proxy(proxy_config).await?;
         env.insert("ANTHROPIC_BASE_URL".into(), local_base_url);
@@ -187,7 +315,7 @@ pub async fn spawn_session(
         }
     }
     let settings_json = if use_runtime_claude_settings {
-        runtime_claude_settings_json(&env)?
+        runtime_claude_settings_json(&env, runtime_settings)?
     } else {
         None
     };
@@ -372,9 +500,33 @@ const RUNTIME_CLAUDE_SETTINGS_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
 ];
 
+fn take_runtime_settings_json(
+    env: &mut std::collections::HashMap<String, String>,
+) -> Result<Option<Value>> {
+    let Some(raw) = env.remove(CLAUDE_RUNTIME_SETTINGS_ENV_KEY) else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|e| Error::Other(format!("运行时 settings JSON 无效：{e}")))?;
+    if !value.is_object() {
+        return Err(Error::Other("运行时 settings 必须是 JSON 对象".into()));
+    }
+    Ok(Some(value))
+}
+
 fn runtime_claude_settings_json(
     env: &std::collections::HashMap<String, String>,
+    runtime_settings: Option<Value>,
 ) -> Result<Option<String>> {
+    let mut settings = match runtime_settings {
+        Some(Value::Object(map)) => Value::Object(map),
+        Some(_) => return Err(Error::Other("运行时 settings 必须是 JSON 对象".into())),
+        None => Value::Object(Map::new()),
+    };
     let mut runtime_env = std::collections::BTreeMap::new();
     for key in RUNTIME_CLAUDE_SETTINGS_ENV_KEYS {
         let Some(value) = env.get(*key) else {
@@ -383,15 +535,64 @@ fn runtime_claude_settings_json(
         if value.trim().is_empty() {
             continue;
         }
-        runtime_env.insert(*key, value.clone());
+        runtime_env.insert((*key).to_string(), value.clone());
     }
-    if runtime_env.is_empty() {
+
+    let settings_obj = settings
+        .as_object_mut()
+        .ok_or_else(|| Error::Other("运行时 settings 必须是 JSON 对象".into()))?;
+    validate_runtime_settings_env(settings_obj.get("env"))?;
+    if !runtime_env.is_empty() {
+        let existing_env = settings_obj.remove("env");
+        let mut merged_env = match existing_env {
+            Some(Value::Object(map)) => map,
+            Some(_) => return Err(Error::Other("运行时 settings.env 必须是对象".into())),
+            None => Map::new(),
+        };
+        for (key, value) in runtime_env {
+            if let Some(existing) = merged_env.get(&key) {
+                if existing != &Value::String(value.clone()) {
+                    return Err(Error::Other(format!(
+                        "运行时 settings.env.{key} 与 Claudinal 生成值冲突"
+                    )));
+                }
+            }
+            merged_env.insert(key, Value::String(value));
+        }
+        settings_obj.insert("env".into(), Value::Object(merged_env));
+    }
+
+    if settings_obj.is_empty() {
         return Ok(None);
     }
-    let settings = serde_json::json!({ "env": runtime_env });
     serde_json::to_string(&settings)
         .map(Some)
         .map_err(Error::from)
+}
+
+fn validate_runtime_settings_env(value: Option<&Value>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let Some(env) = value.as_object() else {
+        return Err(Error::Other("运行时 settings.env 必须是对象".into()));
+    };
+    for (key, value) in env {
+        if !value.is_string() {
+            return Err(Error::Other(format!(
+                "运行时 settings.env.{key} 必须是字符串"
+            )));
+        }
+        if RUNTIME_CLAUDE_SETTINGS_ENV_KEYS.contains(&key.as_str())
+            || key.starts_with("CLAUDINAL_PROXY_")
+            || key == CLAUDE_RUNTIME_SETTINGS_ENV_KEY
+        {
+            return Err(Error::Other(format!(
+                "运行时 settings.env.{key} 由 Claudinal 管理，请使用对应供应商字段配置"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn take_proxy_config(
@@ -2448,7 +2649,7 @@ mod tests {
         env.insert("HTTP_PROXY".into(), "http://proxy.local:8080".into());
         env.insert("ANTHROPIC_MODEL".into(), "provider-main".into());
 
-        let raw = runtime_claude_settings_json(&env)
+        let raw = runtime_claude_settings_json(&env, None)
             .expect("settings json")
             .expect("settings present");
         let value: Value = serde_json::from_str(&raw).expect("valid json");
@@ -2478,8 +2679,47 @@ mod tests {
         let mut env = std::collections::HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".into(), "   ".into());
 
-        let raw = runtime_claude_settings_json(&env).expect("settings json");
+        let raw = runtime_claude_settings_json(&env, None).expect("settings json");
         assert!(raw.is_none());
+    }
+
+    #[test]
+    fn runtime_claude_settings_merges_extra_runtime_settings() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_MODEL".into(), "provider-main".into());
+        let extra = serde_json::json!({
+            "model": "opus[1m]",
+            "alwaysThinkingEnabled": true,
+            "env": {
+                "EXTRA_FLAG": "1"
+            }
+        });
+
+        let raw = runtime_claude_settings_json(&env, Some(extra))
+            .expect("settings json")
+            .expect("settings present");
+        let value: Value = serde_json::from_str(&raw).expect("valid json");
+
+        assert_eq!(value["model"], "opus[1m]");
+        assert_eq!(value["alwaysThinkingEnabled"], true);
+        assert_eq!(value["env"]["EXTRA_FLAG"], "1");
+        assert_eq!(value["env"]["ANTHROPIC_MODEL"], "provider-main");
+    }
+
+    #[test]
+    fn runtime_claude_settings_rejects_managed_env_keys() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_MODEL".into(), "provider-main".into());
+        let extra = serde_json::json!({
+            "env": {
+                "ANTHROPIC_MODEL": "manual"
+            }
+        });
+
+        let err = runtime_claude_settings_json(&env, Some(extra)).expect_err("managed key");
+        assert!(err
+            .to_string()
+            .contains("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理"));
     }
 
     #[test]

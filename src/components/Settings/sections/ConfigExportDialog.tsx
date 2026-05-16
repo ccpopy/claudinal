@@ -293,7 +293,7 @@ export function ConfigExportPage({ settings, onBack }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 px-8 pb-4 pt-8">
-        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
           <button
             type="button"
             onClick={onBack}

@@ -6,7 +6,7 @@ function Breadcrumb({ className, ...props }: React.ComponentProps<"nav">) {
   return (
     <nav
       aria-label="breadcrumb"
-      className={cn("flex items-center gap-1 text-xs text-muted-foreground", className)}
+      className={cn("flex items-center gap-1.5 text-sm text-muted-foreground", className)}
       {...props}
     />
   )
@@ -43,7 +43,7 @@ function BreadcrumbItem({
 }
 
 function BreadcrumbSeparator({ className }: { className?: string }) {
-  return <ChevronRight className={cn("size-3 opacity-60", className)} />
+  return <ChevronRight className={cn("size-3.5", className)} />
 }
 
 export { Breadcrumb, BreadcrumbItem, BreadcrumbSeparator }

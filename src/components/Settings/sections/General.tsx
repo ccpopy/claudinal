@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Cog, ExternalLink, RefreshCw, Save, Terminal } from "lucide-react"
+import { Cog, Download, ExternalLink, RefreshCw, Save, Terminal } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,7 +8,13 @@ import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
-import { claudeCliVersionInfo, openExternal, type ClaudeCliVersionInfo } from "@/lib/ipc"
+import {
+  claudeCliVersionInfo,
+  installClaudeCli,
+  openExternal,
+  updateClaudeCli,
+  type ClaudeCliVersionInfo
+} from "@/lib/ipc"
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings"
 import { checkForAppUpdate } from "@/lib/updater"
 import appPackage from "../../../../package.json"
@@ -60,6 +66,8 @@ export function General() {
   const [updateState, setUpdateState] = useState<UpdateCheckState>("idle")
   const [availableVersion, setAvailableVersion] = useState<string | null>(null)
   const [checkingCli, setCheckingCli] = useState(false)
+  const [installingCli, setInstallingCli] = useState(false)
+  const [updatingCli, setUpdatingCli] = useState(false)
   const [cliInfo, setCliInfo] = useState<ClaudeCliVersionInfo | null>(null)
   const updateStatus = updateStatusLabel(updateState, availableVersion)
 
@@ -100,7 +108,13 @@ export function General() {
     try {
       const info = await claudeCliVersionInfo()
       setCliInfo(info)
-      if (!info.supported) {
+      if (!info.installed) {
+        if (manual) {
+          toast.warning("未检测到 Claude CLI", {
+            description: `可点击安装按钮执行：${info.install_command}`
+          })
+        }
+      } else if (!info.supported) {
         toast.warning(`Claude CLI 版本过低：${info.version}`, {
           description: `最低支持 ${info.min_supported_version}，请运行 ${info.update_command} 升级。`
         })
@@ -111,6 +125,36 @@ export function General() {
       toast.error(`检查 Claude CLI 版本失败: ${String(error)}`)
     } finally {
       setCheckingCli(false)
+    }
+  }
+
+  const installCli = async () => {
+    setInstallingCli(true)
+    try {
+      const result = await installClaudeCli()
+      toast.success("Claude CLI 安装命令已完成", {
+        description: result.command
+      })
+      await checkClaudeCliVersion(false)
+    } catch (error) {
+      toast.error(`安装 Claude CLI 失败: ${String(error)}`)
+    } finally {
+      setInstallingCli(false)
+    }
+  }
+
+  const updateCli = async () => {
+    setUpdatingCli(true)
+    try {
+      const result = await updateClaudeCli()
+      toast.success("Claude CLI 更新命令已完成", {
+        description: result.command
+      })
+      await checkClaudeCliVersion(false)
+    } catch (error) {
+      toast.error(`更新 Claude CLI 失败: ${String(error)}`)
+    } finally {
+      setUpdatingCli(false)
     }
   }
 
@@ -181,40 +225,89 @@ export function General() {
                 <div>
                   <Label className="text-sm">Claude CLI 版本</Label>
                   <div className="text-xs text-muted-foreground mt-0.5">
-                    自动检查本地 Claude CLI 是否满足桌面端最低要求。
+                    自动检查本地 Claude CLI 是否满足桌面端最低要求；未安装时可按官方安装脚本安装。
                   </div>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => checkClaudeCliVersion(true)}
-                  disabled={checkingCli}
-                >
-                  <RefreshCw className={checkingCli ? "animate-spin" : ""} />
-                  重新检查
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => checkClaudeCliVersion(true)}
+                    disabled={checkingCli || installingCli || updatingCli}
+                  >
+                    <RefreshCw className={checkingCli ? "animate-spin" : ""} />
+                    重新检查
+                  </Button>
+                  {cliInfo && !cliInfo.installed && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={installCli}
+                      disabled={checkingCli || installingCli || updatingCli}
+                    >
+                      <Download className={installingCli ? "animate-pulse" : ""} />
+                      一键安装
+                    </Button>
+                  )}
+                  {cliInfo?.installed && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={updateCli}
+                      disabled={checkingCli || installingCli || updatingCli}
+                    >
+                      <RefreshCw className={updatingCli ? "animate-spin" : ""} />
+                      执行更新
+                    </Button>
+                  )}
+                </div>
               </div>
               {cliInfo && (
                 <div
                   className={
-                    cliInfo.supported
+                    !cliInfo.installed
+                      ? "rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn"
+                      : cliInfo.supported
                       ? "rounded-md border bg-muted/35 px-3 py-2 text-xs text-muted-foreground"
                       : "rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn"
                   }
                 >
                   <div className="flex items-center gap-2 font-medium text-foreground">
                     <Terminal className="size-3.5" />
-                    <span>{cliInfo.version}</span>
+                    <span>{cliInfo.installed ? cliInfo.version : "未安装"}</span>
                   </div>
-                  <div className="mt-1 font-mono text-[11px]">{cliInfo.path}</div>
-                  <div className="mt-2">
-                    最低支持：{cliInfo.min_supported_version}
-                    {!cliInfo.supported && (
+                  {cliInfo.path && (
+                    <div className="mt-1 font-mono text-[11px]">{cliInfo.path}</div>
+                  )}
+                  <div className="mt-2 space-y-1">
+                    <div>最低支持：{cliInfo.min_supported_version}</div>
+                    {!cliInfo.installed ? (
                       <>
-                        ；升级命令：
-                        <span className="font-mono">{cliInfo.update_command}</span>
+                        <div>
+                          安装命令：
+                          <span className="font-mono">{cliInfo.install_command}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="inline-flex max-w-full items-center gap-1 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
+                          onClick={() =>
+                            openExternal(cliInfo.setup_url).catch((error) =>
+                              toast.error(String(error))
+                            )
+                          }
+                        >
+                          <ExternalLink className="size-3.5 shrink-0" />
+                          <span className="truncate font-mono">{cliInfo.setup_url}</span>
+                        </button>
                       </>
+                    ) : (
+                      <div>
+                        更新命令：
+                        <span className="font-mono">{cliInfo.update_command}</span>
+                      </div>
                     )}
                   </div>
                 </div>

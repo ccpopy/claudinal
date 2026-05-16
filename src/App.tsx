@@ -80,7 +80,7 @@ import {
   type SkillInvocation
 } from "@/lib/plugins"
 import {
-  buildClaudeEnv,
+  buildClaudeLaunchEnv,
   cleanupManagedGlobalClaudeSettings,
   loadThirdPartyApiConfig,
   loadThirdPartyApiConfigAsync,
@@ -1366,7 +1366,7 @@ export default function App() {
         !!trimApiUrl(thirdPartyApi.requestUrl) &&
         !!thirdPartyApi.apiKey.trim()
       const thirdPartyEnv = thirdPartyReady
-        ? buildClaudeEnv(thirdPartyApi)
+        ? buildClaudeLaunchEnv(thirdPartyApi)
         : {}
       const env = { ...thirdPartyEnv, ...proxyEnv }
       const apiProfileKey = currentApiProfileKey()

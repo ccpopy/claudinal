@@ -41,6 +41,7 @@ export interface ThirdPartyApiConfig {
   mainAlias: ClaudeModelAlias
   availableModels: string[]
   models: ModelMapping
+  runtimeSettingsJson: string
 }
 
 export interface ThirdPartyApiProvider extends ThirdPartyApiConfig {
@@ -69,6 +70,7 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
   authField: "ANTHROPIC_AUTH_TOKEN",
   mainAlias: "sonnet",
   availableModels: [],
+  runtimeSettingsJson: "",
   models: {
     mainModel: "",
     haikuModel: "",
@@ -106,8 +108,12 @@ const MANAGED_ENV_KEYS = [
   "CLAUDINAL_PROXY_HAIKU_MODEL",
   "CLAUDINAL_PROXY_SONNET_MODEL",
   "CLAUDINAL_PROXY_OPUS_MODEL",
-  "CLAUDINAL_PROXY_AVAILABLE_MODELS"
+  "CLAUDINAL_PROXY_AVAILABLE_MODELS",
+  "CLAUDINAL_RUNTIME_SETTINGS_JSON"
 ]
+
+export const CLAUDINAL_RUNTIME_SETTINGS_JSON_ENV_KEY =
+  "CLAUDINAL_RUNTIME_SETTINGS_JSON"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -194,6 +200,7 @@ export function normalizeThirdPartyApiConfig(
     authField: asAuthField(raw?.authField),
     mainAlias: asClaudeModelAlias(raw?.mainAlias) ?? inferMainAlias(models),
     availableModels: cleanStringArray(raw?.availableModels),
+    runtimeSettingsJson: cleanString(raw?.runtimeSettingsJson),
     models: {
       mainModel: cleanString(models.mainModel),
       haikuModel: cleanString(models.haikuModel),
@@ -202,6 +209,70 @@ export function normalizeThirdPartyApiConfig(
       subagentModel: cleanString(models.subagentModel)
     }
   }
+}
+
+export function parseRuntimeSettingsJson(
+  raw: string
+): Record<string, unknown> {
+  const text = raw.trim()
+  if (!text) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`运行时 settings JSON 无效：${String(error)}`)
+  }
+  if (!isRecord(parsed)) {
+    throw new Error("运行时 settings 必须是 JSON 对象")
+  }
+  validateRuntimeSettingsEnv(parsed.env)
+  return parsed
+}
+
+function validateRuntimeSettingsEnv(value: unknown): void {
+  if (value == null) return
+  if (!isRecord(value)) {
+    throw new Error("运行时 settings.env 必须是对象")
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") {
+      throw new Error(`运行时 settings.env.${key} 必须是字符串`)
+    }
+    if (MANAGED_ENV_KEYS.includes(key)) {
+      throw new Error(
+        `运行时 settings.env.${key} 由 Claudinal 管理，请使用对应供应商字段配置`
+      )
+    }
+  }
+}
+
+function mergeRuntimeSettingsEnv(
+  settings: Record<string, unknown>,
+  env: Record<string, string>
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...settings }
+  const userEnv = isRecord(settings.env)
+    ? Object.fromEntries(
+        Object.entries(settings.env).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string"
+        )
+      )
+    : {}
+  const mergedEnv = { ...userEnv, ...env }
+  if (Object.keys(mergedEnv).length > 0) {
+    next.env = mergedEnv
+  } else {
+    delete next.env
+  }
+  return next
+}
+
+export function buildClaudeRuntimeSettingsPreview(
+  config: ThirdPartyApiConfig,
+  existingEnv?: Record<string, string>
+): Record<string, unknown> {
+  const settings = parseRuntimeSettingsJson(config.runtimeSettingsJson)
+  return mergeRuntimeSettingsEnv(settings, buildClaudeEnv(config, existingEnv))
 }
 
 function providerId(): string {
@@ -603,6 +674,19 @@ export function buildClaudeEnv(
   }
   if (subagentModel) next.CLAUDE_CODE_SUBAGENT_MODEL = subagentModel
 
+  return next
+}
+
+export function buildClaudeLaunchEnv(
+  config: ThirdPartyApiConfig,
+  existingEnv?: Record<string, string>
+): Record<string, string> {
+  const next = buildClaudeEnv(config, existingEnv)
+  const runtimeSettingsJson = config.runtimeSettingsJson.trim()
+  if (runtimeSettingsJson) {
+    parseRuntimeSettingsJson(runtimeSettingsJson)
+    next[CLAUDINAL_RUNTIME_SETTINGS_JSON_ENV_KEY] = runtimeSettingsJson
+  }
   return next
 }
 

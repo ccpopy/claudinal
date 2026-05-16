@@ -163,7 +163,7 @@ export function Statistics() {
         }
         eyebrow={
           mode === "pricing" ? (
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
               <button
                 type="button"
                 onClick={() => setMode("list")}

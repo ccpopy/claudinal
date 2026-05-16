@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
+  buildClaudeLaunchEnv,
   buildClaudeEnv,
+  buildClaudeRuntimeSettingsPreview,
   clearManagedClaudeEnv,
   createThirdPartyApiProvider,
   maskSecret,
   normalizeThirdPartyApiConfig,
+  parseRuntimeSettingsJson,
   providerModelInputOptions,
   providerModelOptions,
   trimApiUrl,
@@ -40,6 +43,7 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(cfg.authField).toBe("ANTHROPIC_AUTH_TOKEN")
     expect(cfg.mainAlias).toBe("sonnet")
     expect(cfg.availableModels).toEqual([])
+    expect(cfg.runtimeSettingsJson).toBe("")
     expect(cfg.models.mainModel).toBe("")
   })
 
@@ -78,6 +82,65 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
       availableModels: [" a ", "b", "a", "  "] as never
     })
     expect(cfg.availableModels).toEqual(["a", "b"])
+  })
+})
+
+describe("thirdPartyApi.runtimeSettings", () => {
+  it("parses an empty runtime settings value as an empty object", () => {
+    expect(parseRuntimeSettingsJson("   ")).toEqual({})
+  })
+
+  it("requires runtime settings to be a JSON object", () => {
+    expect(() => parseRuntimeSettingsJson("[]")).toThrow(
+      "运行时 settings 必须是 JSON 对象"
+    )
+    expect(() => parseRuntimeSettingsJson("{")).toThrow(
+      "运行时 settings JSON 无效"
+    )
+  })
+
+  it("requires env values to be strings", () => {
+    expect(() =>
+      parseRuntimeSettingsJson('{"env":{"FEATURE_FLAG":true}}')
+    ).toThrow("运行时 settings.env.FEATURE_FLAG 必须是字符串")
+  })
+
+  it("rejects env keys managed by Claudinal", () => {
+    expect(() =>
+      parseRuntimeSettingsJson('{"env":{"ANTHROPIC_MODEL":"manual"}}')
+    ).toThrow("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理")
+  })
+
+  it("merges provider runtime settings with generated Claude env for preview", () => {
+    const settings = buildClaudeRuntimeSettingsPreview(
+      makeConfig({
+        runtimeSettingsJson:
+          '{"model":"opus[1m]","alwaysThinkingEnabled":true,"env":{"EXTRA":"1"}}'
+      })
+    )
+    expect(settings.model).toBe("opus[1m]")
+    expect(settings.alwaysThinkingEnabled).toBe(true)
+    expect(settings.env).toMatchObject({
+      EXTRA: "1",
+      ANTHROPIC_MODEL: "claude-3-7-sonnet",
+      CLAUDINAL_PROXY_TARGET_URL: "https://api.example.com"
+    })
+  })
+
+  it("adds runtime settings JSON to launch env only after validation", () => {
+    const env = buildClaudeLaunchEnv(
+      makeConfig({
+        runtimeSettingsJson: '{"model":"opus[1m]"}'
+      })
+    )
+    expect(env.CLAUDINAL_RUNTIME_SETTINGS_JSON).toBe('{"model":"opus[1m]"}')
+    expect(() =>
+      buildClaudeLaunchEnv(
+        makeConfig({
+          runtimeSettingsJson: '{"env":{"ANTHROPIC_MODEL":"manual"}}'
+        })
+      )
+    ).toThrow("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理")
   })
 })
 
@@ -174,6 +237,7 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
       CLAUDINAL_PROXY_SONNET_MODEL: "x",
       CLAUDINAL_PROXY_OPUS_MODEL: "x",
       CLAUDINAL_PROXY_AVAILABLE_MODELS: "x",
+      CLAUDINAL_RUNTIME_SETTINGS_JSON: "x",
       USER_VAR: "keep"
     })
     expect(Object.keys(next)).toEqual(["USER_VAR"])

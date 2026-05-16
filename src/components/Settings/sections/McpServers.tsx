@@ -603,7 +603,7 @@ export function McpServers({ cwd }: Props) {
         description="连接外部工具和数据源，可写入 mcp.json 或 Claude CLI 全局配置。"
         eyebrow={
           editor ? (
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <button
               type="button"
               onClick={() => setEditor(null)}

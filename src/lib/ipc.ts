@@ -147,16 +147,34 @@ export async function detectClaudeCli(): Promise<string> {
 }
 
 export interface ClaudeCliVersionInfo {
-  path: string
-  version: string
+  installed: boolean
+  path: string | null
+  version: string | null
   min_supported_version: string
   supported: boolean
   update_command: string
+  install_command: string
   docs_url: string
+  setup_url: string
 }
 
 export async function claudeCliVersionInfo(): Promise<ClaudeCliVersionInfo> {
   return invoke<ClaudeCliVersionInfo>("claude_cli_version_info")
+}
+
+export interface ClaudeCliCommandResult {
+  command: string
+  stdout: string
+  stderr: string
+  exit_code: number
+}
+
+export async function installClaudeCli(): Promise<ClaudeCliCommandResult> {
+  return invoke<ClaudeCliCommandResult>("install_claude_cli")
+}
+
+export async function updateClaudeCli(): Promise<ClaudeCliCommandResult> {
+  return invoke<ClaudeCliCommandResult>("update_claude_cli")
 }
 
 export async function spawnSession(args: SpawnArgs): Promise<string> {

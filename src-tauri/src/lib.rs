@@ -113,6 +113,8 @@ pub fn run() {
             commands::app_runtime_info,
             commands::detect_claude_cli,
             commands::claude_cli_version_info,
+            commands::install_claude_cli,
+            commands::update_claude_cli,
             commands::spawn_session,
             commands::resolve_permission_request,
             commands::send_user_message,
