@@ -87,8 +87,10 @@ import {
   loadThirdPartyApiStore,
   migrateLegacyThirdPartyApiKeys,
   OFFICIAL_PROVIDER_ID,
+  canUseApiProfileLaunchPrefs,
   providerModelOptions,
   shouldResumeWithApiProfile,
+  thirdPartyApiConnectionProfileKey,
   thirdPartyApiRuntimeProfileKey,
   trimApiUrl
 } from "@/lib/thirdPartyApi"
@@ -276,6 +278,7 @@ type RunningSession = {
   project: Project
   jsonlSessionId: string | null
   apiProfileKey: string
+  apiLaunchProfileKey: string
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
   streaming: boolean
@@ -380,13 +383,40 @@ function currentApiProfileKey(): string {
   if (store.activeProviderId === OFFICIAL_PROVIDER_ID) return "official"
   const provider = store.providers.find((p) => p.id === store.activeProviderId)
   if (!provider) return "official"
+  return thirdPartyApiConnectionProfileKey({ ...provider, enabled: true })
+}
+
+function currentApiLaunchProfileKey(): string {
+  const store = loadThirdPartyApiStore()
+  if (store.activeProviderId === OFFICIAL_PROVIDER_ID) return "official"
+  const provider = store.providers.find((p) => p.id === store.activeProviderId)
+  if (!provider) return "official"
   return thirdPartyApiRuntimeProfileKey({ ...provider, enabled: true })
 }
 
 function sidecarApiProfileKey(sidecar: unknown): string | null {
   if (!sidecar || typeof sidecar !== "object") return null
+  const connectionRaw = (sidecar as { apiConnectionProfileKey?: unknown })
+    .apiConnectionProfileKey
+  if (typeof connectionRaw === "string" && connectionRaw.trim()) {
+    return connectionRaw.trim()
+  }
   const raw = (sidecar as { apiProfileKey?: unknown }).apiProfileKey
   return typeof raw === "string" && raw.trim() ? raw.trim() : null
+}
+
+function sidecarApiLaunchProfileKey(sidecar: unknown): string | null {
+  if (!sidecar || typeof sidecar !== "object") return null
+  const raw = (sidecar as { apiLaunchProfileKey?: unknown }).apiLaunchProfileKey
+  if (typeof raw === "string" && raw.trim()) return raw.trim()
+  return sidecarApiProfileKey(sidecar)
+}
+
+function fallbackComposerPrefsForApiProfile(
+  apiProfileKey: string,
+  globalDefault: ComposerPrefs
+): ComposerPrefs {
+  return apiProfileKey === "official" ? globalDefault : EMPTY_COMPOSER_PREFS
 }
 
 function chatTitle(
@@ -581,6 +611,7 @@ export default function App() {
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
   const composerDraftsRef = useRef<Map<string, ComposerDraft>>(new Map())
   const apiProfileKeyRef = useRef(currentApiProfileKey())
+  const apiLaunchProfileKeyRef = useRef(currentApiLaunchProfileKey())
   const permissionModeSourceRef =
     useRef<SessionPermissionModeSource>("default")
   const returnViewRef = useRef<ReturnView>("chat")
@@ -1235,7 +1266,14 @@ export default function App() {
       refreshAppSettings()
       refreshComposerDefaults()
     }
-    const resetConversationAfterApiProfileChange = () => {
+    const clearProfileBoundLaunchPrefs = (profileKey: string) => {
+      sessionComposerRef.current = null
+      setSessionComposer(null)
+      setComposerPrefs(
+        fallbackComposerPrefsForApiProfile(profileKey, globalDefault)
+      )
+    }
+    const resetConversationAfterApiConnectionChange = () => {
       pendingApiRuntimeRefreshRef.current = false
       pendingComposerRuntimeRefreshRef.current = false
       activeRuntimeIdRef.current = null
@@ -1246,23 +1284,25 @@ export default function App() {
       setReviewDiffs([])
       setSelectedSessionId(null)
       setSelectedSessionMeta(null)
-      sessionComposerRef.current = null
-      setSessionComposer(null)
-      setComposerPrefs(EMPTY_COMPOSER_PREFS)
+      clearProfileBoundLaunchPrefs(currentApiProfileKey())
       applyDefaultPermissionModeState()
       collabMcpEnabledRef.current = false
     }
     const refreshThirdPartyApi = () => {
       const previousProfileKey = apiProfileKeyRef.current
       const nextProfileKey = currentApiProfileKey()
+      const previousLaunchProfileKey = apiLaunchProfileKeyRef.current
+      const nextLaunchProfileKey = currentApiLaunchProfileKey()
       apiProfileKeyRef.current = nextProfileKey
+      apiLaunchProfileKeyRef.current = nextLaunchProfileKey
       setThirdPartyApiVersion((version) => version + 1)
       if (previousProfileKey !== nextProfileKey) {
         const runtimeId = activeRuntimeIdRef.current
         const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
         if (run?.streaming || (run && run.pendingPermissionRequestIds.size > 0)) {
+          pendingApiRuntimeRefreshRef.current = true
           toast.warning(
-            "API 供应商已切换；当前运行中的会话仍使用原供应商，结束后新对话会使用新供应商"
+            "第三方 API 连接配置已切换；当前运行中的会话仍使用原连接，结束后新对话会使用新连接"
           )
         } else {
           if (runtimeId) {
@@ -1270,10 +1310,15 @@ export default function App() {
               console.error("关闭旧 API 会话失败:", error)
             )
           }
-          resetConversationAfterApiProfileChange()
-          toast.info("API 供应商已切换，已自动创建新会话")
+          resetConversationAfterApiConnectionChange()
+          toast.info("第三方 API 连接配置已切换，已自动创建新会话")
         }
         setSidebarRefreshKey((k) => k + 1)
+      } else if (previousLaunchProfileKey !== nextLaunchProfileKey) {
+        clearProfileBoundLaunchPrefs(nextProfileKey)
+        refreshActiveThirdPartyRuntime(
+          "第三方 API 模型配置已刷新，当前会话上下文已保留"
+        )
       } else {
         refreshActiveThirdPartyRuntime()
       }
@@ -1306,7 +1351,8 @@ export default function App() {
     applyPermissionModeState,
     closeRunningSession,
     refreshActiveThirdPartyRuntime,
-    refreshActiveComposerRuntime
+    refreshActiveComposerRuntime,
+    globalDefault
   ])
 
   const teardown = useCallback(async () => {
@@ -1367,12 +1413,18 @@ export default function App() {
         : {}
       const env = { ...thirdPartyEnv, ...proxyEnv }
       const apiProfileKey = currentApiProfileKey()
+      const apiLaunchProfileKey = currentApiLaunchProfileKey()
       let resumeSessionId = selectedSessionId
       let launchComposerPrefs = composerPrefs
       let launchSessionComposer = sessionComposer
       if (resumeSessionId) {
         const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
         const storedProfileKey = sidecarApiProfileKey(sidecar)
+        const storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
+        const canUseLaunchPrefs = canUseApiProfileLaunchPrefs(
+          storedLaunchProfileKey,
+          apiLaunchProfileKey
+        )
         if (!shouldResumeWithApiProfile(storedProfileKey, apiProfileKey)) {
           resumeSessionId = null
           dispatch({ kind: "reset" })
@@ -1382,11 +1434,29 @@ export default function App() {
           sessionComposerRef.current = null
           launchSessionComposer = null
           setSessionComposer(null)
-          launchComposerPrefs =
-            apiProfileKey === "official" ? globalDefault : EMPTY_COMPOSER_PREFS
+          launchComposerPrefs = fallbackComposerPrefsForApiProfile(
+            apiProfileKey,
+            globalDefault
+          )
           setComposerPrefs(launchComposerPrefs)
           applyDefaultPermissionModeState()
           toast.info("当前会话使用旧 API 配置，已自动创建新会话")
+        } else if (!canUseLaunchPrefs) {
+          const sidecarComposer = pickComposerFromSidecar(sidecar)
+          const composerCameFromStaleSidecar =
+            !launchSessionComposer ||
+            (!!sidecarComposer &&
+              sameComposerPrefs(launchSessionComposer, sidecarComposer))
+          if (composerCameFromStaleSidecar) {
+            sessionComposerRef.current = null
+            launchSessionComposer = null
+            setSessionComposer(null)
+            launchComposerPrefs = fallbackComposerPrefsForApiProfile(
+              apiProfileKey,
+              globalDefault
+            )
+            setComposerPrefs(launchComposerPrefs)
+          }
         }
       }
       const uiModel = launchComposerPrefs.model.trim()
@@ -1421,6 +1491,7 @@ export default function App() {
         project,
         jsonlSessionId: resumeSessionId,
         apiProfileKey,
+        apiLaunchProfileKey,
         selectedSessionMeta: resumeSessionId ? selectedSessionMeta : null,
         state: resumeSessionId ? stateRef.current : reducerInit(),
         streaming: false,
@@ -1588,7 +1659,9 @@ export default function App() {
                 const next: Record<string, unknown> = {
                   ...base,
                   result: ev,
-                  apiProfileKey: run.apiProfileKey
+                  apiProfileKey: run.apiProfileKey,
+                  apiConnectionProfileKey: run.apiProfileKey,
+                  apiLaunchProfileKey: run.apiLaunchProfileKey
                 }
                 if (run.sessionComposer && !base.composer) {
                   next.composer = run.sessionComposer
@@ -2048,9 +2121,9 @@ export default function App() {
       setSelectedSessionMeta(s)
       const runningSession = findRunningSession(p, s.id)
       if (runningSession) {
-        const canUseRunningLaunchConfig = shouldResumeWithApiProfile(
-          runningSession.apiProfileKey,
-          currentApiProfileKey()
+        const canUseRunningLaunchConfig = canUseApiProfileLaunchPrefs(
+          runningSession.apiLaunchProfileKey,
+          currentApiLaunchProfileKey()
         )
         if (
           canUseRunningLaunchConfig ||
@@ -2088,10 +2161,11 @@ export default function App() {
           sidecarPermissionMode ? "session" : "default"
         )
         const currentProfileKey = currentApiProfileKey()
-        const storedProfileKey = sidecarApiProfileKey(sidecar)
-        const canUseSessionLaunchPrefs = shouldResumeWithApiProfile(
-          storedProfileKey,
-          currentProfileKey
+        const currentLaunchProfileKey = currentApiLaunchProfileKey()
+        const storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
+        const canUseSessionLaunchPrefs = canUseApiProfileLaunchPrefs(
+          storedLaunchProfileKey,
+          currentLaunchProfileKey
         )
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
@@ -2108,7 +2182,10 @@ export default function App() {
         )
         sessionComposerRef.current = sessionPrefs
         setSessionComposer(sessionPrefs)
-        setComposerPrefs(sessionPrefs ?? globalDefault)
+        setComposerPrefs(
+          sessionPrefs ??
+            fallbackComposerPrefsForApiProfile(currentProfileKey, globalDefault)
+        )
       } catch (e) {
         if (token !== switchTokenRef.current) return
         toast.error(`加载会话失败: ${String(e)}`)

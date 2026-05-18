@@ -10,7 +10,9 @@ import {
   parseRuntimeSettingsJson,
   providerModelInputOptions,
   providerModelOptions,
+  canUseApiProfileLaunchPrefs,
   shouldResumeWithApiProfile,
+  thirdPartyApiConnectionProfileKey,
   thirdPartyApiRuntimeProfileKey,
   trimApiUrl,
   type ThirdPartyApiConfig
@@ -162,6 +164,35 @@ describe("thirdPartyApi.runtimeProfile", () => {
     )
   })
 
+  it("keeps the connection profile stable when only model mappings change", () => {
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      models: {
+        ...base.models,
+        opusModel: "claude-opus-4-7[1m]",
+        subagentModel: "claude-opus-4-7[1m]"
+      }
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiConnectionProfileKey(changed)).toBe(
+      thirdPartyApiConnectionProfileKey(base)
+    )
+  })
+
+  it("changes the connection profile when provider routing changes", () => {
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      requestUrl: "https://api.other.example.com",
+      inputFormat: "openai-chat-completions"
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiConnectionProfileKey(changed)).not.toBe(
+      thirdPartyApiConnectionProfileKey(base)
+    )
+  })
+
   it("changes when runtime settings JSON changes", () => {
     const base = makeConfig({
       id: "provider-a",
@@ -190,14 +221,65 @@ describe("thirdPartyApi.runtimeProfile", () => {
     )
   })
 
-  it("requires exact third-party profile match before resuming", () => {
+  it("continues third-party sessions when the connection profile matches", () => {
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changedModel = makeConfig({
+      id: "provider-a",
+      models: {
+        ...base.models,
+        opusModel: "claude-opus-4-7[1m]"
+      }
+    } as Partial<ThirdPartyApiConfig>)
+    const changedRoute = makeConfig({
+      id: "provider-a",
+      requestUrl: "https://api.other.example.com"
+    } as Partial<ThirdPartyApiConfig>)
+    const currentConnectionKey = thirdPartyApiConnectionProfileKey(base)
+
     expect(shouldResumeWithApiProfile(null, "official")).toBe(true)
     expect(shouldResumeWithApiProfile("official", "official")).toBe(true)
-    expect(shouldResumeWithApiProfile("third-party:a:old", "official")).toBe(false)
-    expect(shouldResumeWithApiProfile(null, "third-party:a:new")).toBe(false)
+    expect(shouldResumeWithApiProfile(currentConnectionKey, "official")).toBe(false)
+    expect(shouldResumeWithApiProfile(null, currentConnectionKey)).toBe(false)
     expect(
-      shouldResumeWithApiProfile("third-party:a:new", "third-party:a:new")
+      shouldResumeWithApiProfile(
+        thirdPartyApiConnectionProfileKey(changedModel),
+        currentConnectionKey
+      )
     ).toBe(true)
+    expect(
+      shouldResumeWithApiProfile(
+        thirdPartyApiRuntimeProfileKey(changedModel),
+        currentConnectionKey
+      )
+    ).toBe(true)
+    expect(
+      shouldResumeWithApiProfile(
+        thirdPartyApiConnectionProfileKey(changedRoute),
+        currentConnectionKey
+      )
+    ).toBe(false)
+  })
+
+  it("requires exact third-party profile match before reusing launch preferences", () => {
+    const base = thirdPartyApiRuntimeProfileKey(
+      makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    )
+    const changed = thirdPartyApiRuntimeProfileKey(
+      makeConfig({
+        id: "provider-a",
+        models: {
+          ...makeConfig().models,
+          opusModel: "claude-opus-4-7[1m]"
+        }
+      } as Partial<ThirdPartyApiConfig>)
+    )
+
+    expect(canUseApiProfileLaunchPrefs(null, "official")).toBe(true)
+    expect(canUseApiProfileLaunchPrefs("official", "official")).toBe(true)
+    expect(canUseApiProfileLaunchPrefs(base, "official")).toBe(false)
+    expect(canUseApiProfileLaunchPrefs(null, changed)).toBe(false)
+    expect(canUseApiProfileLaunchPrefs(base, changed)).toBe(false)
+    expect(canUseApiProfileLaunchPrefs(changed, changed)).toBe(true)
   })
 })
 

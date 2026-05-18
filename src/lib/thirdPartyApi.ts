@@ -177,11 +177,58 @@ function runtimeProfileHash(value: string): string {
   return (hash >>> 0).toString(36)
 }
 
+const THIRD_PARTY_CONNECTION_PROFILE_PREFIX = "third-party-connection:"
+const THIRD_PARTY_RUNTIME_PROFILE_PREFIX = "third-party:"
+
+function providerProfileId(config: ThirdPartyApiConfig & { id?: string }): string {
+  return cleanString(config.id).trim() || "active"
+}
+
+function thirdPartyProviderIdFromProfileKey(key: string | null): string | null {
+  if (!key) return null
+  const prefix = key.startsWith(THIRD_PARTY_CONNECTION_PROFILE_PREFIX)
+    ? THIRD_PARTY_CONNECTION_PROFILE_PREFIX
+    : key.startsWith(THIRD_PARTY_RUNTIME_PROFILE_PREFIX)
+      ? THIRD_PARTY_RUNTIME_PROFILE_PREFIX
+      : null
+  if (!prefix) return null
+  const rest = key.slice(prefix.length)
+  const encodedProviderId = rest.split(":", 1)[0]
+  if (!encodedProviderId) return null
+  try {
+    return decodeURIComponent(encodedProviderId)
+  } catch {
+    return encodedProviderId
+  }
+}
+
+function isConnectionProfileKey(key: string | null): boolean {
+  return key?.startsWith(THIRD_PARTY_CONNECTION_PROFILE_PREFIX) ?? false
+}
+
+export function thirdPartyApiConnectionProfileKey(
+  config: ThirdPartyApiConfig & { id?: string }
+): string {
+  if (!config.enabled) return "official"
+  const providerId = providerProfileId(config)
+  const profile = {
+    version: 1,
+    providerId,
+    requestUrl: trimApiUrl(config.requestUrl),
+    inputFormat: config.inputFormat,
+    authField: config.authField,
+    useFullUrl: config.useFullUrl
+  }
+  return `${THIRD_PARTY_CONNECTION_PROFILE_PREFIX}${encodeURIComponent(
+    providerId
+  )}:${runtimeProfileHash(JSON.stringify(profile))}`
+}
+
 export function thirdPartyApiRuntimeProfileKey(
   config: ThirdPartyApiConfig & { id?: string }
 ): string {
   if (!config.enabled) return "official"
-  const providerId = cleanString(config.id).trim() || "active"
+  const providerId = providerProfileId(config)
   const profile = {
     version: 2,
     providerId,
@@ -207,6 +254,26 @@ export function thirdPartyApiRuntimeProfileKey(
 }
 
 export function shouldResumeWithApiProfile(
+  storedProfileKey: string | null,
+  currentProfileKey: string
+): boolean {
+  const stored = storedProfileKey?.trim() || null
+  if (currentProfileKey === "official") {
+    return !stored || stored === "official"
+  }
+  const currentProviderId = thirdPartyProviderIdFromProfileKey(currentProfileKey)
+  const storedProviderId = thirdPartyProviderIdFromProfileKey(stored)
+  if (!currentProviderId || !storedProviderId) return false
+  if (
+    isConnectionProfileKey(currentProfileKey) &&
+    isConnectionProfileKey(stored)
+  ) {
+    return stored === currentProfileKey
+  }
+  return storedProviderId === currentProviderId
+}
+
+export function canUseApiProfileLaunchPrefs(
   storedProfileKey: string | null,
   currentProfileKey: string
 ): boolean {
