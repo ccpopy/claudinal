@@ -169,12 +169,18 @@ export interface ClaudeCliCommandResult {
   exit_code: number
 }
 
-export async function installClaudeCli(): Promise<ClaudeCliCommandResult> {
-  return invoke<ClaudeCliCommandResult>("install_claude_cli")
+export type ClaudeCliCommandEnv = Record<string, string>
+
+export async function installClaudeCli(
+  env: ClaudeCliCommandEnv | null = null
+): Promise<ClaudeCliCommandResult> {
+  return invoke<ClaudeCliCommandResult>("install_claude_cli", { env })
 }
 
-export async function updateClaudeCli(): Promise<ClaudeCliCommandResult> {
-  return invoke<ClaudeCliCommandResult>("update_claude_cli")
+export async function updateClaudeCli(
+  env: ClaudeCliCommandEnv | null = null
+): Promise<ClaudeCliCommandResult> {
+  return invoke<ClaudeCliCommandResult>("update_claude_cli", { env })
 }
 
 export async function spawnSession(args: SpawnArgs): Promise<string> {

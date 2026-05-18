@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
+import { waitForClaudeCliPostCommandVersion } from "@/lib/claudeCliUpdate"
 import {
   claudeCliVersionInfo,
   installClaudeCli,
@@ -15,6 +16,7 @@ import {
   updateClaudeCli,
   type ClaudeCliVersionInfo
 } from "@/lib/ipc"
+import { buildProxyEnv, loadProxyAsync } from "@/lib/proxy"
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings"
 import { checkForAppUpdate } from "@/lib/updater"
 import appPackage from "../../../../package.json"
@@ -70,6 +72,11 @@ function cliCommandDescription(result: {
   return output ? `${result.command}\n${output.slice(0, 360)}` : result.command
 }
 
+async function claudeCliCommandEnv(): Promise<Record<string, string> | null> {
+  const env = buildProxyEnv(await loadProxyAsync())
+  return Object.keys(env).length > 0 ? env : null
+}
+
 export function General() {
   const [cfg, setCfg] = useState<AppSettings>(() => loadSettings())
   const [dirty, setDirty] = useState(false)
@@ -120,8 +127,7 @@ export function General() {
   ): Promise<ClaudeCliVersionInfo | null> => {
     setCheckingCli(true)
     try {
-      const info = await claudeCliVersionInfo()
-      setCliInfo(info)
+      const info = await readClaudeCliVersion()
       if (!info.installed) {
         if (manual) {
           toast.warning("未检测到 Claude CLI", {
@@ -144,12 +150,22 @@ export function General() {
     }
   }
 
+  const readClaudeCliVersion = async (): Promise<ClaudeCliVersionInfo> => {
+    const info = await claudeCliVersionInfo()
+    setCliInfo(info)
+    return info
+  }
+
+  const verifyCliAfterCommand = (previousVersion: string | null) =>
+    waitForClaudeCliPostCommandVersion(readClaudeCliVersion, previousVersion)
+
   const installCli = async () => {
     setInstallingCli(true)
     try {
-      const result = await installClaudeCli()
-      const info = await checkClaudeCliVersion(false, false)
-      if (!info?.installed) {
+      const env = await claudeCliCommandEnv()
+      const result = await installClaudeCli(env)
+      const info = await verifyCliAfterCommand(null)
+      if (!info.installed) {
         toast.error("Claude CLI 安装命令已完成，但复查时仍未检测到 CLI", {
           description: cliCommandDescription(result)
         })
@@ -172,10 +188,12 @@ export function General() {
   const updateCli = async () => {
     setUpdatingCli(true)
     try {
-      const previousVersion = cliInfo?.version ?? null
-      const result = await updateClaudeCli()
-      const info = await checkClaudeCliVersion(false, false)
-      if (!info?.installed) {
+      const beforeInfo = cliInfo?.version ? cliInfo : await readClaudeCliVersion()
+      const previousVersion = beforeInfo.version ?? null
+      const env = await claudeCliCommandEnv()
+      const result = await updateClaudeCli(env)
+      const info = await verifyCliAfterCommand(previousVersion)
+      if (!info.installed) {
         toast.error("Claude CLI 更新命令已完成，但复查时未检测到 CLI", {
           description: cliCommandDescription(result)
         })
@@ -184,8 +202,8 @@ export function General() {
           description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(result)}`
         })
       } else if (previousVersion && info.version === previousVersion) {
-        toast.info(`Claude CLI 版本未变化：${info.version}`, {
-          description: cliCommandDescription(result)
+        toast.warning(`Claude CLI 更新后复查版本仍为：${info.version}`, {
+          description: `已等待 Claude CLI 写入新版本后复查，版本仍未变化。\n${cliCommandDescription(result)}`
         })
       } else {
         toast.success(`Claude CLI 已更新：${info.version}`, {

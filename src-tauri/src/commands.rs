@@ -22,6 +22,16 @@ use crate::session::{
 const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
 const CLAUDE_UPDATE_COMMAND: &str = "claude update";
 const CLAUDE_RUNTIME_SETTINGS_ENV_KEY: &str = "CLAUDINAL_RUNTIME_SETTINGS_JSON";
+const CLAUDE_CLI_PROXY_ENV_KEYS: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+];
 const CLAUDE_CLI_REFERENCE_URL: &str =
     "https://docs.anthropic.com/en/docs/claude-code/cli-reference";
 const CLAUDE_CLI_SETUP_URL: &str = "https://code.claude.com/docs/en/setup";
@@ -158,17 +168,24 @@ pub async fn claude_cli_version_info() -> Result<ClaudeCliVersionInfo> {
 }
 
 #[tauri::command]
-pub async fn install_claude_cli() -> Result<ClaudeCliCommandResult> {
-    run_command_spec(claude_install_command_spec()).await
+pub async fn install_claude_cli(
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<ClaudeCliCommandResult> {
+    let mut spec = claude_install_command_spec();
+    spec.env = claude_cli_command_env(env).await?;
+    run_command_spec(spec).await
 }
 
 #[tauri::command]
-pub async fn update_claude_cli() -> Result<ClaudeCliCommandResult> {
+pub async fn update_claude_cli(
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<ClaudeCliCommandResult> {
     let path = crate::proc::spawn::find_claude()?;
     run_command_spec(CommandSpec {
         program: path.display().to_string(),
         args: vec!["update".into()],
         display: CLAUDE_UPDATE_COMMAND.into(),
+        env: claude_cli_command_env(env).await?,
     })
     .await
 }
@@ -185,6 +202,7 @@ struct CommandSpec {
     program: String,
     args: Vec<String>,
     display: String,
+    env: std::collections::HashMap<String, String>,
 }
 
 fn claude_install_command_display() -> String {
@@ -211,6 +229,7 @@ fn claude_install_command_spec() -> CommandSpec {
                 claude_install_command_display(),
             ],
             display: claude_install_command_display(),
+            env: std::collections::HashMap::new(),
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -219,8 +238,37 @@ fn claude_install_command_spec() -> CommandSpec {
             program: "sh".into(),
             args: vec!["-lc".into(), claude_install_command_display()],
             display: claude_install_command_display(),
+            env: std::collections::HashMap::new(),
         }
     }
+}
+
+async fn claude_cli_command_env(
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut env = validate_claude_cli_proxy_env(env)?;
+    bridge_socks_proxy_env(&mut env).await?;
+    Ok(env)
+}
+
+fn validate_claude_cli_proxy_env(
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut validated = std::collections::HashMap::new();
+    for (key, value) in env.unwrap_or_default() {
+        if !CLAUDE_CLI_PROXY_ENV_KEYS.contains(&key.as_str()) {
+            return Err(Error::Other(format!(
+                "不支持的 Claude CLI 代理环境变量：{key}"
+            )));
+        }
+        if value.trim().is_empty() {
+            return Err(Error::Other(format!(
+                "Claude CLI 代理环境变量 {key} 不能为空"
+            )));
+        }
+        validated.insert(key, value);
+    }
+    Ok(validated)
 }
 
 async fn run_command_spec(spec: CommandSpec) -> Result<ClaudeCliCommandResult> {
@@ -232,6 +280,9 @@ async fn run_command_spec(spec: CommandSpec) -> Result<ClaudeCliCommandResult> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    for (key, value) in &spec.env {
+        cmd.env(key, value);
+    }
     hide_tokio_window(&mut cmd);
 
     let output = cmd
@@ -2639,6 +2690,53 @@ fn text_lines(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_cli_proxy_env_accepts_only_proxy_keys() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("HTTPS_PROXY".into(), "http://proxy.local:8080".into());
+        env.insert("NO_PROXY".into(), "localhost,127.0.0.1".into());
+        env.insert("https_proxy".into(), "http://proxy.local:8080".into());
+
+        let validated = validate_claude_cli_proxy_env(Some(env)).expect("proxy env");
+
+        assert_eq!(
+            validated.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://proxy.local:8080")
+        );
+        assert_eq!(
+            validated.get("NO_PROXY").map(String::as_str),
+            Some("localhost,127.0.0.1")
+        );
+        assert_eq!(
+            validated.get("https_proxy").map(String::as_str),
+            Some("http://proxy.local:8080")
+        );
+    }
+
+    #[test]
+    fn claude_cli_proxy_env_rejects_non_proxy_keys() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_API_KEY".into(), "sk-secret".into());
+
+        let err = validate_claude_cli_proxy_env(Some(env)).expect_err("rejected");
+
+        assert!(err
+            .to_string()
+            .contains("不支持的 Claude CLI 代理环境变量：ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn claude_cli_proxy_env_rejects_empty_values() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("HTTPS_PROXY".into(), "  ".into());
+
+        let err = validate_claude_cli_proxy_env(Some(env)).expect_err("rejected");
+
+        assert!(err
+            .to_string()
+            .contains("Claude CLI 代理环境变量 HTTPS_PROXY 不能为空"));
+    }
 
     #[test]
     fn runtime_claude_settings_contains_only_cli_env_overrides() {
