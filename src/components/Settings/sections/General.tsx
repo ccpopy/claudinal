@@ -52,7 +52,7 @@ type UpdateCheckState =
   | "failed"
   | "dev"
 
-type CliCommandProgressStatus = "running" | "completed" | "failed"
+type CliCommandProgressStatus = "running" | "verifying" | "completed" | "failed"
 
 interface CliCommandProgressChunk {
   stream: ClaudeCliCommandProgressEvent["stream"]
@@ -85,6 +85,7 @@ function updateStatusClass(state: UpdateCheckState) {
 
 function cliCommandProgressStatusLabel(status: CliCommandProgressStatus) {
   if (status === "running") return "执行中..."
+  if (status === "verifying") return "正在验证..."
   if (status === "completed") return "已完成"
   return "失败"
 }
@@ -284,7 +285,7 @@ export function General() {
           ? {
               ...progress,
               command: result.command || progress.command,
-              status: "completed",
+              status: "verifying",
               exitCode: result.exit_code
             }
           : progress
@@ -306,6 +307,21 @@ export function General() {
     }
   }
 
+  const finishCliCommandProgress = (
+    status: CliCommandProgressStatus,
+    error: string | null = null
+  ) => {
+    setCliCommandProgress((progress) =>
+      progress
+        ? {
+            ...progress,
+            status,
+            error
+          }
+        : progress
+    )
+  }
+
   const installCli = async () => {
     setInstallingCli(true)
     try {
@@ -316,19 +332,23 @@ export function General() {
       )
       const info = await verifyCliAfterCommand(null, env)
       if (!info.installed) {
+        finishCliCommandProgress("failed", "安装命令已完成，但复查时仍未检测到 CLI")
         toast.error("Claude CLI 安装命令已完成，但复查时仍未检测到 CLI", {
           description: cliCommandDescription(result)
         })
       } else if (!info.supported) {
+        finishCliCommandProgress("failed", `安装后版本仍过低：${info.version}`)
         toast.error(`Claude CLI 安装后版本仍过低：${info.version}`, {
           description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(result)}`
         })
       } else {
+        finishCliCommandProgress("completed")
         toast.success(`Claude CLI 已安装：${info.version}`, {
           description: cliCommandDescription(result)
         })
       }
     } catch (error) {
+      finishCliCommandProgress("failed", String(error))
       toast.error(`安装 Claude CLI 失败: ${String(error)}`)
     } finally {
       setInstallingCli(false)
@@ -356,10 +376,12 @@ export function General() {
           : null
       )
       if (!info.installed) {
+        finishCliCommandProgress("failed", "更新命令已完成，但复查时未检测到 CLI")
         toast.error("Claude CLI 更新命令已完成，但复查时未检测到 CLI", {
           description: cliCommandDescription(result)
         })
       } else if (!info.supported) {
+        finishCliCommandProgress("failed", `更新后仍是旧版本：${info.version}`)
         toast.error(`Claude CLI 更新后仍是旧版本：${info.version}`, {
           description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(result)}`
         })
@@ -367,6 +389,7 @@ export function General() {
         detectedUpdate &&
         isCliUpdateAvailabilityPending(detectedUpdate, info.version)
       ) {
+        finishCliCommandProgress("completed")
         const detail = cliUpdateAvailabilityDetail(detectedUpdate)
         toast.warning(`检测到 Claude CLI 可更新到：${detectedUpdate.availableVersion}`, {
           description: [detail, cliCommandDescription(result)]
@@ -374,15 +397,18 @@ export function General() {
             .join("\n")
         })
       } else if (previousVersion && info.version === previousVersion) {
+        finishCliCommandProgress("completed")
         toast.warning(`Claude CLI 更新后复查版本仍为：${info.version}`, {
           description: `已等待 Claude CLI 写入新版本后复查，版本仍未变化。\n${cliCommandDescription(result)}`
         })
       } else {
+        finishCliCommandProgress("completed")
         toast.success(`Claude CLI 已更新：${info.version}`, {
           description: cliCommandDescription(result)
         })
       }
     } catch (error) {
+      finishCliCommandProgress("failed", String(error))
       toast.error(`更新 Claude CLI 失败: ${String(error)}`)
     } finally {
       setUpdatingCli(false)

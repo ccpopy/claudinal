@@ -38,6 +38,11 @@ fn windows_npm_claude_candidates() -> Vec<PathBuf> {
     if let Some(data_dir) = dirs::data_dir() {
         roots.push(data_dir.join("npm"));
     }
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(program_files) = std::env::var(key) {
+            roots.push(PathBuf::from(program_files).join("nodejs"));
+        }
+    }
 
     roots
         .into_iter()

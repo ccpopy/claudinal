@@ -21,11 +21,12 @@ use crate::session::{
 
 const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
 const CLAUDE_UPDATE_COMMAND: &str = "claude update";
-const CLAUDE_NPM_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
+const CLAUDE_NPM_INSTALL_COMMAND: &str =
+    "npm install -g @anthropic-ai/claude-code --include=optional";
 const CLAUDE_CLI_VERSION_TIMEOUT_SECS: u64 = 30;
 #[cfg(target_os = "windows")]
 const CLAUDE_WINDOWS_NPM_INSTALL_SHELL_COMMAND: &str =
-    "chcp 65001 >nul && npm install -g @anthropic-ai/claude-code";
+    "chcp 65001 >nul && npm install -g @anthropic-ai/claude-code --include=optional";
 const CLAUDE_RUNTIME_SETTINGS_ENV_KEY: &str = "CLAUDINAL_RUNTIME_SETTINGS_JSON";
 const CLAUDE_CLI_PROXY_ENV_KEYS: &[&str] = &[
     "HTTP_PROXY",
@@ -226,6 +227,8 @@ async fn run_windows_claude_install_command(
     } else {
         setup_stdout.push_str("No proxy configured for npm downloads.\n");
     }
+    setup_stdout
+        .push_str("Forcing npm optional dependencies so the native Claude binary is installed.\n");
     emit_command_progress(&app, progress_event.as_deref(), "stdout", &setup_stdout)?;
 
     let result = run_command_spec(
@@ -271,6 +274,8 @@ fn add_npm_proxy_env(env: &mut std::collections::HashMap<String, String>) {
     if let Some(no_proxy) = session_network_no_proxy(env) {
         env.insert("npm_config_noproxy".into(), no_proxy);
     }
+    env.insert("npm_config_optional".into(), "true".into());
+    env.insert("npm_config_include".into(), "optional".into());
 }
 
 #[tauri::command]
@@ -2965,6 +2970,14 @@ mod tests {
         assert_eq!(
             env.get("npm_config_noproxy").map(String::as_str),
             Some("localhost,127.0.0.1")
+        );
+        assert_eq!(
+            env.get("npm_config_optional").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            env.get("npm_config_include").map(String::as_str),
+            Some("optional")
         );
     }
 
