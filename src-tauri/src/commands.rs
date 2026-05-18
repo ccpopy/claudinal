@@ -72,6 +72,7 @@ pub struct ClaudeCliVersionInfo {
     pub installed: bool,
     pub path: Option<String>,
     pub version: Option<String>,
+    pub version_error: Option<String>,
     pub min_supported_version: String,
     pub supported: bool,
     pub update_command: String,
@@ -127,17 +128,7 @@ pub async fn claude_cli_version_info(
     use tokio::time::{timeout, Duration};
 
     let Some(path) = find_claude_optional()? else {
-        return Ok(ClaudeCliVersionInfo {
-            installed: false,
-            path: None,
-            version: None,
-            min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
-            supported: false,
-            update_command: CLAUDE_UPDATE_COMMAND.into(),
-            install_command: claude_install_command_display(),
-            docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
-            setup_url: CLAUDE_CLI_SETUP_URL.into(),
-        });
+        return Ok(claude_cli_unavailable_info(None, None));
     };
     let (program, args) = claude_command_program_args(&path, &["--version"]);
     let mut cmd = AsyncCommand::new(program);
@@ -148,37 +139,65 @@ pub async fn claude_cli_version_info(
     }
     hide_tokio_window(&mut cmd);
 
-    let output = timeout(
+    let output = match timeout(
         Duration::from_secs(CLAUDE_CLI_VERSION_TIMEOUT_SECS),
         cmd.output(),
     )
     .await
-    .map_err(|_| Error::Other("读取 Claude CLI 版本超时".into()))??;
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return Ok(claude_cli_unavailable_info(
+                Some(&path),
+                Some(format!("运行 Claude CLI 版本命令失败：{err}")),
+            ));
+        }
+        Err(_) => {
+            return Ok(claude_cli_unavailable_info(
+                Some(&path),
+                Some("读取 Claude CLI 版本超时".into()),
+            ));
+        }
+    };
     if !output.status.success() {
-        return Err(Error::Other(format!(
-            "读取 Claude CLI 版本失败：exit {}，stderr: {}",
-            output
-                .status
-                .code()
-                .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        return Ok(claude_cli_unavailable_info(
+            Some(&path),
+            Some(format!(
+                "读取 Claude CLI 版本失败：exit {}，stderr: {}，stdout: {}",
+                output
+                    .status
+                    .code()
+                    .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+                String::from_utf8_lossy(&output.stderr).trim(),
+                String::from_utf8_lossy(&output.stdout).trim()
+            )),
+        ));
     }
 
-    let version = String::from_utf8_lossy(&output.stdout)
+    let Some(version) = String::from_utf8_lossy(&output.stdout)
         .lines()
         .next()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .ok_or_else(|| Error::Other("Claude CLI 没有输出版本号".into()))?
-        .to_string();
-    let supported = version_at_least(&version, MIN_SUPPORTED_CLAUDE_CLI_VERSION)
-        .ok_or_else(|| Error::Other(format!("无法解析 Claude CLI 版本号：{version}")))?;
+        .map(str::to_string)
+    else {
+        return Ok(claude_cli_unavailable_info(
+            Some(&path),
+            Some("Claude CLI 没有输出版本号".into()),
+        ));
+    };
+    let Some(supported) = version_at_least(&version, MIN_SUPPORTED_CLAUDE_CLI_VERSION) else {
+        return Ok(claude_cli_unavailable_info(
+            Some(&path),
+            Some(format!("无法解析 Claude CLI 版本号：{version}")),
+        ));
+    };
 
     Ok(ClaudeCliVersionInfo {
         installed: true,
         path: Some(path.display().to_string()),
         version: Some(version),
+        version_error: None,
         min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
         supported,
         update_command: CLAUDE_UPDATE_COMMAND.into(),
@@ -186,6 +205,24 @@ pub async fn claude_cli_version_info(
         docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
         setup_url: CLAUDE_CLI_SETUP_URL.into(),
     })
+}
+
+fn claude_cli_unavailable_info(
+    path: Option<&std::path::Path>,
+    version_error: Option<String>,
+) -> ClaudeCliVersionInfo {
+    ClaudeCliVersionInfo {
+        installed: false,
+        path: path.map(|path| path.display().to_string()),
+        version: None,
+        version_error,
+        min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
+        supported: false,
+        update_command: CLAUDE_UPDATE_COMMAND.into(),
+        install_command: claude_install_command_display(),
+        docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
+        setup_url: CLAUDE_CLI_SETUP_URL.into(),
+    }
 }
 
 #[tauri::command]
@@ -2979,6 +3016,25 @@ mod tests {
             env.get("npm_config_include").map(String::as_str),
             Some("optional")
         );
+    }
+
+    #[test]
+    fn claude_cli_unavailable_info_keeps_path_and_error_for_reinstall() {
+        let info = claude_cli_unavailable_info(
+            Some(std::path::Path::new(r"C:\Program Files\nodejs\claude.cmd")),
+            Some("读取 Claude CLI 版本失败：exit 1".into()),
+        );
+
+        assert!(!info.installed);
+        assert_eq!(
+            info.path.as_deref(),
+            Some(r"C:\Program Files\nodejs\claude.cmd")
+        );
+        assert_eq!(
+            info.version_error.as_deref(),
+            Some("读取 Claude CLI 版本失败：exit 1")
+        );
+        assert_eq!(info.install_command, claude_install_command_display());
     }
 
     #[cfg(target_os = "windows")]

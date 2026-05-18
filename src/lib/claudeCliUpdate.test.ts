@@ -14,6 +14,7 @@ function cliInfo(
     installed,
     path: installed ? "C:/Users/me/.local/bin/claude.exe" : null,
     version,
+    version_error: null,
     min_supported_version: "2.1.123",
     supported: Boolean(version),
     update_command: "claude update",

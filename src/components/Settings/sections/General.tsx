@@ -201,9 +201,15 @@ export function General() {
       const info = await readClaudeCliVersion(env)
       if (!info.installed) {
         if (manual) {
-          toast.warning("未检测到 Claude CLI", {
-            description: `可点击安装按钮执行：${info.install_command}`
-          })
+          if (info.version_error) {
+            toast.error("Claude CLI 检测失败，可重新安装", {
+              description: `${info.version_error}\n可点击安装按钮执行：${info.install_command}`
+            })
+          } else {
+            toast.warning("未检测到 Claude CLI", {
+              description: `可点击安装按钮执行：${info.install_command}`
+            })
+          }
         }
       } else if (!info.supported && notifyUnsupported) {
         toast.warning(`Claude CLI 版本过低：${info.version}`, {
@@ -332,9 +338,13 @@ export function General() {
       )
       const info = await verifyCliAfterCommand(null, env)
       if (!info.installed) {
-        finishCliCommandProgress("failed", "安装命令已完成，但复查时仍未检测到 CLI")
+        const verifyError =
+          info.version_error ?? "安装命令已完成，但复查时仍未检测到 CLI"
+        finishCliCommandProgress("failed", verifyError)
         toast.error("Claude CLI 安装命令已完成，但复查时仍未检测到 CLI", {
-          description: cliCommandDescription(result)
+          description: [info.version_error, cliCommandDescription(result)]
+            .filter(Boolean)
+            .join("\n")
         })
       } else if (!info.supported) {
         finishCliCommandProgress("failed", `安装后版本仍过低：${info.version}`)
@@ -511,7 +521,7 @@ export function General() {
                       disabled={checkingCli || installingCli || updatingCli}
                     >
                       <Download className={installingCli ? "animate-pulse" : ""} />
-                      一键安装
+                      {cliInfo.version_error ? "重新安装" : "一键安装"}
                     </Button>
                   )}
                   {cliInfo?.installed && (
@@ -540,12 +550,23 @@ export function General() {
                 >
                   <div className="flex items-center gap-2 font-medium text-foreground">
                     <Terminal className="size-3.5" />
-                    <span>{cliInfo.installed ? cliInfo.version : "未安装"}</span>
+                    <span>
+                      {cliInfo.installed
+                        ? cliInfo.version
+                        : cliInfo.version_error
+                        ? "检测失败"
+                        : "未安装"}
+                    </span>
                   </div>
                   {cliInfo.path && (
                     <div className="mt-1 font-mono text-[11px]">{cliInfo.path}</div>
                   )}
                   <div className="mt-2 space-y-1">
+                    {cliInfo.version_error && (
+                      <div className="break-words text-destructive">
+                        {cliInfo.version_error}
+                      </div>
+                    )}
                     <div>最低支持：{cliInfo.min_supported_version}</div>
                     {!cliInfo.installed ? (
                       <>

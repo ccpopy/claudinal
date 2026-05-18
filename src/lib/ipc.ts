@@ -150,6 +150,7 @@ export interface ClaudeCliVersionInfo {
   installed: boolean
   path: string | null
   version: string | null
+  version_error?: string | null
   min_supported_version: string
   supported: boolean
   update_command: string
