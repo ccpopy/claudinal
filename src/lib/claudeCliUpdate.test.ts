@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   CLAUDE_CLI_POST_COMMAND_RECHECK_DELAYS_MS,
+  claudeCliUpdateAvailabilityFromCommandOutput,
   waitForClaudeCliPostCommandVersion
 } from "./claudeCliUpdate"
 import type { ClaudeCliVersionInfo } from "./ipc"
@@ -16,7 +17,7 @@ function cliInfo(
     min_supported_version: "2.1.123",
     supported: Boolean(version),
     update_command: "claude update",
-    install_command: "irm https://claude.ai/install.ps1 | iex",
+    install_command: "npm install -g @anthropic-ai/claude-code",
     docs_url: "https://docs.anthropic.com/en/docs/claude-code/cli-reference",
     setup_url: "https://code.claude.com/docs/en/setup"
   }
@@ -73,5 +74,34 @@ describe("waitForClaudeCliPostCommandVersion", () => {
     expect(info.installed).toBe(true)
     expect(info.version).toBe("2.1.143")
     expect(sleeps).toEqual([500, 1000])
+  })
+})
+
+describe("claudeCliUpdateAvailabilityFromCommandOutput", () => {
+  it("detects a package-manager-managed Claude CLI update from command output", () => {
+    const availability = claudeCliUpdateAvailabilityFromCommandOutput(
+      [
+        "Current version: 2.1.123",
+        "Checking for updates to latest version...",
+        "Claude is managed by winget.",
+        "Update available: 2.1.123 -> 2.1.143",
+        "To update, run: winget upgrade Anthropic.ClaudeCode"
+      ].join("\n")
+    )
+
+    expect(availability).toEqual({
+      currentVersion: "2.1.123",
+      availableVersion: "2.1.143",
+      packageManager: "winget",
+      updateCommand: "winget upgrade Anthropic.ClaudeCode"
+    })
+  })
+
+  it("returns null when the update command output has no available version", () => {
+    expect(
+      claudeCliUpdateAvailabilityFromCommandOutput(
+        "Current version: 2.1.143\nClaude is already up to date."
+      )
+    ).toBeNull()
   })
 })

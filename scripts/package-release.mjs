@@ -9,7 +9,8 @@
 //   pnpm package:zip portable      # 仅打便携版 zip
 //
 // 前置：
-//   - portable 需要 src-tauri/target/release/<bin>.exe（cargo build --release 或 tauri build 产出）
+//   - portable 需要 src-tauri/target/release/<bin>.exe（必须由 tauri build --no-bundle 或 tauri build 产出）
+//     不要用裸 cargo build --release；它会生成指向 devUrl 的开发服务器版本。
 //   - installer 需要 src-tauri/target/release/bundle/nsis/*.exe（tauri build --bundles nsis 产出）
 
 import { execSync } from "node:child_process"

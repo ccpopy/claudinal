@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::api_proxy::{start as start_api_proxy, ProxyConfig};
 use crate::child_process::{hide_std_window, hide_tokio_window};
@@ -21,6 +21,10 @@ use crate::session::{
 
 const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
 const CLAUDE_UPDATE_COMMAND: &str = "claude update";
+const CLAUDE_NPM_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
+#[cfg(target_os = "windows")]
+const CLAUDE_WINDOWS_NPM_INSTALL_SHELL_COMMAND: &str =
+    "chcp 65001 >nul && npm install -g @anthropic-ai/claude-code";
 const CLAUDE_RUNTIME_SETTINGS_ENV_KEY: &str = "CLAUDINAL_RUNTIME_SETTINGS_JSON";
 const CLAUDE_CLI_PROXY_ENV_KEYS: &[&str] = &[
     "HTTP_PROXY",
@@ -80,6 +84,12 @@ pub struct ClaudeCliCommandResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ClaudeCliCommandProgressEvent {
+    pub stream: String,
+    pub chunk: String,
 }
 
 #[derive(serde::Serialize)]
@@ -169,24 +179,107 @@ pub async fn claude_cli_version_info() -> Result<ClaudeCliVersionInfo> {
 
 #[tauri::command]
 pub async fn install_claude_cli(
+    app: AppHandle,
     env: Option<std::collections::HashMap<String, String>>,
+    progress_event: Option<String>,
 ) -> Result<ClaudeCliCommandResult> {
-    let mut spec = claude_install_command_spec();
-    spec.env = claude_cli_command_env(env).await?;
-    run_command_spec(spec).await
+    let env = claude_cli_command_env(env).await?;
+    #[cfg(target_os = "windows")]
+    {
+        return run_windows_claude_install_command(app, progress_event, env).await;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut spec = claude_install_command_spec();
+        spec.env = env;
+        run_command_spec(app, progress_event, spec).await
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn run_windows_claude_install_command(
+    app: AppHandle,
+    progress_event: Option<String>,
+    mut env: std::collections::HashMap<String, String>,
+) -> Result<ClaudeCliCommandResult> {
+    add_npm_proxy_env(&mut env);
+
+    let mut setup_stdout = format!(
+        "Using npm standard installer: {CLAUDE_NPM_INSTALL_COMMAND}\nForcing Windows command output to UTF-8 before npm runs.\n"
+    );
+    if let Some(proxy_url) = session_network_proxy_url(&env) {
+        setup_stdout.push_str(&format!(
+            "Using configured proxy for npm downloads: {}\n",
+            masked_proxy_url(&proxy_url)
+        ));
+        setup_stdout.push_str("Forwarded proxy to npm_config_proxy and npm_config_https_proxy.\n");
+    } else {
+        setup_stdout.push_str("No proxy configured for npm downloads.\n");
+    }
+    emit_command_progress(&app, progress_event.as_deref(), "stdout", &setup_stdout)?;
+
+    let result = run_command_spec(
+        app,
+        progress_event,
+        CommandSpec {
+            program: "cmd.exe".into(),
+            args: vec![
+                "/D".into(),
+                "/C".into(),
+                CLAUDE_WINDOWS_NPM_INSTALL_SHELL_COMMAND.into(),
+            ],
+            display: claude_install_command_display(),
+            env,
+        },
+    )
+    .await;
+
+    result.map(|mut result| {
+        result.stdout = format!("{}{}", setup_stdout, result.stdout);
+        result
+    })
+}
+
+fn masked_proxy_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let Some((auth, host)) = rest.split_once('@') else {
+        return url.to_string();
+    };
+    if auth.is_empty() {
+        return url.to_string();
+    }
+    format!("{scheme}://***@{host}")
+}
+
+fn add_npm_proxy_env(env: &mut std::collections::HashMap<String, String>) {
+    if let Some(proxy_url) = session_network_proxy_url(env) {
+        env.insert("npm_config_proxy".into(), proxy_url.clone());
+        env.insert("npm_config_https_proxy".into(), proxy_url);
+    }
+    if let Some(no_proxy) = session_network_no_proxy(env) {
+        env.insert("npm_config_noproxy".into(), no_proxy);
+    }
 }
 
 #[tauri::command]
 pub async fn update_claude_cli(
+    app: AppHandle,
     env: Option<std::collections::HashMap<String, String>>,
+    progress_event: Option<String>,
 ) -> Result<ClaudeCliCommandResult> {
     let path = crate::proc::spawn::find_claude()?;
-    run_command_spec(CommandSpec {
-        program: path.display().to_string(),
-        args: vec!["update".into()],
-        display: CLAUDE_UPDATE_COMMAND.into(),
-        env: claude_cli_command_env(env).await?,
-    })
+    run_command_spec(
+        app,
+        progress_event,
+        CommandSpec {
+            program: path.display().to_string(),
+            args: vec!["update".into()],
+            display: CLAUDE_UPDATE_COMMAND.into(),
+            env: claude_cli_command_env(env).await?,
+        },
+    )
     .await
 }
 
@@ -208,7 +301,7 @@ struct CommandSpec {
 fn claude_install_command_display() -> String {
     #[cfg(target_os = "windows")]
     {
-        "irm https://claude.ai/install.ps1 | iex".into()
+        CLAUDE_NPM_INSTALL_COMMAND.into()
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -216,30 +309,13 @@ fn claude_install_command_display() -> String {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn claude_install_command_spec() -> CommandSpec {
-    #[cfg(target_os = "windows")]
-    {
-        CommandSpec {
-            program: "powershell.exe".into(),
-            args: vec![
-                "-NoProfile".into(),
-                "-ExecutionPolicy".into(),
-                "Bypass".into(),
-                "-Command".into(),
-                claude_install_command_display(),
-            ],
-            display: claude_install_command_display(),
-            env: std::collections::HashMap::new(),
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        CommandSpec {
-            program: "sh".into(),
-            args: vec!["-lc".into(), claude_install_command_display()],
-            display: claude_install_command_display(),
-            env: std::collections::HashMap::new(),
-        }
+    CommandSpec {
+        program: "sh".into(),
+        args: vec!["-lc".into(), claude_install_command_display()],
+        display: claude_install_command_display(),
+        env: std::collections::HashMap::new(),
     }
 }
 
@@ -271,7 +347,55 @@ fn validate_claude_cli_proxy_env(
     Ok(validated)
 }
 
-async fn run_command_spec(spec: CommandSpec) -> Result<ClaudeCliCommandResult> {
+fn emit_command_progress(
+    app: &AppHandle,
+    progress_event: Option<&str>,
+    stream: &str,
+    chunk: &str,
+) -> Result<()> {
+    if let Some(event) = progress_event {
+        app.emit(
+            event,
+            ClaudeCliCommandProgressEvent {
+                stream: stream.into(),
+                chunk: chunk.into(),
+            },
+        )
+        .map_err(|e| Error::Other(format!("发送 Claude CLI 命令进度失败：{e}")))?;
+    }
+    Ok(())
+}
+
+async fn read_command_stream<R>(
+    app: AppHandle,
+    progress_event: Option<String>,
+    stream: &'static str,
+    mut reader: R,
+) -> Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let read = reader.read(&mut buffer).await.map_err(Error::from)?;
+        if read == 0 {
+            break;
+        }
+        output.extend_from_slice(&buffer[..read]);
+        let chunk = String::from_utf8_lossy(&buffer[..read]);
+        emit_command_progress(&app, progress_event.as_deref(), stream, chunk.as_ref())?;
+    }
+    Ok(output)
+}
+
+async fn run_command_spec(
+    app: AppHandle,
+    progress_event: Option<String>,
+    spec: CommandSpec,
+) -> Result<ClaudeCliCommandResult> {
     use tokio::process::Command as AsyncCommand;
 
     let mut cmd = AsyncCommand::new(&spec.program);
@@ -285,17 +409,28 @@ async fn run_command_spec(spec: CommandSpec) -> Result<ClaudeCliCommandResult> {
     }
     hide_tokio_window(&mut cmd);
 
-    let output = cmd
-        .output()
-        .await
+    let mut child = cmd
+        .spawn()
         .map_err(|e| Error::Other(format!("运行 `{}` 失败：{e}", spec.display)))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Other(format!("运行 `{}` 失败：无法读取 stdout", spec.display)))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Other(format!("运行 `{}` 失败：无法读取 stderr", spec.display)))?;
+    let stdout_task = read_command_stream(app.clone(), progress_event.clone(), "stdout", stdout);
+    let stderr_task = read_command_stream(app, progress_event, "stderr", stderr);
+    let status_task = async { child.wait().await.map_err(Error::from) };
+    let (stdout, stderr, status) = tokio::try_join!(stdout_task, stderr_task, status_task)?;
     let result = ClaudeCliCommandResult {
         command: spec.display,
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout).to_string(),
+        stderr: String::from_utf8_lossy(&stderr).to_string(),
+        exit_code: status.code().unwrap_or(-1),
     };
-    if !output.status.success() {
+    if !status.success() {
         return Err(Error::Other(format!(
             "`{}` 失败，exit {}，stderr: {}，stdout: {}",
             result.command,
@@ -718,6 +853,15 @@ fn session_network_proxy_url(env: &std::collections::HashMap<String, String>) ->
     .map(|value| value.trim())
     .find(|value| !value.is_empty())
     .map(str::to_string)
+}
+
+fn session_network_no_proxy(env: &std::collections::HashMap<String, String>) -> Option<String> {
+    ["NO_PROXY", "no_proxy"]
+        .iter()
+        .filter_map(|key| env.get(*key))
+        .map(|value| value.trim())
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 async fn bridge_socks_proxy_env(env: &mut std::collections::HashMap<String, String>) -> Result<()> {
@@ -2736,6 +2880,40 @@ mod tests {
         assert!(err
             .to_string()
             .contains("Claude CLI 代理环境变量 HTTPS_PROXY 不能为空"));
+    }
+
+    #[test]
+    fn masked_proxy_url_hides_credentials() {
+        assert_eq!(
+            masked_proxy_url("http://user:pass@proxy.local:8080"),
+            "http://***@proxy.local:8080"
+        );
+        assert_eq!(
+            masked_proxy_url("http://proxy.local:8080"),
+            "http://proxy.local:8080"
+        );
+    }
+
+    #[test]
+    fn npm_proxy_env_inherits_session_proxy_settings() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("HTTPS_PROXY".into(), "http://proxy.local:8080".into());
+        env.insert("NO_PROXY".into(), "localhost,127.0.0.1".into());
+
+        add_npm_proxy_env(&mut env);
+
+        assert_eq!(
+            env.get("npm_config_proxy").map(String::as_str),
+            Some("http://proxy.local:8080")
+        );
+        assert_eq!(
+            env.get("npm_config_https_proxy").map(String::as_str),
+            Some("http://proxy.local:8080")
+        );
+        assert_eq!(
+            env.get("npm_config_noproxy").map(String::as_str),
+            Some("localhost,127.0.0.1")
+        );
     }
 
     #[test]

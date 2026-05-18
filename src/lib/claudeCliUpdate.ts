@@ -8,6 +8,13 @@ type SleepFn = (ms: number) => Promise<void>
 
 const sleep: SleepFn = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
+export interface ClaudeCliUpdateAvailability {
+  currentVersion: string | null
+  availableVersion: string
+  packageManager: string | null
+  updateCommand: string | null
+}
+
 function shouldStopPostCommandVersionPolling(
   info: ClaudeCliVersionInfo,
   previousVersion: string | null
@@ -37,4 +44,25 @@ export async function waitForClaudeCliPostCommandVersion(
   }
 
   return info
+}
+
+export function claudeCliUpdateAvailabilityFromCommandOutput(
+  stdout: string,
+  stderr = ""
+): ClaudeCliUpdateAvailability | null {
+  const output = [stdout, stderr].filter(Boolean).join("\n")
+  const updateMatch = output.match(
+    /Update available:\s*v?(\d+(?:\.\d+){1,3}(?:[-+][^\s]+)?)\s*(?:->|→|=>|to)\s*v?(\d+(?:\.\d+){1,3}(?:[-+][^\s]+)?)/i
+  )
+  if (!updateMatch) return null
+
+  const managerMatch = output.match(/Claude is managed by\s+([^\r\n.]+)/i)
+  const commandMatch = output.match(/(?:To update,\s*)?run:\s*([^\r\n]+)/i)
+
+  return {
+    currentVersion: updateMatch[1] ?? null,
+    availableVersion: updateMatch[2],
+    packageManager: managerMatch?.[1]?.trim() || null,
+    updateCommand: commandMatch?.[1]?.trim() || null
+  }
 }

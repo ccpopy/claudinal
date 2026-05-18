@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Cog, Download, ExternalLink, RefreshCw, Save, Terminal } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -8,12 +8,19 @@ import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
-import { waitForClaudeCliPostCommandVersion } from "@/lib/claudeCliUpdate"
+import {
+  claudeCliUpdateAvailabilityFromCommandOutput,
+  waitForClaudeCliPostCommandVersion,
+  type ClaudeCliUpdateAvailability
+} from "@/lib/claudeCliUpdate"
 import {
   claudeCliVersionInfo,
   installClaudeCli,
+  listenClaudeCliCommandProgress,
   openExternal,
   updateClaudeCli,
+  type ClaudeCliCommandProgressEvent,
+  type ClaudeCliCommandResult,
   type ClaudeCliVersionInfo
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxyAsync } from "@/lib/proxy"
@@ -45,6 +52,21 @@ type UpdateCheckState =
   | "failed"
   | "dev"
 
+type CliCommandProgressStatus = "running" | "completed" | "failed"
+
+interface CliCommandProgressChunk {
+  stream: ClaudeCliCommandProgressEvent["stream"]
+  chunk: string
+}
+
+interface CliCommandProgressState {
+  command: string
+  status: CliCommandProgressStatus
+  chunks: CliCommandProgressChunk[]
+  error: string | null
+  exitCode: number | null
+}
+
 function updateStatusLabel(state: UpdateCheckState, version: string | null) {
   if (state === "checking") return "检查中..."
   if (state === "latest") return "已是最新"
@@ -61,6 +83,18 @@ function updateStatusClass(state: UpdateCheckState) {
   return "text-muted-foreground"
 }
 
+function cliCommandProgressStatusLabel(status: CliCommandProgressStatus) {
+  if (status === "running") return "执行中..."
+  if (status === "completed") return "已完成"
+  return "失败"
+}
+
+function cliCommandProgressStatusClass(status: CliCommandProgressStatus) {
+  if (status === "completed") return "text-connected"
+  if (status === "failed") return "text-destructive"
+  return "text-muted-foreground"
+}
+
 function cliCommandDescription(result: {
   command: string
   stdout: string
@@ -72,9 +106,36 @@ function cliCommandDescription(result: {
   return output ? `${result.command}\n${output.slice(0, 360)}` : result.command
 }
 
+function cliUpdateAvailabilityDetail(
+  availability: ClaudeCliUpdateAvailability
+): string {
+  return [
+    availability.packageManager
+      ? `当前 Claude CLI 由 ${availability.packageManager} 管理。`
+      : null,
+    availability.updateCommand ? `建议命令：${availability.updateCommand}` : null
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+function isCliUpdateAvailabilityPending(
+  availability: ClaudeCliUpdateAvailability,
+  observedVersion: string | null
+): boolean {
+  if (!observedVersion) return false
+  return availability.currentVersion
+    ? observedVersion === availability.currentVersion
+    : observedVersion !== availability.availableVersion
+}
+
 async function claudeCliCommandEnv(): Promise<Record<string, string> | null> {
   const env = buildProxyEnv(await loadProxyAsync())
   return Object.keys(env).length > 0 ? env : null
+}
+
+function createClaudeCliProgressEventName(): string {
+  return `claudinal://claude-cli-command/${globalThis.crypto.randomUUID()}`
 }
 
 export function General() {
@@ -87,6 +148,11 @@ export function General() {
   const [installingCli, setInstallingCli] = useState(false)
   const [updatingCli, setUpdatingCli] = useState(false)
   const [cliInfo, setCliInfo] = useState<ClaudeCliVersionInfo | null>(null)
+  const [cliUpdateAvailability, setCliUpdateAvailability] =
+    useState<ClaudeCliUpdateAvailability | null>(null)
+  const [cliCommandProgress, setCliCommandProgress] =
+    useState<CliCommandProgressState | null>(null)
+  const cliCommandProgressRef = useRef<HTMLPreElement | null>(null)
   const updateStatus = updateStatusLabel(updateState, availableVersion)
 
   const update = (patch: Partial<AppSettings>) => {
@@ -153,17 +219,89 @@ export function General() {
   const readClaudeCliVersion = async (): Promise<ClaudeCliVersionInfo> => {
     const info = await claudeCliVersionInfo()
     setCliInfo(info)
+    setCliUpdateAvailability((availability) => {
+      if (!availability) return null
+      if (!info.installed || !info.version) return null
+      return isCliUpdateAvailabilityPending(availability, info.version)
+        ? availability
+        : null
+    })
     return info
   }
 
   const verifyCliAfterCommand = (previousVersion: string | null) =>
     waitForClaudeCliPostCommandVersion(readClaudeCliVersion, previousVersion)
 
+  const appendCliCommandProgress = (event: ClaudeCliCommandProgressEvent) => {
+    setCliCommandProgress((progress) => {
+      if (!progress) return progress
+      const last = progress.chunks[progress.chunks.length - 1]
+      const chunks =
+        last?.stream === event.stream
+          ? [
+              ...progress.chunks.slice(0, -1),
+              { stream: event.stream, chunk: last.chunk + event.chunk }
+            ]
+          : [...progress.chunks, event]
+      return { ...progress, chunks }
+    })
+  }
+
+  const runClaudeCliCommandWithProgress = async (
+    command: string,
+    run: (progressEvent: string) => Promise<ClaudeCliCommandResult>
+  ): Promise<ClaudeCliCommandResult> => {
+    const progressEvent = createClaudeCliProgressEventName()
+    setCliCommandProgress({
+      command,
+      status: "running",
+      chunks: [],
+      error: null,
+      exitCode: null
+    })
+
+    let unlisten: (() => void) | null = null
+    try {
+      unlisten = await listenClaudeCliCommandProgress(
+        progressEvent,
+        appendCliCommandProgress
+      )
+      const result = await run(progressEvent)
+      setCliCommandProgress((progress) =>
+        progress
+          ? {
+              ...progress,
+              command: result.command || progress.command,
+              status: "completed",
+              exitCode: result.exit_code
+            }
+          : progress
+      )
+      return result
+    } catch (error) {
+      setCliCommandProgress((progress) =>
+        progress
+          ? {
+              ...progress,
+              status: "failed",
+              error: String(error)
+            }
+          : progress
+      )
+      throw error
+    } finally {
+      unlisten?.()
+    }
+  }
+
   const installCli = async () => {
     setInstallingCli(true)
     try {
       const env = await claudeCliCommandEnv()
-      const result = await installClaudeCli(env)
+      const result = await runClaudeCliCommandWithProgress(
+        cliInfo?.install_command ?? "Claude CLI install",
+        (progressEvent) => installClaudeCli(env, progressEvent)
+      )
       const info = await verifyCliAfterCommand(null)
       if (!info.installed) {
         toast.error("Claude CLI 安装命令已完成，但复查时仍未检测到 CLI", {
@@ -191,8 +329,20 @@ export function General() {
       const beforeInfo = cliInfo?.version ? cliInfo : await readClaudeCliVersion()
       const previousVersion = beforeInfo.version ?? null
       const env = await claudeCliCommandEnv()
-      const result = await updateClaudeCli(env)
+      const result = await runClaudeCliCommandWithProgress(
+        beforeInfo.update_command,
+        (progressEvent) => updateClaudeCli(env, progressEvent)
+      )
+      const detectedUpdate =
+        claudeCliUpdateAvailabilityFromCommandOutput(result.stdout, result.stderr)
       const info = await verifyCliAfterCommand(previousVersion)
+      setCliUpdateAvailability(
+        detectedUpdate &&
+          info.installed &&
+          isCliUpdateAvailabilityPending(detectedUpdate, info.version)
+          ? detectedUpdate
+          : null
+      )
       if (!info.installed) {
         toast.error("Claude CLI 更新命令已完成，但复查时未检测到 CLI", {
           description: cliCommandDescription(result)
@@ -200,6 +350,16 @@ export function General() {
       } else if (!info.supported) {
         toast.error(`Claude CLI 更新后仍是旧版本：${info.version}`, {
           description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(result)}`
+        })
+      } else if (
+        detectedUpdate &&
+        isCliUpdateAvailabilityPending(detectedUpdate, info.version)
+      ) {
+        const detail = cliUpdateAvailabilityDetail(detectedUpdate)
+        toast.warning(`检测到 Claude CLI 可更新到：${detectedUpdate.availableVersion}`, {
+          description: [detail, cliCommandDescription(result)]
+            .filter(Boolean)
+            .join("\n")
         })
       } else if (previousVersion && info.version === previousVersion) {
         toast.warning(`Claude CLI 更新后复查版本仍为：${info.version}`, {
@@ -220,6 +380,12 @@ export function General() {
   useEffect(() => {
     void checkClaudeCliVersion(false)
   }, [])
+
+  useEffect(() => {
+    const element = cliCommandProgressRef.current
+    if (!element) return
+    element.scrollTop = element.scrollHeight
+  }, [cliCommandProgress?.chunks, cliCommandProgress?.status])
 
   return (
     <SettingsSection>
@@ -284,7 +450,7 @@ export function General() {
                 <div>
                   <Label className="text-sm">Claude CLI 版本</Label>
                   <div className="text-xs text-muted-foreground mt-0.5">
-                    自动检查本地 Claude CLI 是否满足桌面端最低要求；未安装时可按官方安装脚本安装。
+                    自动检查本地 Claude CLI 是否满足桌面端最低要求；未安装时可按官方 npm 命令安装。
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -368,7 +534,85 @@ export function General() {
                         <span className="font-mono">{cliInfo.update_command}</span>
                       </div>
                     )}
+                    {cliInfo.installed && cliUpdateAvailability && (
+                      <div className="rounded-sm border border-warn/30 bg-warn/10 px-2 py-1 text-warn">
+                        <div>
+                          检测到可更新：
+                          <span className="font-mono">
+                            {cliUpdateAvailability.currentVersion ?? cliInfo.version}
+                          </span>
+                          {" -> "}
+                          <span className="font-mono">
+                            {cliUpdateAvailability.availableVersion}
+                          </span>
+                        </div>
+                        {cliUpdateAvailability.packageManager && (
+                          <div>
+                            管理方式：{cliUpdateAvailability.packageManager}
+                          </div>
+                        )}
+                        {cliUpdateAvailability.updateCommand && (
+                          <div>
+                            建议命令：
+                            <span className="font-mono">
+                              {cliUpdateAvailability.updateCommand}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
+                </div>
+              )}
+              {cliCommandProgress && (
+                <div className="rounded-md border bg-background px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2 font-medium text-foreground">
+                      <Terminal className="size-3.5 shrink-0" />
+                      <span className="shrink-0">命令输出</span>
+                      <span className="truncate font-mono text-[11px] text-muted-foreground">
+                        {cliCommandProgress.command}
+                      </span>
+                    </div>
+                    <span
+                      className={cliCommandProgressStatusClass(
+                        cliCommandProgress.status
+                      )}
+                    >
+                      {cliCommandProgressStatusLabel(cliCommandProgress.status)}
+                    </span>
+                  </div>
+                  <pre
+                    ref={cliCommandProgressRef}
+                    className="mt-2 max-h-44 overflow-y-auto rounded-sm bg-muted/35 px-2 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words"
+                  >
+                    {cliCommandProgress.chunks.length === 0 ? (
+                      <span className="text-muted-foreground">
+                        {cliCommandProgress.status === "running"
+                          ? "等待命令输出..."
+                          : "命令未输出 stdout/stderr。"}
+                      </span>
+                    ) : (
+                      cliCommandProgress.chunks.map((chunk, index) => (
+                        <span
+                          key={`${chunk.stream}-${index}`}
+                          className={
+                            chunk.stream === "stderr"
+                              ? "text-warn"
+                              : "text-foreground"
+                          }
+                        >
+                          {chunk.chunk}
+                        </span>
+                      ))
+                    )}
+                  </pre>
+                  {cliCommandProgress.status === "failed" &&
+                    cliCommandProgress.error && (
+                      <div className="mt-2 break-words text-destructive">
+                        {cliCommandProgress.error}
+                      </div>
+                    )}
                 </div>
               )}
             </div>

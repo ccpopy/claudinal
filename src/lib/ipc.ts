@@ -169,18 +169,40 @@ export interface ClaudeCliCommandResult {
   exit_code: number
 }
 
+export interface ClaudeCliCommandProgressEvent {
+  stream: "stdout" | "stderr"
+  chunk: string
+}
+
 export type ClaudeCliCommandEnv = Record<string, string>
 
 export async function installClaudeCli(
-  env: ClaudeCliCommandEnv | null = null
+  env: ClaudeCliCommandEnv | null = null,
+  progressEvent: string | null = null
 ): Promise<ClaudeCliCommandResult> {
-  return invoke<ClaudeCliCommandResult>("install_claude_cli", { env })
+  return invoke<ClaudeCliCommandResult>("install_claude_cli", {
+    env,
+    progressEvent
+  })
 }
 
 export async function updateClaudeCli(
-  env: ClaudeCliCommandEnv | null = null
+  env: ClaudeCliCommandEnv | null = null,
+  progressEvent: string | null = null
 ): Promise<ClaudeCliCommandResult> {
-  return invoke<ClaudeCliCommandResult>("update_claude_cli", { env })
+  return invoke<ClaudeCliCommandResult>("update_claude_cli", {
+    env,
+    progressEvent
+  })
+}
+
+export async function listenClaudeCliCommandProgress(
+  progressEvent: string,
+  handler: (event: ClaudeCliCommandProgressEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ClaudeCliCommandProgressEvent>(progressEvent, (event) =>
+    handler(event.payload)
+  )
 }
 
 export async function spawnSession(args: SpawnArgs): Promise<string> {

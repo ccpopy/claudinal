@@ -16,6 +16,7 @@
     "package:exe": "tauri build --bundles nsis",
     "package:msi": "tauri build --bundles msi",
     "package:win": "tauri build --bundles nsis,msi",
+    "package:portable": "tauri build --no-bundle && node scripts/package-release.mjs portable",
     "package:dmg": "tauri build --bundles dmg",
     "package:mac-app": "tauri build --bundles app",
     "package:mac": "tauri build --bundles app,dmg",
