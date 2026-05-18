@@ -30,19 +30,36 @@ export async function waitForClaudeCliPostCommandVersion(
   previousVersion: string | null,
   sleepFn: SleepFn = sleep
 ): Promise<ClaudeCliVersionInfo> {
-  let info = await readVersion()
-  if (shouldStopPostCommandVersionPolling(info, previousVersion)) {
-    return info
+  let info: ClaudeCliVersionInfo | null = null
+  let lastError: unknown = null
+  const readAndCheck = async () => {
+    try {
+      info = await readVersion()
+      lastError = null
+      return shouldStopPostCommandVersionPolling(info, previousVersion)
+    } catch (error) {
+      lastError = error
+      return false
+    }
+  }
+
+  if (await readAndCheck()) {
+    return info!
   }
 
   for (const delay of CLAUDE_CLI_POST_COMMAND_RECHECK_DELAYS_MS) {
     await sleepFn(delay)
-    info = await readVersion()
-    if (shouldStopPostCommandVersionPolling(info, previousVersion)) {
-      return info
+    if (await readAndCheck()) {
+      return info!
     }
   }
 
+  if (lastError) {
+    throw lastError
+  }
+  if (!info) {
+    throw new Error("未能读取 Claude CLI 版本")
+  }
   return info
 }
 

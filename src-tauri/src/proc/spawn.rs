@@ -18,5 +18,35 @@ pub fn find_claude() -> Result<PathBuf> {
             return Ok(native);
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        for candidate in windows_npm_claude_candidates() {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
     which::which("claude").map_err(Error::from)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_npm_claude_candidates() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        roots.push(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        roots.push(data_dir.join("npm"));
+    }
+
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            [
+                root.join("claude.cmd"),
+                root.join("claude.exe"),
+                root.join("claude.ps1"),
+            ]
+        })
+        .collect()
 }

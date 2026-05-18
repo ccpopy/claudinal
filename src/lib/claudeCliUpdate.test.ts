@@ -75,6 +75,46 @@ describe("waitForClaudeCliPostCommandVersion", () => {
     expect(info.version).toBe("2.1.143")
     expect(sleeps).toEqual([500, 1000])
   })
+
+  it("keeps polling when a post-install version check fails transiently", async () => {
+    const versions = [cliInfo("2.1.143")]
+    const sleeps: number[] = []
+    let attempts = 0
+
+    const info = await waitForClaudeCliPostCommandVersion(
+      async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error("读取 Claude CLI 版本超时")
+        return versions.shift() ?? cliInfo("2.1.143")
+      },
+      null,
+      async (ms) => {
+        sleeps.push(ms)
+      }
+    )
+
+    expect(info.installed).toBe(true)
+    expect(info.version).toBe("2.1.143")
+    expect(sleeps).toEqual([500])
+  })
+
+  it("throws the last post-command version check error after all retries fail", async () => {
+    const sleeps: number[] = []
+
+    await expect(
+      waitForClaudeCliPostCommandVersion(
+        async () => {
+          throw new Error("读取 Claude CLI 版本超时")
+        },
+        null,
+        async (ms) => {
+          sleeps.push(ms)
+        }
+      )
+    ).rejects.toThrow("读取 Claude CLI 版本超时")
+
+    expect(sleeps).toEqual([...CLAUDE_CLI_POST_COMMAND_RECHECK_DELAYS_MS])
+  })
 })
 
 describe("claudeCliUpdateAvailabilityFromCommandOutput", () => {

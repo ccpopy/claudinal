@@ -22,6 +22,7 @@ use crate::session::{
 const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
 const CLAUDE_UPDATE_COMMAND: &str = "claude update";
 const CLAUDE_NPM_INSTALL_COMMAND: &str = "npm install -g @anthropic-ai/claude-code";
+const CLAUDE_CLI_VERSION_TIMEOUT_SECS: u64 = 30;
 #[cfg(target_os = "windows")]
 const CLAUDE_WINDOWS_NPM_INSTALL_SHELL_COMMAND: &str =
     "chcp 65001 >nul && npm install -g @anthropic-ai/claude-code";
@@ -118,7 +119,9 @@ pub async fn detect_claude_cli() -> Result<String> {
 }
 
 #[tauri::command]
-pub async fn claude_cli_version_info() -> Result<ClaudeCliVersionInfo> {
+pub async fn claude_cli_version_info(
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<ClaudeCliVersionInfo> {
     use tokio::process::Command as AsyncCommand;
     use tokio::time::{timeout, Duration};
 
@@ -135,14 +138,21 @@ pub async fn claude_cli_version_info() -> Result<ClaudeCliVersionInfo> {
             setup_url: CLAUDE_CLI_SETUP_URL.into(),
         });
     };
-    let mut cmd = AsyncCommand::new(&path);
-    cmd.arg("--version");
+    let (program, args) = claude_command_program_args(&path, &["--version"]);
+    let mut cmd = AsyncCommand::new(program);
+    cmd.args(args);
     cmd.kill_on_drop(true);
+    for (key, value) in claude_cli_command_env(env).await? {
+        cmd.env(key, value);
+    }
     hide_tokio_window(&mut cmd);
 
-    let output = timeout(Duration::from_secs(5), cmd.output())
-        .await
-        .map_err(|_| Error::Other("读取 Claude CLI 版本超时".into()))??;
+    let output = timeout(
+        Duration::from_secs(CLAUDE_CLI_VERSION_TIMEOUT_SECS),
+        cmd.output(),
+    )
+    .await
+    .map_err(|_| Error::Other("读取 Claude CLI 版本超时".into()))??;
     if !output.status.success() {
         return Err(Error::Other(format!(
             "读取 Claude CLI 版本失败：exit {}，stderr: {}",
@@ -270,12 +280,13 @@ pub async fn update_claude_cli(
     progress_event: Option<String>,
 ) -> Result<ClaudeCliCommandResult> {
     let path = crate::proc::spawn::find_claude()?;
+    let (program, args) = claude_command_program_args(&path, &["update"]);
     run_command_spec(
         app,
         progress_event,
         CommandSpec {
-            program: path.display().to_string(),
-            args: vec!["update".into()],
+            program,
+            args,
             display: CLAUDE_UPDATE_COMMAND.into(),
             env: claude_cli_command_env(env).await?,
         },
@@ -296,6 +307,47 @@ struct CommandSpec {
     args: Vec<String>,
     display: String,
     env: std::collections::HashMap<String, String>,
+}
+
+fn claude_command_program_args(path: &std::path::Path, args: &[&str]) -> (String, Vec<String>) {
+    #[cfg(target_os = "windows")]
+    {
+        if is_windows_command_script(path) {
+            return (
+                "cmd.exe".into(),
+                vec![
+                    "/D".into(),
+                    "/C".into(),
+                    windows_shell_command_invocation(path, args),
+                ],
+            );
+        }
+    }
+
+    (
+        path.display().to_string(),
+        args.iter().map(|arg| (*arg).to_string()).collect(),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_command_script(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shell_command_invocation(path: &std::path::Path, args: &[&str]) -> String {
+    let quoted_path = path.display().to_string().replace('"', "\"\"");
+    let joined_args = args.join(" ");
+    if joined_args.is_empty() {
+        format!("chcp 65001 >nul && call \"{quoted_path}\"")
+    } else {
+        format!("chcp 65001 >nul && call \"{quoted_path}\" {joined_args}")
+    }
 }
 
 fn claude_install_command_display() -> String {
@@ -2913,6 +2965,23 @@ mod tests {
         assert_eq!(
             env.get("npm_config_noproxy").map(String::as_str),
             Some("localhost,127.0.0.1")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn claude_cmd_shim_runs_through_cmd_shell() {
+        let (program, args) = claude_command_program_args(
+            std::path::Path::new(r"C:\Users\tester\AppData\Roaming\npm\claude.cmd"),
+            &["--version"],
+        );
+
+        assert_eq!(program, "cmd.exe");
+        assert_eq!(args[0], "/D");
+        assert_eq!(args[1], "/C");
+        assert_eq!(
+            args[2],
+            r#"chcp 65001 >nul && call "C:\Users\tester\AppData\Roaming\npm\claude.cmd" --version"#
         );
     }
 

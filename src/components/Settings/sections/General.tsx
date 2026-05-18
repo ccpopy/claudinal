@@ -191,9 +191,13 @@ export function General() {
     manual = false,
     notifyUnsupported = true
   ): Promise<ClaudeCliVersionInfo | null> => {
+    if (manual) {
+      setCliCommandProgress(null)
+    }
     setCheckingCli(true)
     try {
-      const info = await readClaudeCliVersion()
+      const env = await claudeCliCommandEnv()
+      const info = await readClaudeCliVersion(env)
       if (!info.installed) {
         if (manual) {
           toast.warning("未检测到 Claude CLI", {
@@ -216,8 +220,10 @@ export function General() {
     }
   }
 
-  const readClaudeCliVersion = async (): Promise<ClaudeCliVersionInfo> => {
-    const info = await claudeCliVersionInfo()
+  const readClaudeCliVersion = async (
+    env: Record<string, string> | null = null
+  ): Promise<ClaudeCliVersionInfo> => {
+    const info = await claudeCliVersionInfo(env)
     setCliInfo(info)
     setCliUpdateAvailability((availability) => {
       if (!availability) return null
@@ -229,8 +235,14 @@ export function General() {
     return info
   }
 
-  const verifyCliAfterCommand = (previousVersion: string | null) =>
-    waitForClaudeCliPostCommandVersion(readClaudeCliVersion, previousVersion)
+  const verifyCliAfterCommand = (
+    previousVersion: string | null,
+    env: Record<string, string> | null
+  ) =>
+    waitForClaudeCliPostCommandVersion(
+      () => readClaudeCliVersion(env),
+      previousVersion
+    )
 
   const appendCliCommandProgress = (event: ClaudeCliCommandProgressEvent) => {
     setCliCommandProgress((progress) => {
@@ -302,7 +314,7 @@ export function General() {
         cliInfo?.install_command ?? "Claude CLI install",
         (progressEvent) => installClaudeCli(env, progressEvent)
       )
-      const info = await verifyCliAfterCommand(null)
+      const info = await verifyCliAfterCommand(null, env)
       if (!info.installed) {
         toast.error("Claude CLI 安装命令已完成，但复查时仍未检测到 CLI", {
           description: cliCommandDescription(result)
@@ -326,16 +338,16 @@ export function General() {
   const updateCli = async () => {
     setUpdatingCli(true)
     try {
-      const beforeInfo = cliInfo?.version ? cliInfo : await readClaudeCliVersion()
-      const previousVersion = beforeInfo.version ?? null
       const env = await claudeCliCommandEnv()
+      const beforeInfo = cliInfo?.version ? cliInfo : await readClaudeCliVersion(env)
+      const previousVersion = beforeInfo.version ?? null
       const result = await runClaudeCliCommandWithProgress(
         beforeInfo.update_command,
         (progressEvent) => updateClaudeCli(env, progressEvent)
       )
       const detectedUpdate =
         claudeCliUpdateAvailabilityFromCommandOutput(result.stdout, result.stderr)
-      const info = await verifyCliAfterCommand(previousVersion)
+      const info = await verifyCliAfterCommand(previousVersion, env)
       setCliUpdateAvailability(
         detectedUpdate &&
           info.installed &&

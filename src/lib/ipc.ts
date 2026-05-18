@@ -158,8 +158,10 @@ export interface ClaudeCliVersionInfo {
   setup_url: string
 }
 
-export async function claudeCliVersionInfo(): Promise<ClaudeCliVersionInfo> {
-  return invoke<ClaudeCliVersionInfo>("claude_cli_version_info")
+export async function claudeCliVersionInfo(
+  env: ClaudeCliCommandEnv | null = null
+): Promise<ClaudeCliVersionInfo> {
+  return invoke<ClaudeCliVersionInfo>("claude_cli_version_info", { env })
 }
 
 export interface ClaudeCliCommandResult {
