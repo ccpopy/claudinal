@@ -59,6 +59,17 @@ function updateStatusClass(state: UpdateCheckState) {
   return "text-muted-foreground"
 }
 
+function cliCommandDescription(result: {
+  command: string
+  stdout: string
+  stderr: string
+}): string {
+  const output = [result.stdout.trim(), result.stderr.trim()]
+    .filter(Boolean)
+    .join("\n")
+  return output ? `${result.command}\n${output.slice(0, 360)}` : result.command
+}
+
 export function General() {
   const [cfg, setCfg] = useState<AppSettings>(() => loadSettings())
   const [dirty, setDirty] = useState(false)
@@ -103,7 +114,10 @@ export function General() {
     }
   }
 
-  const checkClaudeCliVersion = async (manual = false) => {
+  const checkClaudeCliVersion = async (
+    manual = false,
+    notifyUnsupported = true
+  ): Promise<ClaudeCliVersionInfo | null> => {
     setCheckingCli(true)
     try {
       const info = await claudeCliVersionInfo()
@@ -114,15 +128,17 @@ export function General() {
             description: `可点击安装按钮执行：${info.install_command}`
           })
         }
-      } else if (!info.supported) {
+      } else if (!info.supported && notifyUnsupported) {
         toast.warning(`Claude CLI 版本过低：${info.version}`, {
           description: `最低支持 ${info.min_supported_version}，请运行 ${info.update_command} 升级。`
         })
       } else if (manual) {
         toast.success(`Claude CLI 版本可用：${info.version}`)
       }
+      return info
     } catch (error) {
       toast.error(`检查 Claude CLI 版本失败: ${String(error)}`)
+      return null
     } finally {
       setCheckingCli(false)
     }
@@ -132,10 +148,20 @@ export function General() {
     setInstallingCli(true)
     try {
       const result = await installClaudeCli()
-      toast.success("Claude CLI 安装命令已完成", {
-        description: result.command
-      })
-      await checkClaudeCliVersion(false)
+      const info = await checkClaudeCliVersion(false, false)
+      if (!info?.installed) {
+        toast.error("Claude CLI 安装命令已完成，但复查时仍未检测到 CLI", {
+          description: cliCommandDescription(result)
+        })
+      } else if (!info.supported) {
+        toast.error(`Claude CLI 安装后版本仍过低：${info.version}`, {
+          description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(result)}`
+        })
+      } else {
+        toast.success(`Claude CLI 已安装：${info.version}`, {
+          description: cliCommandDescription(result)
+        })
+      }
     } catch (error) {
       toast.error(`安装 Claude CLI 失败: ${String(error)}`)
     } finally {
@@ -146,11 +172,26 @@ export function General() {
   const updateCli = async () => {
     setUpdatingCli(true)
     try {
+      const previousVersion = cliInfo?.version ?? null
       const result = await updateClaudeCli()
-      toast.success("Claude CLI 更新命令已完成", {
-        description: result.command
-      })
-      await checkClaudeCliVersion(false)
+      const info = await checkClaudeCliVersion(false, false)
+      if (!info?.installed) {
+        toast.error("Claude CLI 更新命令已完成，但复查时未检测到 CLI", {
+          description: cliCommandDescription(result)
+        })
+      } else if (!info.supported) {
+        toast.error(`Claude CLI 更新后仍是旧版本：${info.version}`, {
+          description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(result)}`
+        })
+      } else if (previousVersion && info.version === previousVersion) {
+        toast.info(`Claude CLI 版本未变化：${info.version}`, {
+          description: cliCommandDescription(result)
+        })
+      } else {
+        toast.success(`Claude CLI 已更新：${info.version}`, {
+          description: cliCommandDescription(result)
+        })
+      }
     } catch (error) {
       toast.error(`更新 Claude CLI 失败: ${String(error)}`)
     } finally {

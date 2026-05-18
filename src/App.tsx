@@ -88,6 +88,8 @@ import {
   migrateLegacyThirdPartyApiKeys,
   OFFICIAL_PROVIDER_ID,
   providerModelOptions,
+  shouldResumeWithApiProfile,
+  thirdPartyApiRuntimeProfileKey,
   trimApiUrl
 } from "@/lib/thirdPartyApi"
 import { isOfficialApi } from "@/lib/oauthUsage"
@@ -378,12 +380,7 @@ function currentApiProfileKey(): string {
   if (store.activeProviderId === OFFICIAL_PROVIDER_ID) return "official"
   const provider = store.providers.find((p) => p.id === store.activeProviderId)
   if (!provider) return "official"
-  return [
-    "third-party",
-    provider.id,
-    trimApiUrl(provider.requestUrl),
-    provider.inputFormat
-  ].join(":")
+  return thirdPartyApiRuntimeProfileKey({ ...provider, enabled: true })
 }
 
 function sidecarApiProfileKey(sidecar: unknown): string | null {
@@ -1371,23 +1368,29 @@ export default function App() {
       const env = { ...thirdPartyEnv, ...proxyEnv }
       const apiProfileKey = currentApiProfileKey()
       let resumeSessionId = selectedSessionId
+      let launchComposerPrefs = composerPrefs
+      let launchSessionComposer = sessionComposer
       if (resumeSessionId) {
         const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
         const storedProfileKey = sidecarApiProfileKey(sidecar)
-        if (storedProfileKey && storedProfileKey !== apiProfileKey) {
+        if (!shouldResumeWithApiProfile(storedProfileKey, apiProfileKey)) {
           resumeSessionId = null
           dispatch({ kind: "reset" })
           setReviewDiffs([])
           setSelectedSessionId(null)
           setSelectedSessionMeta(null)
           sessionComposerRef.current = null
+          launchSessionComposer = null
           setSessionComposer(null)
+          launchComposerPrefs =
+            apiProfileKey === "official" ? globalDefault : EMPTY_COMPOSER_PREFS
+          setComposerPrefs(launchComposerPrefs)
           applyDefaultPermissionModeState()
-          toast.info("当前会话属于另一个 API 供应商，已自动创建新会话")
+          toast.info("当前会话使用旧 API 配置，已自动创建新会话")
         }
       }
-      const uiModel = composerPrefs.model.trim()
-      const uiEffort = composerPrefs.effort.trim()
+      const uiModel = launchComposerPrefs.model.trim()
+      const uiEffort = launchComposerPrefs.effort.trim()
       const launchEffort =
         thirdPartyReady &&
         thirdPartyApi.inputFormat === "openai-chat-completions" &&
@@ -1427,8 +1430,8 @@ export default function App() {
         unlisten: [],
         permissionMode: launchPermissionMode,
         permissionModeSource: permissionModeSourceRef.current,
-        composerPrefs,
-        sessionComposer,
+        composerPrefs: launchComposerPrefs,
+        sessionComposer: launchSessionComposer,
         collabMcpEnabled: collabCfg.enabled,
         reviewSnapshotId: null,
         reviewDiffs: []
@@ -1644,7 +1647,8 @@ export default function App() {
     reportNetworkError,
     refreshActiveThirdPartyRuntime,
     refreshActiveComposerRuntime,
-    applyDefaultPermissionModeState
+    applyDefaultPermissionModeState,
+    globalDefault
   ])
 
   const refreshGitStatus = useCallback(async () => {
@@ -2044,10 +2048,27 @@ export default function App() {
       setSelectedSessionMeta(s)
       const runningSession = findRunningSession(p, s.id)
       if (runningSession) {
-        runningSession.selectedSessionMeta = s
-        activateRunningSession(runningSession)
-        setLoadingSession(false)
-        return
+        const canUseRunningLaunchConfig = shouldResumeWithApiProfile(
+          runningSession.apiProfileKey,
+          currentApiProfileKey()
+        )
+        if (
+          canUseRunningLaunchConfig ||
+          runningSession.streaming ||
+          runningSession.pendingPermissionRequestIds.size > 0
+        ) {
+          runningSession.selectedSessionMeta = s
+          activateRunningSession(runningSession)
+          setLoadingSession(false)
+          return
+        }
+        try {
+          await closeRunningSession(runningSession.runtimeId, { dropQueued: false })
+        } catch (error) {
+          toast.error(`关闭旧 API 运行会话失败: ${String(error)}`)
+          setLoadingSession(false)
+          return
+        }
       }
       try {
         const events = (await readSessionTranscript(p.cwd, s.id)) as ClaudeEvent[]
@@ -2066,16 +2087,24 @@ export default function App() {
           sidecarPermissionMode ?? loadSettings().defaultPermissionMode,
           sidecarPermissionMode ? "session" : "default"
         )
+        const currentProfileKey = currentApiProfileKey()
+        const storedProfileKey = sidecarApiProfileKey(sidecar)
+        const canUseSessionLaunchPrefs = shouldResumeWithApiProfile(
+          storedProfileKey,
+          currentProfileKey
+        )
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
         dispatch({ kind: "load_transcript", events: merged })
         setReviewDiffs([])
         // 还原会话级 composer 偏好：sidecar 是 GUI 显式选择；没有 sidecar
         // 时从 Claude CLI jsonl 里的 /model、/effort 和 system/init 反推。
-        const transcriptPrefs = pickComposerFromTranscript(events)
+        const transcriptPrefs = canUseSessionLaunchPrefs
+          ? pickComposerFromTranscript(events)
+          : null
         const sessionPrefs = mergeComposerPrefs(
           transcriptPrefs,
-          pickComposerFromSidecar(sidecar)
+          canUseSessionLaunchPrefs ? pickComposerFromSidecar(sidecar) : null
         )
         sessionComposerRef.current = sessionPrefs
         setSessionComposer(sessionPrefs)
@@ -2092,6 +2121,7 @@ export default function App() {
       detachActiveSession,
       findRunningSession,
       activateRunningSession,
+      closeRunningSession,
       globalDefault
     ]
   )

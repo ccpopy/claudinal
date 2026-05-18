@@ -168,6 +168,55 @@ function cleanStringArray(value: unknown): string[] {
   return Array.from(new Set(out))
 }
 
+function runtimeProfileHash(value: string): string {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+export function thirdPartyApiRuntimeProfileKey(
+  config: ThirdPartyApiConfig & { id?: string }
+): string {
+  if (!config.enabled) return "official"
+  const providerId = cleanString(config.id).trim() || "active"
+  const profile = {
+    version: 2,
+    providerId,
+    requestUrl: trimApiUrl(config.requestUrl),
+    inputFormat: config.inputFormat,
+    authField: config.authField,
+    useFullUrl: config.useFullUrl,
+    models: {
+      mainModel: config.models.mainModel.trim(),
+      haikuModel: config.models.haikuModel.trim(),
+      sonnetModel: config.models.sonnetModel.trim(),
+      opusModel: config.models.opusModel.trim(),
+      subagentModel: config.models.subagentModel.trim()
+    },
+    availableModels: config.availableModels
+      .map((model) => model.trim())
+      .filter(Boolean),
+    runtimeSettingsJson: config.runtimeSettingsJson.trim()
+  }
+  return `third-party:${encodeURIComponent(providerId)}:${runtimeProfileHash(
+    JSON.stringify(profile)
+  )}`
+}
+
+export function shouldResumeWithApiProfile(
+  storedProfileKey: string | null,
+  currentProfileKey: string
+): boolean {
+  const stored = storedProfileKey?.trim() || null
+  if (currentProfileKey === "official") {
+    return !stored || stored === "official"
+  }
+  return stored === currentProfileKey
+}
+
 function inferMainAlias(models: Partial<ModelMapping>): ClaudeModelAlias {
   const mainModel = cleanString(models.mainModel).trim()
   if (mainModel && mainModel === cleanString(models.opusModel).trim()) return "opus"

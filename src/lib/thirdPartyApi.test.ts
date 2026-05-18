@@ -10,6 +10,8 @@ import {
   parseRuntimeSettingsJson,
   providerModelInputOptions,
   providerModelOptions,
+  shouldResumeWithApiProfile,
+  thirdPartyApiRuntimeProfileKey,
   trimApiUrl,
   type ThirdPartyApiConfig
 } from "./thirdPartyApi"
@@ -141,6 +143,61 @@ describe("thirdPartyApi.runtimeSettings", () => {
         })
       )
     ).toThrow("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理")
+  })
+})
+
+describe("thirdPartyApi.runtimeProfile", () => {
+  it("changes when launch-affecting model mappings change", () => {
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      models: {
+        ...base.models,
+        opusModel: "claude-opus-4-7[1m]"
+      }
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
+      thirdPartyApiRuntimeProfileKey(base)
+    )
+  })
+
+  it("changes when runtime settings JSON changes", () => {
+    const base = makeConfig({
+      id: "provider-a",
+      runtimeSettingsJson: '{"model":"claude-opus-4-7"}'
+    } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      runtimeSettingsJson: '{"model":"claude-opus-4-7[1m]"}'
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
+      thirdPartyApiRuntimeProfileKey(base)
+    )
+  })
+
+  it("does not include API key changes in the runtime profile key", () => {
+    const base = makeConfig({ id: "provider-a", apiKey: "sk-old" } as Partial<
+      ThirdPartyApiConfig
+    >)
+    const changed = makeConfig({ id: "provider-a", apiKey: "sk-new" } as Partial<
+      ThirdPartyApiConfig
+    >)
+
+    expect(thirdPartyApiRuntimeProfileKey(changed)).toBe(
+      thirdPartyApiRuntimeProfileKey(base)
+    )
+  })
+
+  it("requires exact third-party profile match before resuming", () => {
+    expect(shouldResumeWithApiProfile(null, "official")).toBe(true)
+    expect(shouldResumeWithApiProfile("official", "official")).toBe(true)
+    expect(shouldResumeWithApiProfile("third-party:a:old", "official")).toBe(false)
+    expect(shouldResumeWithApiProfile(null, "third-party:a:new")).toBe(false)
+    expect(
+      shouldResumeWithApiProfile("third-party:a:new", "third-party:a:new")
+    ).toBe(true)
   })
 })
 
