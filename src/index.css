@@ -189,7 +189,17 @@
   *::-webkit-scrollbar-thumb:hover {
     background: var(--ring);
   }
-  *::-webkit-scrollbar-button {
+  *::-webkit-scrollbar-button,
+  *::-webkit-scrollbar-button:single-button,
+  *::-webkit-scrollbar-button:vertical:start:decrement,
+  *::-webkit-scrollbar-button:vertical:end:increment,
+  *::-webkit-scrollbar-button:horizontal:start:decrement,
+  *::-webkit-scrollbar-button:horizontal:end:increment {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    background-image: none;
+    border: 0;
     display: none;
     height: 0;
     width: 0;
@@ -237,13 +247,38 @@
     background: var(--border); border-radius: 4px;
   }
   &::-webkit-scrollbar-thumb:hover { background: var(--ring); }
-  &::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
+  &::-webkit-scrollbar-button,
+  &::-webkit-scrollbar-button:single-button,
+  &::-webkit-scrollbar-button:vertical:start:decrement,
+  &::-webkit-scrollbar-button:vertical:end:increment,
+  &::-webkit-scrollbar-button:horizontal:start:decrement,
+  &::-webkit-scrollbar-button:horizontal:end:increment {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    background-image: none;
+    border: 0;
+    display: none;
+    height: 0;
+    width: 0;
+  }
   &::-webkit-scrollbar-corner { background: transparent; }
 }
 
 /* 全局兜底：textarea / pre 滚动按钮去掉 */
 textarea::-webkit-scrollbar-button,
-pre::-webkit-scrollbar-button {
+textarea::-webkit-scrollbar-button:single-button,
+textarea::-webkit-scrollbar-button:vertical:start:decrement,
+textarea::-webkit-scrollbar-button:vertical:end:increment,
+pre::-webkit-scrollbar-button,
+pre::-webkit-scrollbar-button:single-button,
+pre::-webkit-scrollbar-button:vertical:start:decrement,
+pre::-webkit-scrollbar-button:vertical:end:increment {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  background-image: none;
+  border: 0;
   display: none;
   height: 0;
   width: 0;
