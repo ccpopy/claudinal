@@ -115,6 +115,7 @@ pub fn run() {
             commands::claude_cli_version_info,
             commands::install_claude_cli,
             commands::update_claude_cli,
+            commands::run_claude_cli_package_manager_upgrade,
             commands::spawn_session,
             commands::resolve_permission_request,
             commands::send_user_message,

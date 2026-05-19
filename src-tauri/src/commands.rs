@@ -124,17 +124,102 @@ pub async fn detect_claude_cli() -> Result<String> {
 pub async fn claude_cli_version_info(
     env: Option<std::collections::HashMap<String, String>>,
 ) -> Result<ClaudeCliVersionInfo> {
+    let env = claude_cli_command_env(env).await?;
+    let mut first_existing_path = None;
+    let mut first_valid_probe = None;
+    let mut probe_errors = Vec::new();
+
+    for path in crate::proc::spawn::claude_lookup_candidates() {
+        if !path.is_file() {
+            continue;
+        }
+        if first_existing_path.is_none() {
+            first_existing_path = Some(path.clone());
+        }
+        match probe_claude_cli_version(&path, &env).await {
+            Ok(version) => {
+                let Some(supported) = version_at_least(&version, MIN_SUPPORTED_CLAUDE_CLI_VERSION)
+                else {
+                    probe_errors.push(format!(
+                        "{}: 无法解析 Claude CLI 版本号：{version}",
+                        path.display()
+                    ));
+                    continue;
+                };
+                let probe = ClaudeCliVersionProbe {
+                    path,
+                    version,
+                    supported,
+                };
+                if probe.supported {
+                    return Ok(claude_cli_available_info(probe));
+                }
+                if first_valid_probe.is_none() {
+                    first_valid_probe = Some(probe);
+                }
+            }
+            Err(error) => {
+                probe_errors.push(format!("{}: {error}", path.display()));
+            }
+        }
+    }
+
+    if let Some(probe) = first_valid_probe {
+        return Ok(claude_cli_available_info(probe));
+    }
+
+    if first_existing_path.is_none() {
+        return Ok(claude_cli_unavailable_info(None, None));
+    }
+
+    let version_error = if probe_errors.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "读取 Claude CLI 版本失败，已尝试 {} 个候选入口：{}",
+            probe_errors.len(),
+            probe_errors.join(" | ")
+        ))
+    };
+    Ok(claude_cli_unavailable_info(
+        first_existing_path.as_deref(),
+        version_error,
+    ))
+}
+
+struct ClaudeCliVersionProbe {
+    path: std::path::PathBuf,
+    version: String,
+    supported: bool,
+}
+
+fn claude_cli_available_info(probe: ClaudeCliVersionProbe) -> ClaudeCliVersionInfo {
+    ClaudeCliVersionInfo {
+        installed: true,
+        path: Some(probe.path.display().to_string()),
+        version: Some(probe.version),
+        version_error: None,
+        min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
+        supported: probe.supported,
+        update_command: CLAUDE_UPDATE_COMMAND.into(),
+        install_command: claude_install_command_display(),
+        docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
+        setup_url: CLAUDE_CLI_SETUP_URL.into(),
+    }
+}
+
+async fn probe_claude_cli_version(
+    path: &std::path::Path,
+    env: &std::collections::HashMap<String, String>,
+) -> std::result::Result<String, String> {
     use tokio::process::Command as AsyncCommand;
     use tokio::time::{timeout, Duration};
 
-    let Some(path) = find_claude_optional()? else {
-        return Ok(claude_cli_unavailable_info(None, None));
-    };
-    let (program, args) = claude_command_program_args(&path, &["--version"]);
-    let mut cmd = AsyncCommand::new(program);
-    cmd.args(args);
+    let invocation = claude_command_invocation(path, &["--version"]);
+    let mut cmd = AsyncCommand::new(&invocation.program);
+    apply_command_invocation(&mut cmd, &invocation);
     cmd.kill_on_drop(true);
-    for (key, value) in claude_cli_command_env(env).await? {
+    for (key, value) in env {
         cmd.env(key, value);
     }
     hide_tokio_window(&mut cmd);
@@ -147,64 +232,31 @@ pub async fn claude_cli_version_info(
     {
         Ok(Ok(output)) => output,
         Ok(Err(err)) => {
-            return Ok(claude_cli_unavailable_info(
-                Some(&path),
-                Some(format!("运行 Claude CLI 版本命令失败：{err}")),
-            ));
+            return Err(format!("运行 Claude CLI 版本命令失败：{err}"));
         }
         Err(_) => {
-            return Ok(claude_cli_unavailable_info(
-                Some(&path),
-                Some("读取 Claude CLI 版本超时".into()),
-            ));
+            return Err("读取 Claude CLI 版本超时".into());
         }
     };
     if !output.status.success() {
-        return Ok(claude_cli_unavailable_info(
-            Some(&path),
-            Some(format!(
-                "读取 Claude CLI 版本失败：exit {}，stderr: {}，stdout: {}",
-                output
-                    .status
-                    .code()
-                    .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
-                String::from_utf8_lossy(&output.stderr).trim(),
-                String::from_utf8_lossy(&output.stdout).trim()
-            )),
+        return Err(format!(
+            "读取 Claude CLI 版本失败：exit {}，stderr: {}，stdout: {}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
         ));
     }
 
-    let Some(version) = String::from_utf8_lossy(&output.stdout)
+    String::from_utf8_lossy(&output.stdout)
         .lines()
         .next()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(str::to_string)
-    else {
-        return Ok(claude_cli_unavailable_info(
-            Some(&path),
-            Some("Claude CLI 没有输出版本号".into()),
-        ));
-    };
-    let Some(supported) = version_at_least(&version, MIN_SUPPORTED_CLAUDE_CLI_VERSION) else {
-        return Ok(claude_cli_unavailable_info(
-            Some(&path),
-            Some(format!("无法解析 Claude CLI 版本号：{version}")),
-        ));
-    };
-
-    Ok(ClaudeCliVersionInfo {
-        installed: true,
-        path: Some(path.display().to_string()),
-        version: Some(version),
-        version_error: None,
-        min_supported_version: MIN_SUPPORTED_CLAUDE_CLI_VERSION.into(),
-        supported,
-        update_command: CLAUDE_UPDATE_COMMAND.into(),
-        install_command: claude_install_command_display(),
-        docs_url: CLAUDE_CLI_REFERENCE_URL.into(),
-        setup_url: CLAUDE_CLI_SETUP_URL.into(),
-    })
+        .ok_or_else(|| "Claude CLI 没有输出版本号".to_string())
 }
 
 fn claude_cli_unavailable_info(
@@ -231,30 +283,22 @@ pub async fn install_claude_cli(
     env: Option<std::collections::HashMap<String, String>>,
     progress_event: Option<String>,
 ) -> Result<ClaudeCliCommandResult> {
-    let env = claude_cli_command_env(env).await?;
-    #[cfg(target_os = "windows")]
-    {
-        return run_windows_claude_install_command(app, progress_event, env).await;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut spec = claude_install_command_spec();
-        spec.env = env;
-        run_command_spec(app, progress_event, spec).await
-    }
+    let mut env = claude_cli_command_env(env).await?;
+    add_npm_proxy_env(&mut env);
+    run_claude_npm_install_command(app, progress_event, env).await
 }
 
-#[cfg(target_os = "windows")]
-async fn run_windows_claude_install_command(
+async fn run_claude_npm_install_command(
     app: AppHandle,
     progress_event: Option<String>,
-    mut env: std::collections::HashMap<String, String>,
+    env: std::collections::HashMap<String, String>,
 ) -> Result<ClaudeCliCommandResult> {
-    add_npm_proxy_env(&mut env);
-
-    let mut setup_stdout = format!(
-        "Using npm standard installer: {CLAUDE_NPM_INSTALL_COMMAND}\nForcing Windows command output to UTF-8 before npm runs.\n"
-    );
+    let mut setup_stdout = String::new();
+    setup_stdout.push_str(&format!(
+        "Using npm standard installer: {CLAUDE_NPM_INSTALL_COMMAND}\n"
+    ));
+    #[cfg(target_os = "windows")]
+    setup_stdout.push_str("Forcing Windows command output to UTF-8 before npm runs.\n");
     if let Some(proxy_url) = session_network_proxy_url(&env) {
         setup_stdout.push_str(&format!(
             "Using configured proxy for npm downloads: {}\n",
@@ -268,16 +312,12 @@ async fn run_windows_claude_install_command(
         .push_str("Forcing npm optional dependencies so the native Claude binary is installed.\n");
     emit_command_progress(&app, progress_event.as_deref(), "stdout", &setup_stdout)?;
 
+    let invocation = claude_npm_install_invocation();
     let result = run_command_spec(
         app,
         progress_event,
         CommandSpec {
-            program: "cmd.exe".into(),
-            args: vec![
-                "/D".into(),
-                "/C".into(),
-                CLAUDE_WINDOWS_NPM_INSTALL_SHELL_COMMAND.into(),
-            ],
+            invocation,
             display: claude_install_command_display(),
             env,
         },
@@ -288,6 +328,22 @@ async fn run_windows_claude_install_command(
         result.stdout = format!("{}{}", setup_stdout, result.stdout);
         result
     })
+}
+
+#[cfg(target_os = "windows")]
+fn claude_npm_install_invocation() -> CommandInvocation {
+    windows_cmd_invocation(CLAUDE_WINDOWS_NPM_INSTALL_SHELL_COMMAND.into())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn claude_npm_install_invocation() -> CommandInvocation {
+    // macOS/Linux：用 login shell 跑，确保 nvm/asdf 注入的 PATH 能找到 npm；
+    // 用户若自定义了 npm prefix（如 ~/.npm-global），这里也能尊重其 shell rc。
+    CommandInvocation {
+        program: "sh".into(),
+        args: vec!["-lc".into(), CLAUDE_NPM_INSTALL_COMMAND.into()],
+        raw_arg: None,
+    }
 }
 
 fn masked_proxy_url(url: &str) -> String {
@@ -322,13 +378,12 @@ pub async fn update_claude_cli(
     progress_event: Option<String>,
 ) -> Result<ClaudeCliCommandResult> {
     let path = crate::proc::spawn::find_claude()?;
-    let (program, args) = claude_command_program_args(&path, &["update"]);
+    let invocation = claude_command_invocation(&path, &["update"]);
     run_command_spec(
         app,
         progress_event,
         CommandSpec {
-            program,
-            args,
+            invocation,
             display: CLAUDE_UPDATE_COMMAND.into(),
             env: claude_cli_command_env(env).await?,
         },
@@ -336,40 +391,131 @@ pub async fn update_claude_cli(
     .await
 }
 
-fn find_claude_optional() -> Result<Option<std::path::PathBuf>> {
-    match crate::proc::spawn::find_claude() {
-        Ok(path) => Ok(Some(path)),
-        Err(Error::Which(which::Error::CannotFindBinaryPath)) | Err(Error::CliNotFound) => Ok(None),
-        Err(err) => Err(err),
+/// 当 `claude update` 解析出当前 CLI 由 winget/scoop/brew/npm 等包管理器接管时，
+/// 前端拿着这里的白名单调用真正的升级命令。manager 必须在 ALLOWED 集合里，
+/// 每个 arg 都不能含 shell 元字符，避免把 `claude update` 输出里任意字符串当 shell
+/// 命令执行（前端的解析结果不可信）。
+#[tauri::command]
+pub async fn run_claude_cli_package_manager_upgrade(
+    app: AppHandle,
+    manager: String,
+    args: Vec<String>,
+    env: Option<std::collections::HashMap<String, String>>,
+    progress_event: Option<String>,
+) -> Result<ClaudeCliCommandResult> {
+    let manager = validate_package_manager(&manager)?;
+    if args.is_empty() {
+        return Err(Error::Other(format!("{manager} 升级命令缺少参数")));
+    }
+    for arg in &args {
+        validate_package_manager_arg(arg)?;
+    }
+
+    let mut env = claude_cli_command_env(env).await?;
+    if matches!(manager, "npm" | "pnpm" | "yarn") {
+        add_npm_proxy_env(&mut env);
+    }
+
+    let display = format!("{manager} {}", args.join(" "));
+    let invocation = package_manager_invocation(manager, &args);
+    run_command_spec(
+        app,
+        progress_event,
+        CommandSpec {
+            invocation,
+            display,
+            env,
+        },
+    )
+    .await
+}
+
+const ALLOWED_PACKAGE_MANAGERS: &[&str] = &["winget", "scoop", "brew", "npm", "pnpm", "yarn"];
+
+fn validate_package_manager(manager: &str) -> Result<&'static str> {
+    let lowered = manager.trim().to_lowercase();
+    ALLOWED_PACKAGE_MANAGERS
+        .iter()
+        .copied()
+        .find(|allowed| *allowed == lowered)
+        .ok_or_else(|| Error::Other(format!("不支持的包管理器：{manager}")))
+}
+
+fn validate_package_manager_arg(arg: &str) -> Result<()> {
+    if arg.is_empty() {
+        return Err(Error::Other("包管理器升级参数不能为空".into()));
+    }
+    // 显式禁止 shell 元字符、空白、路径前导（避免 `; rm -rf` 之类）
+    let ok = arg.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | '@' | ':' | '+' | '=')
+    });
+    if !ok {
+        return Err(Error::Other(format!("包管理器升级参数含非法字符：{arg}")));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn package_manager_invocation(manager: &'static str, args: &[String]) -> CommandInvocation {
+    // Windows 上 npm/pnpm/yarn 是 .cmd 脚本，winget/scoop 是 .exe，统一走 cmd 调度更稳。
+    windows_cmd_invocation(format!("chcp 65001 >nul && {manager} {}", args.join(" ")))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn package_manager_invocation(manager: &'static str, args: &[String]) -> CommandInvocation {
+    // macOS/Linux 用 login shell：尊重用户在 shell rc 里配置的 PATH / nvm / brew。
+    let cmd_line = format!("{manager} {}", args.join(" "));
+    CommandInvocation {
+        program: "sh".into(),
+        args: vec!["-lc".into(), cmd_line],
+        raw_arg: None,
     }
 }
 
-struct CommandSpec {
+struct CommandInvocation {
     program: String,
     args: Vec<String>,
+    raw_arg: Option<String>,
+}
+
+struct CommandSpec {
+    invocation: CommandInvocation,
     display: String,
     env: std::collections::HashMap<String, String>,
 }
 
-fn claude_command_program_args(path: &std::path::Path, args: &[&str]) -> (String, Vec<String>) {
+fn claude_command_invocation(path: &std::path::Path, args: &[&str]) -> CommandInvocation {
     #[cfg(target_os = "windows")]
     {
         if is_windows_command_script(path) {
-            return (
-                "cmd.exe".into(),
-                vec![
-                    "/D".into(),
-                    "/C".into(),
-                    windows_shell_command_invocation(path, args),
-                ],
-            );
+            return windows_cmd_invocation(windows_shell_command_invocation(path, args));
         }
     }
 
-    (
-        path.display().to_string(),
-        args.iter().map(|arg| (*arg).to_string()).collect(),
-    )
+    CommandInvocation {
+        program: path.display().to_string(),
+        args: args.iter().map(|arg| (*arg).to_string()).collect(),
+        raw_arg: None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_cmd_invocation(command_line: String) -> CommandInvocation {
+    CommandInvocation {
+        program: "cmd.exe".into(),
+        args: vec!["/D".into(), "/C".into()],
+        raw_arg: Some(command_line),
+    }
+}
+
+fn apply_command_invocation(cmd: &mut tokio::process::Command, invocation: &CommandInvocation) {
+    cmd.args(&invocation.args);
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(raw_arg) = &invocation.raw_arg {
+            cmd.raw_arg(raw_arg);
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -393,24 +539,7 @@ fn windows_shell_command_invocation(path: &std::path::Path, args: &[&str]) -> St
 }
 
 fn claude_install_command_display() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        CLAUDE_NPM_INSTALL_COMMAND.into()
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        "curl -fsSL https://claude.ai/install.sh | bash".into()
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn claude_install_command_spec() -> CommandSpec {
-    CommandSpec {
-        program: "sh".into(),
-        args: vec!["-lc".into(), claude_install_command_display()],
-        display: claude_install_command_display(),
-        env: std::collections::HashMap::new(),
-    }
+    CLAUDE_NPM_INSTALL_COMMAND.into()
 }
 
 async fn claude_cli_command_env(
@@ -492,9 +621,9 @@ async fn run_command_spec(
 ) -> Result<ClaudeCliCommandResult> {
     use tokio::process::Command as AsyncCommand;
 
-    let mut cmd = AsyncCommand::new(&spec.program);
-    cmd.args(&spec.args)
-        .stdin(std::process::Stdio::null())
+    let mut cmd = AsyncCommand::new(&spec.invocation.program);
+    apply_command_invocation(&mut cmd, &spec.invocation);
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -2977,6 +3106,52 @@ mod tests {
     }
 
     #[test]
+    fn package_manager_whitelist_accepts_known_managers() {
+        for name in ["winget", "WINGET", "Scoop", "brew", "npm", "pnpm", "yarn"] {
+            validate_package_manager(name).expect("known manager");
+        }
+    }
+
+    #[test]
+    fn package_manager_whitelist_rejects_unknown_managers() {
+        let err = validate_package_manager("apt").expect_err("rejected");
+        assert!(err.to_string().contains("不支持的包管理器：apt"));
+    }
+
+    #[test]
+    fn package_manager_arg_validator_allows_safe_tokens() {
+        for arg in [
+            "upgrade",
+            "Anthropic.ClaudeCode",
+            "@anthropic-ai/claude-code@latest",
+            "--include=optional",
+            "claude-code",
+            "anthropic/tap/claude-code",
+        ] {
+            validate_package_manager_arg(arg).expect("safe arg");
+        }
+    }
+
+    #[test]
+    fn package_manager_arg_validator_rejects_shell_metacharacters() {
+        for arg in [
+            "; rm -rf /",
+            "claude && bad",
+            "$(whoami)",
+            "claude `id`",
+            "claude code|tee",
+            "claude code\nls",
+            "claude\\code",
+            "",
+        ] {
+            assert!(
+                validate_package_manager_arg(arg).is_err(),
+                "expected rejection: {arg}"
+            );
+        }
+    }
+
+    #[test]
     fn masked_proxy_url_hides_credentials() {
         assert_eq!(
             masked_proxy_url("http://user:pass@proxy.local:8080"),
@@ -3040,17 +3215,18 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn claude_cmd_shim_runs_through_cmd_shell() {
-        let (program, args) = claude_command_program_args(
+        let invocation = claude_command_invocation(
             std::path::Path::new(r"C:\Users\tester\AppData\Roaming\npm\claude.cmd"),
             &["--version"],
         );
 
-        assert_eq!(program, "cmd.exe");
-        assert_eq!(args[0], "/D");
-        assert_eq!(args[1], "/C");
+        assert_eq!(invocation.program, "cmd.exe");
+        assert_eq!(invocation.args, vec!["/D".to_string(), "/C".to_string()]);
         assert_eq!(
-            args[2],
-            r#"chcp 65001 >nul && call "C:\Users\tester\AppData\Roaming\npm\claude.cmd" --version"#
+            invocation.raw_arg.as_deref(),
+            Some(
+                r#"chcp 65001 >nul && call "C:\Users\tester\AppData\Roaming\npm\claude.cmd" --version"#
+            )
         );
     }
 

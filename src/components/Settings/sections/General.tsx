@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react"
-import { Cog, Download, ExternalLink, RefreshCw, Save, Terminal } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronUp,
+  Cog,
+  Download,
+  ExternalLink,
+  RefreshCw,
+  Save,
+  Terminal
+} from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,7 +19,9 @@ import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import {
   claudeCliUpdateAvailabilityFromCommandOutput,
+  parseSupportedPackageManagerUpgrade,
   waitForClaudeCliPostCommandVersion,
+  type ClaudeCliPackageManagerUpgradePlan,
   type ClaudeCliUpdateAvailability
 } from "@/lib/claudeCliUpdate"
 import {
@@ -18,6 +29,7 @@ import {
   installClaudeCli,
   listenClaudeCliCommandProgress,
   openExternal,
+  runClaudeCliPackageManagerUpgrade,
   updateClaudeCli,
   type ClaudeCliCommandProgressEvent,
   type ClaudeCliCommandResult,
@@ -153,8 +165,14 @@ export function General() {
     useState<ClaudeCliUpdateAvailability | null>(null)
   const [cliCommandProgress, setCliCommandProgress] =
     useState<CliCommandProgressState | null>(null)
+  const [cliCommandLogExpanded, setCliCommandLogExpanded] = useState(false)
   const cliCommandProgressRef = useRef<HTMLPreElement | null>(null)
   const updateStatus = updateStatusLabel(updateState, availableVersion)
+  const cliCommandLogVisible =
+    cliCommandLogExpanded ||
+    cliCommandProgress?.status === "running" ||
+    cliCommandProgress?.status === "verifying" ||
+    cliCommandProgress?.status === "failed"
 
   const update = (patch: Partial<AppSettings>) => {
     setCfg((c) => ({ ...c, ...patch }))
@@ -268,15 +286,32 @@ export function General() {
 
   const runClaudeCliCommandWithProgress = async (
     command: string,
-    run: (progressEvent: string) => Promise<ClaudeCliCommandResult>
+    run: (progressEvent: string) => Promise<ClaudeCliCommandResult>,
+    options: { append?: boolean; phaseLabel?: string } = {}
   ): Promise<ClaudeCliCommandResult> => {
     const progressEvent = createClaudeCliProgressEventName()
-    setCliCommandProgress({
-      command,
-      status: "running",
-      chunks: [],
-      error: null,
-      exitCode: null
+    setCliCommandProgress((prev) => {
+      if (options.append && prev) {
+        const phaseLabel = options.phaseLabel ?? command
+        return {
+          ...prev,
+          command,
+          status: "running",
+          chunks: [
+            ...prev.chunks,
+            { stream: "stdout", chunk: `\n=== ${phaseLabel} ===\n` }
+          ],
+          error: null,
+          exitCode: null
+        }
+      }
+      return {
+        command,
+        status: "running",
+        chunks: [],
+        error: null,
+        exitCode: null
+      }
     })
 
     let unlisten: (() => void) | null = null
@@ -330,6 +365,7 @@ export function General() {
 
   const installCli = async () => {
     setInstallingCli(true)
+    setCliCommandLogExpanded(false)
     try {
       const env = await claudeCliCommandEnv()
       const result = await runClaudeCliCommandWithProgress(
@@ -365,60 +401,113 @@ export function General() {
     }
   }
 
+  const runPackageManagerUpgradePhase = async (
+    plan: ClaudeCliPackageManagerUpgradePlan,
+    env: Record<string, string> | null
+  ): Promise<{
+    result: ClaudeCliCommandResult | null
+    error: unknown | null
+  }> => {
+    try {
+      const result = await runClaudeCliCommandWithProgress(
+        plan.displayCommand,
+        (progressEvent) =>
+          runClaudeCliPackageManagerUpgrade({
+            manager: plan.manager,
+            args: plan.args,
+            env,
+            progressEvent
+          }),
+        { append: true, phaseLabel: `包管理器升级：${plan.displayCommand}` }
+      )
+      return { result, error: null }
+    } catch (error) {
+      return { result: null, error }
+    }
+  }
+
   const updateCli = async () => {
     setUpdatingCli(true)
+    setCliCommandLogExpanded(false)
     try {
       const env = await claudeCliCommandEnv()
       const beforeInfo = cliInfo?.version ? cliInfo : await readClaudeCliVersion(env)
       const previousVersion = beforeInfo.version ?? null
-      const result = await runClaudeCliCommandWithProgress(
+      const claudeUpdateResult = await runClaudeCliCommandWithProgress(
         beforeInfo.update_command,
         (progressEvent) => updateClaudeCli(env, progressEvent)
       )
-      const detectedUpdate =
-        claudeCliUpdateAvailabilityFromCommandOutput(result.stdout, result.stderr)
-      const info = await verifyCliAfterCommand(previousVersion, env)
-      setCliUpdateAvailability(
-        detectedUpdate &&
-          info.installed &&
-          isCliUpdateAvailabilityPending(detectedUpdate, info.version)
-          ? detectedUpdate
-          : null
+      const detectedUpdate = claudeCliUpdateAvailabilityFromCommandOutput(
+        claudeUpdateResult.stdout,
+        claudeUpdateResult.stderr
       )
+
+      // 当 `claude update` 自身不能完成升级（如被 winget/scoop/brew/npm 接管），
+      // 直接代调对应包管理器，让用户少一步手动复制粘贴。
+      const upgradePlan = detectedUpdate?.updateCommand
+        ? parseSupportedPackageManagerUpgrade(detectedUpdate.updateCommand)
+        : null
+      let packageManagerOutcome: {
+        result: ClaudeCliCommandResult | null
+        error: unknown | null
+      } = { result: null, error: null }
+      if (upgradePlan) {
+        packageManagerOutcome = await runPackageManagerUpgradePhase(upgradePlan, env)
+      }
+
+      const finalCommandResult =
+        packageManagerOutcome.result ?? claudeUpdateResult
+      const info = await verifyCliAfterCommand(previousVersion, env)
+      const stillHasUpdate =
+        detectedUpdate &&
+        info.installed &&
+        isCliUpdateAvailabilityPending(detectedUpdate, info.version)
+      setCliUpdateAvailability(stillHasUpdate ? detectedUpdate : null)
+
+      if (packageManagerOutcome.error) {
+        const errText = String(packageManagerOutcome.error)
+        finishCliCommandProgress("failed", `包管理器升级失败：${errText}`)
+        setCliCommandLogExpanded(true)
+        toast.error(`Claude CLI 包管理器升级失败：${errText}`, {
+          description: cliCommandDescription(claudeUpdateResult)
+        })
+        return
+      }
+
       if (!info.installed) {
         finishCliCommandProgress("failed", "更新命令已完成，但复查时未检测到 CLI")
+        setCliCommandLogExpanded(true)
         toast.error("Claude CLI 更新命令已完成，但复查时未检测到 CLI", {
-          description: cliCommandDescription(result)
+          description: cliCommandDescription(finalCommandResult)
         })
       } else if (!info.supported) {
         finishCliCommandProgress("failed", `更新后仍是旧版本：${info.version}`)
+        setCliCommandLogExpanded(true)
         toast.error(`Claude CLI 更新后仍是旧版本：${info.version}`, {
-          description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(result)}`
+          description: `最低支持 ${info.min_supported_version}\n${cliCommandDescription(finalCommandResult)}`
         })
-      } else if (
-        detectedUpdate &&
-        isCliUpdateAvailabilityPending(detectedUpdate, info.version)
-      ) {
+      } else if (stillHasUpdate) {
         finishCliCommandProgress("completed")
         const detail = cliUpdateAvailabilityDetail(detectedUpdate)
         toast.warning(`检测到 Claude CLI 可更新到：${detectedUpdate.availableVersion}`, {
-          description: [detail, cliCommandDescription(result)]
+          description: [detail, cliCommandDescription(finalCommandResult)]
             .filter(Boolean)
             .join("\n")
         })
       } else if (previousVersion && info.version === previousVersion) {
         finishCliCommandProgress("completed")
         toast.warning(`Claude CLI 更新后复查版本仍为：${info.version}`, {
-          description: `已等待 Claude CLI 写入新版本后复查，版本仍未变化。\n${cliCommandDescription(result)}`
+          description: `已等待 Claude CLI 写入新版本后复查，版本仍未变化。\n${cliCommandDescription(finalCommandResult)}`
         })
       } else {
         finishCliCommandProgress("completed")
         toast.success(`Claude CLI 已更新：${info.version}`, {
-          description: cliCommandDescription(result)
+          description: cliCommandDescription(finalCommandResult)
         })
       }
     } catch (error) {
       finishCliCommandProgress("failed", String(error))
+      setCliCommandLogExpanded(true)
       toast.error(`更新 Claude CLI 失败: ${String(error)}`)
     } finally {
       setUpdatingCli(false)
@@ -633,45 +722,70 @@ export function General() {
                         {cliCommandProgress.command}
                       </span>
                     </div>
-                    <span
-                      className={cliCommandProgressStatusClass(
-                        cliCommandProgress.status
-                      )}
-                    >
-                      {cliCommandProgressStatusLabel(cliCommandProgress.status)}
-                    </span>
-                  </div>
-                  <pre
-                    ref={cliCommandProgressRef}
-                    className="mt-2 max-h-44 overflow-y-auto rounded-sm bg-muted/35 px-2 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words"
-                  >
-                    {cliCommandProgress.chunks.length === 0 ? (
-                      <span className="text-muted-foreground">
-                        {cliCommandProgress.status === "running"
-                          ? "等待命令输出..."
-                          : "命令未输出 stdout/stderr。"}
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span
+                        className={cliCommandProgressStatusClass(
+                          cliCommandProgress.status
+                        )}
+                      >
+                        {cliCommandProgressStatusLabel(cliCommandProgress.status)}
                       </span>
-                    ) : (
-                      cliCommandProgress.chunks.map((chunk, index) => (
-                        <span
-                          key={`${chunk.stream}-${index}`}
-                          className={
-                            chunk.stream === "stderr"
-                              ? "text-warn"
-                              : "text-foreground"
-                          }
-                        >
-                          {chunk.chunk}
-                        </span>
-                      ))
-                    )}
-                  </pre>
-                  {cliCommandProgress.status === "failed" &&
-                    cliCommandProgress.error && (
-                      <div className="mt-2 break-words text-destructive">
-                        {cliCommandProgress.error}
-                      </div>
-                    )}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-1.5 text-[11px]"
+                        onClick={() => setCliCommandLogExpanded((v) => !v)}
+                      >
+                        {cliCommandLogVisible ? (
+                          <>
+                            <ChevronUp className="size-3" />
+                            收起输出
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="size-3" />
+                            查看输出
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                  {cliCommandLogVisible && (
+                    <>
+                      <pre
+                        ref={cliCommandProgressRef}
+                        className="mt-2 max-h-44 overflow-y-auto rounded-sm bg-muted/35 px-2 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words"
+                      >
+                        {cliCommandProgress.chunks.length === 0 ? (
+                          <span className="text-muted-foreground">
+                            {cliCommandProgress.status === "running"
+                              ? "等待命令输出..."
+                              : "命令未输出 stdout/stderr。"}
+                          </span>
+                        ) : (
+                          cliCommandProgress.chunks.map((chunk, index) => (
+                            <span
+                              key={`${chunk.stream}-${index}`}
+                              className={
+                                chunk.stream === "stderr"
+                                  ? "text-warn"
+                                  : "text-foreground"
+                              }
+                            >
+                              {chunk.chunk}
+                            </span>
+                          ))
+                        )}
+                      </pre>
+                      {cliCommandProgress.status === "failed" &&
+                        cliCommandProgress.error && (
+                          <div className="mt-2 break-words text-destructive">
+                            {cliCommandProgress.error}
+                          </div>
+                        )}
+                    </>
+                  )}
                 </div>
               )}
             </div>

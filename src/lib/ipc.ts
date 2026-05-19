@@ -199,6 +199,24 @@ export async function updateClaudeCli(
   })
 }
 
+export interface ClaudeCliPackageManagerUpgradeArgs {
+  manager: string
+  args: string[]
+  env?: ClaudeCliCommandEnv | null
+  progressEvent?: string | null
+}
+
+export async function runClaudeCliPackageManagerUpgrade(
+  args: ClaudeCliPackageManagerUpgradeArgs
+): Promise<ClaudeCliCommandResult> {
+  return invoke<ClaudeCliCommandResult>("run_claude_cli_package_manager_upgrade", {
+    manager: args.manager,
+    args: args.args,
+    env: args.env ?? null,
+    progressEvent: args.progressEvent ?? null
+  })
+}
+
 export async function listenClaudeCliCommandProgress(
   progressEvent: string,
   handler: (event: ClaudeCliCommandProgressEvent) => void
