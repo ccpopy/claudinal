@@ -13,9 +13,12 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import {
   buildAskUserQuestionResponse,
+  collectAskUserQuestionAnswers,
+  initialAskUserQuestionDraft,
   parseAskUserQuestionInput,
-  type AskUserQuestionAnswers,
-  type AskUserQuestionInput
+  updateAskUserQuestionCustomAnswer,
+  updateAskUserQuestionSelection,
+  type AskUserQuestionDraftAnswers
 } from "@/lib/askUserQuestion"
 import { resolvePermissionRequest, type PermissionRequestPayload } from "@/lib/ipc"
 import { cn } from "@/lib/utils"
@@ -24,13 +27,6 @@ interface Props {
   request: PermissionRequestPayload | null
   onSettled: (requestId: string) => void
 }
-
-interface DraftAnswer {
-  selected: string[]
-  custom: string
-}
-
-type DraftAnswers = Record<number, DraftAnswer>
 
 export function UserInputDialog({ request, onSettled }: Props) {
   const [busy, setBusy] = useState(false)
@@ -48,14 +44,16 @@ export function UserInputDialog({ request, onSettled }: Props) {
       }
     }
   }, [request])
-  const [draft, setDraft] = useState<DraftAnswers>({})
+  const [draft, setDraft] = useState<AskUserQuestionDraftAnswers>({})
 
   useEffect(() => {
     setBusy(false)
-    setDraft(parsed.input ? initialDraft(parsed.input) : {})
+    setDraft(parsed.input ? initialAskUserQuestionDraft(parsed.input) : {})
   }, [request?.request_id, parsed.input])
 
-  const answers = parsed.input ? collectAnswers(parsed.input, draft) : null
+  const answers = parsed.input
+    ? collectAskUserQuestionAnswers(parsed.input, draft)
+    : null
   const canSubmit = !!request && !!parsed.input && !!answers && !busy
 
   const settle = async (response: Record<string, unknown>) => {
@@ -159,7 +157,7 @@ export function UserInputDialog({ request, onSettled }: Props) {
                         disabled={busy}
                         onClick={() =>
                           setDraft((cur) =>
-                            updateSelection(
+                            updateAskUserQuestionSelection(
                               cur,
                               questionIndex,
                               option.label,
@@ -209,7 +207,12 @@ export function UserInputDialog({ request, onSettled }: Props) {
                   className="min-h-20 resize-none text-sm"
                   onChange={(event) =>
                     setDraft((cur) =>
-                      updateCustomAnswer(cur, questionIndex, event.target.value)
+                      updateAskUserQuestionCustomAnswer(
+                        cur,
+                        questionIndex,
+                        event.target.value,
+                        question.multiSelect
+                      )
                     )
                   }
                 />
@@ -246,65 +249,4 @@ export function UserInputDialog({ request, onSettled }: Props) {
       </DialogContent>
     </Dialog>
   )
-}
-
-function initialDraft(input: AskUserQuestionInput): DraftAnswers {
-  return Object.fromEntries(
-    input.questions.map((_, index) => [index, { selected: [], custom: "" }])
-  )
-}
-
-function updateSelection(
-  draft: DraftAnswers,
-  questionIndex: number,
-  label: string,
-  multiSelect: boolean
-): DraftAnswers {
-  const current = draft[questionIndex] ?? { selected: [], custom: "" }
-  const selected = multiSelect
-    ? current.selected.includes(label)
-      ? current.selected.filter((item) => item !== label)
-      : [...current.selected, label]
-    : [label]
-  return {
-    ...draft,
-    [questionIndex]: { ...current, selected }
-  }
-}
-
-function updateCustomAnswer(
-  draft: DraftAnswers,
-  questionIndex: number,
-  custom: string
-): DraftAnswers {
-  const current = draft[questionIndex] ?? { selected: [], custom: "" }
-  return {
-    ...draft,
-    [questionIndex]: { ...current, custom }
-  }
-}
-
-function collectAnswers(
-  input: AskUserQuestionInput,
-  draft: DraftAnswers
-): AskUserQuestionAnswers | null {
-  const answers: AskUserQuestionAnswers = {}
-  for (let index = 0; index < input.questions.length; index += 1) {
-    const question = input.questions[index]
-    const current = draft[index] ?? { selected: [], custom: "" }
-    const custom = current.custom.trim()
-    if (question.multiSelect) {
-      const selected = custom ? [...current.selected, custom] : current.selected
-      if (selected.length === 0) return null
-      answers[question.question] = selected
-      continue
-    }
-    if (custom) {
-      answers[question.question] = custom
-      continue
-    }
-    if (current.selected.length !== 1) return null
-    answers[question.question] = current.selected[0]
-  }
-  return answers
 }

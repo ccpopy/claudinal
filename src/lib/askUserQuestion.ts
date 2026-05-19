@@ -23,6 +23,16 @@ export interface AskUserQuestionInput {
 export type AskUserQuestionAnswer = string | string[]
 export type AskUserQuestionAnswers = Record<string, AskUserQuestionAnswer>
 
+export interface AskUserQuestionDraftAnswer {
+  selected: string[]
+  custom: string
+}
+
+export type AskUserQuestionDraftAnswers = Record<
+  number,
+  AskUserQuestionDraftAnswer
+>
+
 export function isAskUserQuestionRequest(
   request: PermissionRequestPayload | null
 ): boolean {
@@ -60,6 +70,84 @@ export function buildAskUserQuestionResponse(
       answers
     }
   }
+}
+
+export function initialAskUserQuestionDraft(
+  input: AskUserQuestionInput
+): AskUserQuestionDraftAnswers {
+  return Object.fromEntries(
+    input.questions.map((_, index) => [index, { selected: [], custom: "" }])
+  )
+}
+
+export function updateAskUserQuestionSelection(
+  draft: AskUserQuestionDraftAnswers,
+  questionIndex: number,
+  label: string,
+  multiSelect: boolean
+): AskUserQuestionDraftAnswers {
+  const current = draft[questionIndex] ?? emptyDraftAnswer()
+  if (multiSelect) {
+    const selected = current.selected.includes(label)
+      ? current.selected.filter((item) => item !== label)
+      : [...current.selected, label]
+    return {
+      ...draft,
+      [questionIndex]: { ...current, selected }
+    }
+  }
+
+  return {
+    ...draft,
+    [questionIndex]: {
+      selected: current.selected.includes(label) ? [] : [label],
+      custom: current.custom
+    }
+  }
+}
+
+export function updateAskUserQuestionCustomAnswer(
+  draft: AskUserQuestionDraftAnswers,
+  questionIndex: number,
+  custom: string,
+  multiSelect: boolean
+): AskUserQuestionDraftAnswers {
+  const current = draft[questionIndex] ?? emptyDraftAnswer()
+  return {
+    ...draft,
+    [questionIndex]: {
+      ...current,
+      selected: !multiSelect && custom.trim() ? [] : current.selected,
+      custom
+    }
+  }
+}
+
+export function collectAskUserQuestionAnswers(
+  input: AskUserQuestionInput,
+  draft: AskUserQuestionDraftAnswers
+): AskUserQuestionAnswers | null {
+  const answers: AskUserQuestionAnswers = {}
+  for (let index = 0; index < input.questions.length; index += 1) {
+    const question = input.questions[index]
+    const current = draft[index] ?? emptyDraftAnswer()
+    const custom = current.custom.trim()
+    if (question.multiSelect) {
+      const selected = custom ? [...current.selected, custom] : current.selected
+      if (selected.length === 0) return null
+      answers[question.question] = selected
+      continue
+    }
+    if (current.selected.length === 1) {
+      answers[question.question] = current.selected[0]
+      continue
+    }
+    if (current.selected.length > 1) return null
+    if (!custom) return null
+    answers[question.question] = custom
+    continue
+  }
+  return answers
 }
 
 function parseQuestion(value: unknown, index: number): AskUserQuestionItem {
@@ -123,6 +211,10 @@ function optionalString(value: unknown, message: string): string | undefined {
   }
   const trimmed = value.trim()
   return trimmed || undefined
+}
+
+function emptyDraftAnswer(): AskUserQuestionDraftAnswer {
+  return { selected: [], custom: "" }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest"
 import type { PermissionRequestPayload } from "./ipc"
 import {
   buildAskUserQuestionResponse,
+  collectAskUserQuestionAnswers,
+  initialAskUserQuestionDraft,
   isAskUserQuestionRequest,
-  parseAskUserQuestionInput
+  parseAskUserQuestionInput,
+  updateAskUserQuestionCustomAnswer,
+  updateAskUserQuestionSelection
 } from "./askUserQuestion"
 
 function request(toolName: string): PermissionRequestPayload {
@@ -115,5 +119,136 @@ describe("askUserQuestion", () => {
         ]
       })
     ).toThrow("选项「仅设计系统层」的 description 必须是字符串")
+  })
+
+  it("toggles a selected single-select option off", () => {
+    const input = parseAskUserQuestionInput({
+      questions: [
+        {
+          question: "选择框架？",
+          header: "框架",
+          options: [{ label: "React" }, { label: "Vue" }],
+          multiSelect: false
+        }
+      ]
+    })
+
+    const selected = updateAskUserQuestionSelection(
+      initialAskUserQuestionDraft(input),
+      0,
+      "React",
+      false
+    )
+    const cleared = updateAskUserQuestionSelection(selected, 0, "React", false)
+
+    expect(selected[0]).toEqual({ selected: ["React"], custom: "" })
+    expect(cleared[0]).toEqual({ selected: [], custom: "" })
+    expect(collectAskUserQuestionAnswers(input, cleared)).toBeNull()
+  })
+
+  it("uses custom text as the single-select answer and clears the selected option", () => {
+    const input = parseAskUserQuestionInput({
+      questions: [
+        {
+          question: "选择框架？",
+          header: "框架",
+          options: [{ label: "React" }, { label: "Vue" }],
+          multiSelect: false
+        }
+      ]
+    })
+    const selected = updateAskUserQuestionSelection(
+      initialAskUserQuestionDraft(input),
+      0,
+      "React",
+      false
+    )
+    const custom = updateAskUserQuestionCustomAnswer(
+      selected,
+      0,
+      "Svelte",
+      false
+    )
+
+    expect(custom[0]).toEqual({ selected: [], custom: "Svelte" })
+    expect(collectAskUserQuestionAnswers(input, custom)).toEqual({
+      "选择框架？": "Svelte"
+    })
+  })
+
+  it("keeps single-select custom text as a draft but submits the selected option", () => {
+    const input = parseAskUserQuestionInput({
+      questions: [
+        {
+          question: "选择框架？",
+          header: "框架",
+          options: [{ label: "React" }, { label: "Vue" }],
+          multiSelect: false
+        }
+      ]
+    })
+    const custom = updateAskUserQuestionCustomAnswer(
+      initialAskUserQuestionDraft(input),
+      0,
+      "Svelte",
+      false
+    )
+    const selected = updateAskUserQuestionSelection(custom, 0, "Vue", false)
+
+    expect(selected[0]).toEqual({ selected: ["Vue"], custom: "Svelte" })
+    expect(collectAskUserQuestionAnswers(input, selected)).toEqual({
+      "选择框架？": "Vue"
+    })
+  })
+
+  it("falls back to preserved custom text after clearing a single-select option", () => {
+    const input = parseAskUserQuestionInput({
+      questions: [
+        {
+          question: "选择框架？",
+          header: "框架",
+          options: [{ label: "React" }, { label: "Vue" }],
+          multiSelect: false
+        }
+      ]
+    })
+    const custom = updateAskUserQuestionCustomAnswer(
+      initialAskUserQuestionDraft(input),
+      0,
+      "Svelte",
+      false
+    )
+    const selected = updateAskUserQuestionSelection(custom, 0, "Vue", false)
+    const cleared = updateAskUserQuestionSelection(selected, 0, "Vue", false)
+
+    expect(cleared[0]).toEqual({ selected: [], custom: "Svelte" })
+    expect(collectAskUserQuestionAnswers(input, cleared)).toEqual({
+      "选择框架？": "Svelte"
+    })
+  })
+
+  it("keeps multi-select options additive with custom text", () => {
+    const input = parseAskUserQuestionInput({
+      questions: [
+        {
+          question: "包含哪些部分？",
+          header: "范围",
+          options: [{ label: "测试" }, { label: "文档" }],
+          multiSelect: true
+        }
+      ]
+    })
+    const selected = updateAskUserQuestionSelection(
+      initialAskUserQuestionDraft(input),
+      0,
+      "测试",
+      true
+    )
+    const custom = updateAskUserQuestionCustomAnswer(selected, 0, "示例", true)
+
+    expect(custom[0]).toEqual({ selected: ["测试"], custom: "示例" })
+    expect(collectAskUserQuestionAnswers(input, custom)).toEqual({
+      "包含哪些部分？": ["测试", "示例"]
+    })
   })
 })
