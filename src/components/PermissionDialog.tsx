@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "@/components/ui/dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   resolvePermissionRequest,
   type PermissionRequestPayload,
@@ -85,7 +86,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
       <DialogContent
         ref={contentRef}
         tabIndex={-1}
-        className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
+        className="grid max-h-[85vh] max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           contentRef.current?.focus({ preventScroll: true })
@@ -105,51 +106,53 @@ export function PermissionDialog({ request, onSettled }: Props) {
         </DialogHeader>
 
         {request && (
-          <div className="min-h-0 space-y-3 overflow-y-auto pr-1 text-sm scrollbar-thin">
-            <div className="rounded-md border bg-muted/30 px-3 py-2">
-              <div className="text-xs text-muted-foreground mb-1">工具</div>
-              <div className="font-mono break-all">
-                {request.request.display_name ??
-                  request.request.tool_name ??
-                  "未知工具"}
-              </div>
-            </div>
-            <div className="rounded-md border bg-muted/30 px-3 py-2">
-              <div className="text-xs text-muted-foreground mb-1">来源</div>
-              <div className="space-y-1 font-mono text-xs">
-                <div className="break-all">session: {request.session_id}</div>
-                {request.cwd && <div className="break-all">cwd: {request.cwd}</div>}
-              </div>
-            </div>
-            {request.request.description && (
+          <ScrollArea className="min-h-0 overflow-hidden">
+            <div className="space-y-3 pr-3 text-sm">
               <div className="rounded-md border bg-muted/30 px-3 py-2">
-                <div className="text-xs text-muted-foreground mb-1">说明</div>
-                <div className="break-all">{request.request.description}</div>
-              </div>
-            )}
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">参数</div>
-              <ToolInputView input={request.request.input} />
-            </div>
-            {canRememberCategory && permissionCategory && (
-              <div className="rounded-md border bg-muted/30 px-3 py-2">
-                <div className="mb-1 text-xs text-muted-foreground">
-                  可记住的权限分类
-                </div>
-                <div className="font-medium">{permissionCategory.label}</div>
-                <div className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
-                  <div>
-                    <span className="font-medium text-foreground">范围：</span>
-                    {permissionCategory.scope}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">风险：</span>
-                    {permissionCategory.risk}
-                  </div>
+                <div className="text-xs text-muted-foreground mb-1">工具</div>
+                <div className="font-mono break-all">
+                  {request.request.display_name ??
+                    request.request.tool_name ??
+                    "未知工具"}
                 </div>
               </div>
-            )}
-          </div>
+              <div className="rounded-md border bg-muted/30 px-3 py-2">
+                <div className="text-xs text-muted-foreground mb-1">来源</div>
+                <div className="space-y-1 font-mono text-xs">
+                  <div className="break-all">session: {request.session_id}</div>
+                  {request.cwd && <div className="break-all">cwd: {request.cwd}</div>}
+                </div>
+              </div>
+              {request.request.description && (
+                <div className="rounded-md border bg-muted/30 px-3 py-2">
+                  <div className="text-xs text-muted-foreground mb-1">说明</div>
+                  <div className="break-all">{request.request.description}</div>
+                </div>
+              )}
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">参数</div>
+                <ToolInputView input={request.request.input} />
+              </div>
+              {canRememberCategory && permissionCategory && (
+                <div className="rounded-md border bg-muted/30 px-3 py-2">
+                  <div className="mb-1 text-xs text-muted-foreground">
+                    可记住的权限分类
+                  </div>
+                  <div className="font-medium">{permissionCategory.label}</div>
+                  <div className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
+                    <div>
+                      <span className="font-medium text-foreground">范围：</span>
+                      {permissionCategory.scope}
+                    </div>
+                    <div>
+                      <span className="font-medium text-foreground">风险：</span>
+                      {permissionCategory.risk}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
         )}
 
         <DialogFooter className="shrink-0 flex-wrap sm:justify-between">
@@ -354,7 +357,7 @@ function ToolInputView({
     )
   }
   return (
-    <div className="max-h-[38vh] space-y-2 overflow-auto rounded-md border bg-muted/30 p-3 text-xs scrollbar-thin">
+    <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
       {entries.map(([key, value]) => (
         <ToolInputField key={key} name={key} value={value} />
       ))}
@@ -385,7 +388,7 @@ function ToolInputField({ name, value }: { name: string; value: unknown }) {
       return (
         <div className="space-y-1">
           <div className="font-mono text-muted-foreground">{name}</div>
-          <pre className="max-h-72 overflow-auto rounded border bg-background p-2 font-mono whitespace-pre-wrap break-words scrollbar-thin">
+          <pre className="rounded border bg-background p-2 font-mono whitespace-pre-wrap break-words">
             {value}
           </pre>
         </div>
@@ -401,7 +404,7 @@ function ToolInputField({ name, value }: { name: string; value: unknown }) {
   return (
     <div className="space-y-1">
       <div className="font-mono text-muted-foreground">{name}</div>
-      <pre className="max-h-72 overflow-auto rounded border bg-background p-2 font-mono whitespace-pre-wrap break-words scrollbar-thin">
+      <pre className="rounded border bg-background p-2 font-mono whitespace-pre-wrap break-words">
         {JSON.stringify(value, null, 2)}
       </pre>
     </div>

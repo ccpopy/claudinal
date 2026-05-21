@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "@/components/ui/dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import {
   buildAskUserQuestionResponse,
@@ -99,7 +100,7 @@ export function UserInputDialog({ request, onSettled }: Props) {
       }}
     >
       <DialogContent
-        className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
+        className="grid max-h-[85vh] max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden"
         onInteractOutside={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
       >
@@ -113,113 +114,115 @@ export function UserInputDialog({ request, onSettled }: Props) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="min-h-0 space-y-4 overflow-y-auto pr-1 text-sm scrollbar-thin">
-          {request && (
-            <div className="rounded-md border bg-muted/30 px-3 py-2">
-              <div className="text-xs text-muted-foreground mb-1">来源</div>
-              <div className="space-y-1 font-mono text-xs">
-                <div className="break-all">session: {request.session_id}</div>
-                {request.cwd && <div className="break-all">cwd: {request.cwd}</div>}
+        <ScrollArea className="min-h-0 overflow-hidden">
+          <div className="space-y-4 pr-3 text-sm">
+            {request && (
+              <div className="rounded-md border bg-muted/30 px-3 py-2">
+                <div className="text-xs text-muted-foreground mb-1">来源</div>
+                <div className="space-y-1 font-mono text-xs">
+                  <div className="break-all">session: {request.session_id}</div>
+                  {request.cwd && <div className="break-all">cwd: {request.cwd}</div>}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {parsed.error && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">
-              {parsed.error}
-            </div>
-          )}
+            {parsed.error && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">
+                {parsed.error}
+              </div>
+            )}
 
-          {parsed.input?.questions.map((question, questionIndex) => {
-            const current = draft[questionIndex] ?? { selected: [], custom: "" }
-            return (
-              <section
-                key={`${question.header}:${question.question}`}
-                className="space-y-2 rounded-md border bg-muted/20 p-3"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded bg-background px-2 py-0.5 text-xs font-medium">
-                    {question.header}
-                  </span>
-                  {question.multiSelect && (
-                    <span className="text-xs text-muted-foreground">可多选</span>
-                  )}
-                </div>
-                <div className="font-medium leading-relaxed">{question.question}</div>
-                <div className="grid gap-2">
-                  {question.options.map((option, optionIndex) => {
-                    const selected = current.selected.includes(option.label)
-                    return (
-                      <button
-                        key={`${option.label}:${optionIndex}`}
-                        type="button"
-                        aria-pressed={selected}
-                        disabled={busy}
-                        onClick={() =>
-                          setDraft((cur) =>
-                            updateAskUserQuestionSelection(
-                              cur,
-                              questionIndex,
-                              option.label,
-                              question.multiSelect
+            {parsed.input?.questions.map((question, questionIndex) => {
+              const current = draft[questionIndex] ?? { selected: [], custom: "" }
+              return (
+                <section
+                  key={`${question.header}:${question.question}`}
+                  className="space-y-2 rounded-md border bg-muted/20 p-3"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded bg-background px-2 py-0.5 text-xs font-medium">
+                      {question.header}
+                    </span>
+                    {question.multiSelect && (
+                      <span className="text-xs text-muted-foreground">可多选</span>
+                    )}
+                  </div>
+                  <div className="font-medium leading-relaxed">{question.question}</div>
+                  <div className="grid gap-2">
+                    {question.options.map((option, optionIndex) => {
+                      const selected = current.selected.includes(option.label)
+                      return (
+                        <button
+                          key={`${option.label}:${optionIndex}`}
+                          type="button"
+                          aria-pressed={selected}
+                          disabled={busy}
+                          onClick={() =>
+                            setDraft((cur) =>
+                              updateAskUserQuestionSelection(
+                                cur,
+                                questionIndex,
+                                option.label,
+                                question.multiSelect
+                              )
                             )
-                          )
-                        }
-                        className={cn(
-                          "rounded-md border bg-background px-3 py-2 text-left transition-colors",
-                          "hover:border-primary/60 hover:bg-accent disabled:pointer-events-none disabled:opacity-60",
-                          selected && "border-primary bg-primary/10"
-                        )}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              "grid size-4 shrink-0 place-items-center rounded border",
-                              selected
-                                ? "border-primary bg-primary text-primary-foreground"
-                                : "border-muted-foreground/40"
-                            )}
-                          >
-                            {selected && <Check className="size-3" />}
-                          </span>
-                          <span className="min-w-0">
-                            <span className="block font-medium">{option.label}</span>
-                            {option.description && (
-                              <span className="block text-xs leading-relaxed text-muted-foreground">
-                                {option.description}
-                              </span>
-                            )}
-                            {option.preview && (
-                              <span className="mt-2 block whitespace-pre-wrap rounded border bg-muted/40 p-2 font-mono text-[11px] text-muted-foreground">
-                                {option.preview}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-                <Textarea
-                  value={current.custom}
-                  disabled={busy}
-                  placeholder="自定义回答"
-                  className="min-h-20 resize-none text-sm"
-                  onChange={(event) =>
-                    setDraft((cur) =>
-                      updateAskUserQuestionCustomAnswer(
-                        cur,
-                        questionIndex,
-                        event.target.value,
-                        question.multiSelect
+                          }
+                          className={cn(
+                            "rounded-md border bg-background px-3 py-2 text-left transition-colors",
+                            "hover:border-primary/60 hover:bg-accent disabled:pointer-events-none disabled:opacity-60",
+                            selected && "border-primary bg-primary/10"
+                          )}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={cn(
+                                "grid size-4 shrink-0 place-items-center rounded border",
+                                selected
+                                  ? "border-primary bg-primary text-primary-foreground"
+                                  : "border-muted-foreground/40"
+                              )}
+                            >
+                              {selected && <Check className="size-3" />}
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block font-medium">{option.label}</span>
+                              {option.description && (
+                                <span className="block text-xs leading-relaxed text-muted-foreground">
+                                  {option.description}
+                                </span>
+                              )}
+                              {option.preview && (
+                                <span className="mt-2 block whitespace-pre-wrap rounded border bg-muted/40 p-2 font-mono text-[11px] text-muted-foreground">
+                                  {option.preview}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        </button>
                       )
-                    )
-                  }
-                />
-              </section>
-            )
-          })}
-        </div>
+                    })}
+                  </div>
+                  <Textarea
+                    value={current.custom}
+                    disabled={busy}
+                    placeholder="自定义回答"
+                    className="min-h-20 resize-none text-sm field-sizing-content"
+                    onChange={(event) =>
+                      setDraft((cur) =>
+                        updateAskUserQuestionCustomAnswer(
+                          cur,
+                          questionIndex,
+                          event.target.value,
+                          question.multiSelect
+                        )
+                      )
+                    }
+                  />
+                </section>
+              )
+            })}
+          </div>
+        </ScrollArea>
 
         <DialogFooter className="shrink-0 flex-wrap sm:justify-between">
           <Button
