@@ -17,6 +17,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -89,6 +90,18 @@ function providerExists(store: ThirdPartyApiStore, id: string | null) {
     id === OFFICIAL_PROVIDER_ID ||
     store.providers.some((provider) => provider.id === id)
   )
+}
+
+function isValidCchSeed(value: string): boolean {
+  const seed = value.trim()
+  if (!seed) return false
+  if (/^0x[0-9a-fA-F]{1,16}$/.test(seed)) return true
+  if (!/^[0-9]+$/.test(seed)) return false
+  try {
+    return BigInt(seed) <= 0xffff_ffff_ffff_ffffn
+  } catch {
+    return false
+  }
 }
 
 function maskRuntimeSettingsValue(value: unknown, key = ""): unknown {
@@ -281,20 +294,7 @@ export function ThirdPartyApi() {
         toast.error("请填写供应商名称")
         return
       }
-      if (!trimApiUrl(provider.requestUrl)) {
-        toast.error("请填写请求地址")
-        return
-      }
-      if (!provider.apiKey.trim()) {
-        toast.error("请填写 API Key")
-        return
-      }
-      try {
-        parseRuntimeSettingsJson(provider.runtimeSettingsJson)
-      } catch (error) {
-        toast.error(String(error))
-        return
-      }
+      if (!validate(provider)) return
       const providers =
         editor.mode === "new"
           ? [...store.providers, provider]
@@ -360,6 +360,22 @@ export function ThirdPartyApi() {
       parseRuntimeSettingsJson(target.runtimeSettingsJson)
     } catch (error) {
       toast.error(String(error))
+      return false
+    }
+    if (
+      !target.cacheHitOptimizationEnabled &&
+      target.cchRewriteEnabled &&
+      target.inputFormat !== "anthropic"
+    ) {
+      toast.error("CCH 重算仅支持 Anthropic Messages 输入格式")
+      return false
+    }
+    if (
+      !target.cacheHitOptimizationEnabled &&
+      target.cchRewriteEnabled &&
+      !isValidCchSeed(target.cchSeed)
+    ) {
+      toast.error("请填写有效的 CCH seed，可使用 0x 开头的 64 位十六进制值")
       return false
     }
     return true
@@ -707,6 +723,60 @@ export function ThirdPartyApi() {
                   通过 --settings 注入到本供应商的新会话。
                 </div>
               </div>
+              <div className="space-y-3 rounded-md border bg-muted/40 px-3 py-3">
+                <RuntimeOption
+                  id="third-party-cache-hit-optimization"
+                  checked={editorConfig.cacheHitOptimizationEnabled}
+                  disabled={loading || saving}
+                  label="提升第三方缓存命中率"
+                  description="写入 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 与 CLAUDE_CODE_ATTRIBUTION_HEADER=0，减少归属提示块和非必要流量对第三方网关缓存的影响。"
+                  onCheckedChange={(cacheHitOptimizationEnabled) =>
+                    update({ cacheHitOptimizationEnabled })
+                  }
+                />
+                <RuntimeOption
+                  id="third-party-enable-prompt-caching-1h"
+                  checked={editorConfig.enablePromptCaching1h}
+                  disabled={loading || saving}
+                  label="启用 1 小时 Prompt Cache"
+                  description="写入 ENABLE_PROMPT_CACHING_1H=1，请求 1 小时缓存 TTL；API 计费场景下缓存写入费率可能更高。"
+                  onCheckedChange={(enablePromptCaching1h) =>
+                    update({ enablePromptCaching1h })
+                  }
+                />
+                {!editorConfig.cacheHitOptimizationEnabled && (
+                  <div className="space-y-3 rounded-md border bg-background px-3 py-3">
+                    <RuntimeOption
+                      id="third-party-cch-rewrite"
+                      checked={editorConfig.cchRewriteEnabled}
+                      disabled={loading || saving}
+                      label="按 seed 重算 CCH"
+                      description="高级兼容选项。保留归属提示块时，Claudinal 会在转发 Anthropic Messages 请求前用 seed 重算 cch。"
+                      onCheckedChange={(cchRewriteEnabled) =>
+                        update({ cchRewriteEnabled })
+                      }
+                    />
+                    <div className="space-y-2 pl-7">
+                      <Label
+                        htmlFor="third-party-cch-seed"
+                        className="text-xs text-muted-foreground"
+                      >
+                        CCH seed
+                      </Label>
+                      <Input
+                        id="third-party-cch-seed"
+                        value={editorConfig.cchSeed}
+                        onChange={(e) => update({ cchSeed: e.target.value })}
+                        placeholder="0x6E52736AC806831E"
+                        className="font-mono text-xs"
+                        disabled={
+                          loading || saving || !editorConfig.cchRewriteEnabled
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
               <Textarea
                 value={editorConfig.runtimeSettingsJson}
                 onChange={(e) => update({ runtimeSettingsJson: e.target.value })}
@@ -904,6 +974,42 @@ function Row({
     <div className="flex items-center gap-3">
       <Label className="w-24 text-xs shrink-0">{label}</Label>
       {children}
+    </div>
+  )
+}
+
+function RuntimeOption({
+  id,
+  checked,
+  disabled,
+  label,
+  description,
+  onCheckedChange
+}: {
+  id: string
+  checked: boolean
+  disabled?: boolean
+  label: string
+  description: string
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <Checkbox
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(value) => onCheckedChange(value === true)}
+        className="mt-0.5"
+      />
+      <div className="min-w-0 space-y-1">
+        <Label htmlFor={id} className="text-sm">
+          {label}
+        </Label>
+        <div className="text-xs leading-relaxed text-muted-foreground">
+          {description}
+        </div>
+      </div>
     </div>
   )
 }

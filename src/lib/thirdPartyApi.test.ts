@@ -45,6 +45,10 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(cfg.apiKey).toBe("")
     expect(cfg.inputFormat).toBe("anthropic")
     expect(cfg.authField).toBe("ANTHROPIC_AUTH_TOKEN")
+    expect(cfg.cacheHitOptimizationEnabled).toBe(true)
+    expect(cfg.enablePromptCaching1h).toBe(true)
+    expect(cfg.cchRewriteEnabled).toBe(false)
+    expect(cfg.cchSeed).toBe("")
     expect(cfg.mainAlias).toBe("sonnet")
     expect(cfg.availableModels).toEqual([])
     expect(cfg.runtimeSettingsJson).toBe("")
@@ -64,6 +68,33 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     })
     expect(open.inputFormat).toBe("openai-chat-completions")
     expect(open.authField).toBe("ANTHROPIC_API_KEY")
+  })
+
+  it("preserves explicit cache option opt-outs and cch settings", () => {
+    const cfg = normalizeThirdPartyApiConfig({
+      cacheHitOptimizationEnabled: false,
+      enablePromptCaching1h: false,
+      cchRewriteEnabled: true,
+      cchSeed: "0x6E52736AC806831E"
+    })
+    expect(cfg.cacheHitOptimizationEnabled).toBe(false)
+    expect(cfg.enablePromptCaching1h).toBe(false)
+    expect(cfg.cchRewriteEnabled).toBe(true)
+    expect(cfg.cchSeed).toBe("0x6E52736AC806831E")
+
+    const invalid = normalizeThirdPartyApiConfig({
+      cacheHitOptimizationEnabled: "false" as never,
+      enablePromptCaching1h: "false" as never
+    })
+    expect(invalid.cacheHitOptimizationEnabled).toBe(true)
+    expect(invalid.enablePromptCaching1h).toBe(true)
+  })
+
+  it("migrates legacy disableAttributionHeader to cacheHitOptimizationEnabled", () => {
+    const cfg = normalizeThirdPartyApiConfig({
+      disableAttributionHeader: false
+    } as never)
+    expect(cfg.cacheHitOptimizationEnabled).toBe(false)
   })
 
   it("infers mainAlias when not explicitly set", () => {
@@ -113,6 +144,20 @@ describe("thirdPartyApi.runtimeSettings", () => {
     expect(() =>
       parseRuntimeSettingsJson('{"env":{"ANTHROPIC_MODEL":"manual"}}')
     ).toThrow("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理")
+    expect(() =>
+      parseRuntimeSettingsJson(
+        '{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"manual"}}'
+      )
+    ).toThrow(
+      "运行时 settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER 由 Claudinal 管理"
+    )
+    expect(() =>
+      parseRuntimeSettingsJson(
+        '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"manual"}}'
+      )
+    ).toThrow(
+      "运行时 settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 由 Claudinal 管理"
+    )
   })
 
   it("merges provider runtime settings with generated Claude env for preview", () => {
@@ -127,7 +172,10 @@ describe("thirdPartyApi.runtimeSettings", () => {
     expect(settings.env).toMatchObject({
       EXTRA: "1",
       ANTHROPIC_MODEL: "claude-3-7-sonnet",
-      CLAUDINAL_PROXY_TARGET_URL: "https://api.example.com"
+      CLAUDINAL_PROXY_TARGET_URL: "https://api.example.com",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+      ENABLE_PROMPT_CACHING_1H: "1"
     })
   })
 
@@ -201,6 +249,18 @@ describe("thirdPartyApi.runtimeProfile", () => {
     const changed = makeConfig({
       id: "provider-a",
       runtimeSettingsJson: '{"model":"claude-opus-4-7[1m]"}'
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
+      thirdPartyApiRuntimeProfileKey(base)
+    )
+  })
+
+  it("changes when cache optimization options change", () => {
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      enablePromptCaching1h: false
     } as Partial<ThirdPartyApiConfig>)
 
     expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
@@ -304,6 +364,41 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
     expect(env.CLAUDINAL_PROXY_INPUT_FORMAT).toBe("anthropic")
     expect(env.CLAUDINAL_PROXY_AUTH_FIELD).toBe("ANTHROPIC_AUTH_TOKEN")
     expect(env.CLAUDINAL_PROXY_USE_FULL_URL).toBe("0")
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1")
+    expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0")
+    expect(env.ENABLE_PROMPT_CACHING_1H).toBe("1")
+  })
+
+  it("omits official cache optimization env vars when disabled", () => {
+    const env = buildClaudeEnv(
+      makeConfig({
+        cacheHitOptimizationEnabled: false,
+        enablePromptCaching1h: false
+      })
+    )
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBeUndefined()
+    expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBeUndefined()
+    expect(env.ENABLE_PROMPT_CACHING_1H).toBeUndefined()
+  })
+
+  it("passes cch seed only when official cache optimization is disabled", () => {
+    const enabled = buildClaudeEnv(
+      makeConfig({
+        cacheHitOptimizationEnabled: true,
+        cchRewriteEnabled: true,
+        cchSeed: "0x6E52736AC806831E"
+      })
+    )
+    expect(enabled.CLAUDINAL_PROXY_CCH_SEED).toBeUndefined()
+
+    const disabled = buildClaudeEnv(
+      makeConfig({
+        cacheHitOptimizationEnabled: false,
+        cchRewriteEnabled: true,
+        cchSeed: "0x6E52736AC806831E"
+      })
+    )
+    expect(disabled.CLAUDINAL_PROXY_CCH_SEED).toBe("0x6E52736AC806831E")
   })
 
   it("populates ANTHROPIC_DEFAULT_*_MODEL only when corresponding model fields are set", () => {
@@ -365,6 +460,9 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
       ANTHROPIC_DEFAULT_SONNET_MODEL: "x",
       ANTHROPIC_DEFAULT_OPUS_MODEL: "x",
       CLAUDE_CODE_SUBAGENT_MODEL: "x",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "x",
+      CLAUDE_CODE_ATTRIBUTION_HEADER: "x",
+      ENABLE_PROMPT_CACHING_1H: "x",
       CLAUDINAL_PROXY_TARGET_URL: "x",
       CLAUDINAL_PROXY_API_KEY: "x",
       CLAUDINAL_PROXY_INPUT_FORMAT: "x",
@@ -376,6 +474,7 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
       CLAUDINAL_PROXY_SONNET_MODEL: "x",
       CLAUDINAL_PROXY_OPUS_MODEL: "x",
       CLAUDINAL_PROXY_AVAILABLE_MODELS: "x",
+      CLAUDINAL_PROXY_CCH_SEED: "x",
       CLAUDINAL_RUNTIME_SETTINGS_JSON: "x",
       USER_VAR: "keep"
     })

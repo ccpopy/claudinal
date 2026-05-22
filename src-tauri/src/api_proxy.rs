@@ -22,6 +22,7 @@ pub struct ProxyConfig {
     pub sonnet_model: String,
     pub opus_model: String,
     pub available_models: Vec<String>,
+    pub cch_seed: Option<u64>,
 }
 
 pub async fn start(config: ProxyConfig) -> Result<String> {
@@ -120,15 +121,21 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
     let openai_chat = config.input_format == "openai-chat-completions";
     let messages_path = is_messages_path(path);
 
-    if content_type
+    let json_request = content_type
         .to_ascii_lowercase()
-        .contains("application/json")
-    {
+        .contains("application/json");
+    if json_request {
         body = if openai_chat && messages_path {
             anthropic_to_openai_request(&body, &config)?
         } else {
             rewrite_model(&body, &config)?
         };
+    }
+    if config.cch_seed.is_some() && messages_path && !openai_chat && !json_request {
+        return Err(Error::Other("proxy cch rewrite requires JSON body".into()));
+    }
+    if let Some(seed) = config.cch_seed.filter(|_| messages_path && !openai_chat) {
+        body = rewrite_cch(&body, seed)?;
     }
 
     let method = reqwest::Method::from_bytes(method.as_bytes())
@@ -278,6 +285,56 @@ fn rewrite_model(body: &[u8], config: &ProxyConfig) -> Result<Vec<u8>> {
         obj.insert("model".into(), Value::String(target));
     }
     serde_json::to_vec(&value).map_err(Error::from)
+}
+
+fn rewrite_cch(body: &[u8], seed: u64) -> Result<Vec<u8>> {
+    let mut value = serde_json::from_slice::<Value>(body)
+        .map_err(|e| Error::Other(format!("proxy cch json parse: {e}")))?;
+    replace_billing_header_cch(&mut value, "00000")?;
+    let placeholder_body = serde_json::to_vec(&value).map_err(Error::from)?;
+    let cch = format!("{:05x}", xxh64(&placeholder_body, seed) & 0x000f_ffff);
+    replace_billing_header_cch(&mut value, &cch)?;
+    serde_json::to_vec(&value).map_err(Error::from)
+}
+
+fn replace_billing_header_cch(value: &mut Value, cch: &str) -> Result<()> {
+    let system = value
+        .get_mut("system")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| Error::Other("proxy cch billing header not found".into()))?;
+    let mut replaced = 0usize;
+    for item in system {
+        let Some(Value::String(text)) = item.get_mut("text") else {
+            continue;
+        };
+        let Some(next) = replace_cch_segment(text, cch) else {
+            continue;
+        };
+        *text = next;
+        replaced += 1;
+    }
+    match replaced {
+        1 => Ok(()),
+        0 => Err(Error::Other("proxy cch billing header not found".into())),
+        _ => Err(Error::Other("proxy cch billing header is ambiguous".into())),
+    }
+}
+
+fn replace_cch_segment(text: &str, cch: &str) -> Option<String> {
+    let header_start = text.find("x-anthropic-billing-header:")?;
+    let cch_key_start = header_start + text[header_start..].find("cch=")?;
+    let value_start = cch_key_start + "cch=".len();
+    let value_end = text[value_start..]
+        .find(';')
+        .map(|offset| value_start + offset)?;
+    if value_start == value_end {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len() + cch.len());
+    out.push_str(&text[..value_start]);
+    out.push_str(cch);
+    out.push_str(&text[value_end..]);
+    Some(out)
 }
 
 fn anthropic_to_openai_request(body: &[u8], config: &ProxyConfig) -> Result<Vec<u8>> {
@@ -1169,6 +1226,97 @@ fn host_matches_no_proxy_rule(host: &str, rule: &str) -> bool {
     host == rule || host.ends_with(&format!(".{rule}"))
 }
 
+const XXH64_PRIME1: u64 = 11_400_714_785_074_694_791;
+const XXH64_PRIME2: u64 = 14_029_467_366_897_019_727;
+const XXH64_PRIME3: u64 = 1_609_587_929_392_839_161;
+const XXH64_PRIME4: u64 = 9_650_029_242_287_828_579;
+const XXH64_PRIME5: u64 = 2_870_177_450_012_600_261;
+
+fn xxh64(input: &[u8], seed: u64) -> u64 {
+    let mut index = 0usize;
+    let len = input.len();
+    let mut hash = if len >= 32 {
+        let mut v1 = seed.wrapping_add(XXH64_PRIME1).wrapping_add(XXH64_PRIME2);
+        let mut v2 = seed.wrapping_add(XXH64_PRIME2);
+        let mut v3 = seed;
+        let mut v4 = seed.wrapping_sub(XXH64_PRIME1);
+        while index <= len - 32 {
+            v1 = xxh64_round(v1, read_u64_le(input, index));
+            index += 8;
+            v2 = xxh64_round(v2, read_u64_le(input, index));
+            index += 8;
+            v3 = xxh64_round(v3, read_u64_le(input, index));
+            index += 8;
+            v4 = xxh64_round(v4, read_u64_le(input, index));
+            index += 8;
+        }
+        let mut h = v1
+            .rotate_left(1)
+            .wrapping_add(v2.rotate_left(7))
+            .wrapping_add(v3.rotate_left(12))
+            .wrapping_add(v4.rotate_left(18));
+        h = xxh64_merge_round(h, v1);
+        h = xxh64_merge_round(h, v2);
+        h = xxh64_merge_round(h, v3);
+        xxh64_merge_round(h, v4)
+    } else {
+        seed.wrapping_add(XXH64_PRIME5)
+    };
+
+    hash = hash.wrapping_add(len as u64);
+    while index + 8 <= len {
+        let k1 = xxh64_round(0, read_u64_le(input, index));
+        hash ^= k1;
+        hash = hash
+            .rotate_left(27)
+            .wrapping_mul(XXH64_PRIME1)
+            .wrapping_add(XXH64_PRIME4);
+        index += 8;
+    }
+    if index + 4 <= len {
+        hash ^= (read_u32_le(input, index) as u64).wrapping_mul(XXH64_PRIME1);
+        hash = hash
+            .rotate_left(23)
+            .wrapping_mul(XXH64_PRIME2)
+            .wrapping_add(XXH64_PRIME3);
+        index += 4;
+    }
+    while index < len {
+        hash ^= (input[index] as u64).wrapping_mul(XXH64_PRIME5);
+        hash = hash.rotate_left(11).wrapping_mul(XXH64_PRIME1);
+        index += 1;
+    }
+    xxh64_avalanche(hash)
+}
+
+fn xxh64_round(acc: u64, input: u64) -> u64 {
+    acc.wrapping_add(input.wrapping_mul(XXH64_PRIME2))
+        .rotate_left(31)
+        .wrapping_mul(XXH64_PRIME1)
+}
+
+fn xxh64_merge_round(acc: u64, value: u64) -> u64 {
+    (acc ^ xxh64_round(0, value))
+        .wrapping_mul(XXH64_PRIME1)
+        .wrapping_add(XXH64_PRIME4)
+}
+
+fn xxh64_avalanche(mut hash: u64) -> u64 {
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(XXH64_PRIME2);
+    hash ^= hash >> 29;
+    hash = hash.wrapping_mul(XXH64_PRIME3);
+    hash ^ (hash >> 32)
+}
+
+fn read_u64_le(input: &[u8], index: usize) -> u64 {
+    u64::from_le_bytes(input[index..index + 8].try_into().expect("u64 chunk"))
+}
+
+fn read_u32_le(input: &[u8], index: usize) -> u32 {
+    u32::from_le_bytes(input[index..index + 4].try_into().expect("u32 chunk"))
+}
+
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|w| w == b"\r\n\r\n")
 }
@@ -1192,6 +1340,7 @@ mod tests {
             sonnet_model: String::new(),
             opus_model: String::new(),
             available_models: vec!["opus[1m]".into(), "mimo-v2.5-pro".into()],
+            cch_seed: None,
         }
     }
 
@@ -1229,6 +1378,52 @@ mod tests {
 
         assert!(ids.contains(&"mimo-v2.5-pro"));
         assert!(ids.contains(&"opus[1m]"));
+    }
+
+    #[test]
+    fn xxh64_matches_known_empty_digest() {
+        assert_eq!(xxh64(b"", 0), 0xef46_db37_51d8_e999);
+    }
+
+    #[test]
+    fn rewrite_cch_updates_only_billing_header_segment() {
+        let body = serde_json::json!({
+            "model": "sonnet",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "x-anthropic-billing-header: t=1;cch=abcde;k=v;"
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "literal cch=00000 should remain"
+                }
+            ]
+        });
+        let out = rewrite_cch(body.to_string().as_bytes(), 0).expect("rewrite cch");
+        let value: Value = serde_json::from_slice(&out).expect("json");
+        let system_text = value["system"][0]["text"].as_str().expect("system text");
+        let user_text = value["messages"][0]["content"].as_str().expect("user text");
+
+        assert!(system_text.contains("x-anthropic-billing-header:"));
+        assert!(!system_text.contains("cch=abcde;"));
+        assert!(!system_text.contains("cch=00000;"));
+        assert!(user_text.contains("literal cch=00000 should remain"));
+    }
+
+    #[test]
+    fn rewrite_cch_errors_when_billing_header_missing() {
+        let body = serde_json::json!({
+            "model": "sonnet",
+            "system": [{ "type": "text", "text": "no billing header" }],
+            "messages": []
+        });
+        let err = rewrite_cch(body.to_string().as_bytes(), 0).expect_err("missing cch");
+        assert!(err
+            .to_string()
+            .contains("proxy cch billing header not found"));
     }
 
     #[test]

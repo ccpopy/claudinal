@@ -690,7 +690,7 @@ pub async fn spawn_session(
     let env_remove = Vec::new();
     let runtime_settings = take_runtime_settings_json(&mut env)?;
     let mut use_runtime_claude_settings = runtime_settings.is_some();
-    if let Some(proxy_config) = take_proxy_config(&mut env, effort.as_deref()) {
+    if let Some(proxy_config) = take_proxy_config(&mut env, effort.as_deref())? {
         let local_base_url = start_api_proxy(proxy_config).await?;
         env.insert("ANTHROPIC_BASE_URL".into(), local_base_url);
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
@@ -903,6 +903,9 @@ const RUNTIME_CLAUDE_SETTINGS_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER",
+    "ENABLE_PROMPT_CACHING_1H",
     "ANTHROPIC_CUSTOM_MODEL_OPTION",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
@@ -1007,8 +1010,10 @@ fn validate_runtime_settings_env(value: Option<&Value>) -> Result<()> {
 fn take_proxy_config(
     env: &mut std::collections::HashMap<String, String>,
     effort: Option<&str>,
-) -> Option<ProxyConfig> {
-    let target_url = env.remove("CLAUDINAL_PROXY_TARGET_URL")?;
+) -> Result<Option<ProxyConfig>> {
+    let Some(target_url) = env.remove("CLAUDINAL_PROXY_TARGET_URL") else {
+        return Ok(None);
+    };
     let api_key = env.remove("CLAUDINAL_PROXY_API_KEY").unwrap_or_default();
     let input_format = env
         .remove("CLAUDINAL_PROXY_INPUT_FORMAT")
@@ -1045,7 +1050,11 @@ fn take_proxy_config(
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
         .collect();
-    Some(ProxyConfig {
+    let cch_seed = env
+        .remove("CLAUDINAL_PROXY_CCH_SEED")
+        .map(|raw| parse_cch_seed(&raw))
+        .transpose()?;
+    Ok(Some(ProxyConfig {
         target_url,
         api_key,
         input_format,
@@ -1059,7 +1068,35 @@ fn take_proxy_config(
         sonnet_model,
         opus_model,
         available_models,
-    })
+        cch_seed,
+    }))
+}
+
+fn parse_cch_seed(raw: &str) -> Result<u64> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(Error::Other("CCH seed 不能为空".into()));
+    }
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        if hex.is_empty() || hex.len() > 16 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(Error::Other(
+                "CCH seed 必须是 64 位以内的十六进制或十进制整数".into(),
+            ));
+        }
+        return u64::from_str_radix(hex, 16)
+            .map_err(|e| Error::Other(format!("CCH seed 无效：{e}")));
+    }
+    if !value.chars().all(|c| c.is_ascii_digit()) {
+        return Err(Error::Other(
+            "CCH seed 必须是 64 位以内的十六进制或十进制整数".into(),
+        ));
+    }
+    value
+        .parse::<u64>()
+        .map_err(|e| Error::Other(format!("CCH seed 无效：{e}")))
 }
 
 fn session_network_proxy_url(env: &std::collections::HashMap<String, String>) -> Option<String> {
@@ -3238,6 +3275,10 @@ mod tests {
         env.insert("CLAUDINAL_PROXY_API_KEY".into(), "sk-secret".into());
         env.insert("HTTP_PROXY".into(), "http://proxy.local:8080".into());
         env.insert("ANTHROPIC_MODEL".into(), "provider-main".into());
+        env.insert(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
+            "1".into(),
+        );
 
         let raw = runtime_claude_settings_json(&env, None)
             .expect("settings json")
@@ -3259,6 +3300,11 @@ mod tests {
         assert_eq!(
             env.get("ANTHROPIC_MODEL").and_then(Value::as_str),
             Some("provider-main")
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+                .and_then(Value::as_str),
+            Some("1")
         );
         assert!(env.get("CLAUDINAL_PROXY_API_KEY").is_none());
         assert!(env.get("HTTP_PROXY").is_none());
@@ -3310,6 +3356,32 @@ mod tests {
         assert!(err
             .to_string()
             .contains("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理"));
+
+        let extra = serde_json::json!({
+            "env": {
+                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+            }
+        });
+        let err = runtime_claude_settings_json(&env, Some(extra)).expect_err("managed key");
+        assert!(err
+            .to_string()
+            .contains("运行时 settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER 由 Claudinal 管理"));
+    }
+
+    #[test]
+    fn parse_cch_seed_accepts_hex_and_decimal() {
+        assert_eq!(
+            parse_cch_seed("0x6E52736AC806831E").unwrap(),
+            0x6e52_736a_c806_831e
+        );
+        assert_eq!(parse_cch_seed("42").unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_cch_seed_rejects_invalid_values() {
+        assert!(parse_cch_seed("").is_err());
+        assert!(parse_cch_seed("0x10000000000000000").is_err());
+        assert!(parse_cch_seed("not-a-seed").is_err());
     }
 
     #[test]

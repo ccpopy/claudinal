@@ -38,6 +38,10 @@ export interface ThirdPartyApiConfig {
   useFullUrl: boolean
   inputFormat: ProviderInputFormat
   authField: ProviderAuthField
+  cacheHitOptimizationEnabled: boolean
+  enablePromptCaching1h: boolean
+  cchRewriteEnabled: boolean
+  cchSeed: string
   mainAlias: ClaudeModelAlias
   availableModels: string[]
   models: ModelMapping
@@ -68,6 +72,10 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
   useFullUrl: false,
   inputFormat: "anthropic",
   authField: "ANTHROPIC_AUTH_TOKEN",
+  cacheHitOptimizationEnabled: true,
+  enablePromptCaching1h: true,
+  cchRewriteEnabled: false,
+  cchSeed: "",
   mainAlias: "sonnet",
   availableModels: [],
   runtimeSettingsJson: "",
@@ -94,6 +102,9 @@ const MANAGED_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_SONNET_MODEL",
   "ANTHROPIC_DEFAULT_OPUS_MODEL",
   "CLAUDE_CODE_SUBAGENT_MODEL",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  "CLAUDE_CODE_ATTRIBUTION_HEADER",
+  "ENABLE_PROMPT_CACHING_1H",
   "ANTHROPIC_CUSTOM_MODEL_OPTION",
   "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
   "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
@@ -109,6 +120,7 @@ const MANAGED_ENV_KEYS = [
   "CLAUDINAL_PROXY_SONNET_MODEL",
   "CLAUDINAL_PROXY_OPUS_MODEL",
   "CLAUDINAL_PROXY_AVAILABLE_MODELS",
+  "CLAUDINAL_PROXY_CCH_SEED",
   "CLAUDINAL_RUNTIME_SETTINGS_JSON"
 ]
 
@@ -157,6 +169,17 @@ function asClaudeModelAlias(value: unknown): ClaudeModelAlias | null {
 
 function cleanString(value: unknown): string {
   return typeof value === "string" ? value : ""
+}
+
+function cleanBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback
+}
+
+function cleanOptionalBoolean(
+  value: unknown,
+  fallback: boolean | undefined
+): boolean | undefined {
+  return typeof value === "boolean" ? value : fallback
 }
 
 function cleanStringArray(value: unknown): string[] {
@@ -230,12 +253,16 @@ export function thirdPartyApiRuntimeProfileKey(
   if (!config.enabled) return "official"
   const providerId = providerProfileId(config)
   const profile = {
-    version: 2,
+    version: 3,
     providerId,
     requestUrl: trimApiUrl(config.requestUrl),
     inputFormat: config.inputFormat,
     authField: config.authField,
     useFullUrl: config.useFullUrl,
+    cacheHitOptimizationEnabled: config.cacheHitOptimizationEnabled,
+    enablePromptCaching1h: config.enablePromptCaching1h,
+    cchRewriteEnabled: config.cchRewriteEnabled,
+    cchSeed: config.cchSeed.trim(),
     models: {
       mainModel: config.models.mainModel.trim(),
       haikuModel: config.models.haikuModel.trim(),
@@ -304,6 +331,18 @@ export function normalizeThirdPartyApiConfig(
   raw: Partial<ThirdPartyApiConfig> | null | undefined
 ): ThirdPartyApiConfig {
   const models: Partial<ModelMapping> = raw?.models ?? {}
+  const legacy = raw as
+    | (Partial<ThirdPartyApiConfig> & {
+        disableAttributionHeader?: unknown
+      })
+    | null
+    | undefined
+  const cacheHitOptimizationEnabled =
+    cleanOptionalBoolean(raw?.cacheHitOptimizationEnabled, undefined) ??
+    cleanBoolean(
+      legacy?.disableAttributionHeader,
+      DEFAULT_THIRD_PARTY_API.cacheHitOptimizationEnabled
+    )
   return {
     ...DEFAULT_THIRD_PARTY_API,
     ...(raw ?? {}),
@@ -314,6 +353,16 @@ export function normalizeThirdPartyApiConfig(
     requestUrl: cleanString(raw?.requestUrl),
     inputFormat: asInputFormat(raw?.inputFormat),
     authField: asAuthField(raw?.authField),
+    cacheHitOptimizationEnabled,
+    enablePromptCaching1h: cleanBoolean(
+      raw?.enablePromptCaching1h,
+      DEFAULT_THIRD_PARTY_API.enablePromptCaching1h
+    ),
+    cchRewriteEnabled: cleanBoolean(
+      raw?.cchRewriteEnabled,
+      DEFAULT_THIRD_PARTY_API.cchRewriteEnabled
+    ),
+    cchSeed: cleanString(raw?.cchSeed),
     mainAlias: asClaudeModelAlias(raw?.mainAlias) ?? inferMainAlias(models),
     availableModels: cleanStringArray(raw?.availableModels),
     runtimeSettingsJson: cleanString(raw?.runtimeSettingsJson),
@@ -769,6 +818,15 @@ export function buildClaudeEnv(
   next.CLAUDINAL_PROXY_INPUT_FORMAT = config.inputFormat
   next.CLAUDINAL_PROXY_AUTH_FIELD = config.authField
   next.CLAUDINAL_PROXY_USE_FULL_URL = config.useFullUrl ? "1" : "0"
+  if (config.cacheHitOptimizationEnabled) {
+    next.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+    next.CLAUDE_CODE_ATTRIBUTION_HEADER = "0"
+  } else if (config.cchRewriteEnabled) {
+    next.CLAUDINAL_PROXY_CCH_SEED = config.cchSeed.trim()
+  }
+  if (config.enablePromptCaching1h) {
+    next.ENABLE_PROMPT_CACHING_1H = "1"
+  }
   if (mainModel) {
     next.ANTHROPIC_MODEL = mainModel
     next.CLAUDINAL_PROXY_MAIN_MODEL = mainModel
