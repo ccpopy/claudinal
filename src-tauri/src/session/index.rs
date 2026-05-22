@@ -7,8 +7,8 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 
 use super::reader::{
-    extract_cwd_from_jsonl, project_dirs, projects_root, scan_session_meta, session_file_meta,
-    SessionFileMeta, SessionMeta,
+    extract_cwd_from_jsonl, jsonl_belongs_to_cwd, project_dirs, projects_root, scan_session_meta,
+    session_file_meta, SessionFileMeta, SessionMeta,
 };
 use super::store::{self, as_i64};
 
@@ -334,12 +334,22 @@ fn collect_all_files(root: &std::path::Path) -> Result<Vec<(String, SessionFileM
 }
 
 fn collect_files(cwd: &str) -> Result<HashMap<String, SessionFileMeta>> {
+    collect_files_from_dirs(cwd, project_dirs(cwd)?)
+}
+
+fn collect_files_from_dirs(
+    cwd: &str,
+    dirs: impl IntoIterator<Item = PathBuf>,
+) -> Result<HashMap<String, SessionFileMeta>> {
     let mut files = HashMap::<String, SessionFileMeta>::new();
-    for dir in project_dirs(cwd)?.into_iter().filter(|dir| dir.is_dir()) {
+    for dir in dirs.into_iter().filter(|dir| dir.is_dir()) {
         for entry in std::fs::read_dir(dir)? {
             let Some(file) = session_file_meta(&entry?.path())? else {
                 continue;
             };
+            if !jsonl_belongs_to_cwd(cwd, std::path::Path::new(&file.file_path)) {
+                continue;
+            }
             if files
                 .get(&file.id)
                 .is_none_or(|old| file.modified_millis > old.modified_millis)
@@ -413,4 +423,59 @@ fn meta_from_row(
         ai_title,
         first_user_text,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_files_filters_jsonl_by_embedded_cwd() -> Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("claudinal-index-cwd-filter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+
+        write_jsonl_with_cwd(&dir.join("matching-session.jsonl"), "F:\\work\\abc-def")?;
+        write_jsonl_with_cwd(&dir.join("foreign-session.jsonl"), "F:\\work\\abc_def")?;
+        std::fs::write(
+            dir.join("missing-cwd-session.jsonl"),
+            serde_json::to_string(&serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": "legacy without cwd" }
+            }))?,
+        )?;
+
+        let files = collect_files_from_dirs("F:/work/abc-def", vec![dir.clone()])?;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(files.contains_key("matching-session"));
+        assert!(!files.contains_key("foreign-session"));
+        assert!(!files.contains_key("missing-cwd-session"));
+        Ok(())
+    }
+
+    fn write_jsonl_with_cwd(path: &std::path::Path, cwd: &str) -> Result<()> {
+        let lines = [
+            serde_json::json!({
+                "type": "summary",
+                "summary": "summary without cwd"
+            }),
+            serde_json::json!({
+                "type": "system",
+                "cwd": cwd
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": "visible message" }
+            }),
+        ];
+        let body = lines
+            .into_iter()
+            .map(|line| serde_json::to_string(&line))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        std::fs::write(path, body)?;
+        Ok(())
+    }
 }

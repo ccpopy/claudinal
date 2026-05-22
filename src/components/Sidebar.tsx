@@ -1,20 +1,29 @@
 import { lazy, Suspense, useEffect, useMemo, useState, useCallback } from "react"
 import {
-  ChevronRight,
   Copy,
   FolderOpen,
   FolderPlus,
   History as HistoryIcon,
   Loader2,
   MessageSquarePlus,
+  MoreHorizontal,
   Pin,
+  PinOff,
   Puzzle,
   Search,
   Settings,
+  SquarePen,
   Trash2
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu"
 import { Kbd, KbdGroup } from "@/components/ui/kbd"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
@@ -34,6 +43,12 @@ import {
 import type { Project } from "@/lib/projects"
 import { isEditableShortcutTarget } from "@/lib/keyboard"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
+import {
+  listPinnedProjects,
+  prunePinnedProjects,
+  toggleProjectPin,
+  type PinnedProjectRef
+} from "@/lib/projectPins"
 import { listArchived, type ArchivedRef } from "@/lib/archivedSessions"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
 import {
@@ -94,6 +109,18 @@ function sameArchivedRefs(a: ArchivedRef[], b: ArchivedRef[]): boolean {
   )
 }
 
+function samePinnedProjectRefs(
+  a: PinnedProjectRef[],
+  b: PinnedProjectRef[]
+): boolean {
+  if (a.length !== b.length) return false
+  return a.every(
+    (item, index) =>
+      item.projectId === b[index]?.projectId &&
+      item.pinnedAt === b[index]?.pinnedAt
+  )
+}
+
 function sameStringSet(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false
   for (const value of a) {
@@ -122,6 +149,9 @@ export function Sidebar({
   refreshKey = 0
 }: Props) {
   const [searchOpen, setSearchOpen] = useState(false)
+  const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(
+    null
+  )
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(listSidebarExpandedProjectIds())
   )
@@ -130,10 +160,17 @@ export function Sidebar({
   >({})
   const [timeTick, setTimeTick] = useState(0)
   const [pinned, setPinned] = useState<PinnedRef[]>(() => listPinned())
+  const [pinnedProjects, setPinnedProjects] = useState<PinnedProjectRef[]>(
+    () => listPinnedProjects()
+  )
   const [archived, setArchived] = useState<ArchivedRef[]>(() => listArchived())
-  const pinnedProjectIds = useMemo(
+  const pinnedSessionProjectIds = useMemo(
     () => new Set(pinned.map((p) => p.projectId)),
     [pinned]
+  )
+  const pinnedProjectIds = useMemo(
+    () => new Set(pinnedProjects.map((p) => p.projectId)),
+    [pinnedProjects]
   )
   const streamingSet = useMemo(() => {
     const set = new Set<string>()
@@ -157,6 +194,12 @@ export function Sidebar({
     const next = listPinned()
     setPinned((cur) => (samePinnedRefs(cur, next) ? cur : next))
   }, [])
+  const refreshPinnedProjects = useCallback(() => {
+    const next = listPinnedProjects()
+    setPinnedProjects((cur) =>
+      samePinnedProjectRefs(cur, next) ? cur : next
+    )
+  }, [])
   const refreshArchived = useCallback(() => {
     const next = listArchived()
     setArchived((cur) => (sameArchivedRefs(cur, next) ? cur : next))
@@ -171,7 +214,20 @@ export function Sidebar({
     }
   }, [])
 
-  const filtered = projects
+  const filtered = useMemo(() => {
+    const pinOrder = new Map(
+      pinnedProjects.map((ref, index) => [ref.projectId, index])
+    )
+    return [...projects].sort((a, b) => {
+      const aPinned = pinnedProjectIds.has(a.id)
+      const bPinned = pinnedProjectIds.has(b.id)
+      if (aPinned !== bPinned) return aPinned ? -1 : 1
+      if (aPinned && bPinned) {
+        return (pinOrder.get(a.id) ?? 0) - (pinOrder.get(b.id) ?? 0)
+      }
+      return 0
+    })
+  }, [projects, pinnedProjects, pinnedProjectIds])
 
   const loadSessions = useCallback(async (p: Project) => {
     setSessionsByProject((cur) => {
@@ -198,20 +254,22 @@ export function Sidebar({
       if (
         p.id === selectedProjectId ||
         expanded.has(p.id) ||
-        pinnedProjectIds.has(p.id)
+        pinnedSessionProjectIds.has(p.id)
       ) {
         void loadSessions(p)
       }
     }
     refreshPinned()
+    refreshPinnedProjects()
     refreshArchived()
   }, [
     projects,
     selectedProjectId,
     expanded,
-    pinnedProjectIds,
+    pinnedSessionProjectIds,
     loadSessions,
     refreshPinned,
+    refreshPinnedProjects,
     refreshArchived
   ])
 
@@ -234,6 +292,10 @@ export function Sidebar({
       )
       return sameStringSet(cur, next) ? cur : next
     })
+    const nextPinnedProjects = prunePinnedProjects(validProjectIds)
+    setPinnedProjects((cur) =>
+      samePinnedProjectRefs(cur, nextPinnedProjects) ? cur : nextPinnedProjects
+    )
   }, [projects])
 
   useEffect(() => {
@@ -269,13 +331,7 @@ export function Sidebar({
   )
 
   useEffect(() => {
-    if (selectedProjectId && selectedSessionId) {
-      setExpanded((cur) => {
-        if (cur.has(selectedProjectId)) return cur
-        const next = new Set(cur)
-        next.add(selectedProjectId)
-        return next
-      })
+    if (selectedProjectId) {
       const selected = projects.find((p) => p.id === selectedProjectId)
       if (selected && !sessionsByProject[selected.id]) {
         loadSessions(selected)
@@ -283,7 +339,7 @@ export function Sidebar({
     }
     for (const p of projects) {
       if (
-        (expanded.has(p.id) || pinnedProjectIds.has(p.id)) &&
+        (expanded.has(p.id) || pinnedSessionProjectIds.has(p.id)) &&
         !sessionsByProject[p.id]
       ) {
         loadSessions(p)
@@ -291,12 +347,11 @@ export function Sidebar({
     }
   }, [
     selectedProjectId,
-    selectedSessionId,
     projects,
     sessionsByProject,
     loadSessions,
     expanded,
-    pinnedProjectIds
+    pinnedSessionProjectIds
   ])
 
   // notify watcher：只监听当前可见 / 置顶相关项目，避免启动时扫描所有项目。
@@ -306,7 +361,7 @@ export function Sidebar({
       (p) =>
         p.id === selectedProjectId ||
         expanded.has(p.id) ||
-        pinnedProjectIds.has(p.id)
+        pinnedSessionProjectIds.has(p.id)
     )
     const cwds = watched.map((p) => p.cwd)
     for (const p of watched) {
@@ -321,7 +376,13 @@ export function Sidebar({
       cleanups.forEach((u) => u())
       for (const cwd of cwds) unwatchSessions(cwd).catch(() => undefined)
     }
-  }, [projects, selectedProjectId, expanded, pinnedProjectIds, loadSessions])
+  }, [
+    projects,
+    selectedProjectId,
+    expanded,
+    pinnedSessionProjectIds,
+    loadSessions
+  ])
 
   // 主区触发的刷新（如发送消息后），只刷新当前可见 / 置顶相关项目；
   // 同时把 pinned / archived 重新读一次，确保 ChatHeader 改动后侧栏立即同步
@@ -360,6 +421,15 @@ export function Sidebar({
       toast.success(nowPinned ? "已置顶" : "已取消置顶")
     },
     [refreshPinned]
+  )
+
+  const toggleProjectPinAndRefresh = useCallback(
+    (projectId: string) => {
+      const nowPinned = toggleProjectPin(projectId)
+      refreshPinnedProjects()
+      toast.success(nowPinned ? "项目已置顶" : "已取消置顶")
+    },
+    [refreshPinnedProjects]
   )
 
   useEffect(() => {
@@ -488,6 +558,8 @@ export function Sidebar({
                   const isExpanded = expanded.has(p.id)
                   const isProjectSelected =
                     selectedProjectId === p.id && !selectedSessionId
+                  const isPinnedProject = pinnedProjectIds.has(p.id)
+                  const projectMenuOpen = openProjectMenuId === p.id
                   const sessionsState = sessionsByProject[p.id]
                   const visibleSessions =
                     sessionsState?.kind === "ok"
@@ -499,6 +571,7 @@ export function Sidebar({
                       : []
                   // 当一个项目的会话全部被置顶 / 归档后，从「项目」列表里隐藏
                   if (
+                    !isPinnedProject &&
                     sessionsState?.kind === "ok" &&
                     sessionsState.items.length > 0 &&
                     visibleSessions.length === 0
@@ -506,7 +579,11 @@ export function Sidebar({
                     return null
                   }
                   return (
-                    <div key={p.id} className="flex flex-col min-w-0">
+                    <Collapsible
+                      key={p.id}
+                      open={isExpanded}
+                      className="flex flex-col min-w-0"
+                    >
                       <div
                         className={cn(
                           "group relative flex items-center h-8 px-2 gap-1.5 rounded-md text-sm transition-colors min-w-0",
@@ -518,66 +595,84 @@ export function Sidebar({
                       >
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            toggleExpand(p)
-                          }}
-                          className="size-5 inline-flex items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground"
-                          aria-label={isExpanded ? "折叠" : "展开"}
+                          onClick={() => toggleExpand(p)}
+                          className="inline-flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
+                          aria-expanded={isExpanded}
+                          aria-label={`${isExpanded ? "折叠" : "展开"}项目 ${p.name}`}
                         >
-                          <ChevronRight
-                            className={cn(
-                              "size-3 transition-transform",
-                              isExpanded && "rotate-90"
-                            )}
-                          />
+                          <FolderOpen className="size-3.5 shrink-0 text-sidebar-foreground/60" />
+                          <span className="truncate">{p.name}</span>
+                          {isPinnedProject && (
+                            <Pin className="size-3 shrink-0 text-sidebar-foreground/50" />
+                          )}
                         </button>
-                        <FolderOpen className="size-3.5 shrink-0 text-sidebar-foreground/60" />
                         <button
                           type="button"
-                          onClick={() => onSelectProject(p)}
-                          className="truncate flex-1 min-w-0 text-left cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onSelectProject(p)
+                          }}
+                          className={cn(
+                            "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
+                            projectMenuOpen && "opacity-100"
+                          )}
+                          aria-label="在此项目新开会话"
                         >
-                          {p.name}
+                          <SquarePen className="size-3.5" />
                         </button>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
+                        <DropdownMenu
+                          open={projectMenuOpen}
+                          onOpenChange={(open) =>
+                            setOpenProjectMenuId(open ? p.id : null)
+                          }
+                        >
+                          <DropdownMenuTrigger asChild>
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
+                              onClick={(e) => e.stopPropagation()}
+                              className={cn(
+                                "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
+                                projectMenuOpen && "opacity-100"
+                              )}
+                              aria-label="更多项目操作"
+                            >
+                              <MoreHorizontal className="size-3.5" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            side="bottom"
+                            className="min-w-[180px]"
+                          >
+                            <DropdownMenuItem
+                              onSelect={() => toggleProjectPinAndRefresh(p.id)}
+                            >
+                              {isPinnedProject ? <PinOff /> : <Pin />}
+                              <span>{isPinnedProject ? "取消置顶" : "置顶项目"}</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() =>
                                 openPath(p.cwd).catch((err) =>
                                   toast.error(`打开失败: ${String(err)}`)
                                 )
-                              }}
-                              className="size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 group-hover:opacity-100 hover:text-sidebar-foreground transition-opacity"
-                              aria-label="在资源管理器中打开"
+                              }
                             >
-                              <FolderOpen className="size-3.5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="right">在资源管理器中打开</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                onRemove(p.id)
-                              }}
-                              className="size-5 inline-flex items-center justify-center rounded opacity-0 group-hover:opacity-100 text-destructive hover:bg-destructive/10 transition-opacity"
-                              aria-label="移除项目"
+                              <FolderOpen />
+                              <span>在资源管理器中打开</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() => onRemove(p.id)}
+                              className="text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"
                             >
-                              <Trash2 className="size-3.5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="right">从列表移除</TooltipContent>
-                        </Tooltip>
+                              <Trash2 />
+                              <span>移除</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
 
-                      {isExpanded && (
-                        <div className="mt-0.5 flex flex-col gap-0.5 min-w-0 max-w-full overflow-hidden">
+                      <CollapsibleContent className="sidebar-project-sessions min-w-0 max-w-full">
+                        <div className="flex flex-col gap-0.5 pt-0.5 min-w-0 max-w-full overflow-hidden">
                           {!sessionsState ||
                           sessionsState.kind === "idle" ||
                           sessionsState.kind === "loading" ? (
@@ -616,8 +711,8 @@ export function Sidebar({
                             ))
                           )}
                         </div>
-                      )}
-                    </div>
+                      </CollapsibleContent>
+                    </Collapsible>
                   )
                 })
               )}

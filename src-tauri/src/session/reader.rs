@@ -81,6 +81,28 @@ pub(crate) fn extract_cwd_from_jsonl(path: &Path) -> Option<String> {
     None
 }
 
+pub(crate) fn cwd_matches_jsonl(requested_cwd: &str, jsonl_cwd: &str) -> bool {
+    normalize_cwd_for_match(requested_cwd) == normalize_cwd_for_match(jsonl_cwd)
+}
+
+pub(crate) fn jsonl_belongs_to_cwd(requested_cwd: &str, path: &Path) -> bool {
+    extract_cwd_from_jsonl(path)
+        .as_deref()
+        .is_some_and(|jsonl_cwd| cwd_matches_jsonl(requested_cwd, jsonl_cwd))
+}
+
+fn normalize_cwd_for_match(cwd: &str) -> String {
+    let mut normalized = cwd.trim().replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
 pub(crate) fn project_dirs(cwd: &str) -> Result<Vec<PathBuf>> {
     let root = projects_root()?;
     let mut out = vec![root.join(encode_cwd(cwd))];
@@ -110,7 +132,7 @@ fn session_jsonl_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     let mut best: Option<(u64, PathBuf)> = None;
     for dir in project_dirs(cwd)? {
         let path = dir.join(format!("{}.jsonl", session_id));
-        if !path.is_file() {
+        if !path.is_file() || !jsonl_belongs_to_cwd(cwd, &path) {
             continue;
         }
         let modified_ts = std::fs::metadata(&path)
@@ -133,14 +155,6 @@ fn session_jsonl_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     Err(Error::Other(format!(
         "transcript not found for session: {session_id}"
     )))
-}
-
-fn sidecar_paths(cwd: &str, session_id: &str) -> Result<Vec<PathBuf>> {
-    validate_session_id(session_id)?;
-    Ok(project_dirs(cwd)?
-        .into_iter()
-        .map(|dir| dir.join(format!("{}.claudinal.json", session_id)))
-        .collect())
 }
 
 pub(crate) fn session_file_meta(path: &Path) -> Result<Option<SessionFileMeta>> {
@@ -371,23 +385,37 @@ pub(crate) fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>)
 }
 
 pub fn read_session_sidecar(cwd: &str, session_id: &str) -> Result<Option<serde_json::Value>> {
-    for path in sidecar_paths(cwd, session_id)? {
-        if !path.is_file() {
-            continue;
-        }
+    let path = match session_jsonl_path(cwd, session_id) {
+        Ok(path) => path.with_extension("claudinal.json"),
+        Err(_) => return Ok(None),
+    };
+    if path.is_file() {
         let raw = std::fs::read_to_string(&path)?;
         let v: serde_json::Value = serde_json::from_str(&raw)?;
-        return Ok(Some(v));
+        Ok(Some(v))
+    } else {
+        Ok(None)
     }
-    Ok(None)
 }
 
 pub fn write_session_sidecar(cwd: &str, session_id: &str, data: serde_json::Value) -> Result<()> {
     validate_session_id(session_id)?;
     let dir = session_jsonl_path(cwd, session_id)
-        .ok()
-        .and_then(|path| path.parent().map(|p| p.to_path_buf()))
-        .unwrap_or(primary_projects_dir(cwd)?);
+        .and_then(|path| {
+            path.parent().map(|p| p.to_path_buf()).ok_or_else(|| {
+                Error::Other(format!("transcript path has no parent: {}", path.display()))
+            })
+        })
+        .or_else(|_| {
+            let dir = primary_projects_dir(cwd)?;
+            if dir.is_dir() {
+                Ok(dir)
+            } else {
+                Err(Error::Other(format!(
+                    "transcript not found for session: {session_id}"
+                )))
+            }
+        })?;
     let path = dir.join(format!("{}.claudinal.json", session_id));
     if let Some(parent) = path.parent() {
         if !parent.is_dir() {
@@ -408,10 +436,12 @@ pub fn write_session_sidecar(cwd: &str, session_id: &str, data: serde_json::Valu
 pub fn delete_session_jsonl(cwd: &str, session_id: &str) -> Result<()> {
     validate_session_id(session_id)?;
     let mut removed = false;
+    let mut removed_sidecars = Vec::new();
     for dir in project_dirs(cwd)? {
         let path = dir.join(format!("{}.jsonl", session_id));
-        if path.is_file() {
+        if path.is_file() && jsonl_belongs_to_cwd(cwd, &path) {
             std::fs::remove_file(&path).map_err(Error::from)?;
+            removed_sidecars.push(path.with_extension("claudinal.json"));
             removed = true;
         }
     }
@@ -420,8 +450,8 @@ pub fn delete_session_jsonl(cwd: &str, session_id: &str) -> Result<()> {
             "transcript not found for session: {session_id}"
         )));
     }
-    // 同步删除所有兼容目录下的 sidecar（如果有）
-    for sidecar in sidecar_paths(cwd, session_id)? {
+    // 只删除已确认属于当前 cwd 的 transcript 同目录 sidecar，避免 encoded 目录碰撞时误删别的项目。
+    for sidecar in removed_sidecars {
         let _ = std::fs::remove_file(sidecar);
     }
     Ok(())
@@ -645,6 +675,58 @@ mod tests {
         // ASCII-only 路径下两个编码结果一致，应该只保留一个
         let ascii_dirs = project_dirs("F:\\project\\demo").expect("ascii dirs");
         assert_eq!(ascii_dirs.len(), 1);
+    }
+
+    #[test]
+    fn cwd_matches_jsonl_normalizes_separators_and_trailing_slashes() {
+        assert!(cwd_matches_jsonl(
+            "F:/project/claude-test/",
+            "F:\\project\\claude-test"
+        ));
+        assert!(!cwd_matches_jsonl(
+            "F:/project/claude-test",
+            "F:\\project\\claude_test"
+        ));
+    }
+
+    #[test]
+    fn jsonl_belongs_to_cwd_requires_matching_embedded_cwd() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-cwd-filter-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let matching = dir.join("matching.jsonl");
+        let foreign = dir.join("foreign.jsonl");
+        let missing = dir.join("missing.jsonl");
+        std::fs::write(
+            &matching,
+            serde_json::to_string(&serde_json::json!({
+                "type": "system",
+                "cwd": "F:\\project\\claude-test"
+            }))?,
+        )?;
+        std::fs::write(
+            &foreign,
+            serde_json::to_string(&serde_json::json!({
+                "type": "system",
+                "cwd": "F:\\project\\claude_test"
+            }))?,
+        )?;
+        std::fs::write(
+            &missing,
+            serde_json::to_string(&serde_json::json!({
+                "type": "system"
+            }))?,
+        )?;
+
+        assert!(jsonl_belongs_to_cwd("F:/project/claude-test", &matching));
+        assert!(!jsonl_belongs_to_cwd("F:/project/claude-test", &foreign));
+        assert!(!jsonl_belongs_to_cwd("F:/project/claude-test", &missing));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
