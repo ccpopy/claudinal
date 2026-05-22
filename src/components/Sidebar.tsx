@@ -229,6 +229,15 @@ export function Sidebar({
     })
   }, [projects, pinnedProjects, pinnedProjectIds])
 
+  const pinnedProjectList = useMemo(
+    () => filtered.filter((p) => pinnedProjectIds.has(p.id)),
+    [filtered, pinnedProjectIds]
+  )
+  const unpinnedProjectList = useMemo(
+    () => filtered.filter((p) => !pinnedProjectIds.has(p.id)),
+    [filtered, pinnedProjectIds]
+  )
+
   const loadSessions = useCallback(async (p: Project) => {
     setSessionsByProject((cur) => {
       const existing = cur[p.id]
@@ -398,6 +407,16 @@ export function Sidebar({
   const pinnedSet = new Set(
     pinned.map((p) => `${p.projectId}::${p.sessionId}`)
   )
+  const computeVisibleSessions = (p: Project): SessionMeta[] => {
+    const state = sessionsByProject[p.id]
+    return state?.kind === "ok"
+      ? state.items.filter(
+          (s) =>
+            !pinnedSet.has(`${p.id}::${s.id}`) &&
+            !archivedSet.has(`${p.id}::${s.id}`)
+        )
+      : []
+  }
   const pinnedItems = pinned
     .map((pr) => {
       // 已归档不出现在置顶区
@@ -498,7 +517,7 @@ export function Sidebar({
 
       <ScrollArea className="flex-1 min-h-0 min-w-0 mt-2">
         <div className="px-2 pb-2 flex flex-col gap-2 min-w-0 max-w-full overflow-hidden">
-          {pinnedItems.length > 0 && (
+          {(pinnedItems.length > 0 || pinnedProjectList.length > 0) && (
             <div className="flex flex-col">
               <div className="flex h-7 items-center px-2 text-xs font-medium text-sidebar-foreground/60">
                 置顶
@@ -522,6 +541,41 @@ export function Sidebar({
                     onCopyId={() => copyText(session.id, "会话 ID")}
                     onTogglePin={() =>
                       togglePinAndRefresh(project.id, session.id)
+                    }
+                  />
+                ))}
+                {pinnedProjectList.map((p) => (
+                  <ProjectNode
+                    key={p.id}
+                    project={p}
+                    isExpanded={expanded.has(p.id)}
+                    isSelected={
+                      selectedProjectId === p.id && !selectedSessionId
+                    }
+                    isPinned
+                    menuOpen={openProjectMenuId === p.id}
+                    sessionsState={sessionsByProject[p.id]}
+                    visibleSessions={computeVisibleSessions(p)}
+                    selectedProjectId={selectedProjectId}
+                    selectedSessionId={selectedSessionId}
+                    streamingSet={streamingSet}
+                    waitingSet={waitingSet}
+                    onMenuOpenChange={(open) =>
+                      setOpenProjectMenuId(open ? p.id : null)
+                    }
+                    onToggleExpand={() => toggleExpand(p)}
+                    onOpenProject={() => onSelectProject(p)}
+                    onTogglePin={() => toggleProjectPinAndRefresh(p.id)}
+                    onOpenInExplorer={() =>
+                      openPath(p.cwd).catch((err) =>
+                        toast.error(`打开失败: ${String(err)}`)
+                      )
+                    }
+                    onRemove={() => onRemove(p.id)}
+                    onSelectSession={(s) => onSelectSession(p, s)}
+                    onCopySessionId={(s) => copyText(s.id, "会话 ID")}
+                    onToggleSessionPin={(s) =>
+                      togglePinAndRefresh(p.id, s.id)
                     }
                   />
                 ))}
@@ -549,29 +603,18 @@ export function Sidebar({
               </Tooltip>
             </div>
             <div className="flex flex-col gap-0.5">
-              {filtered.length === 0 ? (
-                <div className="px-2 py-6 text-center text-xs text-sidebar-foreground/60">
-                  {projects.length === 0 ? "暂无项目，点击 + 添加" : "无匹配"}
-                </div>
+              {unpinnedProjectList.length === 0 ? (
+                projects.length === 0 ? (
+                  <div className="px-2 py-6 text-center text-xs text-sidebar-foreground/60">
+                    暂无项目，点击 + 添加
+                  </div>
+                ) : null
               ) : (
-                filtered.map((p) => {
-                  const isExpanded = expanded.has(p.id)
-                  const isProjectSelected =
-                    selectedProjectId === p.id && !selectedSessionId
-                  const isPinnedProject = pinnedProjectIds.has(p.id)
-                  const projectMenuOpen = openProjectMenuId === p.id
+                unpinnedProjectList.map((p) => {
                   const sessionsState = sessionsByProject[p.id]
-                  const visibleSessions =
-                    sessionsState?.kind === "ok"
-                      ? sessionsState.items.filter(
-                          (s) =>
-                            !pinnedSet.has(`${p.id}::${s.id}`) &&
-                            !archivedSet.has(`${p.id}::${s.id}`)
-                        )
-                      : []
+                  const visibleSessions = computeVisibleSessions(p)
                   // 当一个项目的会话全部被置顶 / 归档后，从「项目」列表里隐藏
                   if (
-                    !isPinnedProject &&
                     sessionsState?.kind === "ok" &&
                     sessionsState.items.length > 0 &&
                     visibleSessions.length === 0
@@ -579,140 +622,37 @@ export function Sidebar({
                     return null
                   }
                   return (
-                    <Collapsible
+                    <ProjectNode
                       key={p.id}
-                      open={isExpanded}
-                      className="flex flex-col min-w-0"
-                    >
-                      <div
-                        className={cn(
-                          "group relative flex items-center h-8 px-2 gap-1.5 rounded-md text-sm transition-colors min-w-0",
-                          isProjectSelected
-                            ? "bg-sidebar-accent text-sidebar-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-r before:bg-primary before:content-['']"
-                            : "hover:bg-sidebar-accent/50"
-                        )}
-                        title={p.cwd}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => toggleExpand(p)}
-                          className="inline-flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
-                          aria-expanded={isExpanded}
-                          aria-label={`${isExpanded ? "折叠" : "展开"}项目 ${p.name}`}
-                        >
-                          <FolderOpen className="size-3.5 shrink-0 text-sidebar-foreground/60" />
-                          <span className="truncate">{p.name}</span>
-                          {isPinnedProject && (
-                            <Pin className="size-3 shrink-0 text-sidebar-foreground/50" />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onSelectProject(p)
-                          }}
-                          className={cn(
-                            "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
-                            projectMenuOpen && "opacity-100"
-                          )}
-                          aria-label="在此项目新开会话"
-                        >
-                          <SquarePen className="size-3.5" />
-                        </button>
-                        <DropdownMenu
-                          open={projectMenuOpen}
-                          onOpenChange={(open) =>
-                            setOpenProjectMenuId(open ? p.id : null)
-                          }
-                        >
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={(e) => e.stopPropagation()}
-                              className={cn(
-                                "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
-                                projectMenuOpen && "opacity-100"
-                              )}
-                              aria-label="更多项目操作"
-                            >
-                              <MoreHorizontal className="size-3.5" />
-                            </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            align="end"
-                            side="bottom"
-                            className="min-w-[180px]"
-                          >
-                            <DropdownMenuItem
-                              onSelect={() => toggleProjectPinAndRefresh(p.id)}
-                            >
-                              {isPinnedProject ? <PinOff /> : <Pin />}
-                              <span>{isPinnedProject ? "取消置顶" : "置顶项目"}</span>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onSelect={() =>
-                                openPath(p.cwd).catch((err) =>
-                                  toast.error(`打开失败: ${String(err)}`)
-                                )
-                              }
-                            >
-                              <FolderOpen />
-                              <span>在资源管理器中打开</span>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onSelect={() => onRemove(p.id)}
-                              className="text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"
-                            >
-                              <Trash2 />
-                              <span>移除</span>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-
-                      <CollapsibleContent className="sidebar-project-sessions min-w-0 max-w-full">
-                        <div className="flex flex-col gap-0.5 pt-0.5 min-w-0 max-w-full overflow-hidden">
-                          {!sessionsState ||
-                          sessionsState.kind === "idle" ||
-                          sessionsState.kind === "loading" ? (
-                            <div className="px-2 py-1 text-xs text-sidebar-foreground/60">
-                              加载中…
-                            </div>
-                          ) : sessionsState.kind === "error" ? (
-                            <div className="px-2 py-1 text-xs text-destructive break-all">
-                              {sessionsState.message}
-                            </div>
-                          ) : visibleSessions.length === 0 ? (
-                            <div className="py-1 pl-8 pr-2 text-xs text-sidebar-foreground/60">
-                              暂无历史会话
-                            </div>
-                          ) : (
-                            visibleSessions.map((s) => (
-                              <SessionRow
-                                key={s.id}
-                                project={p}
-                                session={s}
-                                pinned={false}
-                                active={
-                                  selectedProjectId === p.id &&
-                                  selectedSessionId === s.id
-                                }
-                                streaming={
-                                  streamingSet.has(`${p.id}::${s.id}`)
-                                }
-                                waiting={waitingSet.has(`${p.id}::${s.id}`)}
-                                onSelect={() => onSelectSession(p, s)}
-                                onCopyId={() => copyText(s.id, "会话 ID")}
-                                onTogglePin={() =>
-                                  togglePinAndRefresh(p.id, s.id)
-                                }
-                              />
-                            ))
-                          )}
-                        </div>
-                      </CollapsibleContent>
-                    </Collapsible>
+                      project={p}
+                      isExpanded={expanded.has(p.id)}
+                      isSelected={
+                        selectedProjectId === p.id && !selectedSessionId
+                      }
+                      isPinned={false}
+                      menuOpen={openProjectMenuId === p.id}
+                      sessionsState={sessionsState}
+                      visibleSessions={visibleSessions}
+                      selectedProjectId={selectedProjectId}
+                      selectedSessionId={selectedSessionId}
+                      streamingSet={streamingSet}
+                      waitingSet={waitingSet}
+                      onMenuOpenChange={(open) =>
+                        setOpenProjectMenuId(open ? p.id : null)
+                      }
+                      onToggleExpand={() => toggleExpand(p)}
+                      onOpenProject={() => onSelectProject(p)}
+                      onTogglePin={() => toggleProjectPinAndRefresh(p.id)}
+                      onOpenInExplorer={() =>
+                        openPath(p.cwd).catch((err) =>
+                          toast.error(`打开失败: ${String(err)}`)
+                        )
+                      }
+                      onRemove={() => onRemove(p.id)}
+                      onSelectSession={(s) => onSelectSession(p, s)}
+                      onCopySessionId={(s) => copyText(s.id, "会话 ID")}
+                      onToggleSessionPin={(s) => togglePinAndRefresh(p.id, s.id)}
+                    />
                   )
                 })
               )}
@@ -841,5 +781,162 @@ function SessionRow({
         <TooltipContent side="right">复制会话 ID</TooltipContent>
       </Tooltip>
     </div>
+  )
+}
+
+function ProjectNode({
+  project,
+  isExpanded,
+  isSelected,
+  isPinned,
+  menuOpen,
+  sessionsState,
+  visibleSessions,
+  selectedProjectId,
+  selectedSessionId,
+  streamingSet,
+  waitingSet,
+  onMenuOpenChange,
+  onToggleExpand,
+  onOpenProject,
+  onTogglePin,
+  onOpenInExplorer,
+  onRemove,
+  onSelectSession,
+  onCopySessionId,
+  onToggleSessionPin
+}: {
+  project: Project
+  isExpanded: boolean
+  isSelected: boolean
+  isPinned: boolean
+  menuOpen: boolean
+  sessionsState: SessionListState | undefined
+  visibleSessions: SessionMeta[]
+  selectedProjectId: string | null
+  selectedSessionId: string | null
+  streamingSet: Set<string>
+  waitingSet: Set<string>
+  onMenuOpenChange: (open: boolean) => void
+  onToggleExpand: () => void
+  onOpenProject: () => void
+  onTogglePin: () => void
+  onOpenInExplorer: () => void
+  onRemove: () => void
+  onSelectSession: (session: SessionMeta) => void
+  onCopySessionId: (session: SessionMeta) => void
+  onToggleSessionPin: (session: SessionMeta) => void
+}) {
+  return (
+    <Collapsible open={isExpanded} className="flex flex-col min-w-0">
+      <div
+        className={cn(
+          "group relative flex items-center h-8 px-2 gap-1.5 rounded-md text-sm transition-colors min-w-0",
+          isSelected
+            ? "bg-sidebar-accent text-sidebar-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-r before:bg-primary before:content-['']"
+            : "hover:bg-sidebar-accent/50"
+        )}
+        title={project.cwd}
+      >
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="inline-flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
+          aria-expanded={isExpanded}
+          aria-label={`${isExpanded ? "折叠" : "展开"}项目 ${project.name}`}
+        >
+          <FolderOpen className="size-3.5 shrink-0 text-sidebar-foreground/60" />
+          <span className="truncate">{project.name}</span>
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenProject()
+          }}
+          className={cn(
+            "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
+            menuOpen && "opacity-100"
+          )}
+          aria-label="在此项目新开会话"
+        >
+          <SquarePen className="size-3.5" />
+        </button>
+        <DropdownMenu open={menuOpen} onOpenChange={onMenuOpenChange}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={(e) => e.stopPropagation()}
+              className={cn(
+                "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
+                menuOpen && "opacity-100"
+              )}
+              aria-label="更多项目操作"
+            >
+              <MoreHorizontal className="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            side="bottom"
+            className="min-w-[180px]"
+          >
+            <DropdownMenuItem onSelect={onTogglePin}>
+              {isPinned ? <PinOff /> : <Pin />}
+              <span>{isPinned ? "取消置顶" : "置顶项目"}</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onOpenInExplorer}>
+              <FolderOpen />
+              <span>在资源管理器中打开</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={onRemove}
+              className="text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"
+            >
+              <Trash2 />
+              <span>移除</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      <CollapsibleContent className="sidebar-project-sessions min-w-0 max-w-full">
+        <div className="flex flex-col gap-0.5 pt-0.5 min-w-0 max-w-full overflow-hidden">
+          {!sessionsState ||
+          sessionsState.kind === "idle" ||
+          sessionsState.kind === "loading" ? (
+            <div className="px-2 py-1 text-xs text-sidebar-foreground/60">
+              加载中…
+            </div>
+          ) : sessionsState.kind === "error" ? (
+            <div className="px-2 py-1 text-xs text-destructive break-all">
+              {sessionsState.message}
+            </div>
+          ) : visibleSessions.length === 0 ? (
+            <div className="py-1 pl-8 pr-2 text-xs text-sidebar-foreground/60">
+              暂无历史会话
+            </div>
+          ) : (
+            visibleSessions.map((s) => (
+              <SessionRow
+                key={s.id}
+                project={project}
+                session={s}
+                pinned={false}
+                active={
+                  selectedProjectId === project.id &&
+                  selectedSessionId === s.id
+                }
+                streaming={streamingSet.has(`${project.id}::${s.id}`)}
+                waiting={waitingSet.has(`${project.id}::${s.id}`)}
+                onSelect={() => onSelectSession(s)}
+                onCopyId={() => onCopySessionId(s)}
+                onTogglePin={() => onToggleSessionPin(s)}
+              />
+            ))
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }

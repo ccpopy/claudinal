@@ -2711,41 +2711,47 @@ export default function App() {
             </Suspense>
           ) : (
           <div className="flex min-h-0 flex-1 gap-1.5 bg-sidebar p-1.5 pt-1.5">
-            {sidebarVisible && (
-              <Suspense fallback={<SidebarLoader />}>
-                <Sidebar
-                  projects={projects}
-                  selectedProjectId={project?.id ?? null}
-                  selectedSessionId={selectedSessionId}
-                  streamingProjectId={streaming ? project?.id ?? null : null}
-                  streamingSessionId={streamingJsonlId}
-                  streamingSessionRefs={streamingSessionRefs}
-                  waitingSessionRefs={permissionWaitingSessionRefs}
-                  inPlugins={showPlugins}
-                  onSelectProject={(p) => {
-                    setShowPlugins(false)
-                    setShowHistory(false)
-                    switchProject(p)
-                  }}
-                  onSelectSession={(p, s) => {
-                    setShowPlugins(false)
-                    setShowHistory(false)
-                    switchSession(p, s)
-                  }}
-                  onAdd={() => setShowAdd(true)}
-                  onRemove={handleRemove}
-                  onNewConversation={() => {
-                    setShowPlugins(false)
-                    setShowHistory(false)
-                    void newConversation()
-                  }}
-                  onOpenSettings={() => openSettings()}
-                  onOpenPlugins={openPlugins}
-                  onOpenHistory={openHistory}
-                  refreshKey={sidebarRefreshKey}
-                />
-              </Suspense>
-            )}
+            <div
+              className="sidebar-pane shrink-0 overflow-hidden"
+              data-collapsed={!sidebarVisible || undefined}
+              inert={!sidebarVisible}
+            >
+              <div className="sidebar-pane__inner">
+                <Suspense fallback={<SidebarLoader />}>
+                  <Sidebar
+                    projects={projects}
+                    selectedProjectId={project?.id ?? null}
+                    selectedSessionId={selectedSessionId}
+                    streamingProjectId={streaming ? project?.id ?? null : null}
+                    streamingSessionId={streamingJsonlId}
+                    streamingSessionRefs={streamingSessionRefs}
+                    waitingSessionRefs={permissionWaitingSessionRefs}
+                    inPlugins={showPlugins}
+                    onSelectProject={(p) => {
+                      setShowPlugins(false)
+                      setShowHistory(false)
+                      switchProject(p)
+                    }}
+                    onSelectSession={(p, s) => {
+                      setShowPlugins(false)
+                      setShowHistory(false)
+                      switchSession(p, s)
+                    }}
+                    onAdd={() => setShowAdd(true)}
+                    onRemove={handleRemove}
+                    onNewConversation={() => {
+                      setShowPlugins(false)
+                      setShowHistory(false)
+                      void newConversation()
+                    }}
+                    onOpenSettings={() => openSettings()}
+                    onOpenPlugins={openPlugins}
+                    onOpenHistory={openHistory}
+                    refreshKey={sidebarRefreshKey}
+                  />
+                </Suspense>
+              </div>
+            </div>
 
             <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background rounded-lg border overflow-hidden">
             {showPlugins ? (
