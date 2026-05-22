@@ -42,6 +42,11 @@ export interface ThirdPartyApiConfig {
   enablePromptCaching1h: boolean
   cchRewriteEnabled: boolean
   cchSeed: string
+  disableTelemetry: boolean
+  hideAiAttribution: boolean
+  agentTeamsEnabled: boolean
+  toolSearchEnabled: boolean
+  maxThinkingEnabled: boolean
   mainAlias: ClaudeModelAlias
   availableModels: string[]
   models: ModelMapping
@@ -76,6 +81,11 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
   enablePromptCaching1h: true,
   cchRewriteEnabled: false,
   cchSeed: "",
+  disableTelemetry: false,
+  hideAiAttribution: false,
+  agentTeamsEnabled: false,
+  toolSearchEnabled: false,
+  maxThinkingEnabled: false,
   mainAlias: "sonnet",
   availableModels: [],
   runtimeSettingsJson: "",
@@ -104,7 +114,11 @@ const MANAGED_ENV_KEYS = [
   "CLAUDE_CODE_SUBAGENT_MODEL",
   "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
   "CLAUDE_CODE_ATTRIBUTION_HEADER",
+  "DISABLE_TELEMETRY",
   "ENABLE_PROMPT_CACHING_1H",
+  "ENABLE_TOOL_SEARCH",
+  "CLAUDE_CODE_EFFORT_LEVEL",
+  "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
   "ANTHROPIC_CUSTOM_MODEL_OPTION",
   "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
   "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
@@ -126,6 +140,11 @@ const MANAGED_ENV_KEYS = [
 
 export const CLAUDINAL_RUNTIME_SETTINGS_JSON_ENV_KEY =
   "CLAUDINAL_RUNTIME_SETTINGS_JSON"
+
+const EMPTY_ATTRIBUTION_SETTINGS = {
+  commit: "",
+  pr: ""
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -253,7 +272,7 @@ export function thirdPartyApiRuntimeProfileKey(
   if (!config.enabled) return "official"
   const providerId = providerProfileId(config)
   const profile = {
-    version: 3,
+    version: 4,
     providerId,
     requestUrl: trimApiUrl(config.requestUrl),
     inputFormat: config.inputFormat,
@@ -263,6 +282,11 @@ export function thirdPartyApiRuntimeProfileKey(
     enablePromptCaching1h: config.enablePromptCaching1h,
     cchRewriteEnabled: config.cchRewriteEnabled,
     cchSeed: config.cchSeed.trim(),
+    disableTelemetry: config.disableTelemetry,
+    hideAiAttribution: config.hideAiAttribution,
+    agentTeamsEnabled: config.agentTeamsEnabled,
+    toolSearchEnabled: config.toolSearchEnabled,
+    maxThinkingEnabled: config.maxThinkingEnabled,
     models: {
       mainModel: config.models.mainModel.trim(),
       haikuModel: config.models.haikuModel.trim(),
@@ -363,6 +387,26 @@ export function normalizeThirdPartyApiConfig(
       DEFAULT_THIRD_PARTY_API.cchRewriteEnabled
     ),
     cchSeed: cleanString(raw?.cchSeed),
+    disableTelemetry: cleanBoolean(
+      raw?.disableTelemetry,
+      DEFAULT_THIRD_PARTY_API.disableTelemetry
+    ),
+    hideAiAttribution: cleanBoolean(
+      raw?.hideAiAttribution,
+      DEFAULT_THIRD_PARTY_API.hideAiAttribution
+    ),
+    agentTeamsEnabled: cleanBoolean(
+      raw?.agentTeamsEnabled,
+      DEFAULT_THIRD_PARTY_API.agentTeamsEnabled
+    ),
+    toolSearchEnabled: cleanBoolean(
+      raw?.toolSearchEnabled,
+      DEFAULT_THIRD_PARTY_API.toolSearchEnabled
+    ),
+    maxThinkingEnabled: cleanBoolean(
+      raw?.maxThinkingEnabled,
+      DEFAULT_THIRD_PARTY_API.maxThinkingEnabled
+    ),
     mainAlias: asClaudeModelAlias(raw?.mainAlias) ?? inferMainAlias(models),
     availableModels: cleanStringArray(raw?.availableModels),
     runtimeSettingsJson: cleanString(raw?.runtimeSettingsJson),
@@ -432,11 +476,34 @@ function mergeRuntimeSettingsEnv(
   return next
 }
 
+function ensureRuntimeSettingNotManaged(
+  settings: Record<string, unknown>,
+  key: string,
+  owner: string
+): void {
+  if (!Object.prototype.hasOwnProperty.call(settings, key)) return
+  throw new Error(
+    `运行时 settings.${key} 由 Claudinal 的“${owner}”开关管理，请移除手写配置或关闭该开关`
+  )
+}
+
+function buildRuntimeSettingsExtra(
+  config: ThirdPartyApiConfig
+): Record<string, unknown> {
+  const settings = parseRuntimeSettingsJson(config.runtimeSettingsJson)
+  const next: Record<string, unknown> = { ...settings }
+  if (config.hideAiAttribution) {
+    ensureRuntimeSettingNotManaged(next, "attribution", "隐藏 AI 署名")
+    next.attribution = { ...EMPTY_ATTRIBUTION_SETTINGS }
+  }
+  return next
+}
+
 export function buildClaudeRuntimeSettingsPreview(
   config: ThirdPartyApiConfig,
   existingEnv?: Record<string, string>
 ): Record<string, unknown> {
-  const settings = parseRuntimeSettingsJson(config.runtimeSettingsJson)
+  const settings = buildRuntimeSettingsExtra(config)
   return mergeRuntimeSettingsEnv(settings, buildClaudeEnv(config, existingEnv))
 }
 
@@ -824,8 +891,20 @@ export function buildClaudeEnv(
   } else if (config.cchRewriteEnabled) {
     next.CLAUDINAL_PROXY_CCH_SEED = config.cchSeed.trim()
   }
+  if (config.disableTelemetry) {
+    next.DISABLE_TELEMETRY = "1"
+  }
   if (config.enablePromptCaching1h) {
     next.ENABLE_PROMPT_CACHING_1H = "1"
+  }
+  if (config.agentTeamsEnabled) {
+    next.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
+  }
+  if (config.toolSearchEnabled) {
+    next.ENABLE_TOOL_SEARCH = "true"
+  }
+  if (config.maxThinkingEnabled) {
+    next.CLAUDE_CODE_EFFORT_LEVEL = "max"
   }
   if (mainModel) {
     next.ANTHROPIC_MODEL = mainModel
@@ -856,10 +935,10 @@ export function buildClaudeLaunchEnv(
   existingEnv?: Record<string, string>
 ): Record<string, string> {
   const next = buildClaudeEnv(config, existingEnv)
-  const runtimeSettingsJson = config.runtimeSettingsJson.trim()
-  if (runtimeSettingsJson) {
-    parseRuntimeSettingsJson(runtimeSettingsJson)
-    next[CLAUDINAL_RUNTIME_SETTINGS_JSON_ENV_KEY] = runtimeSettingsJson
+  const runtimeSettings = buildRuntimeSettingsExtra(config)
+  if (Object.keys(runtimeSettings).length > 0) {
+    next[CLAUDINAL_RUNTIME_SETTINGS_JSON_ENV_KEY] =
+      JSON.stringify(runtimeSettings)
   }
   return next
 }

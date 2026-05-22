@@ -38,7 +38,6 @@ import {
   loadThirdPartyApiStoreAsync,
   maskSecret,
   OFFICIAL_PROVIDER_ID,
-  parseRuntimeSettingsJson,
   providerModelInputOptions,
   saveThirdPartyApiStoreAsync,
   trimApiUrl,
@@ -357,7 +356,7 @@ export function ThirdPartyApi() {
       return false
     }
     try {
-      parseRuntimeSettingsJson(target.runtimeSettingsJson)
+      buildClaudeRuntimeSettingsPreview(target)
     } catch (error) {
       toast.error(String(error))
       return false
@@ -776,6 +775,58 @@ export function ThirdPartyApi() {
                     </div>
                   </div>
                 )}
+                <div className="space-y-3 rounded-md border bg-background px-3 py-3">
+                  <RuntimeOption
+                    id="third-party-disable-telemetry"
+                    checked={editorConfig.disableTelemetry}
+                    disabled={loading || saving}
+                    label="单独禁用遥测"
+                    description="写入 DISABLE_TELEMETRY=1；如果上方缓存命中率优化已开启，CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 已经包含这个效果。"
+                    onCheckedChange={(disableTelemetry) =>
+                      update({ disableTelemetry })
+                    }
+                  />
+                  <RuntimeOption
+                    id="third-party-hide-ai-attribution"
+                    checked={editorConfig.hideAiAttribution}
+                    disabled={loading || saving}
+                    label="隐藏 AI 署名"
+                    description="写入空的 attribution.commit 与 attribution.pr，只影响本供应商启动的新会话。"
+                    onCheckedChange={(hideAiAttribution) =>
+                      update({ hideAiAttribution })
+                    }
+                  />
+                  <RuntimeOption
+                    id="third-party-agent-teams"
+                    checked={editorConfig.agentTeamsEnabled}
+                    disabled={loading || saving}
+                    label="启用 Teammates 模式"
+                    description="写入 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1，显示方式保留 Claude Code 默认的 teammateMode。"
+                    onCheckedChange={(agentTeamsEnabled) =>
+                      update({ agentTeamsEnabled })
+                    }
+                  />
+                  <RuntimeOption
+                    id="third-party-tool-search"
+                    checked={editorConfig.toolSearchEnabled}
+                    disabled={loading || saving}
+                    label="启用 Tool Search"
+                    description="写入 ENABLE_TOOL_SEARCH=true；仅在第三方网关支持 tool_reference 时开启。"
+                    onCheckedChange={(toolSearchEnabled) =>
+                      update({ toolSearchEnabled })
+                    }
+                  />
+                  <RuntimeOption
+                    id="third-party-max-thinking"
+                    checked={editorConfig.maxThinkingEnabled}
+                    disabled={loading || saving}
+                    label="最大强度思考"
+                    description="写入 CLAUDE_CODE_EFFORT_LEVEL=max；由 Claude Code 按当前模型支持情况决定是否生效。"
+                    onCheckedChange={(maxThinkingEnabled) =>
+                      update({ maxThinkingEnabled })
+                    }
+                  />
+                </div>
               </div>
               <Textarea
                 value={editorConfig.runtimeSettingsJson}

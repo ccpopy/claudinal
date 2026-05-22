@@ -905,7 +905,11 @@ const RUNTIME_CLAUDE_SETTINGS_ENV_KEYS: &[&str] = &[
     "CLAUDE_CODE_SUBAGENT_MODEL",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ATTRIBUTION_HEADER",
+    "DISABLE_TELEMETRY",
     "ENABLE_PROMPT_CACHING_1H",
+    "ENABLE_TOOL_SEARCH",
+    "CLAUDE_CODE_EFFORT_LEVEL",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
     "ANTHROPIC_CUSTOM_MODEL_OPTION",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
@@ -3279,6 +3283,10 @@ mod tests {
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
             "1".into(),
         );
+        env.insert("DISABLE_TELEMETRY".into(), "1".into());
+        env.insert("ENABLE_TOOL_SEARCH".into(), "true".into());
+        env.insert("CLAUDE_CODE_EFFORT_LEVEL".into(), "max".into());
+        env.insert("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".into(), "1".into());
 
         let raw = runtime_claude_settings_json(&env, None)
             .expect("settings json")
@@ -3303,6 +3311,23 @@ mod tests {
         );
         assert_eq!(
             env.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+                .and_then(Value::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("DISABLE_TELEMETRY").and_then(Value::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("ENABLE_TOOL_SEARCH").and_then(Value::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_EFFORT_LEVEL").and_then(Value::as_str),
+            Some("max")
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
                 .and_then(Value::as_str),
             Some("1")
         );
@@ -3366,6 +3391,16 @@ mod tests {
         assert!(err
             .to_string()
             .contains("运行时 settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER 由 Claudinal 管理"));
+
+        let extra = serde_json::json!({
+            "env": {
+                "ENABLE_TOOL_SEARCH": "true"
+            }
+        });
+        let err = runtime_claude_settings_json(&env, Some(extra)).expect_err("managed key");
+        assert!(err
+            .to_string()
+            .contains("运行时 settings.env.ENABLE_TOOL_SEARCH 由 Claudinal 管理"));
     }
 
     #[test]

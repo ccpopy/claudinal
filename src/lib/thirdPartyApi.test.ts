@@ -49,6 +49,11 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(cfg.enablePromptCaching1h).toBe(true)
     expect(cfg.cchRewriteEnabled).toBe(false)
     expect(cfg.cchSeed).toBe("")
+    expect(cfg.disableTelemetry).toBe(false)
+    expect(cfg.hideAiAttribution).toBe(false)
+    expect(cfg.agentTeamsEnabled).toBe(false)
+    expect(cfg.toolSearchEnabled).toBe(false)
+    expect(cfg.maxThinkingEnabled).toBe(false)
     expect(cfg.mainAlias).toBe("sonnet")
     expect(cfg.availableModels).toEqual([])
     expect(cfg.runtimeSettingsJson).toBe("")
@@ -75,19 +80,39 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
       cacheHitOptimizationEnabled: false,
       enablePromptCaching1h: false,
       cchRewriteEnabled: true,
-      cchSeed: "0x6E52736AC806831E"
+      cchSeed: "0x6E52736AC806831E",
+      disableTelemetry: true,
+      hideAiAttribution: true,
+      agentTeamsEnabled: true,
+      toolSearchEnabled: true,
+      maxThinkingEnabled: true
     })
     expect(cfg.cacheHitOptimizationEnabled).toBe(false)
     expect(cfg.enablePromptCaching1h).toBe(false)
     expect(cfg.cchRewriteEnabled).toBe(true)
     expect(cfg.cchSeed).toBe("0x6E52736AC806831E")
+    expect(cfg.disableTelemetry).toBe(true)
+    expect(cfg.hideAiAttribution).toBe(true)
+    expect(cfg.agentTeamsEnabled).toBe(true)
+    expect(cfg.toolSearchEnabled).toBe(true)
+    expect(cfg.maxThinkingEnabled).toBe(true)
 
     const invalid = normalizeThirdPartyApiConfig({
       cacheHitOptimizationEnabled: "false" as never,
-      enablePromptCaching1h: "false" as never
+      enablePromptCaching1h: "false" as never,
+      disableTelemetry: "true" as never,
+      hideAiAttribution: "true" as never,
+      agentTeamsEnabled: "true" as never,
+      toolSearchEnabled: "true" as never,
+      maxThinkingEnabled: "true" as never
     })
     expect(invalid.cacheHitOptimizationEnabled).toBe(true)
     expect(invalid.enablePromptCaching1h).toBe(true)
+    expect(invalid.disableTelemetry).toBe(false)
+    expect(invalid.hideAiAttribution).toBe(false)
+    expect(invalid.agentTeamsEnabled).toBe(false)
+    expect(invalid.toolSearchEnabled).toBe(false)
+    expect(invalid.maxThinkingEnabled).toBe(false)
   })
 
   it("migrates legacy disableAttributionHeader to cacheHitOptimizationEnabled", () => {
@@ -158,6 +183,12 @@ describe("thirdPartyApi.runtimeSettings", () => {
     ).toThrow(
       "运行时 settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 由 Claudinal 管理"
     )
+    expect(() =>
+      parseRuntimeSettingsJson('{"env":{"ENABLE_TOOL_SEARCH":"true"}}')
+    ).toThrow("运行时 settings.env.ENABLE_TOOL_SEARCH 由 Claudinal 管理")
+    expect(() =>
+      parseRuntimeSettingsJson('{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"max"}}')
+    ).toThrow("运行时 settings.env.CLAUDE_CODE_EFFORT_LEVEL 由 Claudinal 管理")
   })
 
   it("merges provider runtime settings with generated Claude env for preview", () => {
@@ -179,6 +210,36 @@ describe("thirdPartyApi.runtimeSettings", () => {
     })
   })
 
+  it("adds managed top-level runtime settings for optional behavior switches", () => {
+    const settings = buildClaudeRuntimeSettingsPreview(
+      makeConfig({
+        hideAiAttribution: true,
+        disableTelemetry: true,
+        agentTeamsEnabled: true,
+        toolSearchEnabled: true,
+        maxThinkingEnabled: true
+      })
+    )
+    expect(settings.attribution).toEqual({ commit: "", pr: "" })
+    expect(settings.env).toMatchObject({
+      DISABLE_TELEMETRY: "1",
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
+      ENABLE_TOOL_SEARCH: "true",
+      CLAUDE_CODE_EFFORT_LEVEL: "max"
+    })
+  })
+
+  it("rejects manual attribution when the managed hide-attribution switch is enabled", () => {
+    expect(() =>
+      buildClaudeRuntimeSettingsPreview(
+        makeConfig({
+          hideAiAttribution: true,
+          runtimeSettingsJson: '{"attribution":{"commit":"manual","pr":""}}'
+        })
+      )
+    ).toThrow("运行时 settings.attribution 由 Claudinal")
+  })
+
   it("adds runtime settings JSON to launch env only after validation", () => {
     const env = buildClaudeLaunchEnv(
       makeConfig({
@@ -193,6 +254,19 @@ describe("thirdPartyApi.runtimeSettings", () => {
         })
       )
     ).toThrow("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理")
+  })
+
+  it("adds managed top-level runtime settings JSON to launch env", () => {
+    const env = buildClaudeLaunchEnv(
+      makeConfig({
+        hideAiAttribution: true,
+        runtimeSettingsJson: '{"env":{"EXTRA":"1"}}'
+      })
+    )
+    expect(JSON.parse(env.CLAUDINAL_RUNTIME_SETTINGS_JSON)).toEqual({
+      env: { EXTRA: "1" },
+      attribution: { commit: "", pr: "" }
+    })
   })
 })
 
@@ -261,6 +335,18 @@ describe("thirdPartyApi.runtimeProfile", () => {
     const changed = makeConfig({
       id: "provider-a",
       enablePromptCaching1h: false
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
+      thirdPartyApiRuntimeProfileKey(base)
+    )
+  })
+
+  it("changes when optional runtime behavior switches change", () => {
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      toolSearchEnabled: true
     } as Partial<ThirdPartyApiConfig>)
 
     expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
@@ -369,6 +455,27 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
     expect(env.ENABLE_PROMPT_CACHING_1H).toBe("1")
   })
 
+  it("emits optional Claude Code behavior env vars only when enabled", () => {
+    const base = buildClaudeEnv(makeConfig())
+    expect(base.DISABLE_TELEMETRY).toBeUndefined()
+    expect(base.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBeUndefined()
+    expect(base.ENABLE_TOOL_SEARCH).toBeUndefined()
+    expect(base.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined()
+
+    const env = buildClaudeEnv(
+      makeConfig({
+        disableTelemetry: true,
+        agentTeamsEnabled: true,
+        toolSearchEnabled: true,
+        maxThinkingEnabled: true
+      })
+    )
+    expect(env.DISABLE_TELEMETRY).toBe("1")
+    expect(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe("1")
+    expect(env.ENABLE_TOOL_SEARCH).toBe("true")
+    expect(env.CLAUDE_CODE_EFFORT_LEVEL).toBe("max")
+  })
+
   it("omits official cache optimization env vars when disabled", () => {
     const env = buildClaudeEnv(
       makeConfig({
@@ -462,7 +569,11 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
       CLAUDE_CODE_SUBAGENT_MODEL: "x",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "x",
       CLAUDE_CODE_ATTRIBUTION_HEADER: "x",
+      DISABLE_TELEMETRY: "x",
       ENABLE_PROMPT_CACHING_1H: "x",
+      ENABLE_TOOL_SEARCH: "x",
+      CLAUDE_CODE_EFFORT_LEVEL: "x",
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "x",
       CLAUDINAL_PROXY_TARGET_URL: "x",
       CLAUDINAL_PROXY_API_KEY: "x",
       CLAUDINAL_PROXY_INPUT_FORMAT: "x",
