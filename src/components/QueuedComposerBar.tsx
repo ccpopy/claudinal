@@ -34,7 +34,7 @@ export function QueuedComposerBar({
 }: QueuedComposerBarProps) {
   if (items.length === 0) return null
   return (
-    <div className="mx-auto max-w-3xl empty:hidden">
+    <div className="mx-auto max-w-3xl empty:hidden xl:max-w-4xl 2xl:max-w-5xl">
       <div className="flex flex-col gap-1.5">
         {items.map((item) => (
           <QueuedRow

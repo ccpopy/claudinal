@@ -1,4 +1,8 @@
-import type { GitWorktreeStatus, WorktreeDiff } from "@/lib/ipc"
+import type {
+  GitWorktreeStatus,
+  WorktreeDiff,
+  WorktreeFileDiff
+} from "@/lib/ipc"
 import { basename } from "@/lib/localPath"
 import type { UIEntry, UIMessage } from "@/types/ui"
 
@@ -50,6 +54,23 @@ export function kindFromStatus(status: string): FileChange["kind"] {
   if (status.includes("D")) return "delete"
   if (status.includes("?") || status.includes("A")) return "create"
   return "update"
+}
+
+export function fileChangeFromWorktreeFile(
+  file: WorktreeFileDiff,
+  source: Extract<FileChange["source"], "git" | "snapshot">
+): FileChange {
+  return {
+    path: file.path,
+    oldPath: file.oldPath,
+    basename: basename(file.path),
+    kind: kindFromStatus(file.status),
+    source,
+    hunks: file.hunks,
+    binary: file.binary,
+    adds: file.additions,
+    dels: file.deletions
+  }
 }
 
 export function collectChanges(args: {
@@ -114,33 +135,13 @@ export function collectChanges(args: {
   for (const diff of snapshotDiffs ?? []) {
     for (const file of diff.files) {
       const key = keyPath(file.path)
-      map.set(key, {
-        path: file.path,
-        oldPath: file.oldPath,
-        basename: basename(file.path),
-        kind: kindFromStatus(file.status),
-        source: "snapshot",
-        hunks: file.hunks,
-        binary: file.binary,
-        adds: file.additions,
-        dels: file.deletions
-      })
+      map.set(key, fileChangeFromWorktreeFile(file, "snapshot"))
     }
   }
   if (worktreeDiff?.isRepo) {
     for (const file of worktreeDiff.files) {
       const key = keyPath(file.path)
-      map.set(key, {
-        path: file.path,
-        oldPath: file.oldPath,
-        basename: basename(file.path),
-        kind: kindFromStatus(file.status),
-        source: "git",
-        hunks: file.hunks,
-        binary: file.binary,
-        adds: file.additions,
-        dels: file.deletions
-      })
+      map.set(key, fileChangeFromWorktreeFile(file, "git"))
     }
   }
   if (gitStatus?.isRepo) {
@@ -163,8 +164,27 @@ export function collectChanges(args: {
   )
 }
 
-export function collectRunToolChanges(entries: UIEntry[], cwd?: string | null): FileChange[] {
-  return collectChanges({ entries, cwd }).filter((change) => change.source === "session")
+export function collectRunToolChanges(
+  entries: UIEntry[],
+  cwd?: string | null
+): FileChange[] {
+  return collectChanges({ entries, cwd }).filter(
+    (change) => change.source === "session"
+  )
+}
+
+export function collectLatestRunToolChanges(
+  entries: UIEntry[],
+  cwd?: string | null
+): FileChange[] {
+  let start = 0
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].kind === "result") {
+      start = i + 1
+      break
+    }
+  }
+  return collectRunToolChanges(entries.slice(start), cwd)
 }
 
 export function formatHunksAsPatch(change: FileChange): string {
@@ -198,4 +218,3 @@ export function countPatchLines(hunks: StructuredHunk[], prefix: "+" | "-"): num
     0
   )
 }
-

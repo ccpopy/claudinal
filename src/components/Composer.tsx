@@ -733,7 +733,13 @@ export function Composer({
       }}
       onDragLeave={() => setDragOver(false)}
     >
-      <div className={cn("relative", !centered && "mx-auto max-w-3xl")}>
+      <div
+        className={cn(
+          "relative",
+          !centered &&
+            "mx-auto w-full max-w-3xl xl:max-w-4xl 2xl:max-w-5xl"
+        )}
+      >
         <SuggestionPanel
           open={!!trigger}
           items={items}

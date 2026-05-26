@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ChevronDown,
   ChevronRight,
@@ -8,49 +8,44 @@ import {
   GitCompareArrows
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { FileDiffPreview } from "@/components/DiffPreview"
 import {
-  collectChanges,
+  collectLatestRunToolChanges,
+  fileChangeFromWorktreeFile,
   type FileChange,
   type ReviewRunDiff
 } from "@/lib/diff"
-import type { GitWorktreeStatus, WorktreeDiff } from "@/lib/ipc"
+import type { WorktreeFileDiff } from "@/lib/ipc"
 import { cn } from "@/lib/utils"
 import type { UIEntry } from "@/types/ui"
 
+const REVIEW_FILE_COLLAPSE_LIMIT = 3
+
 export function RunStatusStrip({
   entries,
+  streaming,
   cwd,
-  gitStatus,
-  worktreeDiff,
-  reviews = [],
   diffOpen = false,
   onShowDiff
 }: {
   entries: UIEntry[]
-  streaming?: boolean
+  streaming: boolean
   cwd?: string | null
-  gitStatus?: GitWorktreeStatus | null
-  worktreeDiff?: WorktreeDiff | null
-  reviews?: ReviewRunDiff[]
   diffOpen?: boolean
   onShowDiff?: (path?: string) => void
 }) {
   const changes = useMemo(
-    () =>
-      collectChanges({
-        entries,
-        gitStatus,
-        worktreeDiff,
-        snapshotDiffs: reviews.map((review) => review.diff),
-        cwd
-      }),
-    [entries, gitStatus, worktreeDiff, reviews, cwd]
+    () => collectLatestRunToolChanges(entries, cwd),
+    [entries, cwd]
   )
   const summary = useMemo(() => summarizeChanges(changes), [changes])
   const [open, setOpen] = useState(false)
-  if (summary.files === 0) return null
+  useEffect(() => {
+    if (!streaming) setOpen(false)
+  }, [streaming])
+  if (!streaming || summary.files === 0) return null
   return (
-    <div className="mx-auto max-w-3xl rounded-xl border bg-card/95 text-xs shadow-xs backdrop-blur-sm">
+    <div className="mx-auto max-w-3xl rounded-xl border bg-card/95 text-xs shadow-xs backdrop-blur-sm xl:max-w-4xl 2xl:max-w-5xl">
       <div className="flex h-8 items-center justify-between gap-3 px-3">
         <button
           type="button"
@@ -64,13 +59,13 @@ export function RunStatusStrip({
             <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="shrink-0 text-muted-foreground">
-            {summary.files} 个文件已更改
+            <RollingNumber value={summary.files} /> 个文件已更改
           </span>
-          <span className="font-mono font-medium text-connected">
-            +{summary.additions}
+          <span className="font-mono font-medium text-connected tabular-nums">
+            <RollingNumber value={summary.additions} prefix="+" />
           </span>
-          <span className="font-mono font-medium text-destructive">
-            -{summary.deletions}
+          <span className="font-mono font-medium text-destructive tabular-nums">
+            <RollingNumber value={summary.deletions} prefix="-" />
           </span>
           {summary.binary > 0 && (
             <span className="truncate text-muted-foreground">
@@ -86,7 +81,7 @@ export function RunStatusStrip({
             className="h-7 shrink-0 px-2 text-xs"
             onClick={() => onShowDiff()}
           >
-            查看更改
+            在此审查
           </Button>
         )}
       </div>
@@ -109,6 +104,41 @@ export function RunStatusStrip({
         </div>
       </div>
     </div>
+  )
+}
+
+function RollingNumber({
+  value,
+  prefix = ""
+}: {
+  value: number
+  prefix?: string
+}) {
+  const previousRef = useRef(value)
+  const [previous, setPrevious] = useState(value)
+  const [rolling, setRolling] = useState(false)
+
+  useEffect(() => {
+    if (previousRef.current === value) return
+    setPrevious(previousRef.current)
+    previousRef.current = value
+    setRolling(true)
+    const timeout = window.setTimeout(() => setRolling(false), 220)
+    return () => window.clearTimeout(timeout)
+  }, [value])
+
+  const text = `${prefix}${value}`
+  if (!rolling) return <span className="tabular-nums">{text}</span>
+
+  return (
+    <span className="relative inline-flex h-[1.15em] min-w-[2ch] overflow-hidden align-[-0.14em] tabular-nums">
+      <span className="diff-number-old absolute inset-x-0 top-0">
+        {prefix}
+        {previous}
+      </span>
+      <span className="diff-number-new absolute inset-x-0 top-0">{text}</span>
+      <span className="invisible">{text}</span>
+    </span>
   )
 }
 
@@ -171,16 +201,30 @@ export function RunReviewCard({
   onShowDiff
 }: {
   review: ReviewRunDiff
-  onShowDiff?: () => void
+  onShowDiff?: (path?: string) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
+  const [expandedFileKey, setExpandedFileKey] = useState<string | null>(null)
+  const [filesExpanded, setFilesExpanded] = useState(false)
   const files = review.diff.files
+  const changes = useMemo(
+    () => files.map((file) => fileChangeFromWorktreeFile(file, "snapshot")),
+    [files]
+  )
   if (files.length === 0) return null
+  const hiddenFileCount = Math.max(files.length - REVIEW_FILE_COLLAPSE_LIMIT, 0)
+  const canCollapseFiles = hiddenFileCount > 0
+  const visibleFiles = filesExpanded
+    ? files
+    : files.slice(0, REVIEW_FILE_COLLAPSE_LIMIT)
+  const visibleChanges = filesExpanded
+    ? changes
+    : changes.slice(0, REVIEW_FILE_COLLAPSE_LIMIT)
   const additions = files.reduce((sum, file) => sum + file.additions, 0)
   const deletions = files.reduce((sum, file) => sum + file.deletions, 0)
   const sourceLabel = review.diff.isRepo ? "工作树" : "快照"
   return (
-    <div className="mt-2 rounded-lg border bg-card text-xs">
+    <div className="mt-2 overflow-hidden rounded-lg border bg-card text-xs shadow-xs">
       <div className="flex items-center justify-between gap-2 px-3 py-2">
         <button
           type="button"
@@ -205,10 +249,10 @@ export function RunReviewCard({
           variant="ghost"
           size="sm"
           className="h-7 gap-1 px-2 text-[11px]"
-          onClick={onShowDiff}
+          onClick={() => onShowDiff?.()}
         >
           <GitCompareArrows className="size-3.5" />
-          审查
+          审核
         </Button>
       </div>
       <div
@@ -218,36 +262,146 @@ export function RunReviewCard({
         )}
       >
         <div className="overflow-hidden">
-          <div className="space-y-1 border-t px-3 py-2">
-            {files.map((file) => {
-              const Icon = file.status.includes("D")
-                ? FileX
-                : file.status.includes("A") || file.status.includes("?")
-                  ? FilePlus
-                  : FileEdit
+          <div className="space-y-1 border-t px-2 py-2">
+            {visibleFiles.map((file, index) => {
+              const change = visibleChanges[index]
+              const fileKey = `${file.path}:${file.status}:${index}`
               return (
-                <div key={file.path} className="flex items-center gap-2">
-                  <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate font-mono" title={file.path}>
-                    {file.path}
-                  </span>
-                  <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {sourceLabel}
-                  </span>
-                  <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {statusLabel(file.status)}
-                  </span>
-                  {file.binary ? (
-                    <span className="text-muted-foreground">二进制</span>
-                  ) : (
-                    <>
-                      <span className="font-mono text-connected">+{file.additions}</span>
-                      <span className="font-mono text-destructive">-{file.deletions}</span>
-                    </>
-                  )}
-                </div>
+                <ReviewFileRow
+                  key={fileKey}
+                  file={file}
+                  change={change}
+                  sourceLabel={sourceLabel}
+                  expanded={expandedFileKey === fileKey}
+                  onToggle={() =>
+                    setExpandedFileKey((current) =>
+                      current === fileKey ? null : fileKey
+                    )
+                  }
+                  onOpenDiff={() => onShowDiff?.(file.path)}
+                />
               )
             })}
+            {canCollapseFiles && (
+              <button
+                type="button"
+                className="flex h-7 w-full items-center justify-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                onClick={() => {
+                  setFilesExpanded((current) => {
+                    const next = !current
+                    if (!next) setExpandedFileKey(null)
+                    return next
+                  })
+                }}
+                aria-expanded={filesExpanded}
+              >
+                {filesExpanded ? "收起" : `显示更多 ${hiddenFileCount} 个`}
+                <ChevronDown
+                  className={cn(
+                    "size-3.5 transition-transform",
+                    filesExpanded && "rotate-180"
+                  )}
+                />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReviewFileRow({
+  file,
+  change,
+  sourceLabel,
+  expanded,
+  onToggle,
+  onOpenDiff
+}: {
+  file: WorktreeFileDiff
+  change: FileChange
+  sourceLabel: string
+  expanded: boolean
+  onToggle: () => void
+  onOpenDiff: () => void
+}) {
+  const Icon =
+    change.kind === "delete"
+      ? FileX
+      : change.kind === "create"
+        ? FilePlus
+        : FileEdit
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-md border transition-colors",
+        expanded ? "border-border bg-muted/20" : "border-transparent"
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="group flex h-8 min-w-0 flex-1 items-center gap-2 rounded px-2 text-left transition-colors hover:bg-accent/60"
+          aria-expanded={expanded}
+          title={file.path}
+        >
+          <ChevronRight
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              expanded && "rotate-90"
+            )}
+          />
+          <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate font-mono text-foreground/90">
+            {file.path}
+          </span>
+          <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
+            {sourceLabel}
+          </span>
+          <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
+            {statusLabel(file.status)}
+          </span>
+          {file.binary ? (
+            <span className="shrink-0 text-muted-foreground">二进制</span>
+          ) : (
+            <>
+              <span className="shrink-0 font-mono text-connected">
+                +{file.additions}
+              </span>
+              <span className="shrink-0 font-mono text-destructive">
+                -{file.deletions}
+              </span>
+            </>
+          )}
+        </button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 shrink-0 text-muted-foreground"
+          onClick={onOpenDiff}
+          aria-label={`在侧栏审核 ${file.path}`}
+          title="在侧栏审核"
+        >
+          <GitCompareArrows className="size-3.5" />
+        </Button>
+      </div>
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows] duration-200",
+          expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        )}
+      >
+        <div className="overflow-hidden">
+          <div className="border-t px-2 py-2">
+            <FileDiffPreview
+              change={change}
+              compact
+              bounded
+              maxHeightClassName="max-h-72"
+            />
           </div>
         </div>
       </div>

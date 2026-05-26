@@ -16,6 +16,7 @@ import {
   type GitWorktreeStatus,
   worktreeDiff,
   type WorktreeDiff,
+  type WorktreeFileDiff,
   reviewSnapshotStart,
   reviewSnapshotFinish,
   spawnSession,
@@ -237,7 +238,7 @@ function PaneLoader({ label = "正在加载界面…" }: { label?: string }) {
 function ComposerLoader() {
   return (
     <div className="shrink-0 px-6 pb-6">
-      <div className="mx-auto max-w-3xl rounded-[24px] border bg-card p-4 shadow-sm">
+      <div className="mx-auto max-w-3xl rounded-[24px] border bg-card p-4 shadow-sm xl:max-w-4xl 2xl:max-w-5xl">
         <div className="h-14 rounded-2xl bg-muted/60" />
       </div>
     </div>
@@ -293,6 +294,124 @@ type RunningSession = {
   collabMcpEnabled: boolean
   reviewSnapshotId: string | null
   reviewDiffs: ReviewRunDiff[]
+}
+
+type DiffPanelScope =
+  | { kind: "all" }
+  | { kind: "review"; review: ReviewRunDiff }
+
+function recordFromUnknown(
+  value: unknown,
+  label: string
+): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} 必须是对象`)
+  }
+  return value as Record<string, unknown>
+}
+
+function optionalRecordFromUnknown(value: unknown): Record<string, unknown> | null {
+  if (value == null) return null
+  return recordFromUnknown(value, "sidecar")
+}
+
+function stringField(source: Record<string, unknown>, key: string, label: string) {
+  const value = source[key]
+  if (typeof value !== "string") throw new Error(`${label}.${key} 必须是字符串`)
+  return value
+}
+
+function optionalStringField(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+) {
+  const value = source[key]
+  if (value == null) return null
+  if (typeof value !== "string") throw new Error(`${label}.${key} 必须是字符串或 null`)
+  return value
+}
+
+function numberField(source: Record<string, unknown>, key: string, label: string) {
+  const value = source[key]
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label}.${key} 必须是数字`)
+  }
+  return value
+}
+
+function booleanField(source: Record<string, unknown>, key: string, label: string) {
+  const value = source[key]
+  if (typeof value !== "boolean") throw new Error(`${label}.${key} 必须是布尔值`)
+  return value
+}
+
+function parseReviewHunk(
+  value: unknown,
+  label: string
+): WorktreeFileDiff["hunks"][number] {
+  const record = recordFromUnknown(value, label)
+  const lines = record.lines
+  if (!Array.isArray(lines) || !lines.every((line) => typeof line === "string")) {
+    throw new Error(`${label}.lines 必须是字符串数组`)
+  }
+  return {
+    oldStart: numberField(record, "oldStart", label),
+    oldLines: numberField(record, "oldLines", label),
+    newStart: numberField(record, "newStart", label),
+    newLines: numberField(record, "newLines", label),
+    lines
+  }
+}
+
+function parseReviewFileDiff(value: unknown, label: string): WorktreeFileDiff {
+  const record = recordFromUnknown(value, label)
+  const hunks = record.hunks
+  if (!Array.isArray(hunks)) throw new Error(`${label}.hunks 必须是数组`)
+  return {
+    path: stringField(record, "path", label),
+    oldPath: optionalStringField(record, "oldPath", label),
+    status: stringField(record, "status", label),
+    additions: numberField(record, "additions", label),
+    deletions: numberField(record, "deletions", label),
+    binary: booleanField(record, "binary", label),
+    hunks: hunks.map((hunk, index) =>
+      parseReviewHunk(hunk, `${label}.hunks[${index}]`)
+    )
+  }
+}
+
+function parseReviewDiff(value: unknown, label: string): WorktreeDiff {
+  const record = recordFromUnknown(value, label)
+  const files = record.files
+  if (!Array.isArray(files)) throw new Error(`${label}.files 必须是数组`)
+  const patchError = record.patchError
+  if (patchError != null && typeof patchError !== "string") {
+    throw new Error(`${label}.patchError 必须是字符串或 null`)
+  }
+  return {
+    isRepo: booleanField(record, "isRepo", label),
+    files: files.map((file, index) =>
+      parseReviewFileDiff(file, `${label}.files[${index}]`)
+    ),
+    patchError: patchError ?? null
+  }
+}
+
+function parseStoredReviewDiffs(sidecar: unknown): ReviewRunDiff[] {
+  const record = optionalRecordFromUnknown(sidecar)
+  if (!record || record.reviewDiffs == null) return []
+  const raw = record.reviewDiffs
+  if (!Array.isArray(raw)) throw new Error("sidecar.reviewDiffs 必须是数组")
+  return raw.map((item, index) => {
+    const label = `sidecar.reviewDiffs[${index}]`
+    const entry = recordFromUnknown(item, label)
+    return {
+      id: stringField(entry, "id", label),
+      createdAt: numberField(entry, "createdAt", label),
+      diff: parseReviewDiff(entry.diff, `${label}.diff`)
+    }
+  })
 }
 
 function buildCliBlocks(
@@ -585,6 +704,7 @@ export default function App() {
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
   const [showRename, setShowRename] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
+  const [diffScope, setDiffScope] = useState<DiffPanelScope>({ kind: "all" })
   const [diffInitialPath, setDiffInitialPath] = useState<string | null>(null)
   const [showCollabFlow, setShowCollabFlow] = useState(false)
   const [collabSettingsTick, setCollabSettingsTick] = useState(0)
@@ -756,6 +876,25 @@ export default function App() {
     []
   )
 
+  const persistReviewDiffs = useCallback((run: RunningSession) => {
+    const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
+    if (!sid) return
+    readSessionSidecar(run.project.cwd, sid)
+      .then((existing) => {
+        const base = (existing && typeof existing === "object"
+          ? existing
+          : {}) as Record<string, unknown>
+        return writeSessionSidecar(run.project.cwd, sid, {
+          ...base,
+          reviewDiffs: run.reviewDiffs
+        })
+      })
+      .then(() => setSidebarRefreshKey((tick) => tick + 1))
+      .catch((error) => {
+        toast.error(`保存文件 diff 记录失败: ${String(error)}`)
+      })
+  }, [])
+
   const beginRunReview = useCallback(async (run: RunningSession | null) => {
     if (!run) return
     try {
@@ -775,6 +914,7 @@ export default function App() {
       if (activeRuntimeIdRef.current === run.runtimeId) {
         setReviewDiffs(run.reviewDiffs)
       }
+      persistReviewDiffs(run)
       setRunningTick((tick) => tick + 1)
     }
     if (!snapshotId) {
@@ -800,7 +940,7 @@ export default function App() {
         diff: { isRepo: false, files: [], patchError: String(e) }
       })
     }
-  }, [])
+  }, [persistReviewDiffs])
 
   const discardRunReview = useCallback(async (run: RunningSession | null) => {
     const snapshotId = run?.reviewSnapshotId
@@ -1417,6 +1557,7 @@ export default function App() {
       let resumeSessionId = selectedSessionId
       let launchComposerPrefs = composerPrefs
       let launchSessionComposer = sessionComposer
+      let launchReviewDiffs = resumeSessionId ? reviewDiffs : []
       if (resumeSessionId) {
         const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
         const storedProfileKey = sidecarApiProfileKey(sidecar)
@@ -1427,6 +1568,7 @@ export default function App() {
         )
         if (!shouldResumeWithApiProfile(storedProfileKey, apiProfileKey)) {
           resumeSessionId = null
+          launchReviewDiffs = []
           dispatch({ kind: "reset" })
           setReviewDiffs([])
           setSelectedSessionId(null)
@@ -1505,7 +1647,7 @@ export default function App() {
         sessionComposer: launchSessionComposer,
         collabMcpEnabled: collabCfg.enabled,
         reviewSnapshotId: null,
-        reviewDiffs: []
+        reviewDiffs: launchReviewDiffs
       }
       collabMcpEnabledRef.current = collabCfg.enabled
       runningSessionsRef.current.set(id, run)
@@ -1666,6 +1808,9 @@ export default function App() {
                 if (run.sessionComposer && !base.composer) {
                   next.composer = run.sessionComposer
                 }
+                if (run.reviewDiffs.length > 0) {
+                  next.reviewDiffs = run.reviewDiffs
+                }
                 if (run.permissionModeSource === "session") {
                   next.permissionMode = run.permissionMode
                 }
@@ -1709,6 +1854,7 @@ export default function App() {
     project,
     selectedSessionId,
     selectedSessionMeta,
+    reviewDiffs,
     composerPrefs,
     sessionComposer,
     sessionPermissionMode,
@@ -1755,6 +1901,34 @@ export default function App() {
     }
   }, [project])
 
+  const openAllDiff = useCallback((path?: string | null) => {
+    setDiffScope({ kind: "all" })
+    setDiffInitialPath(path ?? null)
+    setShowDiff(true)
+  }, [])
+
+  const openReviewDiff = useCallback(
+    (review: ReviewRunDiff, path?: string | null) => {
+      setDiffScope({ kind: "review", review })
+      setDiffInitialPath(path ?? null)
+      setShowDiff(true)
+    },
+    []
+  )
+
+  const selectDiffReview = useCallback(
+    (id: string | null) => {
+      setDiffInitialPath(null)
+      if (!id) {
+        setDiffScope({ kind: "all" })
+        return
+      }
+      const review = reviewDiffs.find((item) => item.id === id)
+      if (review) setDiffScope({ kind: "review", review })
+    },
+    [reviewDiffs]
+  )
+
   useEffect(() => {
     if (!project) {
       setGitStatus(null)
@@ -1776,10 +1950,10 @@ export default function App() {
   }, [project?.cwd, selectedSessionId, sidebarRefreshKey])
 
   useEffect(() => {
-    if (showDiff) {
+    if (showDiff && diffScope.kind === "all") {
       void refreshWorktreeDiff()
     }
-  }, [showDiff, refreshWorktreeDiff, sidebarRefreshKey])
+  }, [showDiff, diffScope.kind, refreshWorktreeDiff, sidebarRefreshKey])
 
   const send = useCallback(
     async (
@@ -2152,6 +2326,7 @@ export default function App() {
               result?: ClaudeEvent
               composer?: { model?: string; effort?: string }
               permissionMode?: unknown
+              reviewDiffs?: unknown
             }
           | null
         if (token !== switchTokenRef.current) return
@@ -2170,7 +2345,7 @@ export default function App() {
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
         dispatch({ kind: "load_transcript", events: merged })
-        setReviewDiffs([])
+        setReviewDiffs(parseStoredReviewDiffs(sidecar))
         // 还原会话级 composer 偏好：sidecar 是 GUI 显式选择；没有 sidecar
         // 时从 Claude CLI jsonl 里的 /model、/effort 和 system/init 反推。
         const transcriptPrefs = canUseSessionLaunchPrefs
@@ -2799,7 +2974,7 @@ export default function App() {
                     jsonlSessionId ? archiveCurrentSession : undefined
                   }
                   onDelete={deleteCurrentSession}
-                  onShowDiff={() => setShowDiff(true)}
+                  onShowDiff={() => openAllDiff()}
                   diffCount={visibleDiffCount}
                   onShowCollabFlow={() => setShowCollabFlow(true)}
                   collabEnabled={collabEnabled}
@@ -2827,7 +3002,7 @@ export default function App() {
                 </div>
                 {project && (
                   <div className="shrink-0 px-6 pb-6">
-                    <div className="mx-auto max-w-3xl space-y-2">
+                    <div className="mx-auto max-w-3xl space-y-2 xl:max-w-4xl 2xl:max-w-5xl">
                         {projectActions.length > 0 && (
                           <Suspense fallback={null}>
                             <ProjectActionsBar
@@ -2900,13 +3075,13 @@ export default function App() {
                     key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
                     entries={state.entries}
                     streaming={streaming}
-                      reviews={reviewDiffs}
-                      onShowDiff={() => setShowDiff(true)}
+                    reviews={reviewDiffs}
+                    onShowDiff={openReviewDiff}
                   />
                 </Suspense>
                 {project && projectActions.length > 0 && (
                   <div className="shrink-0 bg-background px-6 pt-2">
-                    <div className="mx-auto max-w-3xl">
+                    <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
                       <Suspense fallback={null}>
                         <ProjectActionsBar
                           cwd={project.cwd}
@@ -2920,15 +3095,10 @@ export default function App() {
                   <Suspense fallback={null}>
                     <RunStatusStrip
                       entries={state.entries}
+                      streaming={streaming}
                       cwd={project?.cwd ?? null}
-                      gitStatus={gitStatus}
-                      worktreeDiff={diffPatch}
-                      reviews={reviewDiffs}
                       diffOpen={showDiff}
-                      onShowDiff={(path) => {
-                        setDiffInitialPath(path ?? null)
-                        setShowDiff(true)
-                      }}
+                      onShowDiff={openAllDiff}
                     />
                   </Suspense>
                 </div>
@@ -3064,16 +3234,34 @@ export default function App() {
               open={showDiff}
               onOpenChange={(value) => {
                 setShowDiff(value)
-                if (!value) setDiffInitialPath(null)
+                if (!value) {
+                  setDiffInitialPath(null)
+                  setDiffScope({ kind: "all" })
+                }
               }}
-              entries={state.entries}
-              gitStatus={gitStatus}
-              worktreeDiff={diffPatch}
-              snapshotDiffs={reviewDiffs.map((review) => review.diff)}
-              worktreeDiffLoading={diffPatchLoading}
-              worktreeDiffError={diffPatchError}
+              entries={diffScope.kind === "review" ? [] : state.entries}
+              gitStatus={diffScope.kind === "review" ? null : gitStatus}
+              worktreeDiff={diffScope.kind === "review" ? null : diffPatch}
+              snapshotDiffs={
+                diffScope.kind === "review"
+                  ? [diffScope.review.diff]
+                  : reviewDiffs.map((review) => review.diff)
+              }
+              worktreeDiffLoading={
+                diffScope.kind === "review" ? false : diffPatchLoading
+              }
+              worktreeDiffError={
+                diffScope.kind === "review" ? null : diffPatchError
+              }
               cwd={project?.cwd ?? null}
               initialFilePath={diffInitialPath}
+              title={diffScope.kind === "review" ? "本轮文件 diff" : "文件 diff"}
+              reviews={reviewDiffs}
+              selectedReviewId={
+                diffScope.kind === "review" ? diffScope.review.id : null
+              }
+              onSelectReview={selectDiffReview}
+              onRefresh={() => void refreshWorktreeDiff()}
             />
           </Suspense>
         )}

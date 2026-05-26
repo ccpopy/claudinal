@@ -2,11 +2,15 @@ import { useEffect, useMemo, useState } from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
   Check,
+  Columns2,
   ClipboardCopy,
   FileEdit,
   FilePlus,
   FileText,
   FileX,
+  MoreHorizontal,
+  RefreshCcw,
+  Text,
   X
 } from "lucide-react"
 import { toast } from "sonner"
@@ -18,111 +22,23 @@ import {
   TooltipContent,
   TooltipTrigger
 } from "@/components/ui/tooltip"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import type { GitWorktreeStatus, WorktreeDiff } from "@/lib/ipc"
 import {
   collectChanges,
   formatHunksAsPatch,
   type FileChange,
-  type StructuredHunk
+  type ReviewRunDiff
 } from "@/lib/diff"
 import type { UIEntry } from "@/types/ui"
-
-interface DiffRow {
-  kind: "add" | "del" | "ctx" | "meta"
-  oldLine: number | null
-  newLine: number | null
-  text: string
-  sign: string
-}
-
-function hunkRows(hunk: StructuredHunk): DiffRow[] {
-  let oldLine = hunk.oldStart ?? 0
-  let newLine = hunk.newStart ?? 0
-  return (hunk.lines ?? []).map((raw) => {
-    const mark = raw.charAt(0)
-    if (mark === "\\") {
-      return {
-        kind: "meta",
-        oldLine: null,
-        newLine: null,
-        text: raw,
-        sign: ""
-      }
-    }
-    const text = mark === "+" || mark === "-" || mark === " " ? raw.slice(1) : raw
-    if (mark === "+") {
-      return {
-        kind: "add",
-        oldLine: null,
-        newLine: newLine++,
-        text,
-        sign: "+"
-      }
-    }
-    if (mark === "-") {
-      return {
-        kind: "del",
-        oldLine: oldLine++,
-        newLine: null,
-        text,
-        sign: "-"
-      }
-    }
-    return {
-      kind: "ctx",
-      oldLine: oldLine++,
-      newLine: newLine++,
-      text,
-      sign: ""
-    }
-  })
-}
-
-function UnifiedDiff({ hunks }: { hunks: StructuredHunk[] }) {
-  return (
-    <div className="rounded-md border bg-muted/20 overflow-hidden">
-      {hunks.map((h, hi) => (
-        <div key={hi} className="font-mono text-[12px]">
-          <div className="px-3 py-1 bg-muted/80 text-muted-foreground text-[11px]">
-            @@ -{h.oldStart ?? 0},{h.oldLines ?? 0} +{h.newStart ?? 0},
-            {h.newLines ?? 0} @@
-          </div>
-          {hunkRows(h).map((row, li) => (
-            <div
-              key={li}
-              className={cn(
-                "grid grid-cols-[3.25rem_3.25rem_1.25rem_minmax(0,1fr)] min-w-0",
-                row.kind === "add" && "bg-connected/15",
-                row.kind === "del" && "bg-destructive/15",
-                row.kind === "meta" && "bg-muted/40 text-muted-foreground italic"
-              )}
-            >
-              <div className="select-none border-r px-2 py-0.5 text-right text-muted-foreground/75">
-                {row.oldLine ?? ""}
-              </div>
-              <div className="select-none border-r px-2 py-0.5 text-right text-muted-foreground/75">
-                {row.newLine ?? ""}
-              </div>
-              <div
-                className={cn(
-                  "select-none px-1 py-0.5 text-center",
-                  row.kind === "add" && "text-connected",
-                  row.kind === "del" && "text-destructive"
-                )}
-              >
-                {row.sign}
-              </div>
-              <div className="min-w-0 px-2 py-0.5 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                {row.text || " "}
-              </div>
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  )
-}
+import { FileDiffPreview, type DiffViewMode } from "@/components/DiffPreview"
 
 interface Props {
   open: boolean
@@ -135,6 +51,11 @@ interface Props {
   worktreeDiffError?: string | null
   cwd?: string | null
   initialFilePath?: string | null
+  title?: string
+  reviews?: ReviewRunDiff[]
+  selectedReviewId?: string | null
+  onSelectReview?: (id: string | null) => void
+  onRefresh?: () => void
 }
 
 type SourceFilter = "all" | FileChange["source"]
@@ -144,6 +65,11 @@ const SOURCE_LABEL: Record<FileChange["source"], string> = {
   git: "工作树",
   status: "状态",
   snapshot: "快照"
+}
+
+function reviewLabel(index: number, total: number): string {
+  if (index === total - 1) return "上轮对话"
+  return `第 ${index + 1} 轮对话`
 }
 
 async function copyToClipboard(text: string, kind: string) {
@@ -171,7 +97,12 @@ export function DiffOverview({
   worktreeDiffLoading,
   worktreeDiffError,
   cwd,
-  initialFilePath
+  initialFilePath,
+  title = "文件 diff",
+  reviews = [],
+  selectedReviewId = null,
+  onSelectReview,
+  onRefresh
 }: Props) {
   const allChanges = useMemo(
     () =>
@@ -187,6 +118,22 @@ export function DiffOverview({
   const [activeIdx, setActiveIdx] = useState(0)
   const [filter, setFilter] = useState<SourceFilter>("all")
   const [copiedAllPatch, setCopiedAllPatch] = useState(false)
+  const [viewMode, setViewMode] = useState<DiffViewMode>("unified")
+  const [wrapLines, setWrapLines] = useState(false)
+  const [richMarkdown, setRichMarkdown] = useState(false)
+  const activeReviewIndex = selectedReviewId
+    ? reviews.findIndex((review) => review.id === selectedReviewId)
+    : -1
+  const reviewScopeLabel =
+    activeReviewIndex >= 0
+      ? reviewLabel(activeReviewIndex, reviews.length)
+      : "全部变更"
+
+  useEffect(() => {
+    if (!open) return
+    setFilter("all")
+    setActiveIdx(0)
+  }, [open, selectedReviewId])
 
   useEffect(() => {
     if (!open || !initialFilePath) return
@@ -250,20 +197,53 @@ export function DiffOverview({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-x-0 bottom-0 top-9 z-40 bg-background/35 backdrop-blur-[2px] duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-30 bg-background/60 backdrop-blur-[1px] duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="fixed bottom-1.5 right-1.5 top-10 z-50 flex w-[min(940px,calc(100vw-0.75rem))] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl outline-none duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-8 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-8"
+          className="fixed bottom-0 right-0 top-9 z-40 flex w-[min(760px,calc(100vw-16px))] flex-col overflow-hidden border-l bg-background shadow-2xl outline-none duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-8 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-8"
         >
-        <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <FileEdit className="size-4 text-muted-foreground" />
             <DialogPrimitive.Title className="text-sm font-medium">
-              文件 diff
+              {title}
             </DialogPrimitive.Title>
             <Badge variant="outline" className="text-[10px]">
               {changes.length} 文件
             </Badge>
+            {onSelectReview && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 max-w-[150px] justify-start truncate px-2 text-xs"
+                  >
+                    <span className="truncate">{reviewScopeLabel}</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-[180px]">
+                  <DropdownMenuItem onSelect={() => onSelectReview(null)}>
+                    {selectedReviewId === null && <Check />}
+                    <span>全部变更</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {reviews.map((review, index) => (
+                    <DropdownMenuItem
+                      key={review.id}
+                      onSelect={() => onSelectReview(review.id)}
+                    >
+                      {selectedReviewId === review.id && <Check />}
+                      <span>{reviewLabel(index, reviews.length)}</span>
+                      <span className="ml-auto font-mono text-xs text-muted-foreground">
+                        {review.diff.files.length}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             <SourceFilterChips
               filter={filter}
               total={allChanges.length}
@@ -275,6 +255,20 @@ export function DiffOverview({
             />
           </div>
           <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[11px]"
+              onClick={() =>
+                setViewMode((current) =>
+                  current === "unified" ? "split" : "unified"
+                )
+              }
+            >
+              <Columns2 className="size-3.5" />
+              {viewMode === "unified" ? "切换到拆分差异视图" : "切换到统一差异视图"}
+            </Button>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -297,6 +291,52 @@ export function DiffOverview({
                 把当前过滤后的 {changes.length} 个文件 patch 拼接复制
               </TooltipContent>
             </Tooltip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="更多 diff 操作"
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[190px]">
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault()
+                    onRefresh?.()
+                  }}
+                  disabled={!onRefresh}
+                >
+                  <RefreshCcw />
+                  <span>刷新</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault()
+                    setWrapLines((value) => !value)
+                  }}
+                >
+                  {wrapLines && <Check />}
+                  <Text />
+                  <span>{wrapLines ? "禁用自动换行" : "启用自动换行"}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault()
+                    setRichMarkdown((value) => !value)
+                  }}
+                >
+                  {richMarkdown && <Check />}
+                  <FileText />
+                  <span>{richMarkdown ? "禁用富文本预览" : "启用富文本预览"}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <DialogPrimitive.Close asChild>
               <Button
                 variant="ghost"
@@ -321,7 +361,7 @@ export function DiffOverview({
                   : "当前会话没有文件变更"}
           </div>
         ) : (
-          <div className="flex-1 min-h-0 grid grid-cols-[260px_1fr]">
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(170px,230px)_minmax(0,1fr)]">
             <ScrollArea className="border-r min-h-0">
               <div className="flex flex-col gap-0.5 p-2">
                 {changes.map((c, i) => (
@@ -364,7 +404,11 @@ export function DiffOverview({
                 ))}
               </div>
             </ScrollArea>
-            <ScrollArea key={active?.path ?? "empty"} className="min-h-0">
+            <ScrollArea
+              key={active?.path ?? "empty"}
+              className="min-h-0"
+              scrollbarOrientation={wrapLines ? "vertical" : "both"}
+            >
               {active && (
                 <div className="p-3 space-y-2">
                   {(worktreeDiffLoading || patchError) && (
@@ -428,26 +472,12 @@ export function DiffOverview({
                       </Tooltip>
                     </div>
                   </div>
-                  {active.binary ? (
-                    <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-                      二进制文件有变更，无法以内联文本 diff 展示。
-                    </div>
-                  ) : active.kind === "create" && active.content ? (
-                    <pre className="p-2 rounded-md border bg-connected/5 border-connected/20 text-[12px] font-mono whitespace-pre-wrap break-words">
-                      {active.content}
-                    </pre>
-                  ) : active.hunks.length > 0 ? (
-                    <UnifiedDiff hunks={active.hunks} />
-                  ) : (
-                    <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-                      {active.source === "status"
-                        ? "此文件有工作树变更，patch 读取失败。检测到"
-                        : "此文件无可展示的结构化 patch，变更记录为"}{" "}
-                      <span className="font-mono text-connected">+{active.adds}</span>{" "}
-                      <span className="font-mono text-destructive">-{active.dels}</span>
-                      。
-                    </div>
-                  )}
+                  <FileDiffPreview
+                    change={active}
+                    viewMode={viewMode}
+                    wrapLines={wrapLines}
+                    richMarkdown={richMarkdown}
+                  />
                 </div>
               )}
             </ScrollArea>

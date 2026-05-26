@@ -295,6 +295,36 @@ pre::-webkit-scrollbar-button:vertical:end:increment {
 }
 .caret { animation: blink-caret 1s steps(2, end) infinite; }
 
+@keyframes diff-number-old {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-72%);
+  }
+}
+
+@keyframes diff-number-new {
+  from {
+    opacity: 0;
+    transform: translateY(72%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.diff-number-old {
+  animation: diff-number-old 220ms var(--ease-drawer);
+}
+
+.diff-number-new {
+  animation: diff-number-new 220ms var(--ease-drawer);
+}
+
 /* 统一的抽屉缓动曲线：进出顺滑、尾段轻微缓冲，贯穿侧边栏显隐与项目展开 */
 :root {
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
@@ -379,6 +409,10 @@ pre::-webkit-scrollbar-button:vertical:end:increment {
   }
   .sidebar-project-sessions[data-state="open"],
   .sidebar-project-sessions[data-state="closed"] {
+    animation-duration: 1ms;
+  }
+  .diff-number-old,
+  .diff-number-new {
     animation-duration: 1ms;
   }
 }

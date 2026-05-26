@@ -21,7 +21,7 @@ interface Props {
    *  传 false 表示纯只读预览（如归档预览），从顶部开始让用户自行下滚。 */
   autoScroll?: boolean
   reviews?: ReviewRunDiff[]
-  onShowDiff?: () => void
+  onShowDiff?: (review: ReviewRunDiff, path?: string) => void
 }
 
 interface MsgGroup {
@@ -311,7 +311,7 @@ export function MessageStream({
   let reviewIndex = 0
   return (
     <ScrollArea ref={ref} className="relative flex-1 min-h-0 overflow-hidden">
-      <div className="flex flex-col gap-5 px-6 py-6 max-w-3xl mx-auto w-full">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 py-6 xl:max-w-4xl 2xl:max-w-5xl">
         {groups.map((g) => {
           if (g.kind === "msg") {
             return (
@@ -343,7 +343,10 @@ export function MessageStream({
               <div key={g.key}>
                 <MessageCard entry={g.entry} />
                 {review && (
-                  <RunReviewCard review={review} onShowDiff={onShowDiff} />
+                  <RunReviewCard
+                    review={review}
+                    onShowDiff={(path) => onShowDiff?.(review, path)}
+                  />
                 )}
               </div>
             )
