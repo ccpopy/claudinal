@@ -75,3 +75,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: effort 档位动态化与 ultracode 开关
+
+**Date**: 2026-05-29
+**Task**: effort 档位动态化与 ultracode 开关
+**Branch**: `main`
+
+### Summary
+
+实现 effort 思考强度档位动态化（解析 claude --help，CLI 新增档位零改代码、失败回退内置）、ultracode 开关（effort sentinel + --settings 注入、不传 --effort、仅 Anthropic 路径、session-only）、第三方 OpenAI 兼容切换 reasoning_effort 清单（none/minimal/.../xhigh）。验证 cargo 85 / tsc / vitest 226 / build 全过。TODO：maxThinkingEnabled UI 覆盖提示、前端 runtimeSettingsJson ultracode 校验。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f5a4295` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
