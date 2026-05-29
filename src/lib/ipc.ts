@@ -942,6 +942,15 @@ export async function fetchProviderModels(
   return invoke<string[]>("fetch_provider_models", { ...args })
 }
 
+/** 解析当前 Claude CLI `--effort` 支持的档位；失败返回空数组（前端回退内置清单）。 */
+export async function detectEffortLevels(): Promise<string[]> {
+  try {
+    return await invoke<string[]>("detect_effort_levels")
+  } catch {
+    return []
+  }
+}
+
 export interface ModelUsageAgg {
   input_tokens: number
   output_tokens: number

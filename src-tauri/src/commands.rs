@@ -688,6 +688,13 @@ pub async fn spawn_session(
     }
     let mut env = env.unwrap_or_default();
     let env_remove = Vec::new();
+    // ultracode 是 effort sentinel（非 --effort 档位）：CLI 不接受它作为 --effort 值，
+    // 改在 --settings 注入 {"ultracode": true}（与 runtime_settings 合并、不覆盖用户配置）。
+    // 注意优先级：第三方 maxThinkingEnabled 写入的 env CLAUDE_CODE_EFFORT_LEVEL=max 是官方
+    // 最高优先级，会覆盖此处 ultracode（及任意 effort）选择；GUI 互斥提示见 PR4 的 UI TODO。
+    let ultracode_enabled = effort.as_deref() == Some("ultracode");
+    // 翻译 sentinel：ultracode 时不向 manager 传 effort（即不带 --effort），由 settings 接管。
+    let effort = if ultracode_enabled { None } else { effort };
     let runtime_settings = take_runtime_settings_json(&mut env)?;
     let mut use_runtime_claude_settings = runtime_settings.is_some();
     if let Some(proxy_config) = take_proxy_config(&mut env, effort.as_deref())? {
@@ -723,8 +730,8 @@ pub async fn spawn_session(
                 });
         }
     }
-    let settings_json = if use_runtime_claude_settings {
-        runtime_claude_settings_json(&env, runtime_settings)?
+    let settings_json = if use_runtime_claude_settings || ultracode_enabled {
+        runtime_claude_settings_json(&env, runtime_settings, ultracode_enabled)?
     } else {
         None
     };
@@ -937,6 +944,7 @@ fn take_runtime_settings_json(
 fn runtime_claude_settings_json(
     env: &std::collections::HashMap<String, String>,
     runtime_settings: Option<Value>,
+    ultracode_enabled: bool,
 ) -> Result<Option<String>> {
     let mut settings = match runtime_settings {
         Some(Value::Object(map)) => Value::Object(map),
@@ -958,6 +966,17 @@ fn runtime_claude_settings_json(
         .as_object_mut()
         .ok_or_else(|| Error::Other("运行时 settings 必须是 JSON 对象".into()))?;
     validate_runtime_settings_env(settings_obj.get("env"))?;
+    // ultracode 作为 effort sentinel，由 GUI 思考强度开关拥有顶级 "ultracode" 设置。
+    // 遵循 typed-switch-owns-top-level 约定（同 hideAiAttribution → attribution）：
+    // 开启 ultracode 时拒绝用户在 runtime settings 里手写同名 ultracode，避免来源漂移。
+    if ultracode_enabled {
+        if settings_obj.contains_key("ultracode") {
+            return Err(Error::Other(
+                "运行时 settings.ultracode 由 Claudinal 的思考强度开关管理，请移除手写配置或改用其它思考强度".into(),
+            ));
+        }
+        settings_obj.insert("ultracode".into(), Value::Bool(true));
+    }
     if !runtime_env.is_empty() {
         let existing_env = settings_obj.remove("env");
         let mut merged_env = match existing_env {
@@ -1212,6 +1231,13 @@ pub async fn send_skill_invocation(
 #[tauri::command]
 pub async fn stop_session(manager: State<'_, Manager>, session_id: String) -> Result<()> {
     manager.stop(&session_id).await
+}
+
+/// 返回当前 Claude CLI `--effort` 支持的档位列表（解析 `--help`）。
+/// 无 claude / 解析失败时返回空 Vec，前端回退内置清单。
+#[tauri::command]
+pub async fn detect_effort_levels(manager: State<'_, Manager>) -> Result<Vec<String>> {
+    Ok(manager.effort_levels().await.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -3288,7 +3314,7 @@ mod tests {
         env.insert("CLAUDE_CODE_EFFORT_LEVEL".into(), "max".into());
         env.insert("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".into(), "1".into());
 
-        let raw = runtime_claude_settings_json(&env, None)
+        let raw = runtime_claude_settings_json(&env, None, false)
             .expect("settings json")
             .expect("settings present");
         let value: Value = serde_json::from_str(&raw).expect("valid json");
@@ -3340,7 +3366,7 @@ mod tests {
         let mut env = std::collections::HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".into(), "   ".into());
 
-        let raw = runtime_claude_settings_json(&env, None).expect("settings json");
+        let raw = runtime_claude_settings_json(&env, None, false).expect("settings json");
         assert!(raw.is_none());
     }
 
@@ -3356,7 +3382,7 @@ mod tests {
             }
         });
 
-        let raw = runtime_claude_settings_json(&env, Some(extra))
+        let raw = runtime_claude_settings_json(&env, Some(extra), false)
             .expect("settings json")
             .expect("settings present");
         let value: Value = serde_json::from_str(&raw).expect("valid json");
@@ -3377,7 +3403,7 @@ mod tests {
             }
         });
 
-        let err = runtime_claude_settings_json(&env, Some(extra)).expect_err("managed key");
+        let err = runtime_claude_settings_json(&env, Some(extra), false).expect_err("managed key");
         assert!(err
             .to_string()
             .contains("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理"));
@@ -3387,7 +3413,7 @@ mod tests {
                 "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
             }
         });
-        let err = runtime_claude_settings_json(&env, Some(extra)).expect_err("managed key");
+        let err = runtime_claude_settings_json(&env, Some(extra), false).expect_err("managed key");
         assert!(err
             .to_string()
             .contains("运行时 settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER 由 Claudinal 管理"));
@@ -3397,10 +3423,81 @@ mod tests {
                 "ENABLE_TOOL_SEARCH": "true"
             }
         });
-        let err = runtime_claude_settings_json(&env, Some(extra)).expect_err("managed key");
+        let err = runtime_claude_settings_json(&env, Some(extra), false).expect_err("managed key");
         assert!(err
             .to_string()
             .contains("运行时 settings.env.ENABLE_TOOL_SEARCH 由 Claudinal 管理"));
+    }
+
+    #[test]
+    fn runtime_claude_settings_injects_ultracode_when_enabled() {
+        // effort=="ultracode" 时（spawn_session 已把 manager effort 置 None、不带 --effort），
+        // settings_json 应注入 {"ultracode": true}。
+        let env = std::collections::HashMap::new();
+        let raw = runtime_claude_settings_json(&env, None, true)
+            .expect("settings json")
+            .expect("settings present");
+        let value: Value = serde_json::from_str(&raw).expect("valid json");
+        assert_eq!(value["ultracode"], true);
+    }
+
+    #[test]
+    fn runtime_claude_settings_ultracode_merges_runtime_settings() {
+        // ultracode 注入须与已有 runtime_settings + 选定 env 合并，且不丢字段。
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_MODEL".into(), "provider-main".into());
+        let extra = serde_json::json!({
+            "model": "opus[1m]",
+            "alwaysThinkingEnabled": true,
+            "env": { "EXTRA_FLAG": "1" }
+        });
+
+        let raw = runtime_claude_settings_json(&env, Some(extra), true)
+            .expect("settings json")
+            .expect("settings present");
+        let value: Value = serde_json::from_str(&raw).expect("valid json");
+
+        assert_eq!(value["ultracode"], true);
+        assert_eq!(value["model"], "opus[1m]");
+        assert_eq!(value["alwaysThinkingEnabled"], true);
+        assert_eq!(value["env"]["EXTRA_FLAG"], "1");
+        assert_eq!(value["env"]["ANTHROPIC_MODEL"], "provider-main");
+    }
+
+    #[test]
+    fn runtime_claude_settings_omits_ultracode_when_disabled() {
+        // 未选 ultracode 时不应出现 ultracode 顶级键。
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_MODEL".into(), "provider-main".into());
+        let raw = runtime_claude_settings_json(&env, None, false)
+            .expect("settings json")
+            .expect("settings present");
+        let value: Value = serde_json::from_str(&raw).expect("valid json");
+        assert!(value.get("ultracode").is_none());
+    }
+
+    #[test]
+    fn runtime_claude_settings_rejects_manual_ultracode_when_switch_on() {
+        // typed-switch-owns-top-level：开启 ultracode 时拒绝用户手写同名 ultracode。
+        let env = std::collections::HashMap::new();
+        let extra = serde_json::json!({ "ultracode": false });
+        let err =
+            runtime_claude_settings_json(&env, Some(extra), true).expect_err("managed top-level");
+        assert!(err
+            .to_string()
+            .contains("运行时 settings.ultracode 由 Claudinal"));
+    }
+
+    #[test]
+    fn runtime_claude_settings_allows_manual_ultracode_when_switch_off() {
+        // 开关关闭时不接管 ultracode 顶级键：用户手写值原样透传（不报错、不覆盖）。
+        let env = std::collections::HashMap::new();
+        let extra = serde_json::json!({ "ultracode": false });
+        let raw = runtime_claude_settings_json(&env, Some(extra), false)
+            .expect("settings json")
+            .expect("settings present");
+        let value: Value = serde_json::from_str(&raw).expect("valid json");
+        assert_eq!(value["ultracode"], false);
     }
 
     #[test]

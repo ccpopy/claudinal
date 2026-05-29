@@ -1466,6 +1466,25 @@ mod tests {
     }
 
     #[test]
+    fn openai_reasoning_effort_passes_through_full_level_set() {
+        // OpenAI reasoning_effort 全集（前端 OPENAI_EFFORT_LEVELS）应原样透传，
+        // 含低档位 none/minimal（PR3 新增覆盖）。
+        assert_eq!(openai_reasoning_effort("none"), Some("none".into()));
+        assert_eq!(openai_reasoning_effort("minimal"), Some("minimal".into()));
+        assert_eq!(openai_reasoning_effort("low"), Some("low".into()));
+        assert_eq!(openai_reasoning_effort("medium"), Some("medium".into()));
+        assert_eq!(openai_reasoning_effort("high"), Some("high".into()));
+        assert_eq!(openai_reasoning_effort("xhigh"), Some("xhigh".into()));
+        // 大小写 / 空白宽松
+        assert_eq!(openai_reasoning_effort(" Minimal "), Some("minimal".into()));
+        // 旧会话残留的 Claude 语义 max 兜底为 xhigh
+        assert_eq!(openai_reasoning_effort("max"), Some("xhigh".into()));
+        // 未知 / 空 不发送
+        assert_eq!(openai_reasoning_effort(""), None);
+        assert_eq!(openai_reasoning_effort("ultracode"), None);
+    }
+
+    #[test]
     fn openai_tool_schema_rejects_empty_read_pages() {
         let tool = serde_json::json!({
             "name": "Read",

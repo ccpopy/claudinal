@@ -139,15 +139,13 @@ function readSimpleTag(text: string, tag: string): string | null {
   return decodeTagText(match[1]).trim()
 }
 
-function normalizeEffort(value: string): EffortLevel | null {
-  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, "")
-  if (!normalized || normalized === "auto" || normalized === "default") return ""
-  if (normalized === "low") return "low"
-  if (normalized === "medium") return "medium"
-  if (normalized === "high") return "high"
-  if (normalized === "xhigh" || normalized === "extrahigh") return "xhigh"
-  if (normalized === "max" || normalized === "maximum") return "max"
-  return null
+function normalizeEffort(value: string): EffortLevel {
+  const compact = value.trim().toLowerCase().replace(/[\s_-]+/g, "")
+  if (!compact || compact === "auto" || compact === "default") return ""
+  if (compact === "extrahigh") return "xhigh"
+  if (compact === "maximum") return "max"
+  // 其余原样透传（接受 claude --help 动态档位与未来 sentinel，如 ultracode）
+  return value.trim().toLowerCase()
 }
 
 function messageTextBlocks(ev: ClaudeEvent): string[] {
@@ -172,8 +170,7 @@ export function composerPrefsPatchFromCommandEvent(
     const command = commandName.trim().replace(/^\//, "").toLowerCase()
     const args = readSimpleTag(text, "command-args") ?? ""
     if (command === "effort") {
-      const effort = normalizeEffort(args)
-      if (effort !== null) return { effort }
+      return { effort: normalizeEffort(args) }
     }
     if (command === "model") {
       const modelArg = args.trim()
@@ -285,11 +282,20 @@ export function isClaudeModelEntry(model: string): boolean {
 
 // ===== 思考强度 =====
 // - "" 等价于 CLI 的 `auto`（不发 --effort，由 CLI 决定）
+// - 档位清单优先由 `claude --help` 动态解析（detectEffortLevels），失败回退 BUILTIN_EFFORT_LEVELS
+// - EffortLevel 放宽：保留已知档位的 IDE 提示，同时接受 CLI 动态返回的新档位 / sentinel
 
-export type EffortLevel = "" | "low" | "medium" | "high" | "xhigh" | "max"
+export type EffortLevel =
+  | ""
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | (string & {})
 
-export const EFFORT_ORDER: EffortLevel[] = [
-  "",
+/** claude --help 解析失败时的内置回退档位（不含 auto） */
+export const BUILTIN_EFFORT_LEVELS: string[] = [
   "low",
   "medium",
   "high",
@@ -297,13 +303,73 @@ export const EFFORT_ORDER: EffortLevel[] = [
   "max"
 ]
 
-export const EFFORT_LABELS: Record<EffortLevel, string> = {
+/**
+ * OpenAI 兼容路径（input_format=openai-chat-completions）的 reasoning_effort 固定清单（不含 auto）。
+ *
+ * OpenAI 无 `claude --help` 这类本地枚举源、亦无枚举 API，故硬编码全集；
+ * 具体支持取决于模型（如 GPT-5=minimal/low/medium/high、GPT-5.1=none/low/medium/high），
+ * 端点不支持的档位由底层忽略 / 回退（见 api_proxy.rs::openai_reasoning_effort）。
+ * 这里**不含 max / ultracode**——max 是 Claude 语义、ultracode 是 CC 设置，均不属于 OpenAI。
+ */
+export const OPENAI_EFFORT_LEVELS: string[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh"
+]
+
+/** 已知档位的展示顺序权重（auto 永远在最前） */
+const KNOWN_EFFORT_RANK: Record<string, number> = {
+  low: 1,
+  medium: 2,
+  high: 3,
+  xhigh: 4,
+  max: 5
+}
+
+const KNOWN_EFFORT_LABELS: Record<string, string> = {
   "": "Auto",
+  // OpenAI reasoning_effort 的低档位（仅 openai-chat-completions 路径展示）
+  none: "None",
+  minimal: "Minimal",
   low: "Low",
   medium: "Medium",
   high: "High",
   xhigh: "Extra high",
-  max: "Max"
+  max: "Max",
+  // ultracode 是 GUI 手动追加的 sentinel（非 claude --help 档位），
+  // 仅在官方 / 第三方 anthropic 路径展示，spawn 时翻译为 --settings {"ultracode":true}
+  ultracode: "Ultracode"
+}
+
+/** 档位展示 label；未知档位 fallback（连字符/下划线转空格 + 首字母大写） */
+export function effortLabel(level: string): string {
+  const key = (level || "").trim().toLowerCase()
+  if (key in KNOWN_EFFORT_LABELS) return KNOWN_EFFORT_LABELS[key]
+  const cleaned = key.replace(/[-_]+/g, " ").trim()
+  return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : "Auto"
+}
+
+/**
+ * 由动态档位（claude --help）构建带 auto 的有序档位清单。
+ * 空输入回退内置清单；已知档位按固定顺序，未知新档位追加在已知之后（保持出现顺序）。
+ *
+ * ultracode 是 GUI 手动追加的 sentinel（由 ModelEffortPicker 末尾单独追加），不属于
+ * claude --help 档位；这里显式剔除，避免 help 误带 ultracode 时与 picker 的追加项重复。
+ * 空字符串是 auto sentinel（本函数固定前置），同样从动态源剔除以防重复。
+ */
+export function buildEffortOrder(dynamicLevels: string[]): EffortLevel[] {
+  const src = (dynamicLevels.length ? dynamicLevels : BUILTIN_EFFORT_LEVELS)
+    .map((l) => (l || "").trim().toLowerCase())
+    .filter((l) => l && l !== "ultracode")
+  const unique = Array.from(new Set(src))
+  const known = unique
+    .filter((l) => l in KNOWN_EFFORT_RANK)
+    .sort((a, b) => KNOWN_EFFORT_RANK[a] - KNOWN_EFFORT_RANK[b])
+  const unknown = unique.filter((l) => !(l in KNOWN_EFFORT_RANK))
+  return ["", ...known, ...unknown] as EffortLevel[]
 }
 
 export interface EffortCapabilities {
@@ -311,19 +377,17 @@ export interface EffortCapabilities {
   defaultEffort: EffortLevel
 }
 
-const GENERIC_EFFORT: EffortCapabilities = {
-  available: ["", "low", "medium", "high", "xhigh", "max"],
-  defaultEffort: ""
-}
-
-/** 返回 null 表示该模型不支持 effort（如 Haiku） */
-export function effortLevelsForModel(model: string): EffortCapabilities | null {
+/**
+ * 返回 null 表示该模型不支持 effort（如 Haiku）。
+ * available 由调用方传入的动态档位决定（含 auto）。
+ */
+export function effortLevelsForModel(
+  model: string,
+  availableLevels: EffortLevel[]
+): EffortCapabilities | null {
   const m = (model || "").trim().toLowerCase()
-  if (!m) {
-    return GENERIC_EFFORT
-  }
   if (m.includes("haiku") || m.startsWith("claude-haiku")) return null
-  return GENERIC_EFFORT
+  return { available: availableLevels, defaultEffort: "" }
 }
 
 export function modelDisplayLabel(model: string): string {

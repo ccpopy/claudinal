@@ -12,6 +12,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import {
   detectClaudeCli,
+  detectEffortLevels,
   gitWorktreeStatus,
   type GitWorktreeStatus,
   worktreeDiff,
@@ -690,6 +691,8 @@ export default function App() {
   const [globalDefault, setGlobalDefault] = useState<ComposerPrefs>(
     EMPTY_COMPOSER_PREFS
   )
+  // claude --help 动态解析的 effort 档位（空数组 = 回退内置清单）
+  const [effortLevels, setEffortLevels] = useState<string[]>([])
   // 当前会话的"已显式覆盖" composer prefs（来自 sidecar），用于 effortSource 判定
   const [sessionComposer, setSessionComposer] = useState<ComposerPrefs | null>(
     null
@@ -1248,6 +1251,10 @@ export default function App() {
       .catch(() => {
         // 读 settings.json 失败不致命；保持默认 auto
       })
+    // 动态解析 claude --help 的 effort 档位；失败回退内置清单
+    detectEffortLevels()
+      .then(setEffortLevels)
+      .catch(() => setEffortLevels([]))
     const settings = loadSettings()
     applyPermissionModeState(settings.defaultPermissionMode, "default")
     if (settings.autoCheckUpdate) {
@@ -3046,6 +3053,7 @@ export default function App() {
                           effort={composerPrefs.effort}
                           onModelEffortChange={handleModelEffortChange}
                           modelOptions={modelOptions}
+                          availableEffortLevels={effortLevels}
                           openaiCompatibleProvider={openaiCompatibleProvider}
                           globalDefault={globalDefault}
                           sessionPrefs={sessionComposer}
@@ -3148,6 +3156,7 @@ export default function App() {
                     effort={composerPrefs.effort}
                     onModelEffortChange={handleModelEffortChange}
                     modelOptions={modelOptions}
+                    availableEffortLevels={effortLevels}
                     openaiCompatibleProvider={openaiCompatibleProvider}
                     globalDefault={globalDefault}
                     sessionPrefs={sessionComposer}

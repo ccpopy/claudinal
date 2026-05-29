@@ -52,6 +52,14 @@ impl Manager {
         Self::default()
     }
 
+    /// 解析当前 Claude CLI `--effort` 支持的档位（复用 `--help` 缓存）。
+    /// 失败或解析不到时返回空 Vec，由调用方回退内置清单。
+    pub async fn effort_levels(&self) -> Result<Vec<String>> {
+        let claude = find_claude()?;
+        let help = claude_help_cached(&claude, &self.claude_help_cache).await?;
+        Ok(parse_effort_levels(&help))
+    }
+
     pub async fn spawn(&self, app: AppHandle, opts: SpawnOptions) -> Result<String> {
         let claude = find_claude()?;
         ensure_required_claude_flags(&claude, &opts, &self.claude_help_cache).await?;
@@ -334,20 +342,56 @@ impl Manager {
     }
 }
 
+/// 复用 `--help` 缓存读取 Claude CLI 帮助文本（按二进制指纹缓存）。
+async fn claude_help_cached(
+    claude: &Path,
+    help_cache: &DashMap<ClaudeHelpCacheKey, String>,
+) -> Result<String> {
+    let cache_key = claude_help_cache_key(claude);
+    if let Some(cached) = help_cache.get(&cache_key) {
+        return Ok(cached.clone());
+    }
+    let loaded = claude_help(claude).await?;
+    help_cache.insert(cache_key, loaded.clone());
+    Ok(loaded)
+}
+
+/// 从 `claude --help` 文本解析 `--effort` 接受的档位列表。
+/// 形如 `--effort <level> ... (low, medium, high, xhigh, max)`，提取括号内逗号分隔值。
+/// 解析不到时返回空 Vec（调用方回退内置清单）。
+fn parse_effort_levels(help: &str) -> Vec<String> {
+    let Some(start) = help.find("--effort") else {
+        return Vec::new();
+    };
+    let after = &help[start + "--effort".len()..];
+    // 截到下一个选项行（换行 + 缩进 + '-'），避免吃到后续 flag 的括号
+    let block = match after.find("\n  -") {
+        Some(i) => &after[..i],
+        None => after,
+    };
+    let Some(open) = block.find('(') else {
+        return Vec::new();
+    };
+    let Some(rel_close) = block[open + 1..].find(')') else {
+        return Vec::new();
+    };
+    block[open + 1..open + 1 + rel_close]
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+        .collect()
+}
+
 async fn ensure_required_claude_flags(
     claude: &Path,
     opts: &SpawnOptions,
     help_cache: &DashMap<ClaudeHelpCacheKey, String>,
 ) -> Result<()> {
-    let cache_key = claude_help_cache_key(claude);
-    let help = match help_cache.get(&cache_key) {
-        Some(cached) => cached.clone(),
-        None => {
-            let loaded = claude_help(claude).await?;
-            help_cache.insert(cache_key, loaded.clone());
-            loaded
-        }
-    };
+    let help = claude_help_cached(claude, help_cache).await?;
     // --permission-prompt-tool 在 Claude CLI 2.1.x 起从 --help 输出里移除，
     // 但参数本身仍在用（已实测 2.1.126 直传可正常工作），所以不再做 help 文本检查。
     let mut required = vec![
@@ -487,3 +531,46 @@ fn kill_process_tree(pid: u32) {
 
 #[cfg(not(windows))]
 fn kill_process_tree(_pid: u32) {}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_effort_levels;
+
+    #[test]
+    fn parse_standard_multiline_help() {
+        // --effort 描述跨行（终端换行），括号列表在续行
+        let help = "  --effort <level>     Effort level for the current session\n                       (low, medium, high, xhigh, max)\n  --exclude-foo         Next option\n";
+        assert_eq!(
+            parse_effort_levels(help).join(","),
+            "low,medium,high,xhigh,max"
+        );
+    }
+
+    #[test]
+    fn parse_trims_and_lowercases() {
+        let help = "--effort <level>  Effort ( Low ,  MEDIUM , high )\n  --next\n";
+        assert_eq!(parse_effort_levels(help).join(","), "low,medium,high");
+    }
+
+    #[test]
+    fn parse_includes_unknown_new_level() {
+        // CLI 新增档位时应自动包含，无需改代码
+        let help = "  --effort <level>  Effort level (low, medium, high, xhigh, max, turbo)\n  --foo\n";
+        assert_eq!(
+            parse_effort_levels(help).join(","),
+            "low,medium,high,xhigh,max,turbo"
+        );
+    }
+
+    #[test]
+    fn parse_missing_parens_is_empty() {
+        let help = "  --effort <level>  Effort level for the current session\n  --foo\n";
+        assert!(parse_effort_levels(help).is_empty());
+    }
+
+    #[test]
+    fn parse_no_effort_flag_is_empty() {
+        let help = "  --model <name>  Model selection\n  --foo <bar>  Baz (a, b)\n";
+        assert!(parse_effort_levels(help).is_empty());
+    }
+}

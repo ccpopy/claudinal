@@ -129,6 +129,7 @@ interface Props {
   effort?: string
   onModelEffortChange?: (next: { model?: string; effort?: string }) => void
   modelOptions?: Array<{ value: string; label?: string }>
+  availableEffortLevels?: string[]
   openaiCompatibleProvider?: boolean
   globalDefault?: ComposerPrefs
   sessionPrefs?: ComposerPrefs | null
@@ -264,6 +265,7 @@ export function Composer({
   effort = "",
   onModelEffortChange,
   modelOptions,
+  availableEffortLevels,
   openaiCompatibleProvider = false,
   globalDefault,
   sessionPrefs
@@ -993,6 +995,7 @@ export function Composer({
                   effort={effort}
                   onChange={onModelEffortChange}
                   modelOptions={modelOptions}
+                  availableEffortLevels={availableEffortLevels}
                   openaiCompatibleProvider={openaiCompatibleProvider}
                   disabled={disabled}
                   globalDefault={globalDefault}
