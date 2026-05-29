@@ -52,7 +52,9 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
     <nav
       ref={boundaryRef}
       aria-label="对话时间线导航"
-      className="pointer-events-none absolute bottom-6 right-[max(1rem,calc(50%-26rem))] top-6 z-20 hidden w-10 items-center lg:flex"
+      // right 基准对齐 MessageStream 内容 max-width：右缘外侧 = 50% − 内容半宽 − 时间线宽(w-10=2.5rem)
+      // lg 内容 max-w-3xl=48rem(半宽24)→26.5；xl max-w-4xl=56rem(半宽28)→30.5；2xl max-w-5xl=64rem(半宽32)→34.5
+      className="pointer-events-none absolute bottom-6 right-[max(0.5rem,calc(50%-26.5rem))] top-6 z-20 hidden w-10 items-center lg:flex xl:right-[max(0.5rem,calc(50%-30.5rem))] 2xl:right-[max(0.5rem,calc(50%-34.5rem))]"
     >
       <div
         className="pointer-events-auto relative w-full"
