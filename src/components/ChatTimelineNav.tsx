@@ -33,13 +33,7 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
     if (!boundary || !content) return
 
     const measure = () => {
-      // boundary(nav) 被 flex 行拉伸到 ScrollArea 高度；nav 自身 py-6 是
-      // 内容的上下留白边界，须从 clientHeight 里扣掉 padding 才是 rail 真正
-      // 可用的居中高度（等价于旧 absolute 布局的 top-6/bottom-6 内缩区）。
-      const style = window.getComputedStyle(boundary)
-      const padding =
-        parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
-      const available = boundary.clientHeight - padding
+      const available = boundary.clientHeight
       const contentHeight = content.scrollHeight
       if (available <= 0 || contentHeight <= 0) return
       const next = Math.ceil(Math.min(contentHeight, available))
@@ -58,14 +52,10 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
     <nav
       ref={boundaryRef}
       aria-label="对话时间线导航"
-      // 方案 B（并列布局）：时间线是 MessageStream flex 行内 ScrollArea 右侧的独立列
-      // （shrink-0），不再 absolute 浮在内容上，因此不受内容 max-width(3xl/4xl/5xl)
-      // 影响、始终落在内容右缘外侧。py-6 与 ScrollArea 内容容器的 py-6 对齐，
-      // boundaryRef(nav) 被 flex 行拉伸到 ScrollArea 高度，仍是 railHeight 的高度边界。
-      className="relative hidden w-10 shrink-0 items-center py-6 lg:flex"
+      className="pointer-events-none absolute bottom-6 right-[max(1rem,calc(50%-26rem))] top-6 z-20 hidden w-10 items-center lg:flex"
     >
       <div
-        className="relative w-full"
+        className="pointer-events-auto relative w-full"
         style={railHeight ? { height: railHeight } : undefined}
       >
         <ScrollArea className="h-full w-full">

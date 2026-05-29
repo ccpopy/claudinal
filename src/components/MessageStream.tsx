@@ -310,69 +310,67 @@ export function MessageStream({
 
   let reviewIndex = 0
   return (
-    <div className="flex min-h-0 flex-1">
-      <ScrollArea ref={ref} className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 py-6 xl:max-w-4xl 2xl:max-w-5xl">
-          {groups.map((g) => {
-            if (g.kind === "msg") {
-              return (
-                <div
-                  key={g.key}
-                  ref={(node) => setTimelineTargetRef(g.key, node)}
-                  data-timeline-target={g.key}
-                  className="scroll-mt-6"
-                >
-                  <MessageCard entry={g.msg} />
-                </div>
-              )
-            }
-            if (g.kind === "run") {
-              return (
-                <RunGroup
-                  key={g.key}
-                  steps={g.steps}
-                  running={g.running}
-                  durationMs={g.durationMs}
-                  startTs={g.startTs}
-                  endTs={g.endTs}
-                />
-              )
-            }
-            if (g.entry.kind === "result") {
-              const review = reviews[reviewIndex++]
-              return (
-                <div key={g.key}>
-                  <MessageCard entry={g.entry} />
-                  {review && (
-                    <RunReviewCard
-                      review={review}
-                      onShowDiff={(path) => onShowDiff?.(review, path)}
-                    />
-                  )}
-                </div>
-              )
-            }
-            return <MessageCard key={g.key} entry={g.entry} />
-          })}
-        </div>
-        {autoScroll && !pinnedToBottom && (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="absolute bottom-3 left-1/2 z-10 h-8 -translate-x-1/2 gap-1 rounded-full bg-background/95 px-3 text-xs shadow"
-            onClick={scrollToBottom}
-          >
-            <ArrowDown className="size-3.5" />
-            跳到底部
-          </Button>
-        )}
-      </ScrollArea>
+    <ScrollArea ref={ref} className="relative flex-1 min-h-0 overflow-hidden">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 py-6 xl:max-w-4xl 2xl:max-w-5xl">
+        {groups.map((g) => {
+          if (g.kind === "msg") {
+            return (
+              <div
+                key={g.key}
+                ref={(node) => setTimelineTargetRef(g.key, node)}
+                data-timeline-target={g.key}
+                className="scroll-mt-6"
+              >
+                <MessageCard entry={g.msg} />
+              </div>
+            )
+          }
+          if (g.kind === "run") {
+            return (
+              <RunGroup
+                key={g.key}
+                steps={g.steps}
+                running={g.running}
+                durationMs={g.durationMs}
+                startTs={g.startTs}
+                endTs={g.endTs}
+              />
+            )
+          }
+          if (g.entry.kind === "result") {
+            const review = reviews[reviewIndex++]
+            return (
+              <div key={g.key}>
+                <MessageCard entry={g.entry} />
+                {review && (
+                  <RunReviewCard
+                    review={review}
+                    onShowDiff={(path) => onShowDiff?.(review, path)}
+                  />
+                )}
+              </div>
+            )
+          }
+          return <MessageCard key={g.key} entry={g.entry} />
+        })}
+      </div>
       <ChatTimelineNav
         items={timelineVisible ? timelineItems : []}
         activeId={activeTimelineId}
         onSelect={scrollToTimelineItem}
       />
-    </div>
+      {autoScroll && !pinnedToBottom && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="absolute bottom-3 left-1/2 z-10 h-8 -translate-x-1/2 gap-1 rounded-full bg-background/95 px-3 text-xs shadow"
+          onClick={scrollToBottom}
+        >
+          <ArrowDown className="size-3.5" />
+          跳到底部
+        </Button>
+      )}
+    </ScrollArea>
   )
 }
