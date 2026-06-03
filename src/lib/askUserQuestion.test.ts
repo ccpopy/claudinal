@@ -4,6 +4,7 @@ import {
   buildAskUserQuestionResponse,
   collectAskUserQuestionAnswers,
   initialAskUserQuestionDraft,
+  isAskUserQuestionAnswerComplete,
   isAskUserQuestionRequest,
   parseAskUserQuestionInput,
   updateAskUserQuestionCustomAnswer,
@@ -225,6 +226,43 @@ describe("askUserQuestion", () => {
     expect(collectAskUserQuestionAnswers(input, cleared)).toEqual({
       "选择框架？": "Svelte"
     })
+  })
+
+  it("tracks per-question completeness for page indicators", () => {
+    const input = parseAskUserQuestionInput({
+      questions: [
+        {
+          question: "选择框架？",
+          header: "框架",
+          options: [{ label: "React" }, { label: "Vue" }],
+          multiSelect: false
+        },
+        {
+          question: "包含哪些部分？",
+          header: "范围",
+          options: [{ label: "测试" }, { label: "文档" }],
+          multiSelect: true
+        }
+      ]
+    })
+
+    const empty = initialAskUserQuestionDraft(input)
+    expect(isAskUserQuestionAnswerComplete(input.questions[0], empty[0])).toBe(
+      false
+    )
+    expect(isAskUserQuestionAnswerComplete(input.questions[0], undefined)).toBe(
+      false
+    )
+
+    const withSelection = updateAskUserQuestionSelection(empty, 0, "React", false)
+    expect(
+      isAskUserQuestionAnswerComplete(input.questions[0], withSelection[0])
+    ).toBe(true)
+
+    const withCustom = updateAskUserQuestionCustomAnswer(empty, 1, "示例", true)
+    expect(
+      isAskUserQuestionAnswerComplete(input.questions[1], withCustom[1])
+    ).toBe(true)
   })
 
   it("keeps multi-select options additive with custom text", () => {

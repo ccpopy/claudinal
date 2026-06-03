@@ -150,6 +150,20 @@ export function collectAskUserQuestionAnswers(
   return answers
 }
 
+export function isAskUserQuestionAnswerComplete(
+  question: AskUserQuestionItem,
+  answer: AskUserQuestionDraftAnswer | undefined
+): boolean {
+  const current = answer ?? emptyDraftAnswer()
+  const custom = current.custom.trim()
+  if (question.multiSelect) {
+    return current.selected.length > 0 || custom.length > 0
+  }
+  if (current.selected.length === 1) return true
+  if (current.selected.length > 1) return false
+  return custom.length > 0
+}
+
 function parseQuestion(value: unknown, index: number): AskUserQuestionItem {
   if (!isRecord(value)) {
     throw new Error(`第 ${index + 1} 个问题必须是对象`)
