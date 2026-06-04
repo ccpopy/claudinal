@@ -280,6 +280,18 @@ export function isClaudeModelEntry(model: string): boolean {
   )
 }
 
+export function isComposerModelAllowed(
+  model: string,
+  allowedModelValues: ReadonlySet<string>,
+  restrictToAllowedValues: boolean
+): boolean {
+  const trimmed = (model || "").trim()
+  if (!trimmed) return true
+  return restrictToAllowedValues
+    ? allowedModelValues.has(trimmed)
+    : isClaudeModelEntry(trimmed)
+}
+
 // ===== 思考强度 =====
 // - "" 等价于 CLI 的 `auto`（不发 --effort，由 CLI 决定）
 // - 档位清单优先由 `claude --help` 动态解析（detectEffortLevels），失败回退 BUILTIN_EFFORT_LEVELS

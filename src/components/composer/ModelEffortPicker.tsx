@@ -29,6 +29,7 @@ interface Props {
   effort: string
   onChange: (next: { model?: string; effort?: string }) => void
   modelOptions?: Array<{ value: string; label?: string }>
+  restrictModelOptions?: boolean
   availableEffortLevels?: string[]
   openaiCompatibleProvider?: boolean
   disabled?: boolean
@@ -49,6 +50,7 @@ export function ModelEffortPicker({
   effort,
   onChange,
   modelOptions,
+  restrictModelOptions = false,
   availableEffortLevels,
   openaiCompatibleProvider = false,
   disabled,
@@ -87,7 +89,7 @@ export function ModelEffortPicker({
   const triggerLabel = currentEffortLabel
     ? `${modelLabel} · ${currentEffortLabel}`
     : modelLabel
-  const options = modelOptions?.length
+  const explicitOptions = modelOptions
     ? Array.from(
         new Map(
           modelOptions
@@ -99,6 +101,9 @@ export function ModelEffortPicker({
             .map((option) => [option.value, option])
         ).values()
       )
+    : []
+  const options = modelOptions && (restrictModelOptions || explicitOptions.length)
+    ? explicitOptions
     : BUILTIN_MODELS
 
   const baselineDefault = globalDefault ?? EMPTY_COMPOSER_PREFS

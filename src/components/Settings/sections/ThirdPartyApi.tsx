@@ -42,6 +42,7 @@ import {
   saveThirdPartyApiStoreAsync,
   trimApiUrl,
   type ModelMapping,
+  type ModelSupports1mMapping,
   type ProviderAuthField,
   type ProviderInputFormat,
   type ThirdPartyApiProvider,
@@ -64,6 +65,33 @@ const INPUT_FORMAT_OPTIONS: Array<{ value: ProviderInputFormat; label: string }>
 const AUTH_FIELD_OPTIONS: Array<{ value: ProviderAuthField; label: string }> = [
   { value: "ANTHROPIC_AUTH_TOKEN", label: "ANTHROPIC_AUTH_TOKEN（默认）" },
   { value: "ANTHROPIC_API_KEY", label: "ANTHROPIC_API_KEY" }
+]
+
+type ModelRoleRow = {
+  role: string
+  label: string
+  modelKey: "sonnetModel" | "opusModel" | "haikuModel"
+  supports1mKey?: keyof ModelSupports1mMapping
+}
+
+const MODEL_ROLE_ROWS: ModelRoleRow[] = [
+  {
+    role: "sonnet",
+    label: "Sonnet",
+    modelKey: "sonnetModel",
+    supports1mKey: "sonnet"
+  },
+  {
+    role: "opus",
+    label: "Opus",
+    modelKey: "opusModel",
+    supports1mKey: "opus"
+  },
+  {
+    role: "haiku",
+    label: "Haiku",
+    modelKey: "haikuModel"
+  }
 ]
 
 const ANTHROPIC_DOC_URL = "https://docs.anthropic.com"
@@ -205,6 +233,24 @@ export function ThirdPartyApi() {
             provider: {
               ...cur.provider,
               models: { ...cur.provider.models, ...patch }
+            }
+          }
+        : cur
+    )
+    setDirty(true)
+  }
+
+  const updateModelSupports1m = (patch: Partial<ModelSupports1mMapping>) => {
+    setEditor((cur) =>
+      cur
+        ? {
+            ...cur,
+            provider: {
+              ...cur.provider,
+              modelSupports1m: {
+                ...cur.provider.modelSupports1m,
+                ...patch
+              }
             }
           }
         : cur
@@ -492,6 +538,27 @@ export function ThirdPartyApi() {
     ? providerModelInputOptions(editorConfig)
     : []
   const cachedModelCount = editorConfig?.availableModels.length ?? 0
+  const renderModelSupports1mCell = (row: ModelRoleRow) => {
+    const key = row.supports1mKey
+    if (!key) {
+      return <div className="text-xs text-muted-foreground">不适用</div>
+    }
+    return (
+      <div className="flex items-center gap-2">
+        <Checkbox
+          checked={editorConfig?.modelSupports1m[key] ?? false}
+          onCheckedChange={(checked) =>
+            updateModelSupports1m({
+              [key]: checked === true
+            } as Partial<ModelSupports1mMapping>)
+          }
+          disabled={loading || saving}
+          aria-label={`${row.label} 声明支持 1M`}
+        />
+        <span className="text-xs text-muted-foreground">1M</span>
+      </div>
+    )
+  }
 
   if (editor && editorConfig) {
     return (
@@ -671,7 +738,7 @@ export function ThirdPartyApi() {
               </div>
 
               <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                列表会缓存到当前供应商。下方字段同时用于运行时配置与本地代理转发。
+                列表会缓存到当前供应商。角色映射用于 Composer 的 Sonnet / Opus / Haiku 选择，实际请求模型由本地代理转发时替换。
               </div>
               {cachedModelCount > 0 && (
                 <div className="text-[11px] text-muted-foreground">
@@ -679,33 +746,41 @@ export function ThirdPartyApi() {
                 </div>
               )}
 
+              <div className="overflow-hidden rounded-lg border">
+                <div className="grid grid-cols-[8rem_minmax(0,1fr)_7rem] gap-3 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  <div>模型角色</div>
+                  <div>实际请求模型</div>
+                  <div>声明支持 1M</div>
+                </div>
+                {MODEL_ROLE_ROWS.map((row) => (
+                  <div
+                    key={row.role}
+                    className="grid grid-cols-[8rem_minmax(0,1fr)_7rem] items-center gap-3 border-b px-3 py-2 last:border-b-0"
+                  >
+                    <div className="text-sm font-medium">{row.label}</div>
+                    <ModelInput
+                      value={editorConfig.models[row.modelKey]}
+                      onChange={(value) =>
+                        updateModels({
+                          [row.modelKey]: value
+                        } as Partial<ModelMapping>)
+                      }
+                      options={editorModelOptions}
+                    />
+                    {renderModelSupports1mCell(row)}
+                  </div>
+                ))}
+              </div>
+
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <ModelField
-                  label="ANTHROPIC_MODEL"
+                  label="默认兜底模型（ANTHROPIC_MODEL）"
                   value={editorConfig.models.mainModel}
                   onChange={(mainModel) => updateModels({ mainModel })}
                   options={editorModelOptions}
                 />
                 <ModelField
-                  label="ANTHROPIC_DEFAULT_HAIKU_MODEL"
-                  value={editorConfig.models.haikuModel}
-                  onChange={(haikuModel) => updateModels({ haikuModel })}
-                  options={editorModelOptions}
-                />
-                <ModelField
-                  label="ANTHROPIC_DEFAULT_SONNET_MODEL"
-                  value={editorConfig.models.sonnetModel}
-                  onChange={(sonnetModel) => updateModels({ sonnetModel })}
-                  options={editorModelOptions}
-                />
-                <ModelField
-                  label="ANTHROPIC_DEFAULT_OPUS_MODEL"
-                  value={editorConfig.models.opusModel}
-                  onChange={(opusModel) => updateModels({ opusModel })}
-                  options={editorModelOptions}
-                />
-                <ModelField
-                  label="CLAUDE_CODE_SUBAGENT_MODEL"
+                  label="子代理模型（CLAUDE_CODE_SUBAGENT_MODEL）"
                   value={editorConfig.models.subagentModel}
                   onChange={(subagentModel) => updateModels({ subagentModel })}
                   options={editorModelOptions}
@@ -1185,6 +1260,22 @@ function ModelField({
   onChange: (value: string) => void
   options: string[]
 }) {
+  return (
+    <StackField label={label}>
+      <ModelInput value={value} onChange={onChange} options={options} />
+    </StackField>
+  )
+}
+
+function ModelInput({
+  value,
+  onChange,
+  options
+}: {
+  value: string
+  onChange: (value: string) => void
+  options: string[]
+}) {
   const [open, setOpen] = useState(false)
   const filteredOptions = useMemo(
     () => filterModelOptions(options, value),
@@ -1192,57 +1283,55 @@ function ModelField({
   )
 
   return (
-    <StackField label={label}>
-      <div className="relative">
-        <Input
-          value={value}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setOpen(false)}
-          onChange={(e) => {
-            onChange(e.target.value)
-            setOpen(true)
-          }}
-          placeholder="选择或输入供应商模型 ID"
-          className="font-mono text-xs"
-        />
-        {open && options.length > 0 && (
-          <div
-            role="listbox"
-            className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover p-1 shadow-lg"
-          >
-            {filteredOptions.length === 0 ? (
-              <div className="px-2 py-2 text-xs text-muted-foreground">
-                没有匹配的模型
-              </div>
-            ) : (
-              filteredOptions.map((model) => {
-                const active = model === value
-                return (
-                  <button
-                    key={model}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      onChange(model)
-                      setOpen(false)
-                    }}
-                    className={
-                      active
-                        ? "w-full rounded-sm bg-accent px-2 py-2 text-left font-mono text-xs text-accent-foreground"
-                        : "w-full rounded-sm px-2 py-2 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
-                    }
-                  >
-                    {model}
-                  </button>
-                )
-              })
-            )}
-          </div>
-        )}
-      </div>
-    </StackField>
+    <div className="relative">
+      <Input
+        value={value}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setOpen(true)
+        }}
+        placeholder="选择或输入供应商模型 ID"
+        className="font-mono text-xs"
+      />
+      {open && options.length > 0 && (
+        <div
+          role="listbox"
+          className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover p-1 shadow-lg"
+        >
+          {filteredOptions.length === 0 ? (
+            <div className="px-2 py-2 text-xs text-muted-foreground">
+              没有匹配的模型
+            </div>
+          ) : (
+            filteredOptions.map((model) => {
+              const active = model === value
+              return (
+                <button
+                  key={model}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    onChange(model)
+                    setOpen(false)
+                  }}
+                  className={
+                    active
+                      ? "w-full rounded-sm bg-accent px-2 py-2 text-left font-mono text-xs text-accent-foreground"
+                      : "w-full rounded-sm px-2 py-2 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
+                  }
+                >
+                  {model}
+                </button>
+              )
+            })
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -8,6 +8,7 @@ import {
   maskSecret,
   normalizeThirdPartyApiConfig,
   parseRuntimeSettingsJson,
+  providerComposerModelOptions,
   providerModelInputOptions,
   providerModelOptions,
   canUseApiProfileLaunchPrefs,
@@ -56,6 +57,7 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(cfg.maxThinkingEnabled).toBe(false)
     expect(cfg.mainAlias).toBe("sonnet")
     expect(cfg.availableModels).toEqual([])
+    expect(cfg.modelSupports1m).toEqual({ sonnet: false, opus: false })
     expect(cfg.runtimeSettingsJson).toBe("")
     expect(cfg.models.mainModel).toBe("")
   })
@@ -113,6 +115,24 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(invalid.agentTeamsEnabled).toBe(false)
     expect(invalid.toolSearchEnabled).toBe(false)
     expect(invalid.maxThinkingEnabled).toBe(false)
+  })
+
+  it("normalizes explicit model 1M capability declarations", () => {
+    const cfg = normalizeThirdPartyApiConfig({
+      modelSupports1m: {
+        sonnet: true,
+        opus: true
+      }
+    } as never)
+    expect(cfg.modelSupports1m).toEqual({ sonnet: true, opus: true })
+
+    const invalid = normalizeThirdPartyApiConfig({
+      modelSupports1m: {
+        sonnet: "true",
+        opus: 1
+      }
+    } as never)
+    expect(invalid.modelSupports1m).toEqual({ sonnet: false, opus: false })
   })
 
   it("migrates legacy disableAttributionHeader to cacheHitOptimizationEnabled", () => {
@@ -609,6 +629,49 @@ describe("thirdPartyApi.providerModelOptions", () => {
       }
     })
     expect(list).toEqual(["m1", "m4", "m3"])
+  })
+})
+
+describe("thirdPartyApi.providerComposerModelOptions", () => {
+  it("returns role aliases instead of raw provider model ids", () => {
+    const list = providerComposerModelOptions({
+      models: {
+        mainModel: "gpt-5.5",
+        haikuModel: "gpt-5.4-mini",
+        sonnetModel: "gpt-5.4",
+        opusModel: "gpt-5.5",
+        subagentModel: "gpt-5.4-mini"
+      },
+      modelSupports1m: {
+        sonnet: false,
+        opus: true
+      }
+    })
+
+    expect(list).toEqual([
+      { value: "sonnet", label: "Sonnet" },
+      { value: "opus", label: "Opus" },
+      { value: "opus[1m]", label: "Opus 1M" },
+      { value: "haiku", label: "Haiku" }
+    ])
+  })
+
+  it("omits 1M aliases unless the role declares support", () => {
+    const list = providerComposerModelOptions({
+      models: {
+        mainModel: "",
+        haikuModel: "",
+        sonnetModel: "gpt-5.4",
+        opusModel: "gpt-5.5",
+        subagentModel: ""
+      },
+      modelSupports1m: {
+        sonnet: false,
+        opus: false
+      }
+    })
+
+    expect(list.map((option) => option.value)).toEqual(["sonnet", "opus"])
   })
 })
 

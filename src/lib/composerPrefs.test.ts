@@ -4,6 +4,7 @@ import {
   composerPrefsPatchFromCommandEvent,
   effortLabel,
   effortSource,
+  isComposerModelAllowed,
   isClaudeModelEntry,
   mergeComposerPrefs,
   OPENAI_EFFORT_LEVELS,
@@ -281,6 +282,24 @@ describe("composerPrefs.isClaudeModelEntry", () => {
   it("rejects third-party model identifiers", () => {
     expect(isClaudeModelEntry("gpt-4o")).toBe(false)
     expect(isClaudeModelEntry("deepseek-v3")).toBe(false)
+  })
+})
+
+describe("composerPrefs.isComposerModelAllowed", () => {
+  it("allows built-in Claude entries when model options are not restricted", () => {
+    const allowed = new Set<string>()
+
+    expect(isComposerModelAllowed("opus[1m]", allowed, false)).toBe(true)
+    expect(isComposerModelAllowed("gpt-5.5", allowed, false)).toBe(false)
+  })
+
+  it("allows only explicit role options when model options are restricted", () => {
+    const allowed = new Set(["sonnet", "opus", "opus[1m]"])
+
+    expect(isComposerModelAllowed("", allowed, true)).toBe(true)
+    expect(isComposerModelAllowed("opus[1m]", allowed, true)).toBe(true)
+    expect(isComposerModelAllowed("sonnet[1m]", allowed, true)).toBe(false)
+    expect(isComposerModelAllowed("gpt-5.5[1m]", allowed, true)).toBe(false)
   })
 })
 

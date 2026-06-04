@@ -49,7 +49,7 @@ import type { AppSettings } from "@/lib/settings"
 import {
   EMPTY_COMPOSER_PREFS,
   composerPrefsPatchFromCommandEvent,
-  isClaudeModelEntry,
+  isComposerModelAllowed,
   loadGlobalDefault,
   mergeComposerPrefs,
   pickComposerFromSidecar,
@@ -90,7 +90,7 @@ import {
   migrateLegacyThirdPartyApiKeys,
   OFFICIAL_PROVIDER_ID,
   canUseApiProfileLaunchPrefs,
-  providerModelOptions,
+  providerComposerModelOptions,
   shouldResumeWithApiProfile,
   thirdPartyApiConnectionProfileKey,
   thirdPartyApiRuntimeProfileKey,
@@ -1360,18 +1360,26 @@ export default function App() {
     let refreshSeq = 0
     const applyDefaultComposer = (next: ComposerPrefs) => {
       setGlobalDefault(next)
+      const currentDefault = fallbackComposerPrefsForApiProfile(
+        currentApiProfileKey(),
+        next
+      )
       if (sessionComposerRef.current) return
-      setComposerPrefs(next)
+      setComposerPrefs(currentDefault)
       const activeRuntimeId = activeRuntimeIdRef.current
       const activeRun = activeRuntimeId
         ? runningSessionsRef.current.get(activeRuntimeId)
         : null
+      const activeRunDefault = activeRun
+        ? fallbackComposerPrefsForApiProfile(activeRun.apiProfileKey, next)
+        : null
       if (
         activeRun &&
         !activeRun.sessionComposer &&
-        !sameComposerPrefs(activeRun.composerPrefs, next)
+        activeRunDefault &&
+        !sameComposerPrefs(activeRun.composerPrefs, activeRunDefault)
       ) {
-        activeRun.composerPrefs = next
+        activeRun.composerPrefs = activeRunDefault
         refreshActiveComposerRuntime()
       }
     }
@@ -2830,10 +2838,7 @@ export default function App() {
     if (!thirdPartyApiConfig.enabled) {
       return [] as Array<{ value: string; label?: string }>
     }
-    return providerModelOptions(thirdPartyApiConfig).map((model) => ({
-      value: model,
-      label: model
-    }))
+    return providerComposerModelOptions(thirdPartyApiConfig)
   }, [thirdPartyApiConfig])
 
   const modelOptionValues = useMemo(
@@ -2843,8 +2848,11 @@ export default function App() {
 
   useEffect(() => {
     const shouldKeepModel = (model: string) => {
-      const trimmed = model.trim()
-      return isClaudeModelEntry(trimmed) || modelOptionValues.has(trimmed)
+      return isComposerModelAllowed(
+        model,
+        modelOptionValues,
+        thirdPartyApiConfig.enabled
+      )
     }
 
     setComposerPrefs((cur) =>
@@ -2855,7 +2863,7 @@ export default function App() {
       const next = { ...cur, model: "" }
       return next.effort ? next : null
     })
-  }, [modelOptionValues])
+  }, [modelOptionValues, thirdPartyApiConfig.enabled])
 
   const projectActions = useMemo(() => {
     if (!project) return []
@@ -3053,6 +3061,7 @@ export default function App() {
                           effort={composerPrefs.effort}
                           onModelEffortChange={handleModelEffortChange}
                           modelOptions={modelOptions}
+                          restrictModelOptions={thirdPartyApiConfig.enabled}
                           availableEffortLevels={effortLevels}
                           openaiCompatibleProvider={openaiCompatibleProvider}
                           globalDefault={globalDefault}
@@ -3156,6 +3165,7 @@ export default function App() {
                     effort={composerPrefs.effort}
                     onModelEffortChange={handleModelEffortChange}
                     modelOptions={modelOptions}
+                    restrictModelOptions={thirdPartyApiConfig.enabled}
                     availableEffortLevels={effortLevels}
                     openaiCompatibleProvider={openaiCompatibleProvider}
                     globalDefault={globalDefault}

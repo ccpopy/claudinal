@@ -28,6 +28,11 @@ export interface ModelMapping {
   subagentModel: string
 }
 
+export interface ModelSupports1mMapping {
+  sonnet: boolean
+  opus: boolean
+}
+
 export interface ThirdPartyApiConfig {
   enabled: boolean
   providerName: string
@@ -50,6 +55,7 @@ export interface ThirdPartyApiConfig {
   mainAlias: ClaudeModelAlias
   availableModels: string[]
   models: ModelMapping
+  modelSupports1m: ModelSupports1mMapping
   runtimeSettingsJson: string
 }
 
@@ -95,6 +101,10 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
     sonnetModel: "",
     opusModel: "",
     subagentModel: ""
+  },
+  modelSupports1m: {
+    sonnet: false,
+    opus: false
   }
 }
 
@@ -294,6 +304,10 @@ export function thirdPartyApiRuntimeProfileKey(
       opusModel: config.models.opusModel.trim(),
       subagentModel: config.models.subagentModel.trim()
     },
+    modelSupports1m: {
+      sonnet: config.modelSupports1m.sonnet,
+      opus: config.modelSupports1m.opus
+    },
     availableModels: config.availableModels
       .map((model) => model.trim())
       .filter(Boolean),
@@ -355,6 +369,8 @@ export function normalizeThirdPartyApiConfig(
   raw: Partial<ThirdPartyApiConfig> | null | undefined
 ): ThirdPartyApiConfig {
   const models: Partial<ModelMapping> = raw?.models ?? {}
+  const modelSupports1m: Partial<ModelSupports1mMapping> =
+    raw?.modelSupports1m ?? {}
   const legacy = raw as
     | (Partial<ThirdPartyApiConfig> & {
         disableAttributionHeader?: unknown
@@ -416,6 +432,16 @@ export function normalizeThirdPartyApiConfig(
       sonnetModel: cleanString(models.sonnetModel),
       opusModel: cleanString(models.opusModel),
       subagentModel: cleanString(models.subagentModel)
+    },
+    modelSupports1m: {
+      sonnet: cleanBoolean(
+        modelSupports1m.sonnet,
+        DEFAULT_THIRD_PARTY_API.modelSupports1m.sonnet
+      ),
+      opus: cleanBoolean(
+        modelSupports1m.opus,
+        DEFAULT_THIRD_PARTY_API.modelSupports1m.opus
+      )
     }
   }
 }
@@ -713,7 +739,8 @@ export function loadThirdPartyApiConfig(): ThirdPartyApiConfig {
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
-      models: { ...DEFAULT_THIRD_PARTY_API.models }
+      models: { ...DEFAULT_THIRD_PARTY_API.models },
+      modelSupports1m: { ...DEFAULT_THIRD_PARTY_API.modelSupports1m }
     }
   }
   const active = store.providers.find((p) => p.id === store.activeProviderId)
@@ -721,7 +748,8 @@ export function loadThirdPartyApiConfig(): ThirdPartyApiConfig {
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
-      models: { ...DEFAULT_THIRD_PARTY_API.models }
+      models: { ...DEFAULT_THIRD_PARTY_API.models },
+      modelSupports1m: { ...DEFAULT_THIRD_PARTY_API.modelSupports1m }
     }
   }
   return { ...normalizeThirdPartyApiConfig(active), enabled: true }
@@ -733,7 +761,8 @@ export async function loadThirdPartyApiConfigAsync(): Promise<ThirdPartyApiConfi
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
-      models: { ...DEFAULT_THIRD_PARTY_API.models }
+      models: { ...DEFAULT_THIRD_PARTY_API.models },
+      modelSupports1m: { ...DEFAULT_THIRD_PARTY_API.modelSupports1m }
     }
   }
   const active = store.providers.find((p) => p.id === store.activeProviderId)
@@ -741,7 +770,8 @@ export async function loadThirdPartyApiConfigAsync(): Promise<ThirdPartyApiConfi
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
-      models: { ...DEFAULT_THIRD_PARTY_API.models }
+      models: { ...DEFAULT_THIRD_PARTY_API.models },
+      modelSupports1m: { ...DEFAULT_THIRD_PARTY_API.modelSupports1m }
     }
   }
   let kcOk = false
@@ -969,6 +999,28 @@ export function providerModelOptions(
   provider: Pick<ThirdPartyApiConfig, "models">
 ): string[] {
   return dedupeModelValues(mappedModelValues(provider))
+}
+
+export function providerComposerModelOptions(
+  provider: Pick<ThirdPartyApiConfig, "models" | "modelSupports1m">
+): Array<{ value: string; label: string }> {
+  const options: Array<{ value: string; label: string }> = []
+  if (provider.models.sonnetModel.trim()) {
+    options.push({ value: "sonnet", label: "Sonnet" })
+    if (provider.modelSupports1m.sonnet) {
+      options.push({ value: "sonnet[1m]", label: "Sonnet 1M" })
+    }
+  }
+  if (provider.models.opusModel.trim()) {
+    options.push({ value: "opus", label: "Opus" })
+    if (provider.modelSupports1m.opus) {
+      options.push({ value: "opus[1m]", label: "Opus 1M" })
+    }
+  }
+  if (provider.models.haikuModel.trim()) {
+    options.push({ value: "haiku", label: "Haiku" })
+  }
+  return options
 }
 
 export function providerModelInputOptions(
