@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::error::{Error, Result};
 
@@ -25,7 +27,52 @@ pub struct ProxyConfig {
     pub cch_seed: Option<u64>,
 }
 
-pub async fn start(config: ProxyConfig) -> Result<String> {
+/// 上游状态事件：CLI 在 stream-json 模式下静默退避重试（无 stderr、无事件），
+/// 本地代理是唯一能观测每次上游响应的位置，借此把 429/5xx/断连暴露给 GUI。
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyStatusEvent {
+    pub kind: String,
+    pub status: Option<u16>,
+    pub message: String,
+    pub path: String,
+    pub model: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct ProxyStatusReporter {
+    tx: UnboundedSender<ProxyStatusEvent>,
+    had_error: Arc<AtomicBool>,
+}
+
+impl ProxyStatusReporter {
+    pub fn new(tx: UnboundedSender<ProxyStatusEvent>) -> Self {
+        Self {
+            tx,
+            had_error: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn error(&self, event: ProxyStatusEvent) {
+        self.had_error.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(event);
+    }
+
+    /// 出错后的首个成功响应发一次 recovered；连续成功不重复发。
+    fn success(&self, path: &str) {
+        if self.had_error.swap(false, Ordering::Relaxed) {
+            let _ = self.tx.send(ProxyStatusEvent {
+                kind: "recovered".into(),
+                status: None,
+                message: String::new(),
+                path: path.to_string(),
+                model: None,
+            });
+        }
+    }
+}
+
+pub async fn start(config: ProxyConfig, reporter: Option<ProxyStatusReporter>) -> Result<String> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let config = Arc::new(config);
@@ -35,15 +82,20 @@ pub async fn start(config: ProxyConfig) -> Result<String> {
                 break;
             };
             let config = config.clone();
+            let reporter = reporter.clone();
             tokio::spawn(async move {
-                let _ = handle(stream, config).await;
+                let _ = handle(stream, config, reporter).await;
             });
         }
     });
     Ok(format!("http://{addr}"))
 }
 
-async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
+async fn handle(
+    mut stream: TcpStream,
+    config: Arc<ProxyConfig>,
+    reporter: Option<ProxyStatusReporter>,
+) -> Result<()> {
     let mut buffer = Vec::with_capacity(16 * 1024);
     let header_end = loop {
         let mut chunk = [0u8; 4096];
@@ -124,11 +176,16 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
     let json_request = content_type
         .to_ascii_lowercase()
         .contains("application/json");
+    let mut request_model: Option<String> = None;
     if json_request {
         body = if openai_chat && messages_path {
-            anthropic_to_openai_request(&body, &config)?
+            let (converted, model) = anthropic_to_openai_request(&body, &config)?;
+            request_model = model;
+            converted
         } else {
-            rewrite_model(&body, &config)?
+            let (rewritten, model) = rewrite_model(&body, &config)?;
+            request_model = model;
+            rewritten
         };
     }
     if config.cch_seed.is_some() && messages_path && !openai_chat && !json_request {
@@ -174,11 +231,22 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
         req = req.bearer_auth(token);
     }
 
-    let resp = req
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| Error::Other(format!("proxy request: {e}")))?;
+    let event_path = path.split('?').next().unwrap_or(path).to_string();
+    let resp = match req.body(body).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            if let Some(reporter) = &reporter {
+                reporter.error(ProxyStatusEvent {
+                    kind: "network-error".into(),
+                    status: None,
+                    message: format!("{e}"),
+                    path: event_path,
+                    model: request_model,
+                });
+            }
+            return Err(Error::Other(format!("proxy request: {e}")));
+        }
+    };
     let status = resp.status();
     let upstream_content_type = resp
         .headers()
@@ -199,19 +267,124 @@ async fn handle(mut stream: TcpStream, config: Arc<ProxyConfig>) -> Result<()> {
             response_headers.push((name.as_str().to_string(), v.to_string()));
         }
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| Error::Other(format!("proxy response: {e}")))?;
-    let (response_headers, bytes) = if openai_chat && messages_path && status.is_success() {
-        convert_openai_response(&bytes, &upstream_content_type)
-            .unwrap_or((response_headers, bytes.to_vec()))
-    } else {
-        (response_headers, bytes.to_vec())
-    };
 
-    write_response(&mut stream, status.as_u16(), response_headers, bytes).await?;
-    Ok(())
+    if !status.is_success() {
+        // 错误响应体很小，保持缓冲；同时上报给 GUI（CLI 此时在静默退避重试）。
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| Error::Other(format!("proxy response: {e}")))?;
+        if let Some(reporter) = &reporter {
+            reporter.error(ProxyStatusEvent {
+                kind: "upstream-error".into(),
+                status: Some(status.as_u16()),
+                message: body_snippet(&bytes),
+                path: event_path,
+                model: request_model,
+            });
+        }
+        write_response(
+            &mut stream,
+            status.as_u16(),
+            response_headers,
+            bytes.to_vec(),
+        )
+        .await?;
+        return Ok(());
+    }
+    if let Some(reporter) = &reporter {
+        reporter.success(&event_path);
+    }
+
+    if openai_chat && messages_path {
+        // OpenAI → Anthropic 转换需要完整响应，保持缓冲（增量转换不在本任务范围）。
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| Error::Other(format!("proxy response: {e}")))?;
+        let (response_headers, bytes) = convert_openai_response(&bytes, &upstream_content_type)
+            .unwrap_or((response_headers, bytes.to_vec()));
+        write_response(&mut stream, status.as_u16(), response_headers, bytes).await?;
+        return Ok(());
+    }
+
+    stream_response(
+        &mut stream,
+        status.as_u16(),
+        response_headers,
+        resp,
+        reporter.as_ref(),
+        &event_path,
+        request_model.as_deref(),
+    )
+    .await
+}
+
+/// Anthropic 直通：上游字节随到随写（SSE 增量可见）。
+/// 用 chunked 编码承载完成语义（终止块 `0\r\n\r\n`），不依赖 EOF：
+/// Windows 上并发 CreateProcess 会让 accepted socket 的关闭呈现为 RST 而非 FIN，
+/// EOF 定界的响应会被客户端当作中断。
+async fn stream_response(
+    stream: &mut TcpStream,
+    status: u16,
+    response_headers: Vec<(String, String)>,
+    mut resp: reqwest::Response,
+    reporter: Option<&ProxyStatusReporter>,
+    path: &str,
+    model: Option<&str>,
+) -> Result<()> {
+    let mut head = format!("HTTP/1.1 {} {}\r\n", status, reason_phrase(status));
+    for (name, value) in response_headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("Transfer-Encoding: chunked\r\n");
+    head.push_str("Connection: close\r\n\r\n");
+    stream.write_all(head.as_bytes()).await?;
+    stream.flush().await?;
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if chunk.is_empty() {
+                    continue;
+                }
+                let frame_head = format!("{:x}\r\n", chunk.len());
+                stream.write_all(frame_head.as_bytes()).await?;
+                stream.write_all(&chunk).await?;
+                stream.write_all(b"\r\n").await?;
+                stream.flush().await?;
+            }
+            Ok(None) => {
+                stream.write_all(b"0\r\n\r\n").await?;
+                stream.flush().await?;
+                return Ok(());
+            }
+            Err(e) => {
+                // 响应头已发出，无法回写错误状态；不发终止块直接断开，
+                // 让 CLI 把这轮当作传输中断并走自身重试。
+                if let Some(reporter) = reporter {
+                    reporter.error(ProxyStatusEvent {
+                        kind: "network-error".into(),
+                        status: None,
+                        message: format!("response stream interrupted: {e}"),
+                        path: path.to_string(),
+                        model: model.map(str::to_string),
+                    });
+                }
+                return Err(Error::Other(format!("proxy response stream: {e}")));
+            }
+        }
+    }
+}
+
+fn body_snippet(bytes: &[u8]) -> String {
+    const MAX_CHARS: usize = 400;
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    let mut out: String = trimmed.chars().take(MAX_CHARS).collect();
+    if trimmed.chars().count() > MAX_CHARS {
+        out.push('…');
+    }
+    out
 }
 
 async fn write_response(
@@ -220,15 +393,7 @@ async fn write_response(
     response_headers: Vec<(String, String)>,
     bytes: Vec<u8>,
 ) -> Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        _ => "",
-    };
-    let mut head = format!("HTTP/1.1 {} {}\r\n", status, reason);
+    let mut head = format!("HTTP/1.1 {} {}\r\n", status, reason_phrase(status));
     for (name, value) in response_headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -238,6 +403,24 @@ async fn write_response(
     stream.write_all(&bytes).await?;
     stream.flush().await?;
     Ok(())
+}
+
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    }
 }
 
 fn is_models_path(path: &str) -> bool {
@@ -273,7 +456,7 @@ fn models_response(config: &ProxyConfig) -> Vec<u8> {
     .into_bytes()
 }
 
-fn rewrite_model(body: &[u8], config: &ProxyConfig) -> Result<Vec<u8>> {
+fn rewrite_model(body: &[u8], config: &ProxyConfig) -> Result<(Vec<u8>, Option<String>)> {
     let mut value = serde_json::from_slice::<Value>(body)
         .map_err(|e| Error::Other(format!("proxy json parse: {e}")))?;
     let obj = value
@@ -281,10 +464,14 @@ fn rewrite_model(body: &[u8], config: &ProxyConfig) -> Result<Vec<u8>> {
         .ok_or_else(|| Error::Other("proxy json body must be an object".into()))?;
     let source = obj.get("model").and_then(Value::as_str).unwrap_or_default();
     let target = mapped_model(source, config);
-    if !target.is_empty() {
-        obj.insert("model".into(), Value::String(target));
-    }
-    serde_json::to_vec(&value).map_err(Error::from)
+    let model = if target.is_empty() {
+        None
+    } else {
+        obj.insert("model".into(), Value::String(target.clone()));
+        Some(target)
+    };
+    let bytes = serde_json::to_vec(&value).map_err(Error::from)?;
+    Ok((bytes, model))
 }
 
 fn rewrite_cch(body: &[u8], seed: u64) -> Result<Vec<u8>> {
@@ -337,7 +524,10 @@ fn replace_cch_segment(text: &str, cch: &str) -> Option<String> {
     Some(out)
 }
 
-fn anthropic_to_openai_request(body: &[u8], config: &ProxyConfig) -> Result<Vec<u8>> {
+fn anthropic_to_openai_request(
+    body: &[u8],
+    config: &ProxyConfig,
+) -> Result<(Vec<u8>, Option<String>)> {
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|e| Error::Other(format!("proxy json parse: {e}")))?;
     let obj = value
@@ -346,9 +536,12 @@ fn anthropic_to_openai_request(body: &[u8], config: &ProxyConfig) -> Result<Vec<
     let mut out = Map::new();
     let source = obj.get("model").and_then(Value::as_str).unwrap_or_default();
     let model = mapped_model(source, config);
-    if !model.is_empty() {
-        out.insert("model".into(), Value::String(model));
-    }
+    let mapped = if model.is_empty() {
+        None
+    } else {
+        out.insert("model".into(), Value::String(model.clone()));
+        Some(model)
+    };
 
     let mut messages = Vec::new();
     if let Some(system) = obj
@@ -421,7 +614,8 @@ fn anthropic_to_openai_request(body: &[u8], config: &ProxyConfig) -> Result<Vec<
         out.insert("service_tier".into(), Value::String(tier));
     }
 
-    serde_json::to_vec(&Value::Object(out)).map_err(Error::from)
+    let bytes = serde_json::to_vec(&Value::Object(out)).map_err(Error::from)?;
+    Ok((bytes, mapped))
 }
 
 fn append_openai_messages(out: &mut Vec<Value>, message: &Value) -> Result<()> {
@@ -1173,7 +1367,11 @@ fn forward_url(
 }
 
 fn http_client(config: &ProxyConfig, request_url: &str) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300));
+    // 不用总超时：流式响应整轮可超过任意固定上限，会被中途掐断。
+    // connect 上限 + 块间空闲（read）上限既放行长流，又能让挂死连接失败。
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300));
     let proxy_url = config.network_proxy_url.trim();
     if !proxy_url.is_empty() && !matches_no_proxy(request_url, &config.network_no_proxy) {
         let proxy = reqwest::Proxy::all(proxy_url)
@@ -1455,8 +1653,10 @@ mod tests {
             ],
             "tool_choice": { "type": "auto" }
         });
-        let out = anthropic_to_openai_request(body.to_string().as_bytes(), &config).unwrap();
+        let (out, mapped) =
+            anthropic_to_openai_request(body.to_string().as_bytes(), &config).unwrap();
         let value: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(mapped.as_deref(), Some("opus"));
         assert_eq!(value["model"], "opus");
         assert_eq!(value["max_completion_tokens"], 1024);
         assert_eq!(value["reasoning_effort"], "xhigh");
@@ -1614,5 +1814,224 @@ mod tests {
             "https://api.openai.com/v1/models",
             "*.example.com"
         ));
+    }
+
+    #[test]
+    fn reason_phrase_covers_common_upstream_statuses() {
+        assert_eq!(reason_phrase(429), "Too Many Requests");
+        assert_eq!(reason_phrase(502), "Bad Gateway");
+        assert_eq!(reason_phrase(503), "Service Unavailable");
+        assert_eq!(reason_phrase(504), "Gateway Timeout");
+        assert_eq!(reason_phrase(418), "");
+    }
+
+    #[test]
+    fn rewrite_model_returns_mapped_target() {
+        let mut config = proxy_config();
+        config.opus_model = "mimo-v2.5-pro".into();
+        let body = serde_json::json!({ "model": "claude-opus-4-8" });
+        let (bytes, model) = rewrite_model(body.to_string().as_bytes(), &config).expect("rewrite");
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(model.as_deref(), Some("mimo-v2.5-pro"));
+        assert_eq!(value["model"], "mimo-v2.5-pro");
+    }
+
+    /// 读完一个 HTTP 请求（头 + Content-Length 定长体），供假上游使用。
+    async fn read_http_request(sock: &mut TcpStream) {
+        let mut buf = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let n = sock.read(&mut chunk).await.expect("upstream read");
+            if n == 0 {
+                return;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = find_header_end(&buf) {
+                let header = String::from_utf8_lossy(&buf[..pos]).to_ascii_lowercase();
+                let content_length = header
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buf.len() >= pos + 4 + content_length {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// 响应是否已按帧语义读完（Content-Length 满足或 chunked 终止块到达）。
+    /// 不依赖 EOF：Windows 上并发 CreateProcess 会让对端关闭呈现为 RST。
+    fn http_response_complete(received: &[u8]) -> bool {
+        let Some(header_end) = find_header_end(received) else {
+            return false;
+        };
+        let header = String::from_utf8_lossy(&received[..header_end]).to_ascii_lowercase();
+        let body = &received[header_end + 4..];
+        if let Some(content_length) = header
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+        {
+            return body.len() >= content_length;
+        }
+        if header.contains("transfer-encoding: chunked") {
+            return body.ends_with(b"0\r\n\r\n");
+        }
+        false
+    }
+
+    /// 通过本地代理发一个 /v1/messages 请求并按帧语义读完响应。
+    async fn proxy_roundtrip(proxy_url: &str, body: &[u8]) -> String {
+        let addr = proxy_url.strip_prefix("http://").expect("proxy url");
+        let mut client = TcpStream::connect(addr).await.expect("connect proxy");
+        let head = format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        client.write_all(head.as_bytes()).await.expect("write head");
+        client.write_all(body).await.expect("write body");
+        let mut received = Vec::new();
+        loop {
+            if http_response_complete(&received) {
+                break;
+            }
+            let mut chunk = [0u8; 1024];
+            let n = client.read(&mut chunk).await.expect("read response");
+            if n == 0 {
+                break;
+            }
+            received.extend_from_slice(&chunk[..n]);
+        }
+        String::from_utf8_lossy(&received).into_owned()
+    }
+
+    #[tokio::test]
+    async fn anthropic_passthrough_streams_chunks_before_upstream_completes() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream");
+        let upstream_addr = upstream.local_addr().expect("upstream addr");
+        // 信号驱动：上游发出第一块后阻塞等待，确保“客户端读到第一块”先于“上游发完”。
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let (mut sock, _) = upstream.accept().await.expect("accept");
+            read_http_request(&mut sock).await;
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: first\n\n",
+            )
+            .await
+            .expect("write first chunk");
+            sock.flush().await.expect("flush first chunk");
+            release_rx.await.expect("await release");
+            sock.write_all(b"event: second\n\n")
+                .await
+                .expect("write second chunk");
+            sock.flush().await.expect("flush second chunk");
+        });
+
+        let mut config = proxy_config();
+        config.target_url = format!("http://{upstream_addr}");
+        let proxy_url = start(config, None).await.expect("start proxy");
+        let addr = proxy_url.strip_prefix("http://").expect("proxy url");
+        let mut client = TcpStream::connect(addr).await.expect("connect proxy");
+        let body = br#"{"model":"sonnet"}"#;
+        let head = format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        client.write_all(head.as_bytes()).await.expect("write head");
+        client.write_all(body).await.expect("write body");
+
+        let mut received = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let mut chunk = [0u8; 1024];
+                let n = client.read(&mut chunk).await.expect("read first chunk");
+                assert!(n > 0, "proxy closed before first chunk");
+                received.extend_from_slice(&chunk[..n]);
+                if String::from_utf8_lossy(&received).contains("event: first") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("first chunk must arrive while upstream is still streaming");
+
+        release_tx.send(()).expect("release upstream");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !http_response_complete(&received) {
+                let mut chunk = [0u8; 1024];
+                let n = client.read(&mut chunk).await.expect("read rest");
+                assert!(n > 0, "connection ended before terminal chunk");
+                received.extend_from_slice(&chunk[..n]);
+            }
+        })
+        .await
+        .expect("terminal chunk should arrive after upstream closes");
+
+        let text = String::from_utf8_lossy(&received);
+        assert!(text.contains("event: second"));
+        assert!(
+            text.to_ascii_lowercase()
+                .contains("transfer-encoding: chunked"),
+            "streaming passthrough must use chunked framing"
+        );
+        assert!(
+            !text.to_ascii_lowercase().contains("content-length"),
+            "streaming passthrough must not buffer with content-length"
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_upstream_error_then_recovery() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream");
+        let upstream_addr = upstream.local_addr().expect("upstream addr");
+        tokio::spawn(async move {
+            let responses: [&[u8]; 2] = [
+                b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: 19\r\n\r\nService Unavailable",
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            ];
+            for response in responses {
+                let (mut sock, _) = upstream.accept().await.expect("accept");
+                read_http_request(&mut sock).await;
+                sock.write_all(response).await.expect("write response");
+                sock.flush().await.expect("flush response");
+            }
+        });
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut config = proxy_config();
+        config.target_url = format!("http://{upstream_addr}");
+        let proxy_url = start(config, Some(ProxyStatusReporter::new(tx)))
+            .await
+            .expect("start proxy");
+
+        let body = br#"{"model":"sonnet"}"#;
+        let first = proxy_roundtrip(&proxy_url, body).await;
+        assert!(first.starts_with("HTTP/1.1 429 Too Many Requests"));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("error event in time")
+            .expect("error event");
+        assert_eq!(event.kind, "upstream-error");
+        assert_eq!(event.status, Some(429));
+        assert_eq!(event.path, "/v1/messages");
+        assert_eq!(event.model.as_deref(), Some("sonnet"));
+        assert!(event.message.contains("Service Unavailable"));
+
+        let second = proxy_roundtrip(&proxy_url, body).await;
+        assert!(second.starts_with("HTTP/1.1 200 OK"));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("recovered event in time")
+            .expect("recovered event");
+        assert_eq!(event.kind, "recovered");
+        assert!(
+            rx.try_recv().is_err(),
+            "consecutive successes must not emit extra events"
+        );
     }
 }

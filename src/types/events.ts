@@ -29,3 +29,12 @@ export type ClaudeEvent =
   | { type: "stderr"; line: string }
   | { type: "raw"; line: string }
   | { type: string; [k: string]: unknown }
+
+/** 第三方本地代理上报的上游状态（claude://session/{id}/proxy-status）。 */
+export interface ProxyStatusEvent {
+  kind: "upstream-error" | "network-error" | "recovered" | string
+  status?: number | null
+  message?: string
+  path?: string
+  model?: string | null
+}

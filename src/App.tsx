@@ -26,6 +26,7 @@ import {
   stopSession,
   listenSessionEvents,
   listenSessionErrors,
+  listenSessionProxyStatus,
   listenPermissionRequests,
   resolvePermissionRequest,
   readSessionTranscript,
@@ -44,6 +45,12 @@ import {
   loadProxyAsync,
   migrateLegacyProxyPassword
 } from "@/lib/proxy"
+import {
+  proxyStatusErrorText,
+  reduceProxyStatus,
+  type UpstreamStatusState
+} from "@/lib/proxyStatus"
+import { UpstreamStatusBanner } from "@/components/UpstreamStatusBanner"
 import { loadSettings, recordResultUsage } from "@/lib/settings"
 import type { AppSettings } from "@/lib/settings"
 import {
@@ -295,6 +302,7 @@ type RunningSession = {
   collabMcpEnabled: boolean
   reviewSnapshotId: string | null
   reviewDiffs: ReviewRunDiff[]
+  upstreamStatus: UpstreamStatusState | null
 }
 
 type DiffPanelScope =
@@ -852,7 +860,7 @@ export default function App() {
   const reportNetworkError = useCallback(
     (
       runtimeId: string,
-      source: "stderr" | "result",
+      source: "stderr" | "result" | "proxy",
       raw: string | null | undefined
     ) => {
       const hit = detectNetworkError(raw)
@@ -866,7 +874,12 @@ export default function App() {
       const lastAt = perSession.get(hit.topic) ?? 0
       if (now - lastAt < NETWORK_TOAST_THROTTLE_MS) return
       perSession.set(hit.topic, now)
-      const sourceLabel = source === "stderr" ? "CLI stderr" : "result.is_error"
+      const sourceLabel =
+        source === "stderr"
+          ? "CLI stderr"
+          : source === "proxy"
+            ? "本地代理"
+            : "result.is_error"
       toast.error(hit.summary, {
         description: `${hit.hint}\n\n来自 ${sourceLabel}：${(raw ?? "").trim().slice(0, 240)}`,
         duration: 9_000,
@@ -1662,7 +1675,8 @@ export default function App() {
         sessionComposer: launchSessionComposer,
         collabMcpEnabled: collabCfg.enabled,
         reviewSnapshotId: null,
-        reviewDiffs: launchReviewDiffs
+        reviewDiffs: launchReviewDiffs,
+        upstreamStatus: null
       }
       collabMcpEnabledRef.current = collabCfg.enabled
       runningSessionsRef.current.set(id, run)
@@ -1782,6 +1796,8 @@ export default function App() {
             )
             setRunningTick((tick) => tick + 1)
           }
+          // 回合结束：上游状态条不再有意义（成功则已 recovered，失败则 result 错误已落地）
+          run.upstreamStatus = null
           setRunningSessionStreaming(run, false)
           void finishRunReview(run).then(() => sendQueuedFollowup(run))
           setSidebarRefreshKey((k) => k + 1)
@@ -1853,7 +1869,14 @@ export default function App() {
         applyRunningAction(run, { kind: "event", event: ev })
         reportNetworkError(run.runtimeId, "stderr", line)
       })
-      run.unlisten = [u1, u2]
+      const u3 = await listenSessionProxyStatus(id, (ev) => {
+        run.upstreamStatus = reduceProxyStatus(run.upstreamStatus, ev, Date.now())
+        setRunningTick((tick) => tick + 1)
+        if (ev.kind === "upstream-error" || ev.kind === "network-error") {
+          reportNetworkError(run.runtimeId, "proxy", proxyStatusErrorText(ev))
+        }
+      })
+      run.unlisten = [u1, u2, u3]
       return id
     } catch (e) {
       if (createdRuntimeId) {
@@ -2772,6 +2795,12 @@ export default function App() {
       }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningTick, sessionId])
+  const activeUpstreamStatus = useMemo(() => {
+    const runtimeId = activeRuntimeIdRef.current ?? sessionId
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+    return run?.upstreamStatus ?? null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningTick, sessionId])
   const activePermissionRequest =
     permissionRequests.find((request) => request.session_id === sessionId) ??
     null
@@ -3106,6 +3135,11 @@ export default function App() {
                         />
                       </Suspense>
                     </div>
+                  </div>
+                )}
+                {activeUpstreamStatus && (
+                  <div className="shrink-0 bg-background px-6 pt-2">
+                    <UpstreamStatusBanner status={activeUpstreamStatus} />
                   </div>
                 )}
                 <div className="shrink-0 bg-background px-6 pt-2 empty:hidden">

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::api_proxy::{start as start_api_proxy, ProxyConfig};
+use crate::api_proxy::{start as start_api_proxy, ProxyConfig, ProxyStatusReporter};
 use crate::child_process::{hide_std_window, hide_tokio_window};
 use crate::error::{Error, Result};
 use crate::permission_mcp::{
@@ -697,12 +697,16 @@ pub async fn spawn_session(
     let effort = if ultracode_enabled { None } else { effort };
     let runtime_settings = take_runtime_settings_json(&mut env)?;
     let mut use_runtime_claude_settings = runtime_settings.is_some();
+    let mut proxy_status_rx = None;
     if let Some(proxy_config) = take_proxy_config(&mut env, effort.as_deref())? {
-        let local_base_url = start_api_proxy(proxy_config).await?;
+        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel();
+        let local_base_url =
+            start_api_proxy(proxy_config, Some(ProxyStatusReporter::new(status_tx))).await?;
         env.insert("ANTHROPIC_BASE_URL".into(), local_base_url);
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "claudinal-proxy".into());
         env.remove("ANTHROPIC_API_KEY");
         use_runtime_claude_settings = true;
+        proxy_status_rx = Some(status_rx);
     }
     bridge_socks_proxy_env(&mut env).await?;
     if let Some(model) = model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -788,7 +792,18 @@ pub async fn spawn_session(
         mcp_config,
         settings_json,
     };
-    manager.spawn(app, opts).await
+    let session_id = manager.spawn(app.clone(), opts).await?;
+    // CLI 在 stream-json 模式下对 429/5xx 静默退避重试，本地代理的状态事件是 GUI
+    // 唯一的可见性来源；unbounded channel 缓冲 spawn 完成前已发生的事件，不丢。
+    if let Some(mut status_rx) = proxy_status_rx {
+        let topic = format!("claude://session/{session_id}/proxy-status");
+        tokio::spawn(async move {
+            while let Some(event) = status_rx.recv().await {
+                let _ = app.emit(&topic, event);
+            }
+        });
+    }
+    Ok(session_id)
 }
 
 fn version_at_least(version: &str, min_version: &str) -> Option<bool> {

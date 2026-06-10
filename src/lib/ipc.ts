@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-import type { ClaudeEvent } from "../types/events"
+import type { ClaudeEvent, ProxyStatusEvent } from "../types/events"
 
 export interface AppRuntimeInfo {
   executable_path: string
@@ -1022,5 +1022,15 @@ export async function listenSessionErrors(
 ): Promise<UnlistenFn> {
   return listen<string>(`claude://session/${sessionId}/error`, (e) =>
     handler(e.payload)
+  )
+}
+
+export async function listenSessionProxyStatus(
+  sessionId: string,
+  handler: (ev: ProxyStatusEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ProxyStatusEvent>(
+    `claude://session/${sessionId}/proxy-status`,
+    (e) => handler(e.payload)
   )
 }
