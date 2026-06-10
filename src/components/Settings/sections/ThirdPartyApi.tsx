@@ -746,8 +746,9 @@ export function ThirdPartyApi() {
                 </div>
               )}
 
-              <div className="overflow-hidden rounded-lg border">
-                <div className="grid grid-cols-[8rem_minmax(0,1fr)_7rem] gap-3 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
+              {/* 不能 overflow-hidden：ModelInput 的建议下拉是 absolute 定位，会被裁掉；表头单独补顶部圆角 */}
+              <div className="rounded-lg border">
+                <div className="grid grid-cols-[8rem_minmax(0,1fr)_7rem] gap-3 rounded-t-lg border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
                   <div>模型角色</div>
                   <div>实际请求模型</div>
                   <div>声明支持 1M</div>
