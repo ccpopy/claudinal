@@ -31,6 +31,7 @@ import {
   type AppearanceConfig
 } from "@/lib/appearance"
 import {
+  SettingsCard,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionHeader
@@ -103,9 +104,9 @@ export function Appearance() {
         title="外观"
         description="默认跟随系统；浅色与深色可独立微调，修改后实时生效。"
       />
-      <SettingsSectionBody className="space-y-5">
-      <section className="rounded-lg border bg-card p-5">
-        <div className="mb-4 flex items-start justify-between gap-3">
+      <SettingsSectionBody>
+      <SettingsCard>
+        <div className="flex items-start justify-between gap-3">
           <div>
             <Label className="text-sm font-medium">主题模式</Label>
             <div className="mt-1 text-xs text-muted-foreground">
@@ -146,10 +147,10 @@ export function Appearance() {
             )
           })}
         </div>
-      </section>
+      </SettingsCard>
 
-      <section className="rounded-lg border bg-card p-5">
-        <div className="mb-4 flex items-center justify-between gap-3">
+      <SettingsCard>
+        <div className="flex items-center justify-between gap-3">
           <div>
             <Label className="text-sm font-medium">预设主题</Label>
             <div className="mt-1 text-xs text-muted-foreground">
@@ -182,10 +183,10 @@ export function Appearance() {
             aria-label="切换到自定义配色"
           />
         </div>
-      </section>
+      </SettingsCard>
 
-      <section className="rounded-lg border bg-card p-5">
-        <div className="mb-4 flex items-start justify-between gap-3">
+      <SettingsCard>
+        <div className="flex items-start justify-between gap-3">
           <div>
             <Label className="text-sm font-medium">自定义细节</Label>
             <div className="mt-1 text-xs text-muted-foreground">
@@ -204,7 +205,7 @@ export function Appearance() {
             />
           ))}
         </div>
-      </section>
+      </SettingsCard>
       </SettingsSectionBody>
     </SettingsSection>
   )

@@ -40,6 +40,8 @@ import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings"
 import { checkForAppUpdate } from "@/lib/updater"
 import appPackage from "../../../../package.json"
 import {
+  SettingsCallout,
+  SettingsCard,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionFooter,
@@ -533,7 +535,7 @@ export function General() {
       />
 
       <SettingsSectionBody>
-        <section className="space-y-4 rounded-lg border bg-card p-5">
+        <SettingsCard>
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-sm">自动检查更新</Label>
@@ -628,13 +630,13 @@ export function General() {
                 </div>
               </div>
               {cliInfo && (
-                <div
-                  className={
+                <SettingsCallout
+                  tone={
                     !cliInfo.installed
-                      ? "rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn"
+                      ? "warn"
                       : cliInfo.supported
-                      ? "rounded-md border bg-muted/35 px-3 py-2 text-xs text-muted-foreground"
-                      : "rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn"
+                      ? "info"
+                      : "warn"
                   }
                 >
                   <div className="flex items-center gap-2 font-medium text-foreground">
@@ -710,7 +712,7 @@ export function General() {
                       </div>
                     )}
                   </div>
-                </div>
+                </SettingsCallout>
               )}
               {cliCommandProgress && (
                 <div className="rounded-md border bg-background px-3 py-2 text-xs">
@@ -858,7 +860,7 @@ export function General() {
                 />
               </div>
             </div>
-        </section>
+        </SettingsCard>
       </SettingsSectionBody>
 
       <SettingsSectionFooter>

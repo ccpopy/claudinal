@@ -38,6 +38,8 @@ import { listProjects, type Project } from "@/lib/projects"
 import { getSessionTitle } from "@/lib/sessionTitles"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
 import {
+  SettingsCallout,
+  SettingsCard,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionHeader
@@ -419,7 +421,7 @@ function SessionIndexDiagnosticsCard({
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-4 space-y-3 text-xs">
+      <SettingsCard className="space-y-3 p-4 text-xs">
         {error ? (
           <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive">
             <div className="font-medium">读取索引失败</div>
@@ -469,9 +471,9 @@ function SessionIndexDiagnosticsCard({
               />
             </div>
             {schemaMismatch && (
-              <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
+              <SettingsCallout tone="warn">
                 schema 版本与当前应用期望不一致，建议重建索引以避免读写错位。
-              </div>
+              </SettingsCallout>
             )}
           </>
         ) : loading ? (
@@ -482,7 +484,7 @@ function SessionIndexDiagnosticsCard({
         ) : (
           <div className="text-muted-foreground">尚未读取索引诊断信息。</div>
         )}
-      </div>
+      </SettingsCard>
     </section>
   )
 }

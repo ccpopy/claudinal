@@ -38,7 +38,12 @@ import {
   type McpServerConfig
 } from "@/lib/mcp"
 import { cn } from "@/lib/utils"
-import { SettingsSectionHeader } from "./layout"
+import {
+  SettingsCard,
+  SettingsCardTitle,
+  SettingsEmptyState,
+  SettingsSectionHeader
+} from "./layout"
 
 type ServerScope = McpScope | "claude-json-global" | "claude-json-project"
 type EditableServerScope = McpScope | "claude-json-global"
@@ -741,8 +746,8 @@ function ListView({
     <>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-6 px-8 pb-6 pt-2">
-          <section className="rounded-lg border bg-card p-5">
-            <div className="mb-4 flex flex-wrap items-center gap-2">
+          <SettingsCard>
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
@@ -780,13 +785,13 @@ function ListView({
                 正在读取 MCP 配置
               </div>
             ) : rows.length === 0 ? (
-              <div className="flex h-40 flex-col items-center justify-center rounded-lg border border-dashed text-center">
+              <SettingsEmptyState>
                 <Server className="mb-3 size-6 text-muted-foreground" />
                 <div className="text-sm font-medium">还没有 MCP 服务器</div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   点击右上角添加服务器。
                 </div>
-              </div>
+              </SettingsEmptyState>
             ) : (
               <div className="space-y-3">
                 {rows.map((row) => (
@@ -801,7 +806,7 @@ function ListView({
                 ))}
               </div>
             )}
-          </section>
+          </SettingsCard>
         </div>
       </ScrollArea>
     </>
@@ -996,10 +1001,8 @@ function EditorView({
     <>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-6 px-8 pb-6 pt-2">
-          <section className="space-y-4 rounded-lg border bg-card p-5">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              基本信息
-            </div>
+          <SettingsCard>
+            <SettingsCardTitle>基本信息</SettingsCardTitle>
             <FieldRow label="名称">
               <Input
                 value={editor.name}
@@ -1055,7 +1058,7 @@ function EditorView({
                 })}
               </div>
             </FieldRow>
-          </section>
+          </SettingsCard>
 
           {editor.type === "stdio" ? (
             <StdioEditor editor={editor} disabled={disabled} onUpdate={onUpdate} />
@@ -1086,10 +1089,8 @@ function StdioEditor({
   onUpdate: (patch: Partial<EditorState>) => void
 }) {
   return (
-    <section className="space-y-5 rounded-lg border bg-card p-5">
-      <div className="text-xs uppercase tracking-wider text-muted-foreground">
-        STDIO
-      </div>
+    <SettingsCard className="space-y-5">
+      <SettingsCardTitle>STDIO</SettingsCardTitle>
       <StackField label="启动命令">
         <Input
           value={editor.command}
@@ -1133,7 +1134,7 @@ function StdioEditor({
           disabled={disabled}
         />
       </StackField>
-    </section>
+    </SettingsCard>
   )
 }
 
@@ -1147,10 +1148,8 @@ function HttpEditor({
   onUpdate: (patch: Partial<EditorState>) => void
 }) {
   return (
-    <section className="space-y-5 rounded-lg border bg-card p-5">
-      <div className="text-xs uppercase tracking-wider text-muted-foreground">
-        流式 HTTP
-      </div>
+    <SettingsCard className="space-y-5">
+      <SettingsCardTitle>流式 HTTP</SettingsCardTitle>
       <StackField label="URL">
         <Input
           value={editor.url}
@@ -1180,7 +1179,7 @@ function HttpEditor({
         disabled={disabled}
         onChange={(headers) => onUpdate({ headers })}
       />
-    </section>
+    </SettingsCard>
   )
 }
 

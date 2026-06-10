@@ -15,6 +15,7 @@ import {
   type PricingGroup,
   type PricingRule
 } from "@/lib/pricing"
+import { SettingsCard, SettingsEmptyState } from "./layout"
 
 interface PendingDelete {
   kind: "group" | "rule"
@@ -205,12 +206,12 @@ export function PricingEditor() {
 
       <div className="space-y-6 pb-2 pt-4">
         {config.groups.length === 0 ? (
-          <div className="flex h-40 flex-col items-center justify-center rounded-lg border border-dashed text-center">
+          <SettingsEmptyState>
             <div className="text-sm font-medium">还没有任何定价分组</div>
             <div className="mt-1 text-xs text-muted-foreground">
               点击右上角「新增分组」开始配置。
             </div>
-          </div>
+          </SettingsEmptyState>
         ) : (
           config.groups.map((group) => (
             <GroupCard
@@ -335,7 +336,7 @@ function GroupCard({
   onDeleteRule: (rule: PricingRule) => void
 }) {
   return (
-    <section className="rounded-lg border bg-card p-5 space-y-4">
+    <SettingsCard>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Input
           value={group.name}
@@ -387,7 +388,7 @@ function GroupCard({
           </div>
         </div>
       )}
-    </section>
+    </SettingsCard>
   )
 }
 

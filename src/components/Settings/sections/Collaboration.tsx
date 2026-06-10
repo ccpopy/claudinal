@@ -33,6 +33,7 @@ import {
   type CollabSettings
 } from "@/lib/collabSettings"
 import {
+  SettingsCard,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionFooter,
@@ -127,7 +128,7 @@ export function Collaboration() {
       />
 
       <SettingsSectionBody>
-        <section className="space-y-4 rounded-lg border bg-card p-5">
+        <SettingsCard>
           <div className="flex items-center justify-between gap-4">
             <div>
               <Label className="text-sm">启用协同 MCP</Label>
@@ -196,7 +197,7 @@ export function Collaboration() {
               disabled={!cfg.allowWrites}
             />
           </div>
-        </section>
+        </SettingsCard>
 
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-3">

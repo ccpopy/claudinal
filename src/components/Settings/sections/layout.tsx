@@ -70,3 +70,112 @@ export function SettingsSectionFooter({
     </div>
   )
 }
+
+/** 设置卡片：所有设置分组统一的卡片原语。space-y/padding 特例用 className 覆盖（twMerge）。 */
+export function SettingsCard({
+  children,
+  className
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <div className={cn("space-y-4 rounded-lg border bg-card p-5", className)}>
+      {children}
+    </div>
+  )
+}
+
+/** 卡片 eyebrow 小标题；可选 description 渲染为紧随其后的描述行。 */
+export function SettingsCardTitle({
+  children,
+  description,
+  className
+}: {
+  children: ReactNode
+  description?: ReactNode
+  className?: string
+}) {
+  const title = (
+    <div
+      className={cn(
+        "text-xs uppercase tracking-wider text-muted-foreground",
+        className
+      )}
+    >
+      {children}
+    </div>
+  )
+  if (description == null) return title
+  return (
+    <>
+      {title}
+      <div className="mt-1 text-xs text-muted-foreground">{description}</div>
+    </>
+  )
+}
+
+/** muted 语气的提示盒。 */
+export function SettingsHint({
+  children,
+  className
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground",
+        className
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** 带语气的信息盒：warn 警示 / info 同 hint。 */
+export function SettingsCallout({
+  tone,
+  children,
+  className
+}: {
+  tone: "warn" | "info"
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-3 py-2 text-xs",
+        tone === "warn"
+          ? "border-warn/40 bg-warn/10 text-warn"
+          : "bg-muted/40 text-muted-foreground",
+        className
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** dashed 空状态盒。 */
+export function SettingsEmptyState({
+  children,
+  className
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <div
+      className={cn(
+        "flex h-40 flex-col items-center justify-center rounded-lg border border-dashed text-center",
+        className
+      )}
+    >
+      {children}
+    </div>
+  )
+}

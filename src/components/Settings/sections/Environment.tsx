@@ -35,7 +35,12 @@ import {
 } from "@/lib/projectEnv"
 import { listProjects, type Project } from "@/lib/projects"
 import { cn, formatPathForDisplay } from "@/lib/utils"
-import { SettingsSectionHeader } from "./layout"
+import {
+  SettingsCard,
+  SettingsCardTitle,
+  SettingsEmptyState,
+  SettingsSectionHeader
+} from "./layout"
 
 interface Props {
   cwd?: string | null
@@ -265,9 +270,9 @@ function ListView({
   return (
     <ScrollArea className="min-h-0 flex-1">
       <div className="space-y-6 px-8 pb-6 pt-2">
-        <section className="rounded-lg border bg-card p-5">
+        <SettingsCard>
           {rows.length === 0 ? (
-            <div className="flex h-44 flex-col items-center justify-center rounded-lg border border-dashed text-center">
+            <SettingsEmptyState>
               <Folder className="mb-3 size-6 text-muted-foreground" />
               <div className="text-sm font-medium">还没有项目</div>
               <div className="mt-1 text-xs text-muted-foreground">
@@ -277,7 +282,7 @@ function ListView({
                 <FolderPlus />
                 添加项目
               </Button>
-            </div>
+            </SettingsEmptyState>
           ) : (
             <div className="space-y-3">
               {rows.map(({ project, config }) => (
@@ -291,7 +296,7 @@ function ListView({
               ))}
             </div>
           )}
-        </section>
+        </SettingsCard>
       </div>
     </ScrollArea>
   )
@@ -380,11 +385,9 @@ function EditorView({
     <>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-6 px-8 pb-6 pt-2">
-          <section className="rounded-lg border bg-card p-5">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              本地环境
-            </div>
-            <div className="mt-4 flex flex-col gap-4">
+          <SettingsCard>
+            <SettingsCardTitle>本地环境</SettingsCardTitle>
+            <div className="flex flex-col gap-4">
               <div className="flex items-center gap-3 rounded-lg border bg-background p-3">
                 <div className="grid size-10 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
                   <Folder className="size-4" />
@@ -415,7 +418,7 @@ function EditorView({
                 </p>
               </div>
             </div>
-          </section>
+          </SettingsCard>
 
           <ScriptSection
             title="设置脚本"
@@ -506,7 +509,7 @@ function ScriptSection({
   onChange: (value: string) => void
 }) {
   return (
-    <section className="space-y-4 rounded-lg border bg-card p-5">
+    <SettingsCard>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold">{title}</div>
@@ -533,7 +536,7 @@ function ScriptSection({
         className="min-h-44 font-mono text-xs leading-5"
         spellCheck={false}
       />
-    </section>
+    </SettingsCard>
   )
 }
 
@@ -549,7 +552,7 @@ function ActionSection({
   onRemove: (id: string) => void
 }) {
   return (
-    <section className="rounded-lg border bg-card p-5">
+    <SettingsCard>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-sm font-semibold">操作</div>
@@ -564,7 +567,7 @@ function ActionSection({
       </div>
 
       {actions.length === 0 ? (
-        <div className="mt-4 rounded-lg border border-dashed bg-background p-4 text-sm text-muted-foreground">
+        <div className="rounded-lg border border-dashed bg-background p-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-2 font-medium text-foreground">
             <WandSparkles className="size-4 text-muted-foreground" />
             还没有项目操作
@@ -574,7 +577,7 @@ function ActionSection({
           </p>
         </div>
       ) : (
-        <div className="mt-4 space-y-3">
+        <div className="space-y-3">
           {actions.map((action, index) => (
             <div key={action.id} className="rounded-lg border bg-background p-3">
               <div className="flex items-start gap-3">
@@ -622,7 +625,7 @@ function ActionSection({
           ))}
         </div>
       )}
-    </section>
+    </SettingsCard>
   )
 }
 

@@ -53,6 +53,7 @@ import {
 } from "@/lib/projects"
 import { cn, formatPathForDisplay } from "@/lib/utils"
 import {
+  SettingsEmptyState,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionHeader
@@ -559,11 +560,11 @@ function CreateWorktreeDialog({
 
 function EmptyState({ title, detail }: { title: string; detail: string }) {
   return (
-    <div className="flex h-44 flex-col items-center justify-center rounded-lg border border-dashed bg-card text-center">
+    <SettingsEmptyState className="bg-card">
       <TreePine className="mb-3 size-6 text-muted-foreground" />
       <div className="text-sm font-medium">{title}</div>
       <div className="mt-1 max-w-md text-xs text-muted-foreground">{detail}</div>
-    </div>
+    </SettingsEmptyState>
   )
 }
 

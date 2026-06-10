@@ -35,6 +35,8 @@ import {
   type OauthUsageWindow
 } from "@/lib/ipc"
 import {
+  SettingsCard,
+  SettingsCardTitle,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionHeader
@@ -289,11 +291,9 @@ export function Account() {
       />
 
       <SettingsSectionBody>
-        <section className="rounded-lg border bg-card p-5 space-y-4">
+        <SettingsCard>
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              登录
-            </div>
+            <SettingsCardTitle>登录</SettingsCardTitle>
             <AuthActions
               auth={auth}
               awaitingLogin={awaitingLogin}
@@ -330,7 +330,7 @@ export function Account() {
               </div>
             </div>
           )}
-        </section>
+        </SettingsCard>
 
         {showPlanUsage && (
           <PlanUsageSection
@@ -461,10 +461,8 @@ function PlanUsageSection({
 }) {
   if (error) {
     return (
-      <section className="rounded-lg border bg-card p-5 space-y-2">
-        <div className="text-xs uppercase tracking-wider text-muted-foreground">
-          计划用量限额
-        </div>
+      <SettingsCard className="space-y-2">
+        <SettingsCardTitle>计划用量限额</SettingsCardTitle>
         <div className="flex items-start gap-2 text-xs text-warn">
           <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
           <span className="break-all">{error}</span>
@@ -472,14 +470,14 @@ function PlanUsageSection({
         <div className="text-[11px] text-muted-foreground">
           仅 OAuth 登录用户可查看。macOS 上 token 存在系统钥匙串（"Claude Code-credentials"），桌面端不读取；终端运行 `claude auth status` 可查看登录态。
         </div>
-      </section>
+      </SettingsCard>
     )
   }
   if (loading && !data) {
     return (
-      <section className="rounded-lg border bg-card p-5">
+      <SettingsCard>
         <div className="text-xs text-muted-foreground">加载计划用量中…</div>
-      </section>
+      </SettingsCard>
     )
   }
   if (!data) return null
@@ -490,7 +488,7 @@ function PlanUsageSection({
   const sevenDaySonnet = data.seven_day_sonnet ?? undefined
 
   return (
-    <section className="rounded-lg border bg-card p-5 space-y-5">
+    <SettingsCard className="space-y-5">
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="text-sm font-semibold">计划用量限额</div>
@@ -545,7 +543,7 @@ function PlanUsageSection({
           </div>
         )}
       </div>
-    </section>
+    </SettingsCard>
   )
 }
 

@@ -31,6 +31,7 @@ import {
   type McpServerConfig
 } from "@/lib/mcp"
 import {
+  SettingsCard,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionHeader
@@ -245,7 +246,7 @@ export function Browser({ cwd }: Props) {
       />
 
       <SettingsSectionBody>
-          <section className="rounded-lg border bg-card p-5">
+          <SettingsCard>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold">Claude 浏览器可用性</h3>
@@ -261,7 +262,7 @@ export function Browser({ cwd }: Props) {
                     : "缺少 Chromium"}
               </Badge>
             </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2">
               <ReadinessItem
                 label="浏览器 MCP"
                 ok={enabledBrowserMcpCount > 0}
@@ -277,7 +278,7 @@ export function Browser({ cwd }: Props) {
                 value={hasChromium ? "已安装" : "未安装"}
               />
             </div>
-          </section>
+          </SettingsCard>
 
           <section className="space-y-3">
             <div>
@@ -431,7 +432,7 @@ export function Browser({ cwd }: Props) {
                 <code className="font-mono">ms-playwright</code> 缓存状态，用于排查浏览器是否安装到位。
               </p>
             </div>
-            <div className="space-y-3 rounded-lg border bg-card p-5">
+            <SettingsCard className="space-y-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <Label className="text-sm">缓存目录</Label>
@@ -484,7 +485,7 @@ export function Browser({ cwd }: Props) {
                   </div>
                 </div>
               )}
-            </div>
+            </SettingsCard>
           </section>
       </SettingsSectionBody>
     </SettingsSection>

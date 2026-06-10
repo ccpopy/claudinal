@@ -15,6 +15,9 @@ import {
 import { emitSettingsBus } from "@/lib/settingsBus"
 import { ConfigExportPage } from "./ConfigExportDialog"
 import {
+  SettingsCard,
+  SettingsCardTitle,
+  SettingsHint,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionFooter,
@@ -120,13 +123,11 @@ export function Config() {
       />
 
       <SettingsSectionBody>
-          <section className="rounded-lg border bg-card p-5 space-y-4">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              CLI 行为
-            </div>
-            <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <SettingsCard>
+            <SettingsCardTitle>CLI 行为</SettingsCardTitle>
+            <SettingsHint>
               这里写到 <code className="font-mono">~/.claude/settings.json</code>，对 Claude CLI 全局生效。会话级临时切换（包括 max effort）请用对话页 Composer 的 Model / Effort 选择器，不会写回此处；权限模式默认在「常规」页配置。
-            </div>
+            </SettingsHint>
             <Row label="模型">
               <Input
                 value={(cliSettings.model as string) ?? ""}
@@ -172,7 +173,7 @@ export function Config() {
                 导出配置
               </Button>
             </Row>
-          </section>
+          </SettingsCard>
       </SettingsSectionBody>
 
       <SettingsSectionFooter>

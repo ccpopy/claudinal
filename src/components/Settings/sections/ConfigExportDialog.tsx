@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { writeTextFile } from "@/lib/ipc"
+import { SettingsCard, SettingsCardTitle } from "./layout"
 
 interface Props {
   settings: Record<string, unknown>
@@ -338,20 +339,18 @@ export function ConfigExportPage({ settings, onBack }: Props) {
       </div>
 
       <ScrollArea className="min-h-0 min-w-0 flex-1">
-        <div className="min-w-0 px-8 pb-6 space-y-4">
+        <div className="min-w-0 px-8 pb-6 space-y-6">
           {groupedKeys.length === 0 && (
             <div className="text-xs text-muted-foreground text-center py-8">
               settings.json 中没有任何字段。
             </div>
           )}
           {groupedKeys.map((g) => (
-            <section
+            <SettingsCard
               key={g.id}
-              className="min-w-0 overflow-hidden rounded-lg border bg-card p-4 space-y-3"
+              className="min-w-0 space-y-3 overflow-hidden p-4"
             >
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                {g.label}
-              </div>
+              <SettingsCardTitle>{g.label}</SettingsCardTitle>
               <div className="space-y-2">
                 {g.keys.map((k) =>
                   k === "env" && envObj ? (
@@ -382,7 +381,7 @@ export function ConfigExportPage({ settings, onBack }: Props) {
                   )
                 )}
               </div>
-            </section>
+            </SettingsCard>
           ))}
         </div>
       </ScrollArea>

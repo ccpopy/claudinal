@@ -38,6 +38,8 @@ import {
 } from "@/lib/proxy"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
 import {
+  SettingsCard,
+  SettingsCardTitle,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionFooter,
@@ -329,7 +331,7 @@ export function Network() {
               </div>
             </section>
           )}
-          <section className="space-y-4 rounded-lg border bg-card p-5">
+          <SettingsCard>
             <div className="flex items-center justify-between">
               <Label htmlFor="proxy-enabled" className="text-sm">
                 启用代理
@@ -421,12 +423,10 @@ export function Network() {
                 className="font-mono text-xs"
               />
             </div>
-          </section>
+          </SettingsCard>
 
           <section className="rounded-lg border bg-muted/40 p-5 space-y-2">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              当前预览
-            </div>
+            <SettingsCardTitle>当前预览</SettingsCardTitle>
             <div className="font-mono text-sm break-all">
               {config.enabled ? previewUrl : "未启用"}
             </div>
@@ -435,7 +435,7 @@ export function Network() {
             </div>
           </section>
 
-          <section className="rounded-lg border bg-card p-5 space-y-3">
+          <SettingsCard className="space-y-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <Label className="text-sm">测试连接</Label>
@@ -491,7 +491,7 @@ export function Network() {
                 </div>
               </div>
             )}
-          </section>
+          </SettingsCard>
       </SettingsSectionBody>
 
       <SettingsSectionFooter>

@@ -50,6 +50,13 @@ import {
 } from "@/lib/thirdPartyApi"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
 import { formatProxyUrl, loadProxyAsync } from "@/lib/proxy"
+import {
+  SettingsCallout,
+  SettingsCard,
+  SettingsCardTitle,
+  SettingsEmptyState,
+  SettingsHint
+} from "./layout"
 
 interface ProviderEditorState {
   mode: "new" | "edit"
@@ -596,8 +603,8 @@ export function ThirdPartyApi() {
         </div>
 
         <ScrollArea className="flex-1 min-h-0">
-          <div className="space-y-4 px-8 pb-6 pt-2">
-            <section className="rounded-lg border bg-card p-5 space-y-4">
+          <div className="space-y-6 px-8 pb-6 pt-2">
+            <SettingsCard>
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <StackField label="供应商名称">
                   <Input
@@ -675,17 +682,15 @@ export function ThirdPartyApi() {
                   disabled={loading || saving}
                 />
                 {editorConfig.inputFormat === "anthropic" && (
-                  <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+                  <SettingsCallout tone="warn">
                     默认填写基础地址（如 {ANTHROPIC_API_BASE_URL}）。如需直接指向 messages 端点，请打开「完整端点 URL」。
-                  </div>
+                  </SettingsCallout>
                 )}
               </div>
-            </section>
+            </SettingsCard>
 
-            <section className="rounded-lg border bg-card p-5 space-y-4">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                协议映射
-              </div>
+            <SettingsCard>
+              <SettingsCardTitle>协议映射</SettingsCardTitle>
               <Row label="输入格式">
                 <Select
                   value={editorConfig.inputFormat}
@@ -714,17 +719,14 @@ export function ThirdPartyApi() {
                   />
                 </Row>
               )}
-            </section>
+            </SettingsCard>
 
-            <section className="rounded-lg border bg-card p-5 space-y-4">
+            <SettingsCard>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  <SettingsCardTitle description="映射到 Claude Code 官方环境变量，新会话启动时注入。">
                     使用模型
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    映射到 Claude Code 官方环境变量，新会话启动时注入。
-                  </div>
+                  </SettingsCardTitle>
                 </div>
                 <Button
                   variant="outline"
@@ -737,9 +739,9 @@ export function ThirdPartyApi() {
                 </Button>
               </div>
 
-              <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <SettingsHint>
                 列表会缓存到当前供应商。角色映射用于 Composer 的 Sonnet / Opus / Haiku 选择，实际请求模型由本地代理转发时替换。
-              </div>
+              </SettingsHint>
               {cachedModelCount > 0 && (
                 <div className="text-[11px] text-muted-foreground">
                   已缓存 {cachedModelCount} 个模型，点击输入框可从列表中选择，也可以手动输入。
@@ -787,16 +789,13 @@ export function ThirdPartyApi() {
                   options={editorModelOptions}
                 />
               </div>
-            </section>
+            </SettingsCard>
 
-            <section className="rounded-lg border bg-card p-5 space-y-4">
+            <SettingsCard>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                <SettingsCardTitle description="通过 --settings 注入到本供应商的新会话。">
                   Claude settings 覆盖
-                </div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  通过 --settings 注入到本供应商的新会话。
-                </div>
+                </SettingsCardTitle>
               </div>
               <div className="space-y-3 rounded-md border bg-muted/40 px-3 py-3">
                 <RuntimeOption
@@ -911,15 +910,13 @@ export function ThirdPartyApi() {
                 className="min-h-32 font-mono text-xs"
                 disabled={loading || saving}
               />
-              <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <SettingsHint>
                 env 字段仅用于追加自定义环境变量。ANTHROPIC_*、CLAUDINAL_PROXY_* 及 API Key 由上方字段统一管理。
-              </div>
-            </section>
+              </SettingsHint>
+            </SettingsCard>
 
             <section className="rounded-lg border bg-muted/40 p-5 space-y-3">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                Claude 运行时 settings 预览
-              </div>
+              <SettingsCardTitle>Claude 运行时 settings 预览</SettingsCardTitle>
               <pre className="max-h-64 overflow-auto rounded-md bg-background border p-3 text-xs font-mono leading-relaxed">
                 {preview}
               </pre>
@@ -983,15 +980,12 @@ export function ThirdPartyApi() {
 
       <ScrollArea className="flex-1 min-h-0">
         <div className="px-8 pb-6 pt-2 w-full space-y-6">
-          <section className="rounded-lg border bg-card p-5 space-y-3">
+          <SettingsCard className="space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                <SettingsCardTitle description="管理可用供应商；启用后，新启动会话会通过运行时配置和本地代理转发。">
                   供应商列表
-                </div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  管理可用供应商；启用后，新启动会话会通过运行时配置和本地代理转发。
-                </div>
+                </SettingsCardTitle>
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2 text-xs">
@@ -1002,9 +996,9 @@ export function ThirdPartyApi() {
               </div>
             </div>
             {hasLegacyKey && (
-              <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+              <SettingsCallout tone="warn">
                 部分供应商的 API Key 以明文存储（钥匙串不可用或上次保存失败）。请重新打开并保存这些供应商，将密钥写入系统钥匙串。
-              </div>
+              </SettingsCallout>
             )}
             <div className="flex justify-end gap-2">
               {!activeOfficial && (
@@ -1025,13 +1019,13 @@ export function ThirdPartyApi() {
             </div>
             <div className="space-y-3">
               {store.providers.length === 0 ? (
-                <div className="flex h-40 flex-col items-center justify-center rounded-lg border border-dashed text-center">
+                <SettingsEmptyState>
                   <Key className="mb-3 size-6 text-muted-foreground" />
                   <div className="text-sm font-medium">还没有第三方供应商</div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     点击“新增供应商”后再填写并保存供应商配置。
                   </div>
-                </div>
+                </SettingsEmptyState>
               ) : (
                 store.providers.map((provider) => (
                   <ProviderCard
@@ -1059,7 +1053,7 @@ export function ThirdPartyApi() {
                 ))
               )}
             </div>
-          </section>
+          </SettingsCard>
 
         </div>
       </ScrollArea>

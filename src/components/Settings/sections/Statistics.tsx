@@ -36,6 +36,9 @@ import {
 } from "@/lib/pricing"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
 import {
+  SettingsCallout,
+  SettingsCard,
+  SettingsCardTitle,
   SettingsSection,
   SettingsSectionBody,
   SettingsSectionHeader
@@ -213,12 +216,10 @@ export function Statistics() {
         </SettingsSectionBody>
       ) : (
         <SettingsSectionBody>
-          <section className="rounded-lg border bg-card p-5 space-y-3">
+          <SettingsCard className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                  全部会话累计
-                </div>
+                <SettingsCardTitle>全部会话累计</SettingsCardTitle>
                 <Badge
                   variant="outline"
                   className="font-sans text-[10px] tracking-normal"
@@ -269,7 +270,7 @@ export function Statistics() {
               />
             </div>
             {usage && usage.scan_errors.length > 0 && (
-              <div className="rounded-md border border-warn/40 bg-warn/10 p-3 text-xs space-y-1.5">
+              <SettingsCallout tone="warn" className="space-y-1.5 p-3">
                 <div className="flex items-center gap-1.5 font-medium text-warn">
                   <AlertTriangle className="size-3.5" />
                   有 {usage.skipped_sidecar_count} 个 sidecar 未纳入统计
@@ -289,14 +290,12 @@ export function Statistics() {
                     其余 {usage.scan_errors.length - 5} 个错误已省略。
                   </div>
                 )}
-              </div>
+              </SettingsCallout>
             )}
             <Separator />
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                  按模型拆分
-                </div>
+                <SettingsCardTitle>按模型拆分</SettingsCardTitle>
                 <button
                   type="button"
                   onClick={() => setMode("pricing")}
@@ -396,14 +395,14 @@ export function Statistics() {
                 </div>
               )}
             </div>
-          </section>
+          </SettingsCard>
 
-          <section className="rounded-lg border bg-card p-5 space-y-3">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">
+          <SettingsCard className="space-y-3">
+            <SettingsCardTitle>
               活跃度热力图（最近 {HEATMAP_DAYS} 天）
-            </div>
+            </SettingsCardTitle>
             <ActivityHeatmap cells={cells} days={HEATMAP_DAYS} />
-          </section>
+          </SettingsCard>
         </SettingsSectionBody>
       )}
     </SettingsSection>
