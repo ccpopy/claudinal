@@ -876,12 +876,12 @@ export default function App() {
       perSession.set(hit.topic, now)
       const sourceLabel =
         source === "stderr"
-          ? "CLI stderr"
+          ? "CLI"
           : source === "proxy"
             ? "本地代理"
-            : "result.is_error"
+            : "结果"
       toast.error(hit.summary, {
-        description: `${hit.hint}\n\n来自 ${sourceLabel}：${(raw ?? "").trim().slice(0, 240)}`,
+        description: `${hit.toastHint}来源：${sourceLabel}`,
         duration: 9_000,
         action: {
           label: "网络设置",

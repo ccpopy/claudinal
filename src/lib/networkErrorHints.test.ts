@@ -110,4 +110,24 @@ describe("networkErrorHints.detectNetworkError", () => {
     expect(hit?.summary).toBeTruthy()
     expect(hit?.hint && hit.hint.length).toBeGreaterThan(0)
   })
+
+  it("provides compact single-line toast hints", () => {
+    const samples = [
+      "proxy connect failed",
+      "TLS handshake failed: invalid certificate",
+      "could not resolve host: api.anthropic.com",
+      "Operation timed out after 30000ms",
+      "connect ECONNREFUSED 127.0.0.1:7890",
+      "HTTP status 429 Too Many Requests",
+      "HTTP Status 401 Unauthorized",
+      "HTTP status 503 Service Unavailable"
+    ]
+
+    for (const sample of samples) {
+      const hit = detectNetworkError(sample)
+      expect(hit?.toastHint).toBeTruthy()
+      expect(hit?.toastHint).not.toMatch(/\r|\n/)
+      expect(hit?.toastHint.length).toBeLessThanOrEqual(24)
+    }
+  })
 })
