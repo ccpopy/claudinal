@@ -254,10 +254,6 @@ function thirdPartyProviderIdFromProfileKey(key: string | null): string | null {
   }
 }
 
-function isConnectionProfileKey(key: string | null): boolean {
-  return key?.startsWith(THIRD_PARTY_CONNECTION_PROFILE_PREFIX) ?? false
-}
-
 export function thirdPartyApiConnectionProfileKey(
   config: ThirdPartyApiConfig & { id?: string }
 ): string {
@@ -318,6 +314,13 @@ export function thirdPartyApiRuntimeProfileKey(
   )}`
 }
 
+/**
+ * 旧会话能否带着当前 API 配置直接 `--resume`。
+ * `claude --resume` 重放的是本地 jsonl，对端点 / 密钥 / 模型映射没有技术依赖，
+ * 因此第三方场景只要求归属同一供应商条目（providerId 相等）即可续——
+ * 请求地址、apiKey、协议、鉴权字段等连接细节变化不作废历史会话。
+ * 跨供应商、官方与第三方互切、旧会话无归属记录时返回 false，由调用方决定如何处理。
+ */
 export function shouldResumeWithApiProfile(
   storedProfileKey: string | null,
   currentProfileKey: string
@@ -329,12 +332,6 @@ export function shouldResumeWithApiProfile(
   const currentProviderId = thirdPartyProviderIdFromProfileKey(currentProfileKey)
   const storedProviderId = thirdPartyProviderIdFromProfileKey(stored)
   if (!currentProviderId || !storedProviderId) return false
-  if (
-    isConnectionProfileKey(currentProfileKey) &&
-    isConnectionProfileKey(stored)
-  ) {
-    return stored === currentProfileKey
-  }
   return storedProviderId === currentProviderId
 }
 

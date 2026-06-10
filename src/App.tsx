@@ -629,6 +629,14 @@ function sameComposerPrefs(a: ComposerPrefs, b: ComposerPrefs): boolean {
 
 const SEND_STEP_WARN_MS = 1_000
 
+/**
+ * `ensureSession` 的中止信号：选中会话的归属与当前 API 供应商不一致，
+ * 本次发送被主动放弃——不 spawn、不重置对话、不切换选中会话。
+ * 与「启动失败」的 null 区分开（失败路径自带错误 toast），
+ * 调用方收到该信号后需把本次输入完整还原给用户。
+ */
+const ENSURE_SESSION_BLOCKED: unique symbol = Symbol("ensure-session-blocked")
+
 function monotonicMs(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now()
 }
@@ -991,6 +999,20 @@ export default function App() {
           : `已把 ${items.length} 条队列消息取回到聊天框`
     )
   }, [])
+
+  /**
+   * 发送被中止（会话归属与当前 API 供应商不一致）时，把本次输入完整还原到聊天框。
+   * 走 externalText/externalImages/externalDocuments 通道：Composer 在 onSend 后会
+   * 立即清空自身内容，而这里的还原发生在 send 的异步判定之后，天然覆盖清空后的状态。
+   */
+  const restoreBlockedSendInput = useCallback(
+    (text: string, images: ImagePayload[], documents: DocumentPayload[]) => {
+      if (text) setDraft(text)
+      setDraftImages(images)
+      setDraftDocuments(documents)
+    },
+    []
+  )
 
   const rememberComposerDraft = useCallback(
     (key: string | undefined, next: ComposerDraft) => {
@@ -1559,7 +1581,9 @@ export default function App() {
     ]
   )
 
-  const ensureSession = useCallback(async (): Promise<string | null> => {
+  const ensureSession = useCallback(async (): Promise<
+    string | typeof ENSURE_SESSION_BLOCKED | null
+  > => {
     if (!project) {
       setShowAdd(true)
       return null
@@ -1582,36 +1606,30 @@ export default function App() {
       const env = { ...thirdPartyEnv, ...proxyEnv }
       const apiProfileKey = currentApiProfileKey()
       const apiLaunchProfileKey = currentApiLaunchProfileKey()
-      let resumeSessionId = selectedSessionId
+      const resumeSessionId = selectedSessionId
       let launchComposerPrefs = composerPrefs
       let launchSessionComposer = sessionComposer
-      let launchReviewDiffs = resumeSessionId ? reviewDiffs : []
+      const launchReviewDiffs = resumeSessionId ? reviewDiffs : []
       if (resumeSessionId) {
         const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
         const storedProfileKey = sidecarApiProfileKey(sidecar)
         const storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
+        if (!shouldResumeWithApiProfile(storedProfileKey, apiProfileKey)) {
+          // 跨供应商（或归属无法确认）的旧会话：中止本次发送。
+          // 不自动新建会话、不重置对话状态、不切换选中会话——
+          // 跨供应商续会话会把原供应商的完整对话历史发给另一家，必须由用户显式决定。
+          toast.info(
+            storedProfileKey
+              ? "此会话属于其他 API 供应商，已停止发送并保留输入内容。切回原供应商可直接继续；或新建会话后重新发送。"
+              : "无法确认此会话所属的 API 供应商，已停止发送并保留输入内容。可新建会话后重新发送。"
+          )
+          return ENSURE_SESSION_BLOCKED
+        }
         const canUseLaunchPrefs = canUseApiProfileLaunchPrefs(
           storedLaunchProfileKey,
           apiLaunchProfileKey
         )
-        if (!shouldResumeWithApiProfile(storedProfileKey, apiProfileKey)) {
-          resumeSessionId = null
-          launchReviewDiffs = []
-          dispatch({ kind: "reset" })
-          setReviewDiffs([])
-          setSelectedSessionId(null)
-          setSelectedSessionMeta(null)
-          sessionComposerRef.current = null
-          launchSessionComposer = null
-          setSessionComposer(null)
-          launchComposerPrefs = fallbackComposerPrefsForApiProfile(
-            apiProfileKey,
-            globalDefault
-          )
-          setComposerPrefs(launchComposerPrefs)
-          applyDefaultPermissionModeState()
-          toast.info("当前会话使用旧 API 配置，已自动创建新会话")
-        } else if (!canUseLaunchPrefs) {
+        if (!canUseLaunchPrefs) {
           const sidecarComposer = pickComposerFromSidecar(sidecar)
           const composerCameFromStaleSidecar =
             !launchSessionComposer ||
@@ -1904,7 +1922,6 @@ export default function App() {
     reportNetworkError,
     refreshActiveThirdPartyRuntime,
     refreshActiveComposerRuntime,
-    applyDefaultPermissionModeState,
     globalDefault
   ])
 
@@ -2058,10 +2075,14 @@ export default function App() {
 
       if (streaming) {
         const id = sessionIdRef.current ?? (await ensureSession())
-        const run = id ? runningSessionsRef.current.get(id) : null
+        if (id === ENSURE_SESSION_BLOCKED) {
+          restoreBlockedSendInput(text, images, documents)
+          return
+        }
         if (!id) {
           return
         }
+        const run = runningSessionsRef.current.get(id)
         if (!run) {
           toast.error("无法排入消息：当前运行会话不存在")
           return
@@ -2098,6 +2119,10 @@ export default function App() {
       }
 
       const id = await measureSendStep("ensureSession", ensureSession)
+      if (id === ENSURE_SESSION_BLOCKED) {
+        restoreBlockedSendInput(text, images, documents)
+        return
+      }
       if (!id) return
       const run = runningSessionsRef.current.get(id)
       if (run) {
@@ -2126,6 +2151,7 @@ export default function App() {
     [
       streaming,
       ensureSession,
+      restoreBlockedSendInput,
       teardown,
       applyRunningAction,
       setRunningSessionStreaming,

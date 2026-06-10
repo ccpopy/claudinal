@@ -387,8 +387,9 @@ describe("thirdPartyApi.runtimeProfile", () => {
     )
   })
 
-  it("continues third-party sessions when the connection profile matches", () => {
+  it("resumes third-party sessions whenever the provider entry matches", () => {
     const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    // 同供应商：仅模型映射变化（连接指纹不变）
     const changedModel = makeConfig({
       id: "provider-a",
       models: {
@@ -396,31 +397,67 @@ describe("thirdPartyApi.runtimeProfile", () => {
         opusModel: "claude-opus-4-7[1m]"
       }
     } as Partial<ThirdPartyApiConfig>)
+    // 同供应商：换镜像地址 / 换 key / 换协议与鉴权字段（连接指纹变化）
     const changedRoute = makeConfig({
       id: "provider-a",
-      requestUrl: "https://api.other.example.com"
+      requestUrl: "https://api.other.example.com",
+      apiKey: "sk-rotated",
+      inputFormat: "openai-chat-completions",
+      authField: "ANTHROPIC_API_KEY",
+      useFullUrl: true
+    } as Partial<ThirdPartyApiConfig>)
+    const otherProvider = makeConfig({
+      id: "provider-b"
     } as Partial<ThirdPartyApiConfig>)
     const currentConnectionKey = thirdPartyApiConnectionProfileKey(base)
 
+    // official 语义不变：stored 为空或 official 才可续
     expect(shouldResumeWithApiProfile(null, "official")).toBe(true)
     expect(shouldResumeWithApiProfile("official", "official")).toBe(true)
     expect(shouldResumeWithApiProfile(currentConnectionKey, "official")).toBe(false)
+    // 旧会话无归属记录 / 官方会话 → 第三方不可续
     expect(shouldResumeWithApiProfile(null, currentConnectionKey)).toBe(false)
+    expect(shouldResumeWithApiProfile("official", currentConnectionKey)).toBe(false)
+    // 同 providerId：指纹完全相同（仅 key 变化不影响连接指纹）
+    expect(
+      shouldResumeWithApiProfile(currentConnectionKey, currentConnectionKey)
+    ).toBe(true)
     expect(
       shouldResumeWithApiProfile(
         thirdPartyApiConnectionProfileKey(changedModel),
         currentConnectionKey
       )
     ).toBe(true)
+    // 同 providerId：旧版 sidecar 存的是运行时格式 key（third-party: 前缀）
     expect(
       shouldResumeWithApiProfile(
         thirdPartyApiRuntimeProfileKey(changedModel),
         currentConnectionKey
       )
     ).toBe(true)
+    // 同 providerId：连接指纹不同（换镜像 / 换协议）也永远可续
     expect(
       shouldResumeWithApiProfile(
         thirdPartyApiConnectionProfileKey(changedRoute),
+        currentConnectionKey
+      )
+    ).toBe(true)
+    expect(
+      shouldResumeWithApiProfile(
+        thirdPartyApiRuntimeProfileKey(changedRoute),
+        currentConnectionKey
+      )
+    ).toBe(true)
+    // 跨供应商条目 → 不可续
+    expect(
+      shouldResumeWithApiProfile(
+        thirdPartyApiConnectionProfileKey(otherProvider),
+        currentConnectionKey
+      )
+    ).toBe(false)
+    expect(
+      shouldResumeWithApiProfile(
+        thirdPartyApiRuntimeProfileKey(otherProvider),
         currentConnectionKey
       )
     ).toBe(false)
