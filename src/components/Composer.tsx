@@ -20,6 +20,7 @@ import {
   GitBranch,
   Image as ImageIcon,
   ListTodo,
+  Loader2,
   Package,
   Paperclip,
   Plus,
@@ -104,6 +105,8 @@ interface Props {
   onStop: () => void | Promise<void>
   onRecallQueued?: () => void
   streaming: boolean
+  /** 软中断进行中：停止按钮转为 spinner 并禁用（由 App 从 activeRun 派生） */
+  interrupting?: boolean
   disabled?: boolean
   centered?: boolean
   draftKey?: string
@@ -241,6 +244,7 @@ export function Composer({
   onStop,
   onRecallQueued,
   streaming,
+  interrupting = false,
   disabled,
   centered,
   draftKey,
@@ -1009,14 +1013,18 @@ export function Composer({
               {streaming && (
                 <Button
                   onClick={() => onStop()}
-                  variant="ghost"
+                  variant="outline"
                   size="icon"
-                  disabled={disabled}
+                  disabled={disabled || interrupting}
                   aria-label="中断当前回合"
-                  title="中断当前回合 (Esc)"
-                  className="size-8 rounded-lg"
+                  title={interrupting ? "正在中断…" : "中断当前回合 (Esc)"}
+                  className="size-8 rounded-lg text-foreground/70 shadow-sm hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
                 >
-                  <Square fill="currentColor" className="size-3" />
+                  {interrupting ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Square fill="currentColor" className="size-2.5" />
+                  )}
                 </Button>
               )}
               <Button
@@ -1144,6 +1152,13 @@ const PERMISSION_OPTIONS: Array<{
   }
 ]
 
+// 菜单可选项不含 plan：计划模式入口收敛到「+」菜单的开关。
+// PERMISSION_OPTIONS 保留全集，供 mode === "plan" 的旧会话（sidecar/设置残留）
+// 在 chip 上仍正确显示「计划模式」标签。
+const SELECTABLE_PERMISSION_OPTIONS = PERMISSION_OPTIONS.filter(
+  (item) => item.value !== "plan"
+)
+
 function PermissionModePicker({
   mode,
   onChange,
@@ -1175,7 +1190,7 @@ function PermissionModePicker({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="w-56 rounded-xl p-1.5">
         <DropdownMenuLabel>会话权限</DropdownMenuLabel>
-        {PERMISSION_OPTIONS.map((item) => (
+        {SELECTABLE_PERMISSION_OPTIONS.map((item) => (
           <DropdownMenuItem
             key={item.value}
             className="rounded-lg"

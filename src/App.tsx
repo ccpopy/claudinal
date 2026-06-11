@@ -24,6 +24,7 @@ import {
   sendUserMessage,
   sendSkillInvocation,
   stopSession,
+  interruptSession,
   listenSessionEvents,
   listenSessionErrors,
   listenSessionProxyStatus,
@@ -291,6 +292,10 @@ type RunningSession = {
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
   streaming: boolean
+  /** 软中断进行中：已写 interrupt control_request，等待 result 或兜底强杀 */
+  interrupting: boolean
+  /** 软中断超时强杀兜底定时器 id（清理点：result、兜底触发、closeRunningSession） */
+  interruptTimer: number | null
   pendingPermissionRequestIds: Set<string>
   pendingActions: ReducerAction[]
   queuedInputs: QueuedInput[]
@@ -628,6 +633,9 @@ function sameComposerPrefs(a: ComposerPrefs, b: ComposerPrefs): boolean {
 }
 
 const SEND_STEP_WARN_MS = 1_000
+
+/** 软中断兜底：interrupt 发出后超过该时长仍在 streaming，则强杀会话进程。 */
+const INTERRUPT_FALLBACK_MS = 6_000
 
 /**
  * `ensureSession` 的中止信号：选中会话的归属与当前 API 供应商不一致，
@@ -1026,6 +1034,21 @@ export default function App() {
     []
   )
 
+  /**
+   * 清理软中断状态：取消强杀兜底定时器并复位 interrupting 标志。
+   * 调用点：result 事件到达、stdin 写入失败回退强杀、closeRunningSession。
+   */
+  const clearInterruptState = useCallback((run: RunningSession) => {
+    if (run.interruptTimer !== null) {
+      window.clearTimeout(run.interruptTimer)
+      run.interruptTimer = null
+    }
+    if (run.interrupting) {
+      run.interrupting = false
+      setRunningTick((tick) => tick + 1)
+    }
+  }, [])
+
   const closeRunningSession = useCallback(
     async (
       runtimeId: string,
@@ -1051,6 +1074,8 @@ export default function App() {
       }
 
       const isActive = activeRuntimeIdRef.current === runtimeId
+      // 关闭即强杀：清掉软中断兜底定时器，避免定时器在 run 移除后再触发误杀
+      clearInterruptState(run)
       if (opts.dropQueued !== false && run.queuedInputs.length > 0) {
         run.queuedInputs = []
       }
@@ -1075,7 +1100,7 @@ export default function App() {
       }
       setRunningTick((tick) => tick + 1)
     },
-    [applyRunningAction, discardRunReview]
+    [applyRunningAction, clearInterruptState, discardRunReview]
   )
 
   const refreshActiveThirdPartyRuntime = useCallback(
@@ -1683,6 +1708,8 @@ export default function App() {
         selectedSessionMeta: resumeSessionId ? selectedSessionMeta : null,
         state: resumeSessionId ? stateRef.current : reducerInit(),
         streaming: false,
+        interrupting: false,
+        interruptTimer: null,
         pendingPermissionRequestIds: new Set(),
         pendingActions: [],
         queuedInputs: [],
@@ -1791,6 +1818,8 @@ export default function App() {
           }
         }
         if (t === "result") {
+          // 软中断在此收尾：result 到达即回合已终止，清掉 interrupting 态与强杀兜底定时器
+          clearInterruptState(run)
           // 把网络相关的失败 result 也走一遍 toast；ev.is_error 时主要看 result/error 文本
           const isError = (ev as { is_error?: unknown }).is_error === true
           if (isError) {
@@ -1916,6 +1945,7 @@ export default function App() {
     sessionPermissionMode,
     applyRunningAction,
     setRunningSessionStreaming,
+    clearInterruptState,
     finishRunReview,
     sendQueuedFollowup,
     closeRunningSession,
@@ -2163,8 +2193,58 @@ export default function App() {
   )
 
   const stop = useCallback(async () => {
-    await teardown()
-  }, [teardown])
+    const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+    if (!run || !run.streaming) {
+      // 非 streaming（或 run 不存在）：维持原有强杀语义
+      await teardown()
+      return
+    }
+    // 软中断已在途：等待 result 或兜底定时器收尾，避免重复发 interrupt
+    if (run.interrupting) return
+    // ① 排队中的 followup 先还原回草稿：被中断回合的 result 会触发 sendQueuedFollowup，
+    //    不取回的话刚停下的工作会立刻被排队消息重新推回去
+    const queuedFollowups = run.queuedInputs.filter(
+      (item) => item.mode === "followup"
+    )
+    if (queuedFollowups.length > 0) {
+      run.queuedInputs = run.queuedInputs.filter(
+        (item) => item.mode !== "followup"
+      )
+      restoreQueuedInputsToDraft(queuedFollowups)
+    }
+    // ② interrupting 标志驱动停止按钮 spinner（runningTick 触发渲染）
+    run.interrupting = true
+    // ③ 兜底：超时仍在 streaming 则强杀该 run 自身。
+    //    不走 teardown（stopActiveSession 以"当前活动会话"为目标，
+    //    兜底触发时用户可能已切到别的会话，会误杀新会话）
+    run.interruptTimer = window.setTimeout(() => {
+      run.interruptTimer = null
+      run.interrupting = false
+      setRunningTick((tick) => tick + 1)
+      if (!run.streaming) return
+      toast.error("中断超时，已强制停止会话进程")
+      restoreQueuedInputsToDraft(run.queuedInputs)
+      void closeRunningSession(run.runtimeId)
+    }, INTERRUPT_FALLBACK_MS)
+    setRunningTick((tick) => tick + 1)
+    // ④ CLI 原生回合中断（等价 TUI Esc）：进程与会话保活，
+    //    被中断回合产出 result 后由既有 result 处理复位 streaming / interrupting
+    try {
+      await interruptSession(run.runtimeId)
+    } catch (e) {
+      // stdin 写入失败（进程可能已退出）：立即回退强杀
+      clearInterruptState(run)
+      toast.error(`发送中断请求失败，已强制停止会话进程: ${String(e)}`)
+      restoreQueuedInputsToDraft(run.queuedInputs)
+      await closeRunningSession(run.runtimeId)
+    }
+  }, [
+    teardown,
+    restoreQueuedInputsToDraft,
+    closeRunningSession,
+    clearInterruptState
+  ])
 
   const findQueuedInput = useCallback((localId: string) => {
     for (const run of runningSessionsRef.current.values()) {
@@ -2827,6 +2907,12 @@ export default function App() {
     return run?.upstreamStatus ?? null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningTick, sessionId])
+  const activeInterrupting = useMemo(() => {
+    const runtimeId = activeRuntimeIdRef.current ?? sessionId
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+    return run?.interrupting ?? false
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningTick, sessionId])
   const activePermissionRequest =
     permissionRequests.find((request) => request.session_id === sessionId) ??
     null
@@ -3087,6 +3173,7 @@ export default function App() {
                           onStop={stop}
                             onRecallQueued={recallLatestQueuedInput}
                           streaming={streaming}
+                          interrupting={activeInterrupting}
                           disabled={!cliPath}
                           centered
                           draftKey={activeComposerDraftKey}
@@ -3197,6 +3284,7 @@ export default function App() {
                     onStop={stop}
                     onRecallQueued={recallLatestQueuedInput}
                     streaming={streaming}
+                    interrupting={activeInterrupting}
                     disabled={!cliPath || !project}
                     draftKey={activeComposerDraftKey}
                     initialDraft={activeComposerDraft}

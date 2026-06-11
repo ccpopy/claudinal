@@ -1248,6 +1248,12 @@ pub async fn stop_session(manager: State<'_, Manager>, session_id: String) -> Re
     manager.stop(&session_id).await
 }
 
+/// 软中断当前回合：写 interrupt control_request 到 CLI stdin，进程与会话保活。
+#[tauri::command]
+pub async fn interrupt_session(manager: State<'_, Manager>, session_id: String) -> Result<()> {
+    manager.interrupt(&session_id).await
+}
+
 /// 返回当前 Claude CLI `--effort` 支持的档位列表（解析 `--help`）。
 /// 无 claude / 解析失败时返回空 Vec，前端回退内置清单。
 #[tauri::command]

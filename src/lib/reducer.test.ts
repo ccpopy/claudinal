@@ -732,6 +732,21 @@ describe("reducer.unknown preservation", () => {
     })
     expect(s.entries.map((e) => e.kind)).toEqual(["raw", "stderr"])
   })
+
+  it("ignores control_response protocol acks (soft-interrupt receipt)", () => {
+    // GUI 软中断写入 interrupt control_request 后，CLI 在 stdout 回一条
+    // control_response 回执：纯协议事件，不应落进 unknown 渲染
+    const ack = event({
+      type: "control_response",
+      response: { subtype: "success", request_id: "req-1" }
+    } as never)
+    let s = reduce(init(), { kind: "event", event: ack })
+    expect(s.entries).toHaveLength(0)
+
+    // 历史 transcript 重放同样忽略
+    s = reduce(init(), { kind: "load_transcript", events: [ack] })
+    expect(s.entries).toHaveLength(0)
+  })
 })
 
 describe("reducer.local message lifecycle", () => {

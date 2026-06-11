@@ -305,6 +305,18 @@ impl Manager {
         self.write_json_line(session_id, payload).await
     }
 
+    /// 软中断当前回合：向会话 stdin 写一行 interrupt control_request（等价 TUI Esc）。
+    /// CLI 进程与会话保活，被中断回合仍会产出 result 事件；
+    /// 与 resolve_control_request 同向（GUI → CLI stdin），强杀路径见 stop。
+    pub async fn interrupt(&self, session_id: &str) -> Result<()> {
+        let payload = json!({
+            "type": "control_request",
+            "request_id": Uuid::new_v4().to_string(),
+            "request": { "subtype": "interrupt" }
+        });
+        self.write_json_line(session_id, payload).await
+    }
+
     async fn write_json_line(&self, session_id: &str, payload: Value) -> Result<()> {
         self.write_json_lines(session_id, vec![payload]).await
     }

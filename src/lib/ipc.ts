@@ -309,6 +309,11 @@ export async function stopSession(sessionId: string): Promise<void> {
   return invoke("stop_session", { sessionId })
 }
 
+/** 软中断当前回合（CLI 原生 interrupt control_request），进程与会话保活；超时强杀走 stopSession。 */
+export async function interruptSession(sessionId: string): Promise<void> {
+  return invoke("interrupt_session", { sessionId })
+}
+
 export async function createDir(path: string): Promise<void> {
   return invoke("create_dir", { path })
 }

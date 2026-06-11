@@ -94,6 +94,9 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   const t = (ev as { type?: string }).type
   if (isMetaSkillPromptEvent(ev)) return removeLeakedSkillMetaPrompt(state)
   if (isInternalGeneratedEvent(ev)) return state
+  // GUI 软中断写入的 interrupt control_request 会让 CLI 在 stdout 回一条
+  // control_response 回执：纯协议事件，显式忽略，避免落进 unknown 渲染脏行
+  if (t === "control_response") return state
 
   if (t === "system") return reduceSystem(state, ev as Record<string, unknown>, ts)
   if (t === "stream_event")

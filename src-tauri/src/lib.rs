@@ -121,6 +121,7 @@ pub fn run() {
             commands::send_user_message,
             commands::send_skill_invocation,
             commands::stop_session,
+            commands::interrupt_session,
             commands::detect_effort_levels,
             commands::create_dir,
             commands::path_exists,

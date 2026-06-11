@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   ChevronDown,
   ChevronRight,
@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { FileDiffPreview } from "@/components/DiffPreview"
+import { RollingNumber } from "@/components/RollingNumber"
 import {
   collectLatestRunToolChanges,
   fileChangeFromWorktreeFile,
@@ -104,41 +105,6 @@ export function RunStatusStrip({
         </div>
       </div>
     </div>
-  )
-}
-
-function RollingNumber({
-  value,
-  prefix = ""
-}: {
-  value: number
-  prefix?: string
-}) {
-  const previousRef = useRef(value)
-  const [previous, setPrevious] = useState(value)
-  const [rolling, setRolling] = useState(false)
-
-  useEffect(() => {
-    if (previousRef.current === value) return
-    setPrevious(previousRef.current)
-    previousRef.current = value
-    setRolling(true)
-    const timeout = window.setTimeout(() => setRolling(false), 220)
-    return () => window.clearTimeout(timeout)
-  }, [value])
-
-  const text = `${prefix}${value}`
-  if (!rolling) return <span className="tabular-nums">{text}</span>
-
-  return (
-    <span className="relative inline-flex h-[1.15em] min-w-[2ch] overflow-hidden align-[-0.14em] tabular-nums">
-      <span className="diff-number-old absolute inset-x-0 top-0">
-        {prefix}
-        {previous}
-      </span>
-      <span className="diff-number-new absolute inset-x-0 top-0">{text}</span>
-      <span className="invisible">{text}</span>
-    </span>
   )
 }
 
