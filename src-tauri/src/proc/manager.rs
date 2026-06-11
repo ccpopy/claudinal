@@ -567,7 +567,8 @@ mod tests {
     #[test]
     fn parse_includes_unknown_new_level() {
         // CLI 新增档位时应自动包含，无需改代码
-        let help = "  --effort <level>  Effort level (low, medium, high, xhigh, max, turbo)\n  --foo\n";
+        let help =
+            "  --effort <level>  Effort level (low, medium, high, xhigh, max, turbo)\n  --foo\n";
         assert_eq!(
             parse_effort_levels(help).join(","),
             "low,medium,high,xhigh,max,turbo"
