@@ -10,6 +10,7 @@ import {
   OPENAI_EFFORT_LEVELS,
   pickComposerFromSidecar,
   pickComposerFromTranscript,
+  sanitizeComposerModel,
   syncEffortToGlobal,
   type EffortLevel
 } from "./composerPrefs"
@@ -477,5 +478,110 @@ describe("composerPrefs effort pool by provider (ModelEffortPicker source-of-tru
     // OpenAI 池绝不含 ultracode；Anthropic 池绝不含 OpenAI 低档
     expect(visibleEfforts(true)).not.toContain("ultracode")
     expect(visibleEfforts(false)).not.toContain("none")
+  })
+})
+
+describe("composerPrefs.sanitizeComposerModel", () => {
+  it("maps whole-string <...> sentinel shapes to empty", () => {
+    expect(sanitizeComposerModel("<synthetic>")).toBe("")
+    expect(sanitizeComposerModel("<unknown>")).toBe("")
+    expect(sanitizeComposerModel("  <synthetic>  ")).toBe("")
+    // 边界形态：空尖括号与含内部空格的整串 <...> 同样视为哨兵
+    expect(sanitizeComposerModel("<>")).toBe("")
+    expect(sanitizeComposerModel("< synthetic >")).toBe("")
+  })
+
+  it("keeps real model ids and [1m] bracket aliases untouched (trim only)", () => {
+    // 方括号别名（sonnet[1m]）与 <...> 哨兵形态必须区分清楚
+    expect(sanitizeComposerModel("claude-sonnet-4-5")).toBe("claude-sonnet-4-5")
+    expect(sanitizeComposerModel("sonnet[1m]")).toBe("sonnet[1m]")
+    expect(sanitizeComposerModel("  opus[1m]  ")).toBe("opus[1m]")
+    expect(sanitizeComposerModel("")).toBe("")
+    // 非整串 <...> 形态不误杀（哨兵判定仅针对整个值）
+    expect(sanitizeComposerModel("a<b>")).toBe("a<b>")
+  })
+})
+
+describe("composerPrefs synthetic model sentinel", () => {
+  // Claude CLI 在 API 出错（重试耗尽、模型不可用等）时会写入合成 assistant 消息，
+  // 其 message.model 为字面量 "<synthetic>"。任何摄入点都不得把它当作会话模型，
+  // 否则 --model "<synthetic>" 会触发"模型不存在 → 再写合成消息"的报错死循环。
+  const initEv = (model: string) =>
+    ev({ type: "system", subtype: "init", model })
+  const assistantEv = (model: string) =>
+    ev({
+      type: "assistant",
+      message: { role: "assistant", model, content: [] }
+    })
+  const modelCommandEv = (arg: string) =>
+    ev({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `<command-name>/model</command-name><command-args>${arg}</command-args>`
+          }
+        ]
+      }
+    })
+
+  it("skips a trailing synthetic assistant turn and keeps the last real assistant model", () => {
+    expect(
+      pickComposerFromTranscript([
+        initEv("claude-x"),
+        assistantEv("claude-y"),
+        assistantEv("<synthetic>")
+      ])
+    ).toEqual({ model: "claude-y", effort: "" })
+  })
+
+  it("falls back to the init model when every assistant turn is synthetic", () => {
+    expect(
+      pickComposerFromTranscript([
+        initEv("claude-x"),
+        assistantEv("<synthetic>")
+      ])
+    ).toEqual({ model: "claude-x", effort: "" })
+  })
+
+  it("returns null for a transcript with only synthetic assistant turns", () => {
+    expect(pickComposerFromTranscript([assistantEv("<synthetic>")])).toBeNull()
+  })
+
+  it("keeps explicit /model at highest priority over later synthetic turns", () => {
+    expect(
+      pickComposerFromTranscript([
+        initEv("claude-x"),
+        modelCommandEv("opus"),
+        assistantEv("<synthetic>")
+      ])
+    ).toEqual({ model: "opus", effort: "" })
+  })
+
+  it("normalizes sentinel /model arguments to empty (defensive)", () => {
+    expect(
+      composerPrefsPatchFromCommandEvent(modelCommandEv("&lt;synthetic&gt;"))
+    ).toEqual({ model: "" })
+    expect(
+      composerPrefsPatchFromCommandEvent(modelCommandEv("<synthetic>"))
+    ).toEqual({ model: "" })
+  })
+
+  it("self-heals polluted sidecars by reading sentinel models as empty", () => {
+    // model 净化后与 effort 双空时维持「返回 null」的既有语义
+    expect(
+      pickComposerFromSidecar({ composer: { model: "<synthetic>", effort: "" } })
+    ).toBeNull()
+    expect(
+      pickComposerFromSidecar({
+        composer: { model: "<synthetic>", effort: "high" }
+      })
+    ).toEqual({ model: "", effort: "high" })
+  })
+
+  it("sanitizes the system/init model defensively", () => {
+    expect(pickComposerFromTranscript([initEv("<synthetic>")])).toBeNull()
   })
 })

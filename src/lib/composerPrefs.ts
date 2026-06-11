@@ -100,6 +100,20 @@ export async function syncEffortToGlobal(effort: string): Promise<boolean> {
   }
 }
 
+/**
+ * 净化 composer 模型值：trim 后整体匹配 `<...>` 哨兵形态的值归为 ""。
+ *
+ * Claude CLI 在 API 出错（重试耗尽、模型不可用等）时会向会话 jsonl 写入合成
+ * assistant 消息，其 message.model 为字面量 "<synthetic>"——它不是真实模型 id，
+ * 绝不能当成会话模型回传 `--model`（否则 CLI 报模型不存在、再写一条合成消息，
+ * 形成自我强化的报错死循环）。正则覆盖未来同形哨兵（如 "<unknown>"）。
+ * 注意：`sonnet[1m]` 这类方括号别名不是 `<...>` 形态，不受影响。
+ */
+export function sanitizeComposerModel(value: string): string {
+  const trimmed = (value || "").trim()
+  return /^<[^>]*>$/.test(trimmed) ? "" : trimmed
+}
+
 /** 从 sidecar payload 中提取 composer 偏好（resume 时调用）。 */
 export function pickComposerFromSidecar(
   sidecar: unknown
@@ -108,7 +122,10 @@ export function pickComposerFromSidecar(
   const composer = (sidecar as { composer?: unknown }).composer
   if (!composer || typeof composer !== "object") return null
   const obj = composer as Record<string, unknown>
-  const model = typeof obj.model === "string" ? obj.model.trim() : ""
+  // 已污染的 sidecar（model=<synthetic>）读回时净化为 ""，下次写回即自愈
+  const model = sanitizeComposerModel(
+    typeof obj.model === "string" ? obj.model : ""
+  )
   const effort = typeof obj.effort === "string" ? obj.effort.trim() : ""
   if (!model && !effort) return null
   return { model, effort }
@@ -173,7 +190,8 @@ export function composerPrefsPatchFromCommandEvent(
       return { effort: normalizeEffort(args) }
     }
     if (command === "model") {
-      const modelArg = args.trim()
+      // 防御性净化：哨兵形态（如 <synthetic>）等价于 default/auto，归为 ""
+      const modelArg = sanitizeComposerModel(args)
       const model =
         !modelArg || ["default", "auto"].includes(modelArg.toLowerCase())
           ? ""
@@ -197,20 +215,24 @@ export function pickComposerFromTranscript(
     if (t === "system") {
       const subtype = (ev as { subtype?: string }).subtype
       const initModel = (ev as { model?: unknown }).model
-      if (
-        subtype === "init" &&
-        !explicitModel &&
-        typeof initModel === "string" &&
-        initModel.trim()
-      ) {
-        model = initModel.trim()
-        hasValue = true
+      if (subtype === "init" && !explicitModel && typeof initModel === "string") {
+        // 防御性净化：init 正常不会是哨兵，但同样跳过 <...> 形态
+        const sanitized = sanitizeComposerModel(initModel)
+        if (sanitized) {
+          model = sanitized
+          hasValue = true
+        }
       }
     } else if (t === "assistant") {
       const msgModel = (ev as { message?: { model?: unknown } }).message?.model
-      if (!explicitModel && typeof msgModel === "string" && msgModel.trim()) {
-        model = msgModel.trim()
-        hasValue = true
+      if (!explicitModel && typeof msgModel === "string") {
+        // CLI 合成消息（model=<synthetic>）跳过不采纳，
+        // 保留此前采纳的真实 assistant/init 模型
+        const sanitized = sanitizeComposerModel(msgModel)
+        if (sanitized) {
+          model = sanitized
+          hasValue = true
+        }
       }
     }
 
