@@ -3617,10 +3617,8 @@ index 1111111..2222222 100644
 
     #[test]
     fn cleanup_review_snapshots_respects_max_age() {
-        let root = std::env::temp_dir().join(format!(
-            "claudinal-review-gc-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("claudinal-review-gc-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("snapshot-a").join("files")).unwrap();
         std::fs::write(root.join("snapshot-a").join("manifest.json"), "{}").unwrap();
         std::fs::write(root.join("not-a-dir.txt"), "x").unwrap();
