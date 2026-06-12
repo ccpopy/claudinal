@@ -17,7 +17,6 @@ import {
   type GitWorktreeStatus,
   worktreeDiff,
   type WorktreeDiff,
-  type WorktreeFileDiff,
   reviewSnapshotStart,
   reviewSnapshotFinish,
   spawnSession,
@@ -40,6 +39,7 @@ import {
   type SessionMeta
 } from "@/lib/ipc"
 import type { ReviewRunDiff } from "@/lib/diff"
+import { parseStoredReviewDiffs } from "@/lib/reviewDiffs"
 import { findPermissionMemoryMatch } from "@/lib/permissionMemory"
 import {
   buildProxyEnv,
@@ -313,120 +313,6 @@ type RunningSession = {
 type DiffPanelScope =
   | { kind: "all" }
   | { kind: "review"; review: ReviewRunDiff }
-
-function recordFromUnknown(
-  value: unknown,
-  label: string
-): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} 必须是对象`)
-  }
-  return value as Record<string, unknown>
-}
-
-function optionalRecordFromUnknown(value: unknown): Record<string, unknown> | null {
-  if (value == null) return null
-  return recordFromUnknown(value, "sidecar")
-}
-
-function stringField(source: Record<string, unknown>, key: string, label: string) {
-  const value = source[key]
-  if (typeof value !== "string") throw new Error(`${label}.${key} 必须是字符串`)
-  return value
-}
-
-function optionalStringField(
-  source: Record<string, unknown>,
-  key: string,
-  label: string
-) {
-  const value = source[key]
-  if (value == null) return null
-  if (typeof value !== "string") throw new Error(`${label}.${key} 必须是字符串或 null`)
-  return value
-}
-
-function numberField(source: Record<string, unknown>, key: string, label: string) {
-  const value = source[key]
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`${label}.${key} 必须是数字`)
-  }
-  return value
-}
-
-function booleanField(source: Record<string, unknown>, key: string, label: string) {
-  const value = source[key]
-  if (typeof value !== "boolean") throw new Error(`${label}.${key} 必须是布尔值`)
-  return value
-}
-
-function parseReviewHunk(
-  value: unknown,
-  label: string
-): WorktreeFileDiff["hunks"][number] {
-  const record = recordFromUnknown(value, label)
-  const lines = record.lines
-  if (!Array.isArray(lines) || !lines.every((line) => typeof line === "string")) {
-    throw new Error(`${label}.lines 必须是字符串数组`)
-  }
-  return {
-    oldStart: numberField(record, "oldStart", label),
-    oldLines: numberField(record, "oldLines", label),
-    newStart: numberField(record, "newStart", label),
-    newLines: numberField(record, "newLines", label),
-    lines
-  }
-}
-
-function parseReviewFileDiff(value: unknown, label: string): WorktreeFileDiff {
-  const record = recordFromUnknown(value, label)
-  const hunks = record.hunks
-  if (!Array.isArray(hunks)) throw new Error(`${label}.hunks 必须是数组`)
-  return {
-    path: stringField(record, "path", label),
-    oldPath: optionalStringField(record, "oldPath", label),
-    status: stringField(record, "status", label),
-    additions: numberField(record, "additions", label),
-    deletions: numberField(record, "deletions", label),
-    binary: booleanField(record, "binary", label),
-    hunks: hunks.map((hunk, index) =>
-      parseReviewHunk(hunk, `${label}.hunks[${index}]`)
-    )
-  }
-}
-
-function parseReviewDiff(value: unknown, label: string): WorktreeDiff {
-  const record = recordFromUnknown(value, label)
-  const files = record.files
-  if (!Array.isArray(files)) throw new Error(`${label}.files 必须是数组`)
-  const patchError = record.patchError
-  if (patchError != null && typeof patchError !== "string") {
-    throw new Error(`${label}.patchError 必须是字符串或 null`)
-  }
-  return {
-    isRepo: booleanField(record, "isRepo", label),
-    files: files.map((file, index) =>
-      parseReviewFileDiff(file, `${label}.files[${index}]`)
-    ),
-    patchError: patchError ?? null
-  }
-}
-
-function parseStoredReviewDiffs(sidecar: unknown): ReviewRunDiff[] {
-  const record = optionalRecordFromUnknown(sidecar)
-  if (!record || record.reviewDiffs == null) return []
-  const raw = record.reviewDiffs
-  if (!Array.isArray(raw)) throw new Error("sidecar.reviewDiffs 必须是数组")
-  return raw.map((item, index) => {
-    const label = `sidecar.reviewDiffs[${index}]`
-    const entry = recordFromUnknown(item, label)
-    return {
-      id: stringField(entry, "id", label),
-      createdAt: numberField(entry, "createdAt", label),
-      diff: parseReviewDiff(entry.diff, `${label}.diff`)
-    }
-  })
-}
 
 function buildCliBlocks(
   text: string,
@@ -927,16 +813,30 @@ export default function App() {
       })
   }, [])
 
-  const beginRunReview = useCallback(async (run: RunningSession | null) => {
-    if (!run) return
-    try {
-      const snapshot = await reviewSnapshotStart(run.project.cwd)
-      run.reviewSnapshotId = snapshot.id
-    } catch (e) {
-      run.reviewSnapshotId = null
-      toast.error(`建立文件审查基线失败: ${String(e)}`)
-    }
-  }, [])
+  /**
+   * 为当前回合建立审查基线。返回是否新建了快照。
+   * 守卫：run 上已有未结算的基线时直接复用（返回 false）——
+   * result→finishRunReview 的间隙里用户手动开新回合、随后排队跟进经
+   * sendQueuedFollowup 并入该回合时会带着活基线再次进来，此时覆盖
+   * reviewSnapshotId 会让旧快照永远无人 finish/discard（Rust 侧临时目录泄漏）；
+   * 复用更早的基线还能让 diff 覆盖两次输入的全部改动。
+   */
+  const beginRunReview = useCallback(
+    async (run: RunningSession | null): Promise<boolean> => {
+      if (!run) return false
+      if (run.reviewSnapshotId) return false
+      try {
+        const snapshot = await reviewSnapshotStart(run.project.cwd)
+        run.reviewSnapshotId = snapshot.id
+        return true
+      } catch (e) {
+        run.reviewSnapshotId = null
+        toast.error(`建立文件审查基线失败: ${String(e)}`)
+        return false
+      }
+    },
+    []
+  )
 
   const finishRunReview = useCallback(async (run: RunningSession) => {
     const snapshotId = run.reviewSnapshotId
@@ -1578,7 +1478,7 @@ export default function App() {
     async (run: RunningSession): Promise<boolean> => {
       const item = run.queuedInputs.find((queued) => queued.mode === "followup")
       if (!item) return false
-      await beginRunReview(run)
+      const createdSnapshot = await beginRunReview(run)
       try {
         await sendCliInput(run.runtimeId, item.cliBlocks, item.skillInvocation)
         run.queuedInputs = run.queuedInputs.filter(
@@ -1593,7 +1493,8 @@ export default function App() {
         setRunningTick((tick) => tick + 1)
         return true
       } catch (error) {
-        await discardRunReview(run)
+        // 只清理本次新建的基线；复用的基线属于仍在进行的回合，留给它的 result 收尾
+        if (createdSnapshot) await discardRunReview(run)
         toast.error(`发送跟进消息失败: ${String(error)}`)
         return false
       }

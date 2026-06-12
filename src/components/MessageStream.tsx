@@ -8,6 +8,7 @@ import {
   formatTimelineTime
 } from "@/lib/chatTimeline"
 import type { ReviewRunDiff } from "@/lib/diff"
+import { matchReviewsToResults } from "@/lib/diff"
 import type { UIBlock, UIEntry, UIMessage } from "@/types/ui"
 import { ChatTimelineNav, type ChatTimelineItem } from "./ChatTimelineNav"
 import { MessageCard } from "./MessageCard"
@@ -184,6 +185,19 @@ export function MessageStream({
 
   const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
 
+  // 审查 diff 归位：旧版按顺位 reviews[n] 配第 n 个 result，resume CLI 跑过的
+  // 会话时（result 数 > review 数）会把 review 错挂到最早的 result 上；改为
+  // 数量一致保持顺位、不一致按 createdAt 时间归位（见 matchReviewsToResults）。
+  const matchedReviews = useMemo(() => {
+    const resultTs: number[] = []
+    for (const g of groups) {
+      if (g.kind === "entry" && g.entry.kind === "result") {
+        resultTs.push(g.entry.ts)
+      }
+    }
+    return matchReviewsToResults(resultTs, reviews)
+  }, [groups, reviews])
+
   const timelineItems = useMemo<ChatTimelineItem[]>(
     () =>
       groups.flatMap((g) =>
@@ -192,7 +206,7 @@ export function MessageStream({
               {
                 id: g.key,
                 role: g.msg.role,
-                label: chatTimelineRoleLabel(g.msg.role),
+                label: chatTimelineRoleLabel(g.msg.role, g.msg.delivery),
                 preview: chatTimelinePreview(g.msg),
                 time: formatTimelineTime(g.msg.stopTs ?? g.msg.ts)
               }
@@ -338,7 +352,7 @@ export function MessageStream({
             )
           }
           if (g.entry.kind === "result") {
-            const review = reviews[reviewIndex++]
+            const review = matchedReviews[reviewIndex++]
             return (
               <div key={g.key}>
                 <MessageCard entry={g.entry} />

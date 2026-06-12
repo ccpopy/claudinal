@@ -35,8 +35,14 @@ function previewFromBlock(block: UIBlock): string | null {
   return null
 }
 
-export function chatTimelineRoleLabel(role: UIMessage["role"]): string {
-  return role === "user" ? "用户消息" : "Claude 回复"
+export function chatTimelineRoleLabel(
+  role: UIMessage["role"],
+  delivery?: UIMessage["delivery"]
+): string {
+  if (role === "user") {
+    return delivery === "guide" ? "引导消息" : "用户消息"
+  }
+  return "Claude 回复"
 }
 
 export function chatTimelinePreview(message: UIMessage): string {

@@ -34,6 +34,7 @@ import type { GitWorktreeStatus, WorktreeDiff } from "@/lib/ipc"
 import {
   collectChanges,
   formatHunksAsPatch,
+  sameDisplayPath,
   type FileChange,
   type ReviewRunDiff
 } from "@/lib/diff"
@@ -137,7 +138,11 @@ export function DiffOverview({
 
   useEffect(() => {
     if (!open || !initialFilePath) return
-    const target = allChanges.findIndex((c) => c.path === initialFilePath)
+    // 入口路径与列表路径可能只差分隔符 / 大小写（工具入参 vs git/快照输出），
+    // 用展示路径等价比较而非全等，避免 Windows 上定位失败
+    const target = allChanges.findIndex((c) =>
+      sameDisplayPath(c.path, initialFilePath)
+    )
     if (target >= 0) {
       setFilter("all")
       setActiveIdx(target)

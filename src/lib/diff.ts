@@ -50,6 +50,51 @@ function keyPath(path: string): string {
   return normalizePath(path).toLowerCase()
 }
 
+/**
+ * 展示路径等价判断：统一正反斜杠并忽略大小写（Windows 盘符 / 路径大小写不稳定，
+ * 工具入参、git 输出与快照 rel path 可能只差大小写或分隔符）。
+ */
+export function sameDisplayPath(a: string, b: string): boolean {
+  return keyPath(a) === keyPath(b)
+}
+
+/**
+ * 把审查 diff（reviewDiffs）归位到时间线上的 result 条目。
+ *
+ * - 数量一致：保持既有顺位配对——GUI 全程管理的会话每个 result 恰好落一条
+ *   review（finishRunReview 失败也会补空记录），这是已验证的对齐方式。
+ * - 数量不一致（resume 了 CLI 跑过的旧会话、sidecar 丢失部分记录等）：按时间
+ *   归位。review.createdAt 总在其 result 之后产生（diff 在 result 到达后才算），
+ *   因此归到「ts <= createdAt 的最后一个 result」；找不到宿主或宿主已被更早的
+ *   review 占用时不强行挂载（宁缺勿错）。
+ *
+ * 返回数组与 resultTs 等长，下标 i 即第 i 个 result 应展示的 review。
+ */
+export function matchReviewsToResults(
+  resultTs: number[],
+  reviews: ReviewRunDiff[]
+): Array<ReviewRunDiff | undefined> {
+  const matched: Array<ReviewRunDiff | undefined> = new Array(
+    resultTs.length
+  ).fill(undefined)
+  if (reviews.length === 0 || resultTs.length === 0) return matched
+  if (reviews.length === resultTs.length) {
+    for (let i = 0; i < reviews.length; i++) matched[i] = reviews[i]
+    return matched
+  }
+  for (const review of reviews) {
+    const createdAt = review.createdAt
+    if (!Number.isFinite(createdAt)) continue
+    let target = -1
+    for (let i = 0; i < resultTs.length; i++) {
+      const ts = resultTs[i]
+      if (Number.isFinite(ts) && ts <= createdAt) target = i
+    }
+    if (target >= 0 && !matched[target]) matched[target] = review
+  }
+  return matched
+}
+
 export function kindFromStatus(status: string): FileChange["kind"] {
   if (status.includes("D")) return "delete"
   if (status.includes("?") || status.includes("A")) return "create"

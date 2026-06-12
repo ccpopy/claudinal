@@ -51,6 +51,13 @@ describe("chatTimeline", () => {
     expect(chatTimelineRoleLabel("assistant")).toBe("Claude 回复")
   })
 
+  it("labels guide deliveries distinctly from plain user messages", () => {
+    expect(chatTimelineRoleLabel("user", "guide")).toBe("引导消息")
+    expect(chatTimelineRoleLabel("user", undefined)).toBe("用户消息")
+    // assistant 不受 delivery 影响（防御：delivery 只在 user 上有意义）
+    expect(chatTimelineRoleLabel("assistant", "guide")).toBe("Claude 回复")
+  })
+
   it("formats invalid timestamps as empty text", () => {
     expect(formatTimelineTime(Number.NaN)).toBe("")
     expect(formatTimelineTime(0)).toBe("")

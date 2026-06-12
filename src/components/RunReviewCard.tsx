@@ -53,6 +53,7 @@ export function RunStatusStrip({
           onClick={() => setOpen((v) => !v)}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
           aria-expanded={open}
+          title="基于本轮工具调用的实时估算；回合结束后以「审查」的快照 diff 为准"
         >
           {open ? (
             <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -82,7 +83,7 @@ export function RunStatusStrip({
             className="h-7 shrink-0 px-2 text-xs"
             onClick={() => onShowDiff()}
           >
-            在此审查
+            审查
           </Button>
         )}
       </div>

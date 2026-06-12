@@ -1787,6 +1787,45 @@ fn review_snapshot_root() -> std::path::PathBuf {
     std::env::temp_dir().join("claudinal-review-snapshots")
 }
 
+/// 启动期回收历史残留的审查快照目录。
+///
+/// 快照 id 只存在于前端运行内存（RunningSession.reviewSnapshotId），不跨进程持久化；
+/// 应用崩溃、直接关窗（无 JS 端 teardown）、finish 时 remove_dir_all 失败等都会把
+/// 临时目录留在 %TEMP%/claudinal-review-snapshots 下，而每个快照是项目全部文本文件
+/// 的基线副本，体积可观。这里按目录 mtime 做 24h 兜底回收——不直接清空整个根目录，
+/// 避免误删同机并行运行的另一个实例正在使用的活动快照。
+pub fn cleanup_stale_review_snapshots() {
+    const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    let removed = cleanup_review_snapshots_in(&review_snapshot_root(), STALE_AFTER);
+    if removed > 0 {
+        tracing::info!("cleaned {removed} stale review snapshot dir(s)");
+    }
+}
+
+fn cleanup_review_snapshots_in(root: &std::path::Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= max_age);
+        if stale && std::fs::remove_dir_all(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 fn review_snapshot_dir(id: &str) -> Result<std::path::PathBuf> {
     if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') {
         return Err(Error::Other(format!("invalid review snapshot id: {id}")));
@@ -3574,6 +3613,46 @@ index 1111111..2222222 100644
         assert_eq!(entries[0].old_path.as_deref(), Some("old name.rs"));
         assert_eq!(entries[1].status, "??");
         assert_eq!(entries[1].path, "notes.txt");
+    }
+
+    #[test]
+    fn cleanup_review_snapshots_respects_max_age() {
+        let root = std::env::temp_dir().join(format!(
+            "claudinal-review-gc-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("snapshot-a").join("files")).unwrap();
+        std::fs::write(root.join("snapshot-a").join("manifest.json"), "{}").unwrap();
+        std::fs::write(root.join("not-a-dir.txt"), "x").unwrap();
+
+        // 刚创建的目录在 1 小时阈值内：不回收
+        assert_eq!(
+            cleanup_review_snapshots_in(&root, std::time::Duration::from_secs(3600)),
+            0
+        );
+        assert!(root.join("snapshot-a").is_dir());
+
+        // 阈值为 0：一律视为过期；普通文件不受影响
+        assert_eq!(
+            cleanup_review_snapshots_in(&root, std::time::Duration::ZERO),
+            1
+        );
+        assert!(!root.join("snapshot-a").exists());
+        assert!(root.join("not-a-dir.txt").is_file());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn cleanup_review_snapshots_tolerates_missing_root() {
+        let root = std::env::temp_dir().join(format!(
+            "claudinal-review-gc-missing-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert_eq!(
+            cleanup_review_snapshots_in(&root, std::time::Duration::ZERO),
+            0
+        );
     }
 
     #[test]

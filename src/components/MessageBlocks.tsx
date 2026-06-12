@@ -21,14 +21,21 @@ import { AssistantMarkdown } from "./AssistantMarkdown"
 import { CopyButton } from "./CopyButton"
 import { ImageLightbox } from "./ImageLightbox"
 
+/** 消息块渲染形态。"guide"：引导卡内嵌渲染，文本不再自带气泡容器（卡片即容器）。 */
+export type BlockViewVariant = "guide"
+
 export function BlockView({
   role,
-  block
+  block,
+  variant
 }: {
   role: "user" | "assistant"
   block: UIBlock
+  variant?: BlockViewVariant
 }) {
-  if (block.type === "text") return <TextBlock role={role} block={block} />
+  if (block.type === "text") {
+    return <TextBlock role={role} block={block} variant={variant} />
+  }
   if (block.type === "thinking") return <ThinkingBlock block={block} />
   if (block.type === "image") return <ImageBlock role={role} block={block} />
   if (block.type === "attachment") return <AttachmentBlock role={role} block={block} />
@@ -52,15 +59,33 @@ function stripImageMetaLines(s: string | undefined): string {
 
 function TextBlock({
   role,
-  block
+  block,
+  variant
 }: {
   role: "user" | "assistant"
   block: UIBlock
+  variant?: BlockViewVariant
 }) {
   if (!block.text && !block.partial) return null
   if (role === "user") {
     const cleaned = stripImageMetaLines(block.text)
     if (!cleaned) return null
+    if (variant === "guide") {
+      // 引导卡内：卡片本身就是容器，文本不再套灰色气泡；内容处理与复制按钮不变
+      return (
+        <div className="group/msg w-full min-w-0 flex flex-col items-end gap-0.5">
+          <div className="w-full min-w-0 text-foreground text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
+            {cleaned}
+          </div>
+          <CopyButton
+            text={cleaned}
+            ariaLabel="复制消息"
+            label="消息已复制"
+            className="opacity-0 group-hover/msg:opacity-100 transition-opacity"
+          />
+        </div>
+      )
+    }
     return (
       <div className="group/msg self-end max-w-[80%] min-w-0 flex flex-col items-end gap-0.5">
         <div className="max-w-full min-w-0 bg-muted text-foreground rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">

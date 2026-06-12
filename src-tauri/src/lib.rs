@@ -106,7 +106,11 @@ pub fn run() {
                 }
             });
         })
-        .setup(|_app| Ok(()))
+        .setup(|_app| {
+            // 后台回收上次运行残留的审查快照临时目录（崩溃 / 直接关窗会泄漏）
+            std::thread::spawn(commands::cleanup_stale_review_snapshots);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             startup::frontend_ready,
             buddy::get_buddy_bones,

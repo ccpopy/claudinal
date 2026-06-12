@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cog,
+  CornerDownRight,
   DollarSign,
   FileWarning,
   Gauge,
@@ -47,11 +48,38 @@ function MessageView({ msg }: { msg: UIMessage }) {
       </div>
     )
   }
+  if (msg.role === "user" && msg.delivery === "guide") {
+    return <GuideMessageView msg={msg} />
+  }
   return (
     <div className="flex flex-col gap-2 items-stretch">
       {msg.blocks.map((b, i) => (
         <BlockView key={i} role={msg.role} block={b} />
       ))}
+    </div>
+  )
+}
+
+/**
+ * 引导消息卡：streaming 中即时送达的用户输入（delivery === "guide"）。
+ * 与普通用户气泡同侧但形态不同——首行「引导 · 已送达」状态行直接回答
+ * "发出去了吗"；正文沿用用户消息的块渲染，仅换容器与头部。
+ * 已知局限：历史转录 jsonl 不带 delivery 元数据，重载后回落普通气泡。
+ */
+function GuideMessageView({ msg }: { msg: UIMessage }) {
+  return (
+    <div className="flex flex-col items-end">
+      <div className="max-w-[80%] min-w-0 rounded-xl border border-primary/25 bg-primary/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
+          <CornerDownRight className="size-3.5 shrink-0" />
+          <span>引导 · 已送达</span>
+        </div>
+        <div className="mt-1.5 flex flex-col items-stretch gap-2">
+          {msg.blocks.map((b, i) => (
+            <BlockView key={i} role="user" block={b} variant="guide" />
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
