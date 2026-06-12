@@ -27,17 +27,33 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault()
+        e.stopPropagation()
         onClose()
-      } else if (e.key === "+" || e.key === "=") {
+        return
+      }
+      // 缩放键不抢修饰组合键（Ctrl+0 等留给系统/应用快捷键）
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault()
+        e.stopPropagation()
         setZoom((z) => clampZoom(z + ZOOM_STEP))
       } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault()
+        e.stopPropagation()
         setZoom((z) => clampZoom(z - ZOOM_STEP))
       } else if (e.key === "0") {
+        e.preventDefault()
+        e.stopPropagation()
         setZoom(1)
       }
     }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
+    // capture 阶段注册：灯箱是最顶层模态层但没有焦点陷阱，焦点可能仍留在
+    // 下层（如 Composer textarea，其 React onKeyDown 先于 window 冒泡监听
+    // 执行）。在 capture 阶段抢先消费并阻断传播，保证灯箱打开时按 Esc 只
+    // 关灯箱、不触发 streaming 软中断（Esc 双触发审计结论 #1，详见任务
+    // research/keymap.md）；缩放键同理不再漏进底下的输入框。
+    window.addEventListener("keydown", onKey, true)
+    return () => window.removeEventListener("keydown", onKey, true)
   }, [open, onClose])
 
   if (!open || !src) return null

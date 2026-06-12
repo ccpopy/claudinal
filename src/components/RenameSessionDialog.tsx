@@ -55,7 +55,8 @@ export function RenameSessionDialog({
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              // isComposing：CJK 输入法确认候选字的 Enter 不提交对话框
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                 e.preventDefault()
                 submit()
               }

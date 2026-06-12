@@ -1102,7 +1102,12 @@ function AddMarketplaceDialog({
             className="font-mono text-xs"
             disabled={busy}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && value.trim()) {
+              // isComposing：CJK 输入法确认候选字的 Enter 不提交
+              if (
+                e.key === "Enter" &&
+                !e.nativeEvent.isComposing &&
+                value.trim()
+              ) {
                 e.preventDefault()
                 onSubmit(value.trim())
               }

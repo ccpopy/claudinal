@@ -86,6 +86,11 @@ import {
   utf8ByteLength
 } from "@/lib/fileAttachments"
 import { extractDocxText } from "@/lib/docxText"
+import {
+  parseTrigger,
+  triggerSignature,
+  type TriggerInfo
+} from "@/lib/suggestionTrigger"
 import { shortResets, fiveHourPercent } from "@/lib/oauthUsage"
 import type { DocumentPayload, ImagePayload } from "@/types/ui"
 import {
@@ -137,35 +142,6 @@ interface Props {
   openaiCompatibleProvider?: boolean
   globalDefault?: ComposerPrefs
   sessionPrefs?: ComposerPrefs | null
-}
-
-interface TriggerInfo {
-  kind: "@" | "/"
-  start: number // 触发字符位置
-  query: string
-}
-
-function parseTrigger(text: string, caret: number): TriggerInfo | null {
-  // 从光标向前找最近的 @ 或 /，遇到空白或越界则停。
-  let i = caret - 1
-  while (i >= 0) {
-    const c = text[i]
-    if (c === "@" || c === "/") {
-      // 触发符前必须是行首或空白（避免 a/b 触发）
-      const prev = i > 0 ? text[i - 1] : "\n"
-      if (prev === " " || prev === "\n" || prev === "\t" || i === 0) {
-        return {
-          kind: c as "@" | "/",
-          start: i,
-          query: text.slice(i + 1, caret)
-        }
-      }
-      return null
-    }
-    if (c === " " || c === "\n") return null
-    i--
-  }
-  return null
 }
 
 const MAX_TEXT_FILE_BYTES = 1024 * 1024
@@ -292,9 +268,40 @@ export function Composer({
   const [activeIdx, setActiveIdx] = useState(0)
   const [previewIdx, setPreviewIdx] = useState<number | null>(null)
   const fileReqRef = useRef(0)
+  /** 上一次刷新候选时的触发签名；null 表示面板处于关闭态 */
+  const lastTriggerSigRef = useRef<string | null>(null)
+  /**
+   * onKeyDown 已消费的菜单导航键（↑↓/Tab/Enter/Esc）。对应 keyup 到来时
+   * 跳过 updateTrigger：否则 refreshSuggestions 会把高亮重置回第 0 项
+   * （↑↓ 无法移动选中项的根因），Esc 刚关掉/Enter 刚选完的面板也会被
+   * keyup 重新解析触发词而立即重新打开。
+   *
+   * 用 Set 而非单值：交错按键（按住 ↓ 时按 Esc/Enter，A down → B down →
+   * A up → B up）会有多个已消费键同时在途，单值会被后按的键覆盖，先释放
+   * 键的 keyup 便漏进 updateTrigger，把刚关掉的面板立即重新打开。长按
+   * 重复（多次 keydown 一次 keyup）add 幂等，行为与单值一致；keyup 丢失
+   * 的场景（焦点离开）必然先经过 onBlur，在那里整体清空，无残留吞键。
+   */
+  const menuKeyHandledRef = useRef<Set<string>>(new Set())
+
+  const closeSuggestions = useCallback(() => {
+    setTrigger(null)
+    setItems([])
+    lastTriggerSigRef.current = null
+  }, [])
 
   const refreshSuggestions = useCallback(
     async (info: TriggerInfo) => {
+      // 仅当触发签名（kind+start+query）变化时把高亮重置回第 0 项：
+      // 同签名的重复刷新（keyup 重新评估、异步文件补全返回）保留用户
+      // 用 ↑↓ 选中的位置，只在列表变短时夹紧防止越界。
+      const sig = triggerSignature(info)
+      const resetActive = lastTriggerSigRef.current !== sig
+      lastTriggerSigRef.current = sig
+      const applyActiveIdx = (length: number) =>
+        setActiveIdx((cur) =>
+          resetActive ? 0 : Math.min(cur, Math.max(0, length - 1))
+        )
       if (info.kind === "/") {
         const all = (slashCommands ?? []).filter((c) => c)
         const pinned = new Set(loadSettings().pinnedSlash)
@@ -323,7 +330,7 @@ export function Composer({
         }
         const merged = [...pinnedList, ...restList].slice(0, 60)
         setItems(merged)
-        setActiveIdx(0)
+        applyActiveIdx(merged.length)
         return
       }
       // @ 文件补全
@@ -335,14 +342,13 @@ export function Composer({
       try {
         const matches = await listFiles(cwd, info.query)
         if (seq !== fileReqRef.current) return
-        setItems(
-          matches.slice(0, 60).map((m) => ({
-            key: m.rel,
-            primary: m.rel,
-            secondary: m.is_dir ? "目录" : undefined
-          }))
-        )
-        setActiveIdx(0)
+        const next = matches.slice(0, 60).map((m) => ({
+          key: m.rel,
+          primary: m.rel,
+          secondary: m.is_dir ? "目录" : undefined
+        }))
+        setItems(next)
+        applyActiveIdx(next.length)
       } catch {
         if (seq === fileReqRef.current) setItems([])
       }
@@ -353,11 +359,14 @@ export function Composer({
   const updateTrigger = useCallback(
     (next: string, caret: number) => {
       const t = parseTrigger(next, caret)
-      setTrigger(t)
-      if (t) refreshSuggestions(t)
-      else setItems([])
+      if (t) {
+        setTrigger(t)
+        void refreshSuggestions(t)
+      } else {
+        closeSuggestions()
+      }
     },
-    [refreshSuggestions]
+    [closeSuggestions, refreshSuggestions]
   )
 
   const applySuggestion = useCallback(
@@ -371,8 +380,7 @@ export function Composer({
       const after = text.slice(caret)
       const next = `${before}${insert} ${after}`
       setText(next)
-      setTrigger(null)
-      setItems([])
+      closeSuggestions()
       requestAnimationFrame(() => {
         const el = ref.current
         if (!el) return
@@ -381,7 +389,7 @@ export function Composer({
         el.focus()
       })
     },
-    [trigger, items, text]
+    [trigger, items, text, closeSuggestions]
   )
 
   useEffect(() => {
@@ -397,11 +405,10 @@ export function Composer({
     setImages(restored.images)
     setDocuments(restored.documents)
     setFileAttachments(restored.fileAttachments)
-    setTrigger(null)
-    setItems([])
+    closeSuggestions()
     setActiveIdx(0)
     setPreviewIdx(null)
-  }, [draftKey])
+  }, [draftKey, closeSuggestions])
 
   useEffect(() => {
     if (skipNextDraftReportRef.current) {
@@ -486,6 +493,12 @@ export function Composer({
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // 快捷键优先级（高 → 低）：Alt 组合键（streaming 专用）→ 候选菜单
+    // → Enter 发送/排队 → Esc 软中断。
+    //
+    // Alt+↑ 故意排在菜单导航之前：菜单导航分支均要求 !e.altKey，按键空间
+    // 与 Alt 组合键不重叠——菜单打开时 Alt+↑ 仍执行「撤回排队」，普通 ↑↓
+    // 始终归菜单导航（审计结论 #3，见任务 research/keymap.md）。
     if (
       e.key === "ArrowUp" &&
       e.altKey &&
@@ -507,33 +520,47 @@ export function Composer({
       send("followup")
       return
     }
-    if (trigger && items.length > 0) {
-      if (e.key === "ArrowDown" && !e.altKey) {
-        e.preventDefault()
-        setActiveIdx((i) => (i + 1) % items.length)
-        return
+    if (trigger) {
+      // IME 组合期间 ↑↓/Tab/Enter 属于输入法候选操作，不得当作菜单导航
+      // 或选中命令（与下方发送分支同款守卫）；Escape 关面板无副作用，
+      // 不需要守卫。
+      const composing = e.nativeEvent.isComposing
+      if (items.length > 0 && !composing) {
+        if (e.key === "ArrowDown" && !e.altKey) {
+          e.preventDefault()
+          menuKeyHandledRef.current.add(e.key)
+          setActiveIdx((i) => (i + 1) % items.length)
+          return
+        }
+        if (e.key === "ArrowUp" && !e.altKey) {
+          e.preventDefault()
+          menuKeyHandledRef.current.add(e.key)
+          setActiveIdx((i) => (i - 1 + items.length) % items.length)
+          return
+        }
+        if (
+          e.key === "Tab" ||
+          (e.key === "Enter" &&
+            !e.shiftKey &&
+            !e.altKey &&
+            !e.ctrlKey &&
+            !e.metaKey)
+        ) {
+          e.preventDefault()
+          menuKeyHandledRef.current.add(e.key)
+          applySuggestion(activeIdx)
+          return
+        }
       }
-      if (e.key === "ArrowUp" && !e.altKey) {
-        e.preventDefault()
-        setActiveIdx((i) => (i - 1 + items.length) % items.length)
-        return
-      }
-      if (
-        e.key === "Tab" ||
-        (e.key === "Enter" &&
-          !e.shiftKey &&
-          !e.altKey &&
-          !e.ctrlKey &&
-          !e.metaKey)
-      ) {
-        e.preventDefault()
-        applySuggestion(activeIdx)
-        return
-      }
+      // 防回归（审计结论 #2）：面板打开时 Esc 永远先关面板并 return，
+      // 不落入下方 streaming 软中断分支；再按一次 Esc 才会中断。
+      // 该分支必须保持在软中断之前，且不能要求 items.length > 0——
+      // 空结果提示（"无匹配命令/文件"）同样是打开状态，Esc 应当关掉它
+      // 而不是误触软中断。
       if (e.key === "Escape") {
         e.preventDefault()
-        setTrigger(null)
-        setItems([])
+        menuKeyHandledRef.current.add(e.key)
+        closeSuggestions()
         return
       }
     }
@@ -690,8 +717,7 @@ export function Composer({
         contentMode: "inline"
       }
     ])
-    setTrigger(null)
-    setItems([])
+    closeSuggestions()
     toast.success("已将长文本作为 txt 附件添加")
   }
 
@@ -836,6 +862,10 @@ export function Composer({
               updateTrigger(v, caret)
             }}
             onKeyUp={(e) => {
+              // onKeyUp 的职责：跟踪 ←→/Home/End 等纯光标移动进出触发词
+              //（这些键不触发 onChange）。onKeyDown 已消费的菜单键到达
+              // keyup 时直接吞掉，不重新评估触发词（见 menuKeyHandledRef）。
+              if (menuKeyHandledRef.current.delete(e.key)) return
               const el = e.currentTarget
               updateTrigger(el.value, el.selectionStart ?? 0)
             }}
@@ -844,8 +874,9 @@ export function Composer({
               updateTrigger(el.value, el.selectionStart ?? 0)
             }}
             onBlur={() => {
+              menuKeyHandledRef.current.clear()
               // 延迟关闭：让点击 SuggestionPanel 项的 onClick 先触发
-              setTimeout(() => setTrigger(null), 100)
+              setTimeout(() => closeSuggestions(), 100)
             }}
             onKeyDown={onKey}
             onPaste={onPaste}
@@ -1380,7 +1411,8 @@ function GitBranchPicker({
             onChange={(e) => setNewBranch(e.target.value)}
             onKeyDown={(e) => {
               e.stopPropagation()
-              if (e.key === "Enter") {
+              // isComposing：CJK 输入法确认候选字的 Enter 不创建分支
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                 e.preventDefault()
                 void checkout(newBranch, true)
               }
