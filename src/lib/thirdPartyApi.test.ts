@@ -11,6 +11,7 @@ import {
   providerComposerModelOptions,
   providerModelInputOptions,
   providerModelOptions,
+  resolveThirdPartyDefaultComposerModel,
   canUseApiProfileLaunchPrefs,
   shouldResumeWithApiProfile,
   thirdPartyApiConnectionProfileKey,
@@ -299,6 +300,21 @@ describe("thirdPartyApi.runtimeProfile", () => {
         ...base.models,
         opusModel: "claude-opus-4-7[1m]"
       }
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
+      thirdPartyApiRuntimeProfileKey(base)
+    )
+  })
+
+  it("changes when the default model alias changes", () => {
+    const base = makeConfig({
+      id: "provider-a",
+      mainAlias: "sonnet"
+    } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      mainAlias: "opus"
     } as Partial<ThirdPartyApiConfig>)
 
     expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
@@ -725,6 +741,60 @@ describe("thirdPartyApi.providerModelInputOptions", () => {
       }
     })
     expect(list).toEqual(["m1", "m2", "m3", "m4", "m5"])
+  })
+})
+
+describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
+  it("uses the main alias 1M model when Default targets a declared 1M role", () => {
+    expect(
+      resolveThirdPartyDefaultComposerModel(
+        makeConfig({
+          mainAlias: "opus",
+          modelSupports1m: {
+            sonnet: false,
+            opus: true
+          }
+        })
+      )
+    ).toBe("opus[1m]")
+
+    expect(
+      resolveThirdPartyDefaultComposerModel(
+        makeConfig({
+          mainAlias: "sonnet",
+          modelSupports1m: {
+            sonnet: true,
+            opus: false
+          }
+        })
+      )
+    ).toBe("sonnet[1m]")
+  })
+
+  it("leaves Default empty when the main role does not declare 1M support", () => {
+    expect(
+      resolveThirdPartyDefaultComposerModel(
+        makeConfig({
+          mainAlias: "opus",
+          modelSupports1m: {
+            sonnet: true,
+            opus: false
+          }
+        })
+      )
+    ).toBe("")
+
+    expect(
+      resolveThirdPartyDefaultComposerModel(
+        makeConfig({
+          mainAlias: "haiku",
+          modelSupports1m: {
+            sonnet: true,
+            opus: true
+          }
+        })
+      )
+    ).toBe("")
   })
 })
 

@@ -278,7 +278,7 @@ export function thirdPartyApiRuntimeProfileKey(
   if (!config.enabled) return "official"
   const providerId = providerProfileId(config)
   const profile = {
-    version: 4,
+    version: 5,
     providerId,
     requestUrl: trimApiUrl(config.requestUrl),
     inputFormat: config.inputFormat,
@@ -293,6 +293,7 @@ export function thirdPartyApiRuntimeProfileKey(
     agentTeamsEnabled: config.agentTeamsEnabled,
     toolSearchEnabled: config.toolSearchEnabled,
     maxThinkingEnabled: config.maxThinkingEnabled,
+    mainAlias: config.mainAlias,
     models: {
       mainModel: config.models.mainModel.trim(),
       haikuModel: config.models.haikuModel.trim(),
@@ -1018,6 +1019,26 @@ export function providerComposerModelOptions(
     options.push({ value: "haiku", label: "Haiku" })
   }
   return options
+}
+
+export function resolveThirdPartyDefaultComposerModel(
+  provider: Pick<ThirdPartyApiConfig, "mainAlias" | "models" | "modelSupports1m">
+): string {
+  if (
+    provider.mainAlias === "sonnet" &&
+    provider.models.sonnetModel.trim() &&
+    provider.modelSupports1m.sonnet
+  ) {
+    return "sonnet[1m]"
+  }
+  if (
+    provider.mainAlias === "opus" &&
+    provider.models.opusModel.trim() &&
+    provider.modelSupports1m.opus
+  ) {
+    return "opus[1m]"
+  }
+  return ""
 }
 
 export function providerModelInputOptions(

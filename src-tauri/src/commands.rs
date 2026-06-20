@@ -15,6 +15,7 @@ use crate::session::{
     read_session_transcript as read_transcript_inner, rebuild_session_index as rebuild_index_inner,
     scan_activity_heatmap as scan_heatmap_inner, scan_all_usage_sidecars as scan_usage_inner,
     search_sessions as search_sessions_inner, session_index_diagnostics as index_diagnostics_inner,
+    truncate_session_transcript as truncate_transcript_inner,
     write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalSessionMeta, GlobalUsage,
     SessionIndexDiagnostics, SessionMeta, SessionSearchHit, WatcherState,
 };
@@ -4046,6 +4047,15 @@ pub async fn delete_session_jsonl(cwd: String, session_id: String) -> Result<()>
     delete_jsonl_inner(&cwd, &session_id)?;
     crate::collab::store::delete_flows_for_session(&cwd, &session_id)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn truncate_session_transcript(
+    cwd: String,
+    session_id: String,
+    cutoff_ts_millis: u64,
+) -> Result<()> {
+    truncate_transcript_inner(&cwd, &session_id, cutoff_ts_millis)
 }
 
 #[tauri::command]

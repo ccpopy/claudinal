@@ -457,6 +457,81 @@ pub fn delete_session_jsonl(cwd: &str, session_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn json_event_ts_millis(value: &serde_json::Value) -> Option<u64> {
+    let raw = value.get("timestamp").or_else(|| value.get("ts"))?;
+    if let Some(n) = raw.as_u64() {
+        return Some(n);
+    }
+    if let Some(n) = raw.as_i64() {
+        return u64::try_from(n).ok();
+    }
+    if let Some(n) = raw.as_f64() {
+        if n.is_finite() && n >= 0.0 {
+            return Some(n as u64);
+        }
+    }
+    let text = raw.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .and_then(|dt| u64::try_from(dt.timestamp_millis()).ok())
+}
+
+fn atomic_write_session_text(path: &Path, contents: &str) -> Result<()> {
+    let tmp = path.with_extension(format!("jsonl.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, contents).map_err(Error::from)?;
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::from(err));
+    }
+    Ok(())
+}
+
+fn truncate_jsonl_at_timestamp(path: &Path, cutoff_ts_millis: u64) -> Result<()> {
+    let raw = std::fs::read_to_string(path).map_err(Error::from)?;
+    let mut kept = String::with_capacity(raw.len());
+    let mut found_cutoff = false;
+
+    for segment in raw.split_inclusive('\n') {
+        let line = segment.trim();
+        if !line.is_empty() {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if json_event_ts_millis(&value)
+                    .is_some_and(|ts| ts >= cutoff_ts_millis)
+                {
+                    found_cutoff = true;
+                    break;
+                }
+            }
+        }
+        kept.push_str(segment);
+    }
+
+    if !found_cutoff {
+        return Err(Error::Other(
+            "retry cutoff did not match any transcript event".into(),
+        ));
+    }
+    if kept == raw {
+        return Ok(());
+    }
+    atomic_write_session_text(path, &kept)
+}
+
+pub fn truncate_session_transcript(
+    cwd: &str,
+    session_id: &str,
+    cutoff_ts_millis: u64,
+) -> Result<()> {
+    if cutoff_ts_millis == 0 {
+        return Err(Error::Other("retry cutoff timestamp is required".into()));
+    }
+    let path = session_jsonl_path(cwd, session_id)?;
+    truncate_jsonl_at_timestamp(&path, cutoff_ts_millis)
+}
+
 pub fn read_session_transcript(cwd: &str, session_id: &str) -> Result<Vec<serde_json::Value>> {
     let path = session_jsonl_path(cwd, session_id)?;
     let file = std::fs::File::open(&path)?;
@@ -737,6 +812,97 @@ mod tests {
         assert!(validate_session_id("with/slash").is_err());
         assert!(validate_session_id("with\\backslash").is_err());
         assert!(validate_session_id("dot..segment").is_err());
+    }
+
+    #[test]
+    fn truncate_jsonl_at_timestamp_removes_cutoff_line_and_after() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-truncate-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("retry.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "system",
+                "timestamp": "2026-06-20T01:00:00.000Z"
+            }),
+            serde_json::json!({
+                "type": "user",
+                "timestamp": "2026-06-20T01:00:01.000Z",
+                "message": { "role": "user", "content": "retry me" }
+            }),
+            serde_json::json!({
+                "type": "result",
+                "timestamp": "2026-06-20T01:00:02.000Z",
+                "is_error": true
+            }),
+        ];
+        let body = lines
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        std::fs::write(&path, format!("{body}\n"))?;
+
+        truncate_jsonl_at_timestamp(&path, 1_781_917_201_000)?;
+        let out = std::fs::read_to_string(&path)?;
+        assert!(out.contains("\"type\":\"system\""));
+        assert!(!out.contains("\"type\":\"user\""));
+        assert!(!out.contains("\"type\":\"result\""));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn truncate_jsonl_at_timestamp_accepts_numeric_ts() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-truncate-numeric-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("retry.jsonl");
+        std::fs::write(
+            &path,
+            [
+                r#"{"type":"system","ts":100}"#,
+                r#"{"type":"user","ts":200}"#,
+                r#"{"type":"result","ts":300}"#,
+            ]
+            .join("\n"),
+        )?;
+
+        truncate_jsonl_at_timestamp(&path, 200)?;
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            "{\"type\":\"system\",\"ts\":100}\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn truncate_jsonl_at_timestamp_keeps_file_when_cutoff_missing() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-truncate-miss-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("retry.jsonl");
+        let body = "{\"type\":\"system\",\"ts\":100}\n";
+        std::fs::write(&path, body)?;
+
+        let err = truncate_jsonl_at_timestamp(&path, 200).unwrap_err();
+        assert!(format!("{err}").contains("retry cutoff"));
+        assert_eq!(std::fs::read_to_string(&path)?, body);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]

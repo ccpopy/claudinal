@@ -14,7 +14,9 @@ export type Action =
       blocks: UIBlock[]
       delivery?: UIMessage["delivery"]
       localId?: string
+      ts?: number
     }
+  | { kind: "truncate_after_message"; messageId: string }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
   | { kind: "replace_state"; state: State }
   | { kind: "reset" }
@@ -26,8 +28,15 @@ export function init(): State {
 export function reduce(state: State, action: Action): State {
   if (action.kind === "reset") return init()
   if (action.kind === "replace_state") return action.state
+  if (action.kind === "truncate_after_message") {
+    const idx = state.entries.findIndex(
+      (entry) => entry.kind === "message" && entry.id === action.messageId
+    )
+    if (idx < 0) return state
+    return { entries: state.entries.slice(0, idx), hiddenStream: false }
+  }
   if (action.kind === "user_local") {
-    const ts = Date.now()
+    const ts = action.ts ?? Date.now()
     const msg: UIMessage = {
       kind: "message",
       id: action.localId ?? `local-${state.entries.length}-${ts}`,

@@ -441,6 +441,18 @@ export async function deleteSessionJsonl(
   return invoke("delete_session_jsonl", { cwd, sessionId })
 }
 
+export async function truncateSessionTranscript(
+  cwd: string,
+  sessionId: string,
+  cutoffTsMillis: number
+): Promise<void> {
+  return invoke("truncate_session_transcript", {
+    cwd,
+    sessionId,
+    cutoffTsMillis
+  })
+}
+
 export async function readSessionSidecar(
   cwd: string,
   sessionId: string

@@ -34,6 +34,7 @@ import {
   writeSessionSidecar,
   deleteSessionJsonl,
   fetchOauthUsage,
+  truncateSessionTranscript,
   type OauthUsage,
   type PermissionRequestPayload,
   type SessionMeta
@@ -99,6 +100,7 @@ import {
   OFFICIAL_PROVIDER_ID,
   canUseApiProfileLaunchPrefs,
   providerComposerModelOptions,
+  resolveThirdPartyDefaultComposerModel,
   shouldResumeWithApiProfile,
   thirdPartyApiConnectionProfileKey,
   thirdPartyApiRuntimeProfileKey,
@@ -277,6 +279,23 @@ type QueuedInput = {
   documents: DocumentPayload[]
   cliBlocks: Array<Record<string, unknown>>
   skillInvocation?: SkillInvocation | null
+}
+type SentInput = {
+  localId: string
+  text: string
+  images: ImagePayload[]
+  documents: DocumentPayload[]
+  cliBlocks: Array<Record<string, unknown>>
+  skillInvocation?: SkillInvocation | null
+  ts: number
+}
+type SendOptions = {
+  mode?: QueuedInputMode
+  localId?: string
+  cliBlocks?: Array<Record<string, unknown>>
+  skillInvocation?: SkillInvocation | null
+  sentAt?: number
+  bypassPreprocess?: boolean
 }
 type ReturnView = "chat" | "plugins" | "history"
 type ChatReturnTarget =
@@ -569,6 +588,34 @@ function countDiffFiles(
   return set.size
 }
 
+function collectFailedRetryableMessageIds(
+  entries: ReturnType<typeof reducerInit>["entries"],
+  sentInputs: ReadonlyMap<string, SentInput>
+): Set<string> {
+  const ids = new Set<string>()
+  let currentUserId: string | null = null
+  for (const entry of entries) {
+    if (entry.kind === "message" && entry.role === "user") {
+      currentUserId = sentInputs.has(entry.id) ? entry.id : null
+      continue
+    }
+    if (entry.kind !== "result") continue
+    if (entry.isError && currentUserId) ids.add(currentUserId)
+    currentUserId = null
+  }
+  return ids
+}
+
+function eventTimestampMillis(event: unknown): number | null {
+  if (!event || typeof event !== "object") return null
+  const obj = event as { timestamp?: unknown; ts?: unknown }
+  const raw = obj.timestamp ?? obj.ts
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) return raw
+  if (typeof raw !== "string") return null
+  const ms = Date.parse(raw)
+  return Number.isNaN(ms) ? null : ms
+}
+
 export default function App() {
   const [state, dispatch] = useReducer(reduce, undefined, reducerInit)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -636,11 +683,14 @@ export default function App() {
   const [permissionRequests, setPermissionRequests] = useState<
     PermissionRequestPayload[]
   >([])
+  const [sentInputVersion, setSentInputVersion] = useState(0)
   // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
   const stateRef = useRef<ReducerState>(reducerInit())
   const sessionIdRef = useRef<string | null>(null)
+  const selectedSessionIdRef = useRef<string | null>(null)
   const activeRuntimeIdRef = useRef<string | null>(null)
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
+  const sentInputsRef = useRef<Map<string, SentInput>>(new Map())
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
   const composerDraftsRef = useRef<Map<string, ComposerDraft>>(new Map())
   const apiProfileKeyRef = useRef(currentApiProfileKey())
@@ -669,8 +719,22 @@ export default function App() {
   }, [state])
 
   useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId
+  }, [selectedSessionId])
+
+  useEffect(() => {
     installedSkillCommandsRef.current = installedSkillCommands
   }, [installedSkillCommands])
+
+  const rememberSentInput = useCallback((input: SentInput) => {
+    const map = sentInputsRef.current
+    map.set(input.localId, input)
+    if (map.size > 200) {
+      const first = map.keys().next().value
+      if (first) map.delete(first)
+    }
+    setSentInputVersion((version) => version + 1)
+  }, [])
 
   const applyPermissionModeState = useCallback(
     (
@@ -1480,14 +1544,25 @@ export default function App() {
       if (!item) return false
       const createdSnapshot = await beginRunReview(run)
       try {
+        const sentAt = Date.now()
         await sendCliInput(run.runtimeId, item.cliBlocks, item.skillInvocation)
         run.queuedInputs = run.queuedInputs.filter(
           (queued) => queued.localId !== item.localId
         )
+        rememberSentInput({
+          localId: item.localId,
+          text: item.text,
+          images: item.images,
+          documents: item.documents,
+          cliBlocks: item.cliBlocks,
+          skillInvocation: item.skillInvocation,
+          ts: sentAt
+        })
         applyRunningAction(run, {
           kind: "user_local",
           blocks: queuedInputUiBlocks(item),
-          localId: item.localId
+          localId: item.localId,
+          ts: sentAt
         })
         setRunningSessionStreaming(run, true)
         setRunningTick((tick) => tick + 1)
@@ -1503,6 +1578,7 @@ export default function App() {
       applyRunningAction,
       beginRunReview,
       discardRunReview,
+      rememberSentInput,
       setRunningSessionStreaming
     ]
   )
@@ -1532,7 +1608,7 @@ export default function App() {
       const env = { ...thirdPartyEnv, ...proxyEnv }
       const apiProfileKey = currentApiProfileKey()
       const apiLaunchProfileKey = currentApiLaunchProfileKey()
-      const resumeSessionId = selectedSessionId
+      const resumeSessionId = selectedSessionIdRef.current
       let launchComposerPrefs = composerPrefs
       let launchSessionComposer = sessionComposer
       const launchReviewDiffs = resumeSessionId ? reviewDiffs : []
@@ -1581,7 +1657,12 @@ export default function App() {
         uiEffort === "max"
           ? "xhigh"
           : uiEffort
-      const model = uiModel || null
+      const model =
+        uiModel ||
+        (thirdPartyReady
+          ? resolveThirdPartyDefaultComposerModel(thirdPartyApi)
+          : "") ||
+        null
       const launchPermissionMode = planMode
         ? "plan"
         : sessionPermissionMode || cfg.defaultPermissionMode || "default"
@@ -1946,15 +2027,16 @@ export default function App() {
       text: string,
       images: ImagePayload[],
       documents: DocumentPayload[],
-      options: { mode?: QueuedInputMode } = {}
+      options: SendOptions = {}
     ) => {
       // 客户端可处理的斜杠命令直接拦截，不投递给 CLI
       const trimmed = text.trim()
-      if (trimmed === "/clear" || trimmed === "/reset") {
+      if (!options.bypassPreprocess && (trimmed === "/clear" || trimmed === "/reset")) {
         await teardown()
         dispatch({ kind: "reset" })
         setReviewDiffs([])
         setSelectedSessionId(null)
+        selectedSessionIdRef.current = null
         setSelectedSessionMeta(null)
         applyDefaultPermissionModeState()
         toast.success("已清空当前会话")
@@ -1962,8 +2044,9 @@ export default function App() {
       }
       const isTextOnlySlash =
         trimmed.startsWith("/") && images.length === 0 && documents.length === 0
-      let skillInvocation: SkillInvocation | null = null
-      if (isTextOnlySlash) {
+      let skillInvocation: SkillInvocation | null =
+        options.bypassPreprocess ? (options.skillInvocation ?? null) : null
+      if (!options.bypassPreprocess && isTextOnlySlash) {
         try {
           skillInvocation = await expandSkillCommand(project?.cwd ?? null, text)
         } catch (error) {
@@ -1971,13 +2054,13 @@ export default function App() {
           return
         }
       }
-      if (isTextOnlySlash && !skillInvocation) {
+      if (!options.bypassPreprocess && isTextOnlySlash && !skillInvocation) {
         // 其他斜杠命令是 TUI 专属（/usage、/permissions、/login 等），桌面端做不了
         // 仍把文本发给 CLI（CLI 会当普通文本处理），同时给一次性提醒
         toast.info("斜杠命令是 CLI TUI 专属，GUI 中作普通文本处理")
       }
       let cliText = text
-      if (collaborationMode && !skillInvocation) {
+      if (!options.bypassPreprocess && collaborationMode && !skillInvocation) {
         const cfg = loadCollabSettings()
         if (!cfg.enabled) {
           setSettingsSection("collaboration")
@@ -2000,8 +2083,10 @@ export default function App() {
           imageData: image.data
         })
       }
-      const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      const blocks = buildCliBlocks(cliText, images, documents)
+      const localId =
+        options.localId ??
+        `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      const blocks = options.cliBlocks ?? buildCliBlocks(cliText, images, documents)
       const mode = options.mode ?? (streaming ? "followup" : "guide")
 
       if (streaming) {
@@ -2034,12 +2119,24 @@ export default function App() {
           return
         }
         try {
+          const sentAt = options.sentAt ?? Date.now()
           await sendCliInput(id, blocks, skillInvocation)
+          const sentInput: SentInput = {
+            localId,
+            text,
+            images,
+            documents,
+            cliBlocks: blocks,
+            skillInvocation,
+            ts: sentAt
+          }
+          rememberSentInput(sentInput)
           applyRunningAction(run, {
             kind: "user_local",
             blocks: queuedInputUiBlocks(queuedInput),
             delivery: "guide",
-            localId
+            localId,
+            ts: sentAt
           })
           setRunningTick((tick) => tick + 1)
           if (collaborationMode) setCollaborationMode(false)
@@ -2055,12 +2152,29 @@ export default function App() {
         return
       }
       if (!id) return
+      const sentAt = options.sentAt ?? Date.now()
+      const sentInput: SentInput = {
+        localId,
+        text,
+        images,
+        documents,
+        cliBlocks: blocks,
+        skillInvocation,
+        ts: sentAt
+      }
       const run = runningSessionsRef.current.get(id)
       if (run) {
-        applyRunningAction(run, { kind: "user_local", blocks: uiBlocks, localId })
+        rememberSentInput(sentInput)
+        applyRunningAction(run, {
+          kind: "user_local",
+          blocks: uiBlocks,
+          localId,
+          ts: sentAt
+        })
         setRunningSessionStreaming(run, true)
       } else {
-        dispatch({ kind: "user_local", blocks: uiBlocks, localId })
+        rememberSentInput(sentInput)
+        dispatch({ kind: "user_local", blocks: uiBlocks, localId, ts: sentAt })
         setStreaming(true)
       }
       await measureSendStep("beginRunReview", () => beginRunReview(run ?? null))
@@ -2089,7 +2203,97 @@ export default function App() {
       beginRunReview,
       discardRunReview,
       collaborationMode,
-      applyDefaultPermissionModeState
+      applyDefaultPermissionModeState,
+      rememberSentInput
+    ]
+  )
+
+  const clearRetrySidecarTail = useCallback(
+    async (p: Project, sid: string, cutoffTs: number): Promise<ReviewRunDiff[]> => {
+      const existing = await readSessionSidecar(p.cwd, sid)
+      if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+        return []
+      }
+      const next = { ...(existing as Record<string, unknown>) }
+      const resultTs = eventTimestampMillis(next.result)
+      if (next.result && (resultTs === null || resultTs >= cutoffTs)) {
+        delete next.result
+      }
+      const keptReviews = parseStoredReviewDiffs(existing).filter(
+        (review) => review.createdAt < cutoffTs
+      )
+      if (keptReviews.length > 0) {
+        next.reviewDiffs = keptReviews
+      } else {
+        delete next.reviewDiffs
+      }
+      await writeSessionSidecar(p.cwd, sid, next)
+      return keptReviews
+    },
+    []
+  )
+
+  const retryUserMessage = useCallback(
+    async (messageId: string) => {
+      const item = sentInputsRef.current.get(messageId)
+      if (!item) {
+        toast.warning("这条消息缺少原始发送内容，不能重试")
+        return
+      }
+      const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
+      const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+      if (run?.streaming || streaming) {
+        toast.warning("当前请求还在进行，结束后再重试")
+        return
+      }
+      if (!project) {
+        toast.warning("请先选择项目")
+        return
+      }
+      const sid =
+        run?.jsonlSessionId ??
+        selectedSessionIdRef.current ??
+        findInitSessionId(stateRef.current)
+      if (!sid) {
+        toast.warning("当前会话尚未写入历史，无法清理后重试")
+        return
+      }
+
+      try {
+        if (runtimeId) {
+          await closeRunningSession(runtimeId, { dropQueued: false })
+        }
+        await truncateSessionTranscript(project.cwd, sid, item.ts)
+        const keptReviews = await clearRetrySidecarTail(project, sid, item.ts)
+
+        const truncatedState = reduce(stateRef.current, {
+          kind: "truncate_after_message",
+          messageId
+        })
+        dispatch({ kind: "replace_state", state: truncatedState })
+        stateRef.current = truncatedState
+        setReviewDiffs(keptReviews)
+        selectedSessionIdRef.current = sid
+        setSelectedSessionId(sid)
+        setSelectedSessionMeta((cur) => (cur?.id === sid ? cur : null))
+        setSidebarRefreshKey((key) => key + 1)
+
+        await send(item.text, item.images, item.documents, {
+          localId: item.localId,
+          cliBlocks: item.cliBlocks,
+          skillInvocation: item.skillInvocation,
+          bypassPreprocess: true
+        })
+      } catch (error) {
+        toast.error(`重试失败: ${String(error)}`)
+      }
+    },
+    [
+      clearRetrySidecarTail,
+      closeRunningSession,
+      project,
+      send,
+      streaming
     ]
   )
 
@@ -2194,6 +2398,7 @@ export default function App() {
       if (!found) return
       if (found.item.mode === "guide") return
       try {
+        const sentAt = Date.now()
         await sendCliInput(
           found.run.runtimeId,
           found.item.cliBlocks,
@@ -2202,18 +2407,28 @@ export default function App() {
         found.run.queuedInputs = found.run.queuedInputs.filter(
           (item) => item.localId !== localId
         )
+        rememberSentInput({
+          localId: found.item.localId,
+          text: found.item.text,
+          images: found.item.images,
+          documents: found.item.documents,
+          cliBlocks: found.item.cliBlocks,
+          skillInvocation: found.item.skillInvocation,
+          ts: sentAt
+        })
         applyRunningAction(found.run, {
           kind: "user_local",
           blocks: queuedInputUiBlocks(found.item),
           delivery: "guide",
-          localId
+          localId,
+          ts: sentAt
         })
         setRunningTick((tick) => tick + 1)
       } catch (error) {
         toast.error(`发送引导消息失败: ${String(error)}`)
       }
     },
-    [applyRunningAction, findQueuedInput]
+    [applyRunningAction, findQueuedInput, rememberSentInput]
   )
 
   const recallLatestQueuedInput = useCallback(() => {
@@ -2814,6 +3029,10 @@ export default function App() {
     return run?.interrupting ?? false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningTick, sessionId])
+  const retryableMessageIds = useMemo(
+    () => collectFailedRetryableMessageIds(state.entries, sentInputsRef.current),
+    [state.entries, sentInputVersion]
+  )
   const activePermissionRequest =
     permissionRequests.find((request) => request.session_id === sessionId) ??
     null
@@ -3137,6 +3356,8 @@ export default function App() {
                     streaming={streaming}
                     reviews={reviewDiffs}
                     onShowDiff={openReviewDiff}
+                    retryableMessageIds={retryableMessageIds}
+                    onRetryMessage={retryUserMessage}
                   />
                 </Suspense>
                 {project && projectActions.length > 0 && (

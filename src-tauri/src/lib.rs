@@ -147,6 +147,7 @@ pub fn run() {
             commands::github_cli_status,
             commands::read_session_transcript,
             commands::delete_session_jsonl,
+            commands::truncate_session_transcript,
             commands::read_session_sidecar,
             commands::write_session_sidecar,
             commands::watch_sessions,

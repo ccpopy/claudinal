@@ -20,6 +20,7 @@ import type { UIBlock } from "@/types/ui"
 import { AssistantMarkdown } from "./AssistantMarkdown"
 import { CopyButton } from "./CopyButton"
 import { ImageLightbox } from "./ImageLightbox"
+import { RetryButton } from "./RetryButton"
 
 /** 消息块渲染形态。"guide"：引导卡内嵌渲染，文本不再自带气泡容器（卡片即容器）。 */
 export type BlockViewVariant = "guide"
@@ -27,14 +28,23 @@ export type BlockViewVariant = "guide"
 export function BlockView({
   role,
   block,
-  variant
+  variant,
+  onRetry
 }: {
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
+  onRetry?: () => void | Promise<void>
 }) {
   if (block.type === "text") {
-    return <TextBlock role={role} block={block} variant={variant} />
+    return (
+      <TextBlock
+        role={role}
+        block={block}
+        variant={variant}
+        onRetry={onRetry}
+      />
+    )
   }
   if (block.type === "thinking") return <ThinkingBlock block={block} />
   if (block.type === "image") return <ImageBlock role={role} block={block} />
@@ -60,11 +70,13 @@ function stripImageMetaLines(s: string | undefined): string {
 function TextBlock({
   role,
   block,
-  variant
+  variant,
+  onRetry
 }: {
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
+  onRetry?: () => void | Promise<void>
 }) {
   if (!block.text && !block.partial) return null
   if (role === "user") {
@@ -77,12 +89,14 @@ function TextBlock({
           <div className="w-full min-w-0 text-foreground text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
             {cleaned}
           </div>
-          <CopyButton
-            text={cleaned}
-            ariaLabel="复制消息"
-            label="消息已复制"
-            className="opacity-0 group-hover/msg:opacity-100 transition-opacity"
-          />
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
+            {onRetry && <RetryButton onRetry={onRetry} />}
+            <CopyButton
+              text={cleaned}
+              ariaLabel="复制消息"
+              label="消息已复制"
+            />
+          </div>
         </div>
       )
     }
@@ -91,12 +105,14 @@ function TextBlock({
         <div className="max-w-full min-w-0 bg-muted text-foreground rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
           {cleaned}
         </div>
-        <CopyButton
-          text={cleaned}
-          ariaLabel="复制消息"
-          label="消息已复制"
-          className="opacity-0 group-hover/msg:opacity-100 transition-opacity"
-        />
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
+          {onRetry && <RetryButton onRetry={onRetry} />}
+          <CopyButton
+            text={cleaned}
+            ariaLabel="复制消息"
+            label="消息已复制"
+          />
+        </div>
       </div>
     )
   }

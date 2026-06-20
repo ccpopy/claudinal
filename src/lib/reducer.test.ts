@@ -760,6 +760,55 @@ describe("reducer.local message lifecycle", () => {
     expect(lastMessage(s).id).toBe("local-1")
   })
 
+  it("uses provided local timestamp", () => {
+    const s = reduce(init(), {
+      kind: "user_local",
+      blocks: [{ type: "text", text: "hi" }],
+      localId: "local-1",
+      ts: 123
+    })
+    expect(lastMessage(s).ts).toBe(123)
+  })
+
+  it("truncates visible history before a retried local message", () => {
+    let s = reduce(init(), {
+      kind: "user_local",
+      blocks: [{ type: "text", text: "first" }],
+      localId: "local-1"
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "result",
+        is_error: false,
+        timestamp: "2026-06-20T01:00:00.000Z"
+      } as never)
+    })
+    s = reduce(s, {
+      kind: "user_local",
+      blocks: [{ type: "text", text: "retry me" }],
+      localId: "local-2"
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "result",
+        is_error: true,
+        timestamp: "2026-06-20T01:00:01.000Z"
+      } as never)
+    })
+
+    const truncated = reduce(s, {
+      kind: "truncate_after_message",
+      messageId: "local-2"
+    })
+    expect(truncated.entries.map((entry) => entry.kind)).toEqual([
+      "message",
+      "result"
+    ])
+    expect((truncated.entries[0] as { id?: string }).id).toBe("local-1")
+  })
+
   it("preserves guide delivery metadata for same-turn input", () => {
     const s = reduce(init(), {
       kind: "user_local",

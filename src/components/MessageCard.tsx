@@ -19,11 +19,23 @@ import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
 
 interface Props {
   entry: UIEntry
+  onRetryMessage?: (messageId: string) => void | Promise<void>
+  retryableMessageIds?: ReadonlySet<string>
 }
 
-export function MessageCard({ entry }: Props) {
+export function MessageCard({
+  entry,
+  onRetryMessage,
+  retryableMessageIds
+}: Props) {
   if (entry.kind === "message") {
-    return <MessageView msg={entry} />
+    return (
+      <MessageView
+        msg={entry}
+        onRetryMessage={onRetryMessage}
+        retryableMessageIds={retryableMessageIds}
+      />
+    )
   }
   if (entry.kind === "system_init") return <SystemInitView e={entry} />
   if (entry.kind === "system_status") return null
@@ -39,7 +51,15 @@ export function MessageCard({ entry }: Props) {
   return null
 }
 
-function MessageView({ msg }: { msg: UIMessage }) {
+function MessageView({
+  msg,
+  onRetryMessage,
+  retryableMessageIds
+}: {
+  msg: UIMessage
+  onRetryMessage?: (messageId: string) => void | Promise<void>
+  retryableMessageIds?: ReadonlySet<string>
+}) {
   if (msg.blocks.length === 0 && msg.streaming) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -49,12 +69,25 @@ function MessageView({ msg }: { msg: UIMessage }) {
     )
   }
   if (msg.role === "user" && msg.delivery === "guide") {
-    return <GuideMessageView msg={msg} />
+    return (
+      <GuideMessageView
+        msg={msg}
+        onRetry={
+          onRetryMessage && retryableMessageIds?.has(msg.id)
+            ? () => onRetryMessage?.(msg.id)
+            : undefined
+        }
+      />
+    )
   }
+  const onRetry =
+    msg.role === "user" && onRetryMessage && retryableMessageIds?.has(msg.id)
+      ? () => onRetryMessage?.(msg.id)
+      : undefined
   return (
     <div className="flex flex-col gap-2 items-stretch">
       {msg.blocks.map((b, i) => (
-        <BlockView key={i} role={msg.role} block={b} />
+        <BlockView key={i} role={msg.role} block={b} onRetry={onRetry} />
       ))}
     </div>
   )
@@ -66,7 +99,13 @@ function MessageView({ msg }: { msg: UIMessage }) {
  * "发出去了吗"；正文沿用用户消息的块渲染，仅换容器与头部。
  * 已知局限：历史转录 jsonl 不带 delivery 元数据，重载后回落普通气泡。
  */
-function GuideMessageView({ msg }: { msg: UIMessage }) {
+function GuideMessageView({
+  msg,
+  onRetry
+}: {
+  msg: UIMessage
+  onRetry?: () => void | Promise<void>
+}) {
   return (
     <div className="flex flex-col items-end">
       <div className="max-w-[80%] min-w-0 rounded-xl border border-primary/25 bg-primary/5 px-3 py-2">
@@ -76,7 +115,13 @@ function GuideMessageView({ msg }: { msg: UIMessage }) {
         </div>
         <div className="mt-1.5 flex flex-col items-stretch gap-2">
           {msg.blocks.map((b, i) => (
-            <BlockView key={i} role="user" block={b} variant="guide" />
+            <BlockView
+              key={i}
+              role="user"
+              block={b}
+              variant="guide"
+              onRetry={onRetry}
+            />
           ))}
         </div>
       </div>

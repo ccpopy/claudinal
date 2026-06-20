@@ -23,6 +23,8 @@ interface Props {
   autoScroll?: boolean
   reviews?: ReviewRunDiff[]
   onShowDiff?: (review: ReviewRunDiff, path?: string) => void
+  retryableMessageIds?: ReadonlySet<string>
+  onRetryMessage?: (messageId: string) => void | Promise<void>
 }
 
 interface MsgGroup {
@@ -174,7 +176,9 @@ export function MessageStream({
   streaming,
   autoScroll = true,
   reviews = [],
-  onShowDiff
+  onShowDiff,
+  retryableMessageIds,
+  onRetryMessage
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -335,7 +339,11 @@ export function MessageStream({
                 data-timeline-target={g.key}
                 className="scroll-mt-6"
               >
-                <MessageCard entry={g.msg} />
+                <MessageCard
+                  entry={g.msg}
+                  retryableMessageIds={retryableMessageIds}
+                  onRetryMessage={onRetryMessage}
+                />
               </div>
             )
           }
@@ -355,7 +363,11 @@ export function MessageStream({
             const review = matchedReviews[reviewIndex++]
             return (
               <div key={g.key}>
-                <MessageCard entry={g.entry} />
+                <MessageCard
+                  entry={g.entry}
+                  retryableMessageIds={retryableMessageIds}
+                  onRetryMessage={onRetryMessage}
+                />
                 {review && (
                   <RunReviewCard
                     review={review}
@@ -365,7 +377,14 @@ export function MessageStream({
               </div>
             )
           }
-          return <MessageCard key={g.key} entry={g.entry} />
+          return (
+            <MessageCard
+              key={g.key}
+              entry={g.entry}
+              retryableMessageIds={retryableMessageIds}
+              onRetryMessage={onRetryMessage}
+            />
+          )
         })}
       </div>
       <ChatTimelineNav
