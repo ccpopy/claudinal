@@ -142,6 +142,10 @@ import {
   detectNetworkError,
   type NetworkErrorTopic
 } from "@/lib/networkErrorHints"
+import {
+  findFirstTurnFailedMessageId,
+  hasResumableUiConversationContext
+} from "@/lib/failedSessionCleanup"
 import { isAskUserQuestionRequest } from "@/lib/askUserQuestion"
 import { autoApprovePermissionRequest } from "@/lib/permissionPolicy"
 import {
@@ -287,7 +291,13 @@ type SentInput = {
   documents: DocumentPayload[]
   cliBlocks: Array<Record<string, unknown>>
   skillInvocation?: SkillInvocation | null
+  apiProfileKey: string
+  apiLaunchProfileKey: string
   ts: number
+}
+type SessionApiProfileEvidence = {
+  apiProfileKey: string
+  apiLaunchProfileKey: string
 }
 type SendOptions = {
   mode?: QueuedInputMode
@@ -450,6 +460,10 @@ function sidecarApiLaunchProfileKey(sidecar: unknown): string | null {
   return sidecarApiProfileKey(sidecar)
 }
 
+function sessionApiProfileEvidenceKey(project: Project, sid: string): string {
+  return `${project.cwd}::${sid}`
+}
+
 function fallbackComposerPrefsForApiProfile(
   apiProfileKey: string,
   globalDefault: ComposerPrefs
@@ -603,7 +617,17 @@ function collectFailedRetryableMessageIds(
     if (entry.isError && currentUserId) ids.add(currentUserId)
     currentUserId = null
   }
+  if (entries.some((entry) => entry.kind === "result" && entry.isError)) {
+    const firstTurnId = findFirstTurnFailedMessageId(entries, sentInputs)
+    if (firstTurnId) ids.add(firstTurnId)
+  }
   return ids
+}
+
+function hasResumableConversationContext(
+  entries: ReturnType<typeof reducerInit>["entries"]
+): boolean {
+  return hasResumableUiConversationContext(entries)
 }
 
 function eventTimestampMillis(event: unknown): number | null {
@@ -691,6 +715,9 @@ export default function App() {
   const activeRuntimeIdRef = useRef<string | null>(null)
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
   const sentInputsRef = useRef<Map<string, SentInput>>(new Map())
+  const sessionApiProfilesRef = useRef<Map<string, SessionApiProfileEvidence>>(
+    new Map()
+  )
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
   const composerDraftsRef = useRef<Map<string, ComposerDraft>>(new Map())
   const apiProfileKeyRef = useRef(currentApiProfileKey())
@@ -735,6 +762,33 @@ export default function App() {
     }
     setSentInputVersion((version) => version + 1)
   }, [])
+
+  const rememberSessionApiProfile = useCallback(
+    (
+      p: Project,
+      sid: string,
+      apiProfileKey: string,
+      apiLaunchProfileKey: string
+    ) => {
+      const map = sessionApiProfilesRef.current
+      map.set(sessionApiProfileEvidenceKey(p, sid), {
+        apiProfileKey,
+        apiLaunchProfileKey
+      })
+      if (map.size > 200) {
+        const first = map.keys().next().value
+        if (first) map.delete(first)
+      }
+    },
+    []
+  )
+
+  const getRememberedSessionApiProfile = useCallback(
+    (p: Project, sid: string): SessionApiProfileEvidence | null =>
+      sessionApiProfilesRef.current.get(sessionApiProfileEvidenceKey(p, sid)) ??
+      null,
+    []
+  )
 
   const applyPermissionModeState = useCallback(
     (
@@ -1040,6 +1094,15 @@ export default function App() {
       const isActive = activeRuntimeIdRef.current === runtimeId
       // 关闭即强杀：清掉软中断兜底定时器，避免定时器在 run 移除后再触发误杀
       clearInterruptState(run)
+      const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
+      if (sid) {
+        rememberSessionApiProfile(
+          run.project,
+          sid,
+          run.apiProfileKey,
+          run.apiLaunchProfileKey
+        )
+      }
       if (opts.dropQueued !== false && run.queuedInputs.length > 0) {
         run.queuedInputs = []
       }
@@ -1064,8 +1127,20 @@ export default function App() {
       }
       setRunningTick((tick) => tick + 1)
     },
-    [applyRunningAction, clearInterruptState, discardRunReview]
+    [
+      applyRunningAction,
+      clearInterruptState,
+      discardRunReview,
+      rememberSessionApiProfile
+    ]
   )
+
+  const deleteSessionRecord = useCallback(async (p: Project, sid: string) => {
+    await deleteSessionJsonl(p.cwd, sid)
+    unpin(p.id, sid)
+    unarchive(p.id, sid)
+    setSidebarRefreshKey((k) => k + 1)
+  }, [])
 
   const refreshActiveThirdPartyRuntime = useCallback(
     (message = "第三方 API 配置已刷新，下一次发送会使用新配置") => {
@@ -1086,7 +1161,13 @@ export default function App() {
       pendingApiRuntimeRefreshRef.current = false
       pendingComposerRuntimeRefreshRef.current = false
       const sid = run?.jsonlSessionId ?? (run ? findInitSessionId(run.state) : null)
-      if (sid) setSelectedSessionId((cur) => cur ?? sid)
+      if (sid) {
+        setSelectedSessionId((cur) => {
+          const next = cur ?? sid
+          selectedSessionIdRef.current = next
+          return next
+        })
+      }
       void closeRunningSession(runtimeId, { dropQueued: false })
         .then(() => toast.info(message))
         .catch((error) => {
@@ -1115,7 +1196,13 @@ export default function App() {
       pendingApiRuntimeRefreshRef.current = false
       pendingComposerRuntimeRefreshRef.current = false
       const sid = run?.jsonlSessionId ?? (run ? findInitSessionId(run.state) : null)
-      if (sid) setSelectedSessionId((cur) => cur ?? sid)
+      if (sid) {
+        setSelectedSessionId((cur) => {
+          const next = cur ?? sid
+          selectedSessionIdRef.current = next
+          return next
+        })
+      }
       void closeRunningSession(runtimeId, { dropQueued: false })
         .then(() => toast.info(message))
         .catch((error) => {
@@ -1193,6 +1280,56 @@ export default function App() {
       return null
     },
     []
+  )
+
+  const ensureSidecarApiProfile = useCallback(
+    async (
+      p: Project,
+      sid: string,
+      apiProfileKey: string,
+      apiLaunchProfileKey: string
+    ): Promise<{ profileKey: string; launchProfileKey: string | null }> => {
+      rememberSessionApiProfile(p, sid, apiProfileKey, apiLaunchProfileKey)
+      const existing = await readSessionSidecar(p.cwd, sid)
+      const base = (
+        existing && typeof existing === "object" && !Array.isArray(existing)
+          ? existing
+          : {}
+      ) as Record<string, unknown>
+      const storedProfileKey = sidecarApiProfileKey(base)
+      const storedLaunchProfileKey = sidecarApiLaunchProfileKey(base)
+      const profileKey = storedProfileKey ?? apiProfileKey
+      const hasConnectionProfile =
+        typeof base.apiConnectionProfileKey === "string" &&
+        base.apiConnectionProfileKey.trim()
+      const hasLegacyProfile =
+        typeof base.apiProfileKey === "string" && base.apiProfileKey.trim()
+      const hasLaunchProfile =
+        typeof base.apiLaunchProfileKey === "string" &&
+        base.apiLaunchProfileKey.trim()
+      const next: Record<string, unknown> = { ...base }
+      let launchProfileKey = storedLaunchProfileKey
+      let changed = false
+
+      if (!hasConnectionProfile) {
+        next.apiConnectionProfileKey = profileKey
+        changed = true
+      }
+      if (!hasLegacyProfile) {
+        next.apiProfileKey = profileKey
+        changed = true
+      }
+      if (!hasLaunchProfile && !storedProfileKey) {
+        next.apiLaunchProfileKey = apiLaunchProfileKey
+        launchProfileKey = apiLaunchProfileKey
+        changed = true
+      }
+      if (changed) {
+        await writeSessionSidecar(p.cwd, sid, next)
+      }
+      return { profileKey, launchProfileKey }
+    },
+    [rememberSessionApiProfile]
   )
 
   const stopRunningSessionForJsonl = useCallback(
@@ -1556,6 +1693,8 @@ export default function App() {
           documents: item.documents,
           cliBlocks: item.cliBlocks,
           skillInvocation: item.skillInvocation,
+          apiProfileKey: run.apiProfileKey,
+          apiLaunchProfileKey: run.apiLaunchProfileKey,
           ts: sentAt
         })
         applyRunningAction(run, {
@@ -1608,24 +1747,63 @@ export default function App() {
       const env = { ...thirdPartyEnv, ...proxyEnv }
       const apiProfileKey = currentApiProfileKey()
       const apiLaunchProfileKey = currentApiLaunchProfileKey()
-      const resumeSessionId = selectedSessionIdRef.current
+      let resumeSessionId = selectedSessionIdRef.current
+      if (
+        resumeSessionId &&
+        !hasResumableConversationContext(stateRef.current.entries)
+      ) {
+        resumeSessionId = null
+        selectedSessionIdRef.current = null
+        setSelectedSessionId(null)
+        setSelectedSessionMeta(null)
+        setReviewDiffs([])
+      }
       let launchComposerPrefs = composerPrefs
       let launchSessionComposer = sessionComposer
       const launchReviewDiffs = resumeSessionId ? reviewDiffs : []
       if (resumeSessionId) {
         const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
-        const storedProfileKey = sidecarApiProfileKey(sidecar)
-        const storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
+        let storedProfileKey = sidecarApiProfileKey(sidecar)
+        let storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
         if (!shouldResumeWithApiProfile(storedProfileKey, apiProfileKey)) {
-          // 跨供应商（或归属无法确认）的旧会话：中止本次发送。
-          // 不自动新建会话、不重置对话状态、不切换选中会话——
-          // 跨供应商续会话会把原供应商的完整对话历史发给另一家，必须由用户显式决定。
-          toast.info(
-            storedProfileKey
-              ? "此会话属于其他 API 供应商，已停止发送并保留输入内容。切回原供应商可直接继续；或新建会话后重新发送。"
-              : "无法确认此会话所属的 API 供应商，已停止发送并保留输入内容。可新建会话后重新发送。"
-          )
-          return ENSURE_SESSION_BLOCKED
+          const runningOwner = storedProfileKey
+            ? null
+            : findRunningSession(project, resumeSessionId)
+          const rememberedOwner =
+            storedProfileKey || runningOwner
+              ? null
+              : getRememberedSessionApiProfile(project, resumeSessionId)
+          const inMemoryOwner = runningOwner
+            ? {
+                apiProfileKey: runningOwner.apiProfileKey,
+                apiLaunchProfileKey: runningOwner.apiLaunchProfileKey
+              }
+            : rememberedOwner
+          if (
+            inMemoryOwner &&
+            shouldResumeWithApiProfile(inMemoryOwner.apiProfileKey, apiProfileKey)
+          ) {
+            const ensured = await ensureSidecarApiProfile(
+              project,
+              resumeSessionId,
+              inMemoryOwner.apiProfileKey,
+              inMemoryOwner.apiLaunchProfileKey
+            )
+            storedProfileKey = ensured.profileKey
+            storedLaunchProfileKey = ensured.launchProfileKey
+          } else {
+            const blockedProfileKey =
+              storedProfileKey ?? inMemoryOwner?.apiProfileKey ?? null
+            // 跨供应商（或归属无法确认）的旧会话：中止本次发送。
+            // 不自动新建会话、不重置对话状态、不切换选中会话——
+            // 跨供应商续会话会把原供应商的完整对话历史发给另一家，必须由用户显式决定。
+            toast.info(
+              blockedProfileKey
+                ? "此会话属于其他 API 供应商，已停止发送并保留输入内容。切回原供应商可直接继续；或新建会话后重新发送。"
+                : "无法确认此会话所属的 API 供应商，已停止发送并保留输入内容。可新建会话后重新发送。"
+            )
+            return ENSURE_SESSION_BLOCKED
+          }
         }
         const canUseLaunchPrefs = canUseApiProfileLaunchPrefs(
           storedLaunchProfileKey,
@@ -1715,10 +1893,21 @@ export default function App() {
         applyRunningAction(run, { kind: "event", event: ev })
         const t = (ev as { type?: string }).type
         const evSessionId = (ev as { session_id?: string }).session_id
-        if (evSessionId && run.jsonlSessionId !== evSessionId) {
-          run.jsonlSessionId = evSessionId
+        const knownSessionId = evSessionId ?? findInitSessionId(run.state)
+        if (knownSessionId && run.jsonlSessionId !== knownSessionId) {
+          run.jsonlSessionId = knownSessionId
+          void ensureSidecarApiProfile(
+            run.project,
+            knownSessionId,
+            run.apiProfileKey,
+            run.apiLaunchProfileKey
+          ).catch((e) => console.warn("sidecar api profile write failed:", e))
           if (activeRuntimeIdRef.current === run.runtimeId) {
-            setSelectedSessionId((cur) => cur ?? evSessionId)
+            setSelectedSessionId((cur) => {
+              const next = cur ?? knownSessionId
+              selectedSessionIdRef.current = next
+              return next
+            })
           }
           setRunningTick((tick) => tick + 1)
         }
@@ -1816,6 +2005,10 @@ export default function App() {
               reportNetworkError(run.runtimeId, "result", text)
             }
           }
+          const resultSessionId =
+            (ev as { session_id?: string }).session_id ??
+            run.jsonlSessionId ??
+            findInitSessionId(run.state)
           const guideInputs = run.queuedInputs.filter(
             (item) => item.mode === "guide"
           )
@@ -1848,8 +2041,7 @@ export default function App() {
               modelUsage?: Record<string, never>
             }
           )
-          const sid =
-            (ev as { session_id?: string }).session_id ?? run.jsonlSessionId
+          const sid = resultSessionId
           if (sid) {
             // 保留 sidecar 已有字段，更新 result；如果用户在 session id 分配前就
             // 改过 composer，这里把 sessionComposer 一并落地。
@@ -1931,6 +2123,9 @@ export default function App() {
     finishRunReview,
     sendQueuedFollowup,
     closeRunningSession,
+    findRunningSession,
+    getRememberedSessionApiProfile,
+    ensureSidecarApiProfile,
     reportNetworkError,
     refreshActiveThirdPartyRuntime,
     refreshActiveComposerRuntime,
@@ -2128,6 +2323,8 @@ export default function App() {
             documents,
             cliBlocks: blocks,
             skillInvocation,
+            apiProfileKey: run.apiProfileKey,
+            apiLaunchProfileKey: run.apiLaunchProfileKey,
             ts: sentAt
           }
           rememberSentInput(sentInput)
@@ -2152,6 +2349,7 @@ export default function App() {
         return
       }
       if (!id) return
+      const run = runningSessionsRef.current.get(id)
       const sentAt = options.sentAt ?? Date.now()
       const sentInput: SentInput = {
         localId,
@@ -2160,9 +2358,11 @@ export default function App() {
         documents,
         cliBlocks: blocks,
         skillInvocation,
+        apiProfileKey: run?.apiProfileKey ?? currentApiProfileKey(),
+        apiLaunchProfileKey:
+          run?.apiLaunchProfileKey ?? currentApiLaunchProfileKey(),
         ts: sentAt
       }
-      const run = runningSessionsRef.current.get(id)
       if (run) {
         rememberSentInput(sentInput)
         applyRunningAction(run, {
@@ -2254,28 +2454,69 @@ export default function App() {
         run?.jsonlSessionId ??
         selectedSessionIdRef.current ??
         findInitSessionId(stateRef.current)
-      if (!sid) {
-        toast.warning("当前会话尚未写入历史，无法清理后重试")
-        return
-      }
 
       try {
+        const retryProfileKey = sid
+          ? (
+              await ensureSidecarApiProfile(
+                project,
+                sid,
+                item.apiProfileKey,
+                item.apiLaunchProfileKey
+              )
+            ).profileKey
+          : item.apiProfileKey
+        if (!shouldResumeWithApiProfile(retryProfileKey, currentApiProfileKey())) {
+          toast.info(
+            "此会话属于其他 API 供应商，已停止发送并保留输入内容。切回原供应商可直接继续；或新建会话后重新发送。"
+          )
+          return
+        }
         if (runtimeId) {
           await closeRunningSession(runtimeId, { dropQueued: false })
         }
-        await truncateSessionTranscript(project.cwd, sid, item.ts)
-        const keptReviews = await clearRetrySidecarTail(project, sid, item.ts)
-
         const truncatedState = reduce(stateRef.current, {
           kind: "truncate_after_message",
           messageId
         })
-        dispatch({ kind: "replace_state", state: truncatedState })
-        stateRef.current = truncatedState
+        const resumeAfterRetry =
+          sid && hasResumableConversationContext(truncatedState.entries)
+            ? sid
+            : null
+        const firstTurnRetryMessageId = findFirstTurnFailedMessageId(
+          stateRef.current.entries,
+          sentInputsRef.current
+        )
+        const discardFailedFirstTurnSessionId =
+          !resumeAfterRetry && sid && firstTurnRetryMessageId === messageId
+            ? sid
+            : null
+        let keptReviews: ReviewRunDiff[] = []
+        if (resumeAfterRetry) {
+          await truncateSessionTranscript(project.cwd, resumeAfterRetry, item.ts)
+          keptReviews = await clearRetrySidecarTail(
+            project,
+            resumeAfterRetry,
+            item.ts
+          )
+        } else if (discardFailedFirstTurnSessionId) {
+          try {
+            await deleteSessionRecord(project, discardFailedFirstTurnSessionId)
+          } catch (error) {
+            console.warn("retry first-turn failed session cleanup failed:", error)
+            toast.error(`清理失败的临时会话失败: ${String(error)}`)
+          }
+        }
+
+        const nextState = resumeAfterRetry ? truncatedState : reducerInit()
+        dispatch({ kind: "replace_state", state: nextState })
+        stateRef.current = nextState
         setReviewDiffs(keptReviews)
-        selectedSessionIdRef.current = sid
-        setSelectedSessionId(sid)
-        setSelectedSessionMeta((cur) => (cur?.id === sid ? cur : null))
+        selectedSessionIdRef.current = resumeAfterRetry
+        setSelectedSessionId(resumeAfterRetry)
+        setSelectedSessionMeta((cur) =>
+          resumeAfterRetry && cur?.id === resumeAfterRetry ? cur : null
+        )
         setSidebarRefreshKey((key) => key + 1)
 
         await send(item.text, item.images, item.documents, {
@@ -2291,6 +2532,8 @@ export default function App() {
     [
       clearRetrySidecarTail,
       closeRunningSession,
+      deleteSessionRecord,
+      ensureSidecarApiProfile,
       project,
       send,
       streaming
@@ -2414,6 +2657,8 @@ export default function App() {
           documents: found.item.documents,
           cliBlocks: found.item.cliBlocks,
           skillInvocation: found.item.skillInvocation,
+          apiProfileKey: found.run.apiProfileKey,
+          apiLaunchProfileKey: found.run.apiLaunchProfileKey,
           ts: sentAt
         })
         applyRunningAction(found.run, {

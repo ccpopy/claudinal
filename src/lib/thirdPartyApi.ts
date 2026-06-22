@@ -1022,21 +1022,21 @@ export function providerComposerModelOptions(
 }
 
 export function resolveThirdPartyDefaultComposerModel(
-  provider: Pick<ThirdPartyApiConfig, "mainAlias" | "models" | "modelSupports1m">
+  provider: Pick<ThirdPartyApiConfig, "models" | "modelSupports1m">
 ): string {
+  const mainModel = provider.models.mainModel.trim()
+  if (!mainModel) return ""
   if (
-    provider.mainAlias === "sonnet" &&
-    provider.models.sonnetModel.trim() &&
-    provider.modelSupports1m.sonnet
-  ) {
-    return "sonnet[1m]"
-  }
-  if (
-    provider.mainAlias === "opus" &&
-    provider.models.opusModel.trim() &&
+    mainModel === provider.models.opusModel.trim() &&
     provider.modelSupports1m.opus
   ) {
     return "opus[1m]"
+  }
+  if (
+    mainModel === provider.models.sonnetModel.trim() &&
+    provider.modelSupports1m.sonnet
+  ) {
+    return "sonnet[1m]"
   }
   return ""
 }

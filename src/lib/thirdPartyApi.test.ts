@@ -745,11 +745,18 @@ describe("thirdPartyApi.providerModelInputOptions", () => {
 })
 
 describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
-  it("uses the main alias 1M model when Default targets a declared 1M role", () => {
+  it("uses the Default fallback model's declared 1M role", () => {
     expect(
       resolveThirdPartyDefaultComposerModel(
         makeConfig({
-          mainAlias: "opus",
+          mainAlias: "sonnet",
+          models: {
+            mainModel: "claude-opus-4",
+            haikuModel: "claude-3-5-haiku",
+            sonnetModel: "claude-3-7-sonnet",
+            opusModel: "claude-opus-4",
+            subagentModel: "claude-3-5-haiku"
+          },
           modelSupports1m: {
             sonnet: false,
             opus: true
@@ -761,7 +768,13 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
     expect(
       resolveThirdPartyDefaultComposerModel(
         makeConfig({
-          mainAlias: "sonnet",
+          models: {
+            mainModel: "claude-3-7-sonnet",
+            haikuModel: "claude-3-5-haiku",
+            sonnetModel: "claude-3-7-sonnet",
+            opusModel: "claude-opus-4",
+            subagentModel: "claude-3-5-haiku"
+          },
           modelSupports1m: {
             sonnet: true,
             opus: false
@@ -771,11 +784,17 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
     ).toBe("sonnet[1m]")
   })
 
-  it("leaves Default empty when the main role does not declare 1M support", () => {
+  it("leaves Default empty when the matched role does not declare 1M support", () => {
     expect(
       resolveThirdPartyDefaultComposerModel(
         makeConfig({
-          mainAlias: "opus",
+          models: {
+            mainModel: "claude-opus-4",
+            haikuModel: "claude-3-5-haiku",
+            sonnetModel: "claude-3-7-sonnet",
+            opusModel: "claude-opus-4",
+            subagentModel: "claude-3-5-haiku"
+          },
           modelSupports1m: {
             sonnet: true,
             opus: false
@@ -787,7 +806,13 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
     expect(
       resolveThirdPartyDefaultComposerModel(
         makeConfig({
-          mainAlias: "haiku",
+          models: {
+            mainModel: "claude-main-custom",
+            haikuModel: "claude-3-5-haiku",
+            sonnetModel: "claude-3-7-sonnet",
+            opusModel: "claude-opus-4",
+            subagentModel: "claude-3-5-haiku"
+          },
           modelSupports1m: {
             sonnet: true,
             opus: true

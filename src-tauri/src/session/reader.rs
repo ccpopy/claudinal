@@ -300,6 +300,28 @@ pub(crate) fn is_internal_generated_event(v: &serde_json::Value) -> bool {
         || is_skill_meta_prompt_event(v)
 }
 
+pub(crate) fn is_synthetic_api_error_event(v: &serde_json::Value) -> bool {
+    if v.get("type").and_then(|x| x.as_str()) != Some("assistant") {
+        return false;
+    }
+    let model = v.pointer("/message/model").and_then(|x| x.as_str());
+    let synthetic_model = model
+        .map(|s| {
+            s.split_whitespace()
+                .collect::<String>()
+                .eq_ignore_ascii_case("<synthetic>")
+        })
+        .unwrap_or(false);
+    if !synthetic_model {
+        return false;
+    }
+    v.get("isApiErrorMessage")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false)
+        || v.get("apiErrorStatus").is_some()
+        || v.get("api_error_status").is_some()
+}
+
 fn is_skill_meta_prompt_text(s: &str) -> bool {
     s.trim_start().starts_with(SKILL_META_PROMPT_PREFIX)
 }
@@ -350,7 +372,7 @@ pub(crate) fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>)
             Err(_) => continue,
         };
         let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        let internal = is_internal_generated_event(&v);
+        let internal = is_internal_generated_event(&v) || is_synthetic_api_error_event(&v);
         if !internal {
             match t {
                 "user" | "assistant" | "message" => count += 1,
@@ -498,9 +520,7 @@ fn truncate_jsonl_at_timestamp(path: &Path, cutoff_ts_millis: u64) -> Result<()>
         let line = segment.trim();
         if !line.is_empty() {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-                if json_event_ts_millis(&value)
-                    .is_some_and(|ts| ts >= cutoff_ts_millis)
-                {
+                if json_event_ts_millis(&value).is_some_and(|ts| ts >= cutoff_ts_millis) {
                     found_cutoff = true;
                     break;
                 }
@@ -695,6 +715,90 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
         assert_eq!(msg_count, 1);
         assert_eq!(first_user_text, Some("真实用户消息".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_jsonl_ignores_synthetic_api_error_assistant_count() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-synthetic-error-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("synthetic-error.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "给我讲讲这个项目" }]
+                }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "isApiErrorMessage": true,
+                "apiErrorStatus": 429,
+                "message": {
+                    "role": "assistant",
+                    "model": "<synthetic>",
+                    "content": [{
+                        "type": "text",
+                        "text": "API Error: Request rejected (429) · Service Unavailable"
+                    }]
+                }
+            }),
+        ];
+        let body = lines
+            .into_iter()
+            .map(|line| serde_json::to_string(&line))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        std::fs::write(&path, body)?;
+
+        let (msg_count, _, first_user_text) = scan_jsonl(&path);
+        assert_eq!(msg_count, 1);
+        assert_eq!(first_user_text, Some("给我讲讲这个项目".to_string()));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_jsonl_counts_real_assistant_reply() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-real-assistant-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("real-assistant.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": "给我讲讲这个项目" }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet",
+                    "content": "真实回复"
+                }
+            }),
+        ];
+        let body = lines
+            .into_iter()
+            .map(|line| serde_json::to_string(&line))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        std::fs::write(&path, body)?;
+
+        let (msg_count, _, first_user_text) = scan_jsonl(&path);
+        assert_eq!(msg_count, 2);
+        assert_eq!(first_user_text, Some("给我讲讲这个项目".to_string()));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
         Ok(())
     }
 
