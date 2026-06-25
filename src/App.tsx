@@ -317,6 +317,7 @@ type RunningSession = {
   runtimeId: string
   project: Project
   jsonlSessionId: string | null
+  launchModel: string | null
   apiProfileKey: string
   apiLaunchProfileKey: string
   selectedSessionMeta: SessionMeta | null
@@ -338,6 +339,36 @@ type RunningSession = {
   reviewSnapshotId: string | null
   reviewDiffs: ReviewRunDiff[]
   upstreamStatus: UpstreamStatusState | null
+}
+
+const ONE_MILLION_CONTEXT_SUFFIX = "[1m]"
+
+function stripOneMillionContextSuffix(model: string): string {
+  return model.endsWith(ONE_MILLION_CONTEXT_SUFFIX)
+    ? model.slice(0, -ONE_MILLION_CONTEXT_SUFFIX.length)
+    : model
+}
+
+function eventWithLaunchModelIntent(
+  run: RunningSession,
+  ev: ClaudeEvent
+): ClaudeEvent {
+  const launchModel = run.launchModel?.trim()
+  if (!launchModel || !launchModel.endsWith(ONE_MILLION_CONTEXT_SUFFIX)) return ev
+  if (
+    (ev as { type?: string }).type !== "system" ||
+    (ev as { subtype?: string }).subtype !== "init"
+  ) {
+    return ev
+  }
+  const eventModel = (ev as { model?: unknown }).model
+  if (
+    typeof eventModel !== "string" ||
+    eventModel.trim() !== stripOneMillionContextSuffix(launchModel)
+  ) {
+    return ev
+  }
+  return { ...ev, model: launchModel }
 }
 
 type DiffPanelScope =
@@ -1870,6 +1901,7 @@ export default function App() {
         runtimeId: id,
         project,
         jsonlSessionId: resumeSessionId,
+        launchModel: model,
         apiProfileKey,
         apiLaunchProfileKey,
         selectedSessionMeta: resumeSessionId ? selectedSessionMeta : null,
@@ -1897,9 +1929,10 @@ export default function App() {
       setSessionId(id)
       setRunningTick((tick) => tick + 1)
       const u1 = await listenSessionEvents(id, (ev) => {
-        applyRunningAction(run, { kind: "event", event: ev })
-        const t = (ev as { type?: string }).type
-        const evSessionId = (ev as { session_id?: string }).session_id
+        const event = eventWithLaunchModelIntent(run, ev)
+        applyRunningAction(run, { kind: "event", event })
+        const t = (event as { type?: string }).type
+        const evSessionId = (event as { session_id?: string }).session_id
         const knownSessionId = evSessionId ?? findInitSessionId(run.state)
         if (knownSessionId && run.jsonlSessionId !== knownSessionId) {
           run.jsonlSessionId = knownSessionId
@@ -1918,7 +1951,7 @@ export default function App() {
           }
           setRunningTick((tick) => tick + 1)
         }
-        const composerPatch = composerPrefsPatchFromCommandEvent(ev)
+        const composerPatch = composerPrefsPatchFromCommandEvent(event)
         if (composerPatch) {
           const updated = applyComposerPatch(run.composerPrefs, composerPatch)
           const updatedSession = nullableComposerPrefs(
@@ -1948,12 +1981,12 @@ export default function App() {
         }
         if (
           t === "stream_event" &&
-          (ev as { event?: { type?: string } }).event?.type === "message_start"
+          (event as { event?: { type?: string } }).event?.type === "message_start"
         ) {
           setRunningSessionStreaming(run, true)
         }
         if (t === "system") {
-          const apiKeySource = (ev as { apiKeySource?: string }).apiKeySource
+          const apiKeySource = (event as { apiKeySource?: string }).apiKeySource
           if (apiKeySource) {
             try {
               localStorage.setItem("claudinal.api-key-source", apiKeySource)
@@ -1961,8 +1994,8 @@ export default function App() {
               // ignore
             }
           }
-          const slash = (ev as { slash_commands?: unknown }).slash_commands
-          const skills = (ev as { skills?: unknown }).skills
+          const slash = (event as { slash_commands?: unknown }).slash_commands
+          const skills = (event as { skills?: unknown }).skills
           const eventSlashCommands = Array.isArray(slash)
             ? (slash as unknown[]).filter(
                 (s): s is string => typeof s === "string"
@@ -1982,7 +2015,7 @@ export default function App() {
               )
             )
           }
-          const mcpServers = (ev as { mcp_servers?: unknown }).mcp_servers
+          const mcpServers = (event as { mcp_servers?: unknown }).mcp_servers
           if (Array.isArray(mcpServers)) {
             saveMcpStatusCache(
               mcpServers.filter(
@@ -1998,13 +2031,13 @@ export default function App() {
         if (t === "result") {
           // 软中断在此收尾：result 到达即回合已终止，清掉 interrupting 态与强杀兜底定时器
           clearInterruptState(run)
-          // 把网络相关的失败 result 也走一遍 toast；ev.is_error 时主要看 result/error 文本
-          const isError = (ev as { is_error?: unknown }).is_error === true
+          // 把网络相关的失败 result 也走一遍 toast；主要看 result/error 文本
+          const isError = (event as { is_error?: unknown }).is_error === true
           if (isError) {
             const text = [
-              (ev as { result?: unknown }).result,
-              (ev as { error?: unknown }).error,
-              (ev as { stop_reason?: unknown }).stop_reason
+              (event as { result?: unknown }).result,
+              (event as { error?: unknown }).error,
+              (event as { stop_reason?: unknown }).stop_reason
             ]
               .filter((v): v is string => typeof v === "string")
               .join("\n")
@@ -2013,7 +2046,7 @@ export default function App() {
             }
           }
           const resultSessionId =
-            (ev as { session_id?: string }).session_id ??
+            (event as { session_id?: string }).session_id ??
             run.jsonlSessionId ??
             findInitSessionId(run.state)
           const guideInputs = run.queuedInputs.filter(
@@ -2043,7 +2076,7 @@ export default function App() {
               })
           }
           recordResultUsage(
-            ev as {
+            event as {
               total_cost_usd?: number
               modelUsage?: Record<string, never>
             }
@@ -2059,7 +2092,7 @@ export default function App() {
                   : {}) as Record<string, unknown>
                 const next: Record<string, unknown> = {
                   ...base,
-                  result: ev,
+                  result: event,
                   apiProfileKey: run.apiProfileKey,
                   apiConnectionProfileKey: run.apiProfileKey,
                   apiLaunchProfileKey: run.apiLaunchProfileKey

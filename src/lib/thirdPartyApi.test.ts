@@ -995,13 +995,13 @@ describe("thirdPartyApi launch model resolution", () => {
     })
 
     expect(resolveThirdPartyComposerLaunchModel(cfg, "sonnet[1m]")).toBe(
-      "provider-sonnet-1m"
+      "provider-sonnet-1m[1m]"
     )
     expect(resolveThirdPartyComposerLaunchModel(cfg, "opus")).toBe(
       "provider-opus-1m"
     )
     expect(resolveThirdPartyComposerLaunchModel(cfg, "fable[1m]")).toBe(
-      "provider-fable-1m"
+      "provider-fable-1m[1m]"
     )
     expect(resolveThirdPartyComposerLaunchModel(cfg, "haiku")).toBe(
       "provider-haiku"
@@ -1011,14 +1011,37 @@ describe("thirdPartyApi launch model resolution", () => {
     )
   })
 
-  it("maps the Default 1M Composer role to the configured launch model", () => {
+  it("does not duplicate the Claude Code 1M suffix when provider ids already include it", () => {
     const cfg = makeConfig({
-      mainAlias: "sonnet",
       models: {
         mainModel: "claude-opus-4-8[1m]",
         haikuModel: "claude-3-5-haiku",
         sonnetModel: "claude-sonnet-4-5[1m]",
         opusModel: "claude-opus-4-8[1m]",
+        fableModel: "claude-fable-5[1m]",
+        subagentModel: "claude-3-5-haiku"
+      }
+    })
+
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "sonnet[1m]")).toBe(
+      "claude-sonnet-4-5[1m]"
+    )
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "opus[1m]")).toBe(
+      "claude-opus-4-8[1m]"
+    )
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "fable[1m]")).toBe(
+      "claude-fable-5[1m]"
+    )
+  })
+
+  it("maps the Default 1M Composer role to the configured launch model", () => {
+    const cfg = makeConfig({
+      mainAlias: "sonnet",
+      models: {
+        mainModel: "claude-opus-4-8",
+        haikuModel: "claude-3-5-haiku",
+        sonnetModel: "claude-sonnet-4-5[1m]",
+        opusModel: "claude-opus-4-8",
         fableModel: "claude-fable-5[1m]",
         subagentModel: "claude-3-5-haiku"
       },

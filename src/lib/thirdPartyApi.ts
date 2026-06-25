@@ -1132,6 +1132,24 @@ export function resolveThirdPartyDefaultComposerModel(
   return ""
 }
 
+const ONE_MILLION_CONTEXT_SUFFIX = "[1m]"
+
+function hasOneMillionContextSuffix(model: string): boolean {
+  return model.trim().toLowerCase().endsWith(ONE_MILLION_CONTEXT_SUFFIX)
+}
+
+function preserveComposerContextSuffix(
+  mappedModel: string,
+  composerModel: string
+): string {
+  const mapped = mappedModel.trim()
+  if (!mapped) return composerModel.trim()
+  if (!hasOneMillionContextSuffix(composerModel)) return mapped
+  return hasOneMillionContextSuffix(mapped)
+    ? mapped
+    : `${mapped}${ONE_MILLION_CONTEXT_SUFFIX}`
+}
+
 export function resolveThirdPartyComposerLaunchModel(
   provider: Pick<ThirdPartyApiConfig, "models">,
   composerModel: string
@@ -1139,13 +1157,13 @@ export function resolveThirdPartyComposerLaunchModel(
   const model = composerModel.trim()
   if (!model) return ""
   if (model === "sonnet" || model === "sonnet[1m]") {
-    return provider.models.sonnetModel.trim() || model
+    return preserveComposerContextSuffix(provider.models.sonnetModel, model)
   }
   if (model === "opus" || model === "opus[1m]") {
-    return provider.models.opusModel.trim() || model
+    return preserveComposerContextSuffix(provider.models.opusModel, model)
   }
   if (model === "fable" || model === "fable[1m]") {
-    return provider.models.fableModel.trim() || model
+    return preserveComposerContextSuffix(provider.models.fableModel, model)
   }
   if (model === "haiku") {
     return provider.models.haikuModel.trim() || model
