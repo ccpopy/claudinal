@@ -100,7 +100,8 @@ import {
   OFFICIAL_PROVIDER_ID,
   canUseApiProfileLaunchPrefs,
   providerComposerModelOptions,
-  resolveThirdPartyDefaultComposerModel,
+  resolveThirdPartyComposerLaunchModel,
+  resolveThirdPartyDefaultLaunchModel,
   shouldResumeWithApiProfile,
   thirdPartyApiConnectionProfileKey,
   thirdPartyApiRuntimeProfileKey,
@@ -1832,6 +1833,12 @@ export default function App() {
         }
       }
       const uiModel = launchComposerPrefs.model.trim()
+      const thirdPartyLaunchModel =
+        thirdPartyReady && uiModel
+          ? resolveThirdPartyComposerLaunchModel(thirdPartyApi, uiModel)
+          : thirdPartyReady
+            ? resolveThirdPartyDefaultLaunchModel(thirdPartyApi)
+            : ""
       const uiEffort = launchComposerPrefs.effort.trim()
       const launchEffort =
         thirdPartyReady &&
@@ -1840,11 +1847,7 @@ export default function App() {
           ? "xhigh"
           : uiEffort
       const model =
-        uiModel ||
-        (thirdPartyReady
-          ? resolveThirdPartyDefaultComposerModel(thirdPartyApi)
-          : "") ||
-        null
+        (thirdPartyReady ? thirdPartyLaunchModel : uiModel) || null
       const launchPermissionMode = planMode
         ? "plan"
         : sessionPermissionMode || cfg.defaultPermissionMode || "default"

@@ -11,11 +11,15 @@ import {
   providerComposerModelOptions,
   providerModelInputOptions,
   providerModelOptions,
+  resolveThirdPartyComposerLaunchModel,
   resolveThirdPartyDefaultComposerModel,
+  resolveThirdPartyDefaultLaunchModel,
   canUseApiProfileLaunchPrefs,
   shouldResumeWithApiProfile,
+  thirdPartyApiRequiresLocalProxy,
   thirdPartyApiConnectionProfileKey,
   thirdPartyApiRuntimeProfileKey,
+  thirdPartyApiUsesLocalProxy,
   trimApiUrl,
   type ThirdPartyApiConfig
 } from "./thirdPartyApi"
@@ -47,6 +51,7 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(cfg.apiKey).toBe("")
     expect(cfg.inputFormat).toBe("anthropic")
     expect(cfg.authField).toBe("ANTHROPIC_AUTH_TOKEN")
+    expect(cfg.routingMode).toBe("direct")
     expect(cfg.cacheHitOptimizationEnabled).toBe(true)
     expect(cfg.enablePromptCaching1h).toBe(true)
     expect(cfg.cchRewriteEnabled).toBe(false)
@@ -66,16 +71,20 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
   it("clamps inputFormat and authField to known values", () => {
     const cfg = normalizeThirdPartyApiConfig({
       inputFormat: "anthropic" as never,
-      authField: "FOO" as never
+      authField: "FOO" as never,
+      routingMode: "bad" as never
     })
     expect(cfg.inputFormat).toBe("anthropic")
     expect(cfg.authField).toBe("ANTHROPIC_AUTH_TOKEN")
+    expect(cfg.routingMode).toBe("direct")
     const open = normalizeThirdPartyApiConfig({
       inputFormat: "openai-chat-completions",
-      authField: "ANTHROPIC_API_KEY"
+      authField: "ANTHROPIC_API_KEY",
+      routingMode: "proxy"
     })
     expect(open.inputFormat).toBe("openai-chat-completions")
     expect(open.authField).toBe("ANTHROPIC_API_KEY")
+    expect(open.routingMode).toBe("proxy")
   })
 
   it("preserves explicit cache option opt-outs and cch settings", () => {
@@ -223,8 +232,9 @@ describe("thirdPartyApi.runtimeSettings", () => {
     expect(settings.alwaysThinkingEnabled).toBe(true)
     expect(settings.env).toMatchObject({
       EXTRA: "1",
+      ANTHROPIC_BASE_URL: "https://api.example.com",
+      ANTHROPIC_AUTH_TOKEN: "sk-test",
       ANTHROPIC_MODEL: "claude-3-7-sonnet",
-      CLAUDINAL_PROXY_TARGET_URL: "https://api.example.com",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
       ENABLE_PROMPT_CACHING_1H: "1"
@@ -348,6 +358,21 @@ describe("thirdPartyApi.runtimeProfile", () => {
 
     expect(thirdPartyApiConnectionProfileKey(changed)).not.toBe(
       thirdPartyApiConnectionProfileKey(base)
+    )
+  })
+
+  it("changes profile keys when the local proxy routing mode changes", () => {
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      routingMode: "proxy"
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiConnectionProfileKey(changed)).not.toBe(
+      thirdPartyApiConnectionProfileKey(base)
+    )
+    expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
+      thirdPartyApiRuntimeProfileKey(base)
     )
   })
 
@@ -502,6 +527,39 @@ describe("thirdPartyApi.runtimeProfile", () => {
   })
 })
 
+describe("thirdPartyApi routing mode", () => {
+  it("uses direct Claude CLI env for ordinary Anthropic-compatible providers", () => {
+    const cfg = makeConfig()
+    expect(thirdPartyApiRequiresLocalProxy(cfg)).toBe(false)
+    expect(thirdPartyApiUsesLocalProxy(cfg)).toBe(false)
+  })
+
+  it("uses the local proxy when explicitly enabled", () => {
+    const cfg = makeConfig({ routingMode: "proxy" })
+    expect(thirdPartyApiRequiresLocalProxy(cfg)).toBe(false)
+    expect(thirdPartyApiUsesLocalProxy(cfg)).toBe(true)
+  })
+
+  it("requires the local proxy for protocol conversion, full URLs, and CCH rewrite", () => {
+    expect(
+      thirdPartyApiUsesLocalProxy(
+        makeConfig({ inputFormat: "openai-chat-completions" })
+      )
+    ).toBe(true)
+    expect(thirdPartyApiUsesLocalProxy(makeConfig({ useFullUrl: true }))).toBe(
+      true
+    )
+    expect(
+      thirdPartyApiUsesLocalProxy(
+        makeConfig({
+          cacheHitOptimizationEnabled: false,
+          cchRewriteEnabled: true
+        })
+      )
+    ).toBe(true)
+  })
+})
+
 describe("thirdPartyApi.buildClaudeEnv", () => {
   it("returns existing env stripped of managed keys when disabled", () => {
     const cfg = makeConfig({ enabled: false })
@@ -515,17 +573,34 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
     expect(env.UNRELATED).toBe("keep")
   })
 
-  it("emits the proxy-routed sentinel and target URL with API key passthrough", () => {
+  it("emits direct Anthropic-compatible Claude CLI env by default", () => {
     const env = buildClaudeEnv(makeConfig())
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://api.example.com")
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-test")
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.CLAUDINAL_PROXY_TARGET_URL).toBeUndefined()
+    expect(env.CLAUDINAL_PROXY_API_KEY).toBeUndefined()
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1")
+    expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0")
+    expect(env.ENABLE_PROMPT_CACHING_1H).toBe("1")
+  })
+
+  it("uses the configured direct auth field", () => {
+    const env = buildClaudeEnv(makeConfig({ authField: "ANTHROPIC_API_KEY" }))
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://api.example.com")
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-test")
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+  })
+
+  it("emits the proxy-routed sentinel and target URL when local proxy routing is enabled", () => {
+    const env = buildClaudeEnv(makeConfig({ routingMode: "proxy" }))
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("claudinal-proxy")
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
     expect(env.CLAUDINAL_PROXY_TARGET_URL).toBe("https://api.example.com")
     expect(env.CLAUDINAL_PROXY_API_KEY).toBe("sk-test")
     expect(env.CLAUDINAL_PROXY_INPUT_FORMAT).toBe("anthropic")
     expect(env.CLAUDINAL_PROXY_AUTH_FIELD).toBe("ANTHROPIC_AUTH_TOKEN")
     expect(env.CLAUDINAL_PROXY_USE_FULL_URL).toBe("0")
-    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1")
-    expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0")
-    expect(env.ENABLE_PROMPT_CACHING_1H).toBe("1")
   })
 
   it("emits optional Claude Code behavior env vars only when enabled", () => {
@@ -607,13 +682,20 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
   })
 
   it("serializes availableModels JSON only when non-empty", () => {
-    const cfg = makeConfig({ availableModels: ["m1", "m2"] })
+    const cfg = makeConfig({
+      availableModels: ["m1", "m2"],
+      routingMode: "proxy"
+    })
     const env = buildClaudeEnv(cfg)
     expect(env.CLAUDINAL_PROXY_AVAILABLE_MODELS).toBe(
       JSON.stringify(["m1", "m2"])
     )
-    const empty = buildClaudeEnv(makeConfig({ availableModels: [] }))
+    const empty = buildClaudeEnv(
+      makeConfig({ availableModels: [], routingMode: "proxy" })
+    )
     expect(empty.CLAUDINAL_PROXY_AVAILABLE_MODELS).toBeUndefined()
+    const direct = buildClaudeEnv(makeConfig({ availableModels: ["m1"] }))
+    expect(direct.CLAUDINAL_PROXY_AVAILABLE_MODELS).toBeUndefined()
   })
 
   it("flips USE_FULL_URL when configured", () => {
@@ -624,8 +706,14 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
   it("does not write CLAUDINAL_PROXY_API_KEY when key is whitespace", () => {
     const env = buildClaudeEnv(makeConfig({ apiKey: "   " }))
     expect(env.CLAUDINAL_PROXY_API_KEY).toBeUndefined()
-    // 仍标记 ANTHROPIC_AUTH_TOKEN 给 CLI（避免 CLI 走自己的鉴权链路）
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("claudinal-proxy")
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+
+    const proxy = buildClaudeEnv(
+      makeConfig({ apiKey: "   ", routingMode: "proxy" })
+    )
+    expect(proxy.CLAUDINAL_PROXY_API_KEY).toBeUndefined()
+    // 本地代理模式仍用哨兵 token 避免 CLI 走自己的鉴权链路。
+    expect(proxy.ANTHROPIC_AUTH_TOKEN).toBe("claudinal-proxy")
   })
 })
 
@@ -820,6 +908,55 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
         })
       )
     ).toBe("")
+  })
+})
+
+describe("thirdPartyApi launch model resolution", () => {
+  it("maps Composer role aliases to configured provider model ids", () => {
+    const cfg = makeConfig({
+      models: {
+        mainModel: "provider-sonnet-1m",
+        haikuModel: "provider-haiku",
+        sonnetModel: "provider-sonnet-1m",
+        opusModel: "provider-opus-1m",
+        subagentModel: "provider-haiku"
+      }
+    })
+
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "sonnet[1m]")).toBe(
+      "provider-sonnet-1m"
+    )
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "opus")).toBe(
+      "provider-opus-1m"
+    )
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "haiku")).toBe(
+      "provider-haiku"
+    )
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "raw-model")).toBe(
+      "raw-model"
+    )
+  })
+
+  it("maps the Default 1M Composer role to the configured launch model", () => {
+    const cfg = makeConfig({
+      mainAlias: "sonnet",
+      models: {
+        mainModel: "claude-opus-4-8[1m]",
+        haikuModel: "claude-3-5-haiku",
+        sonnetModel: "claude-sonnet-4-5[1m]",
+        opusModel: "claude-opus-4-8[1m]",
+        subagentModel: "claude-3-5-haiku"
+      },
+      modelSupports1m: {
+        sonnet: true,
+        opus: true
+      }
+    })
+
+    expect(resolveThirdPartyDefaultComposerModel(cfg)).toBe("opus[1m]")
+    expect(resolveThirdPartyDefaultLaunchModel(cfg)).toBe(
+      "claude-opus-4-8[1m]"
+    )
   })
 })
 

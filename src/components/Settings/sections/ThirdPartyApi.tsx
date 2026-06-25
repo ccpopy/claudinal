@@ -44,6 +44,9 @@ import {
   type ModelSupports1mMapping,
   type ProviderAuthField,
   type ProviderInputFormat,
+  thirdPartyApiRequiresLocalProxy,
+  thirdPartyApiRoutingMode,
+  thirdPartyApiUsesLocalProxy,
   type ThirdPartyApiProvider,
   type ThirdPartyApiStore
 } from "@/lib/thirdPartyApi"
@@ -115,6 +118,19 @@ function requestUrlPlaceholder(
   return useFullUrl
     ? `${OPENAI_API_BASE_URL}/chat/completions`
     : OPENAI_API_BASE_URL
+}
+
+function localProxyRequirementText(provider: ThirdPartyApiProvider): string | null {
+  if (provider.inputFormat === "openai-chat-completions") {
+    return "OpenAI Chat Completions 需要转换 Claude Messages 请求，必须通过 Claudinal 本地转发代理。"
+  }
+  if (provider.useFullUrl) {
+    return "完整端点 URL 需要由 Claudinal 本地转发代理固定请求路径。"
+  }
+  if (!provider.cacheHitOptimizationEnabled && provider.cchRewriteEnabled) {
+    return "CCH 重算需要改写请求体，必须通过 Claudinal 本地转发代理。"
+  }
+  return null
 }
 
 function providerExists(store: ThirdPartyApiStore, id: string | null) {
@@ -543,6 +559,18 @@ export function ThirdPartyApi() {
     ? providerModelInputOptions(editorConfig)
     : []
   const cachedModelCount = editorConfig?.availableModels.length ?? 0
+  const editorProxyRequirement = editorConfig
+    ? localProxyRequirementText(editorConfig)
+    : null
+  const editorRequiresLocalProxy = editorConfig
+    ? thirdPartyApiRequiresLocalProxy(editorConfig)
+    : false
+  const editorUsesLocalProxy = editorConfig
+    ? thirdPartyApiUsesLocalProxy(editorConfig)
+    : false
+  const editorRoutingMode = editorConfig
+    ? thirdPartyApiRoutingMode(editorConfig)
+    : "direct"
   const renderModelSupports1mCell = (row: ModelRoleRow) => {
     const key = row.supports1mKey
     if (!key) {
@@ -717,6 +745,40 @@ export function ThirdPartyApi() {
                   />
                 </Row>
               )}
+              <div className="space-y-2 rounded-md border bg-muted/40 px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    <Label
+                      htmlFor="third-party-local-proxy"
+                      className="text-sm font-medium"
+                    >
+                      通过 Claudinal 本地转发代理
+                    </Label>
+                    <div className="text-xs leading-relaxed text-muted-foreground">
+                      关闭时等价于给 claude CLI 注入 ANTHROPIC_BASE_URL 和鉴权环境变量；开启时由 Claudinal 转发并可转换或改写请求体。
+                    </div>
+                  </div>
+                  <Switch
+                    id="third-party-local-proxy"
+                    checked={editorUsesLocalProxy}
+                    disabled={loading || saving || editorRequiresLocalProxy}
+                    onCheckedChange={(checked) =>
+                      update({ routingMode: checked ? "proxy" : "direct" })
+                    }
+                  />
+                </div>
+                {editorProxyRequirement ? (
+                  <SettingsHint>{editorProxyRequirement}</SettingsHint>
+                ) : (
+                  <SettingsHint>
+                    当前为
+                    {editorRoutingMode === "proxy"
+                      ? " Claudinal 本地转发"
+                      : " Claude CLI 直连"}
+                    。网络代理设置仍会按需注入给 claude 进程。
+                  </SettingsHint>
+                )}
+              </div>
             </SettingsCard>
 
             <SettingsCard>
@@ -738,7 +800,7 @@ export function ThirdPartyApi() {
               </div>
 
               <SettingsHint>
-                列表会缓存到当前供应商。角色映射用于 Composer 的 Sonnet / Opus / Haiku 选择，实际请求模型由本地代理转发时替换。
+                列表会缓存到当前供应商。角色映射用于 Composer 的 Sonnet / Opus / Haiku 选择；新会话启动前会解析成这里填写的实际请求模型。
               </SettingsHint>
               {cachedModelCount > 0 && (
                 <div className="text-[11px] text-muted-foreground">
@@ -981,7 +1043,7 @@ export function ThirdPartyApi() {
           <SettingsCard className="space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <SettingsCardTitle description="管理可用供应商；启用后，新启动会话会通过运行时配置和本地代理转发。">
+                <SettingsCardTitle description="管理可用供应商；启用后，新启动会话会使用本供应商的运行时配置。">
                   供应商列表
                 </SettingsCardTitle>
               </div>

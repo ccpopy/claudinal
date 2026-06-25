@@ -18,6 +18,7 @@ function keychainAccountForProvider(providerId: string): string {
 
 export type ProviderInputFormat = "anthropic" | "openai-chat-completions"
 export type ProviderAuthField = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"
+export type ProviderRoutingMode = "direct" | "proxy"
 export type ClaudeModelAlias = "sonnet" | "opus" | "haiku"
 
 export interface ModelMapping {
@@ -43,6 +44,7 @@ export interface ThirdPartyApiConfig {
   useFullUrl: boolean
   inputFormat: ProviderInputFormat
   authField: ProviderAuthField
+  routingMode: ProviderRoutingMode
   cacheHitOptimizationEnabled: boolean
   enablePromptCaching1h: boolean
   cchRewriteEnabled: boolean
@@ -83,6 +85,7 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
   useFullUrl: false,
   inputFormat: "anthropic",
   authField: "ANTHROPIC_AUTH_TOKEN",
+  routingMode: "direct",
   cacheHitOptimizationEnabled: true,
   enablePromptCaching1h: true,
   cchRewriteEnabled: false,
@@ -191,6 +194,10 @@ function asAuthField(value: unknown): ProviderAuthField {
     : "ANTHROPIC_AUTH_TOKEN"
 }
 
+function asRoutingMode(value: unknown): ProviderRoutingMode {
+  return value === "proxy" ? "proxy" : "direct"
+}
+
 function asClaudeModelAlias(value: unknown): ClaudeModelAlias | null {
   if (value === "opus" || value === "haiku" || value === "sonnet") return value
   return null
@@ -236,6 +243,44 @@ function providerProfileId(config: ThirdPartyApiConfig & { id?: string }): strin
   return cleanString(config.id).trim() || "active"
 }
 
+type ThirdPartyRoutingConfig = Pick<
+  ThirdPartyApiConfig,
+  | "routingMode"
+  | "inputFormat"
+  | "useFullUrl"
+  | "cacheHitOptimizationEnabled"
+  | "cchRewriteEnabled"
+>
+
+export function thirdPartyApiRequiresLocalProxy(
+  config: Pick<
+    ThirdPartyApiConfig,
+    | "inputFormat"
+    | "useFullUrl"
+    | "cacheHitOptimizationEnabled"
+    | "cchRewriteEnabled"
+  >
+): boolean {
+  return (
+    config.inputFormat === "openai-chat-completions" ||
+    config.useFullUrl ||
+    (!config.cacheHitOptimizationEnabled && config.cchRewriteEnabled)
+  )
+}
+
+export function thirdPartyApiRoutingMode(
+  config: ThirdPartyRoutingConfig
+): ProviderRoutingMode {
+  if (thirdPartyApiRequiresLocalProxy(config)) return "proxy"
+  return config.routingMode === "proxy" ? "proxy" : "direct"
+}
+
+export function thirdPartyApiUsesLocalProxy(
+  config: ThirdPartyRoutingConfig
+): boolean {
+  return thirdPartyApiRoutingMode(config) === "proxy"
+}
+
 function thirdPartyProviderIdFromProfileKey(key: string | null): string | null {
   if (!key) return null
   const prefix = key.startsWith(THIRD_PARTY_CONNECTION_PROFILE_PREFIX)
@@ -260,12 +305,13 @@ export function thirdPartyApiConnectionProfileKey(
   if (!config.enabled) return "official"
   const providerId = providerProfileId(config)
   const profile = {
-    version: 1,
+    version: 2,
     providerId,
     requestUrl: trimApiUrl(config.requestUrl),
     inputFormat: config.inputFormat,
     authField: config.authField,
-    useFullUrl: config.useFullUrl
+    useFullUrl: config.useFullUrl,
+    routingMode: thirdPartyApiRoutingMode(config)
   }
   return `${THIRD_PARTY_CONNECTION_PROFILE_PREFIX}${encodeURIComponent(
     providerId
@@ -278,12 +324,13 @@ export function thirdPartyApiRuntimeProfileKey(
   if (!config.enabled) return "official"
   const providerId = providerProfileId(config)
   const profile = {
-    version: 5,
+    version: 6,
     providerId,
     requestUrl: trimApiUrl(config.requestUrl),
     inputFormat: config.inputFormat,
     authField: config.authField,
     useFullUrl: config.useFullUrl,
+    routingMode: thirdPartyApiRoutingMode(config),
     cacheHitOptimizationEnabled: config.cacheHitOptimizationEnabled,
     enablePromptCaching1h: config.enablePromptCaching1h,
     cchRewriteEnabled: config.cchRewriteEnabled,
@@ -391,6 +438,7 @@ export function normalizeThirdPartyApiConfig(
     requestUrl: cleanString(raw?.requestUrl),
     inputFormat: asInputFormat(raw?.inputFormat),
     authField: asAuthField(raw?.authField),
+    routingMode: asRoutingMode(raw?.routingMode),
     cacheHitOptimizationEnabled,
     enablePromptCaching1h: cleanBoolean(
       raw?.enablePromptCaching1h,
@@ -906,17 +954,23 @@ export function buildClaudeEnv(
   const availableModels = config.availableModels
     .map((model) => model.trim())
     .filter(Boolean)
+  const useLocalProxy = thirdPartyApiUsesLocalProxy(config)
 
-  next.ANTHROPIC_AUTH_TOKEN = "claudinal-proxy"
-  if (baseUrl) next.CLAUDINAL_PROXY_TARGET_URL = baseUrl
-  if (apiKey) next.CLAUDINAL_PROXY_API_KEY = apiKey
-  next.CLAUDINAL_PROXY_INPUT_FORMAT = config.inputFormat
-  next.CLAUDINAL_PROXY_AUTH_FIELD = config.authField
-  next.CLAUDINAL_PROXY_USE_FULL_URL = config.useFullUrl ? "1" : "0"
+  if (useLocalProxy) {
+    next.ANTHROPIC_AUTH_TOKEN = "claudinal-proxy"
+    if (baseUrl) next.CLAUDINAL_PROXY_TARGET_URL = baseUrl
+    if (apiKey) next.CLAUDINAL_PROXY_API_KEY = apiKey
+    next.CLAUDINAL_PROXY_INPUT_FORMAT = config.inputFormat
+    next.CLAUDINAL_PROXY_AUTH_FIELD = config.authField
+    next.CLAUDINAL_PROXY_USE_FULL_URL = config.useFullUrl ? "1" : "0"
+  } else {
+    if (baseUrl) next.ANTHROPIC_BASE_URL = baseUrl
+    if (apiKey) next[config.authField] = apiKey
+  }
   if (config.cacheHitOptimizationEnabled) {
     next.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
     next.CLAUDE_CODE_ATTRIBUTION_HEADER = "0"
-  } else if (config.cchRewriteEnabled) {
+  } else if (config.cchRewriteEnabled && useLocalProxy) {
     next.CLAUDINAL_PROXY_CCH_SEED = config.cchSeed.trim()
   }
   if (config.disableTelemetry) {
@@ -936,21 +990,21 @@ export function buildClaudeEnv(
   }
   if (mainModel) {
     next.ANTHROPIC_MODEL = mainModel
-    next.CLAUDINAL_PROXY_MAIN_MODEL = mainModel
+    if (useLocalProxy) next.CLAUDINAL_PROXY_MAIN_MODEL = mainModel
   }
   if (haikuModel) {
     next.ANTHROPIC_DEFAULT_HAIKU_MODEL = haikuModel
-    next.CLAUDINAL_PROXY_HAIKU_MODEL = haikuModel
+    if (useLocalProxy) next.CLAUDINAL_PROXY_HAIKU_MODEL = haikuModel
   }
   if (sonnetModel) {
     next.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnetModel
-    next.CLAUDINAL_PROXY_SONNET_MODEL = sonnetModel
+    if (useLocalProxy) next.CLAUDINAL_PROXY_SONNET_MODEL = sonnetModel
   }
   if (opusModel) {
     next.ANTHROPIC_DEFAULT_OPUS_MODEL = opusModel
-    next.CLAUDINAL_PROXY_OPUS_MODEL = opusModel
+    if (useLocalProxy) next.CLAUDINAL_PROXY_OPUS_MODEL = opusModel
   }
-  if (availableModels.length > 0) {
+  if (useLocalProxy && availableModels.length > 0) {
     next.CLAUDINAL_PROXY_AVAILABLE_MODELS = JSON.stringify(availableModels)
   }
   if (subagentModel) next.CLAUDE_CODE_SUBAGENT_MODEL = subagentModel
@@ -1039,6 +1093,33 @@ export function resolveThirdPartyDefaultComposerModel(
     return "sonnet[1m]"
   }
   return ""
+}
+
+export function resolveThirdPartyComposerLaunchModel(
+  provider: Pick<ThirdPartyApiConfig, "models">,
+  composerModel: string
+): string {
+  const model = composerModel.trim()
+  if (!model) return ""
+  if (model === "sonnet" || model === "sonnet[1m]") {
+    return provider.models.sonnetModel.trim() || model
+  }
+  if (model === "opus" || model === "opus[1m]") {
+    return provider.models.opusModel.trim() || model
+  }
+  if (model === "haiku") {
+    return provider.models.haikuModel.trim() || model
+  }
+  return model
+}
+
+export function resolveThirdPartyDefaultLaunchModel(
+  provider: Pick<ThirdPartyApiConfig, "models" | "modelSupports1m">
+): string {
+  return resolveThirdPartyComposerLaunchModel(
+    provider,
+    resolveThirdPartyDefaultComposerModel(provider)
+  )
 }
 
 export function providerModelInputOptions(
