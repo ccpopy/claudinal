@@ -32,7 +32,6 @@ import {
 } from "@/lib/ipc"
 import {
   buildClaudeRuntimeSettingsPreview,
-  cleanupManagedGlobalClaudeSettings,
   createThirdPartyApiProvider,
   deleteProviderApiKey,
   loadThirdPartyApiStoreAsync,
@@ -437,8 +436,8 @@ export function ThirdPartyApi() {
     setSaving(true)
     try {
       if (providerId === OFFICIAL_PROVIDER_ID) {
-        await cleanupManagedGlobalClaudeSettings()
         await persistStore({ ...store, activeProviderId: OFFICIAL_PROVIDER_ID })
+        setSelectedProviderId(OFFICIAL_PROVIDER_ID)
         toast.success("已恢复 Claude 官方，新会话不会注入第三方 API")
         return
       }
@@ -451,7 +450,6 @@ export function ThirdPartyApi() {
       }
       if (!validate(target)) return
 
-      await cleanupManagedGlobalClaudeSettings()
       await persistStore({ ...refreshed, activeProviderId: providerId })
       setSelectedProviderId(providerId)
       toast.success("已启用该供应商，新会话会使用运行时配置")
@@ -530,10 +528,10 @@ export function ThirdPartyApi() {
   }, [activeConfig, editorConfig])
 
   const activeTitle = activeOfficial
-    ? "Claude Official"
+    ? "Claude CLI 官方登录"
     : activeProvider?.providerName.trim() || "未命名供应商"
   const activeSubtitle = activeOfficial
-    ? "Claude CLI 官方登录"
+    ? "使用 claude CLI 自身的 OAuth、API Key 与 settings.json"
     : activeProvider?.models.mainModel.trim() ||
       activeProvider?.requestUrl.trim() ||
       "第三方 API"
@@ -1001,23 +999,23 @@ export function ThirdPartyApi() {
               </SettingsCallout>
             )}
             <div className="flex justify-end gap-2">
-              {!activeOfficial && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => activateProvider(OFFICIAL_PROVIDER_ID)}
-                  disabled={loading || saving}
-                >
-                  恢复默认
-                </Button>
-              )}
               <Button variant="outline" size="sm" onClick={addProvider}>
                 <Plus />
                 新增供应商
               </Button>
             </div>
             <div className="space-y-3">
+              <ProviderCard
+                title="Claude CLI 官方登录"
+                subtitle="直接使用 claude CLI 自身的 OAuth、API Key 与 settings.json，不注入第三方 API"
+                active={activeOfficial}
+                selected={selectedProviderId === OFFICIAL_PROVIDER_ID}
+                onSelect={() => setSelectedProviderId(OFFICIAL_PROVIDER_ID)}
+                onApply={() => activateProvider(OFFICIAL_PROVIDER_ID)}
+                applyLabel={activeOfficial ? "重新启用" : "使用官方"}
+                busy={loading || saving}
+                initials="CLI"
+              />
               {store.providers.length === 0 ? (
                 <SettingsEmptyState>
                   <Key className="mb-3 size-6 text-muted-foreground" />
@@ -1138,6 +1136,7 @@ function RuntimeOption({
 function ProviderCard({
   title,
   subtitle,
+  initials,
   active,
   selected,
   onSelect,
@@ -1149,6 +1148,7 @@ function ProviderCard({
 }: {
   title: string
   subtitle: string
+  initials?: string
   active: boolean
   selected: boolean
   onSelect: () => void
@@ -1158,7 +1158,7 @@ function ProviderCard({
   onEdit?: () => void
   onRemove?: () => void
 }) {
-  const initials = title
+  const displayInitials = initials ?? title
     .split(/\s+/)
     .map((part) => part[0])
     .join("")
@@ -1189,7 +1189,7 @@ function ProviderCard({
               : "bg-muted text-muted-foreground"
           )}
         >
-          {initials || "API"}
+          {displayInitials || "API"}
         </div>
         <div className="min-w-0">
           <div className="text-sm font-semibold truncate">{title}</div>

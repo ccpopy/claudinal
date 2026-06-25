@@ -894,18 +894,22 @@ export default function App() {
       const lastAt = perSession.get(hit.topic) ?? 0
       if (now - lastAt < NETWORK_TOAST_THROTTLE_MS) return
       perSession.set(hit.topic, now)
-      const sourceLabel =
+      const sourceInfo =
         source === "stderr"
-          ? "CLI"
+          ? { label: "CLI", settingsSection: "network", actionLabel: "网络设置" }
           : source === "proxy"
-            ? "本地代理"
-            : "结果"
+            ? {
+                label: "第三方 API 本地代理",
+                settingsSection: "third-party-api",
+                actionLabel: "第三方 API"
+              }
+            : { label: "结果", settingsSection: "network", actionLabel: "网络设置" }
       toast.error(hit.summary, {
-        description: `${hit.toastHint}来源：${sourceLabel}`,
+        description: `${hit.toastHint}来源：${sourceInfo.label}`,
         duration: 9_000,
         action: {
-          label: "网络设置",
-          onClick: () => openSettingsRef.current("network")
+          label: sourceInfo.actionLabel,
+          onClick: () => openSettingsRef.current(sourceInfo.settingsSection)
         }
       })
     },
