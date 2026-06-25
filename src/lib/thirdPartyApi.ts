@@ -19,19 +19,21 @@ function keychainAccountForProvider(providerId: string): string {
 export type ProviderInputFormat = "anthropic" | "openai-chat-completions"
 export type ProviderAuthField = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"
 export type ProviderRoutingMode = "direct" | "proxy"
-export type ClaudeModelAlias = "sonnet" | "opus" | "haiku"
+export type ClaudeModelAlias = "sonnet" | "opus" | "fable" | "haiku"
 
 export interface ModelMapping {
   mainModel: string
   haikuModel: string
   sonnetModel: string
   opusModel: string
+  fableModel: string
   subagentModel: string
 }
 
 export interface ModelSupports1mMapping {
   sonnet: boolean
   opus: boolean
+  fable: boolean
 }
 
 export interface ThirdPartyApiConfig {
@@ -103,11 +105,13 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
     haikuModel: "",
     sonnetModel: "",
     opusModel: "",
+    fableModel: "",
     subagentModel: ""
   },
   modelSupports1m: {
     sonnet: false,
-    opus: false
+    opus: false,
+    fable: false
   }
 }
 
@@ -146,6 +150,7 @@ const MANAGED_ENV_KEYS = [
   "CLAUDINAL_PROXY_HAIKU_MODEL",
   "CLAUDINAL_PROXY_SONNET_MODEL",
   "CLAUDINAL_PROXY_OPUS_MODEL",
+  "CLAUDINAL_PROXY_FABLE_MODEL",
   "CLAUDINAL_PROXY_AVAILABLE_MODELS",
   "CLAUDINAL_PROXY_CCH_SEED",
   "CLAUDINAL_RUNTIME_SETTINGS_JSON"
@@ -199,7 +204,14 @@ function asRoutingMode(value: unknown): ProviderRoutingMode {
 }
 
 function asClaudeModelAlias(value: unknown): ClaudeModelAlias | null {
-  if (value === "opus" || value === "haiku" || value === "sonnet") return value
+  if (
+    value === "opus" ||
+    value === "fable" ||
+    value === "haiku" ||
+    value === "sonnet"
+  ) {
+    return value
+  }
   return null
 }
 
@@ -346,11 +358,13 @@ export function thirdPartyApiRuntimeProfileKey(
       haikuModel: config.models.haikuModel.trim(),
       sonnetModel: config.models.sonnetModel.trim(),
       opusModel: config.models.opusModel.trim(),
+      fableModel: config.models.fableModel.trim(),
       subagentModel: config.models.subagentModel.trim()
     },
     modelSupports1m: {
       sonnet: config.modelSupports1m.sonnet,
-      opus: config.modelSupports1m.opus
+      opus: config.modelSupports1m.opus,
+      fable: config.modelSupports1m.fable
     },
     availableModels: config.availableModels
       .map((model) => model.trim())
@@ -397,6 +411,7 @@ export function canUseApiProfileLaunchPrefs(
 function inferMainAlias(models: Partial<ModelMapping>): ClaudeModelAlias {
   const mainModel = cleanString(models.mainModel).trim()
   if (mainModel && mainModel === cleanString(models.opusModel).trim()) return "opus"
+  if (mainModel && mainModel === cleanString(models.fableModel).trim()) return "fable"
   if (mainModel && mainModel === cleanString(models.haikuModel).trim()) return "haiku"
   return "sonnet"
 }
@@ -477,6 +492,7 @@ export function normalizeThirdPartyApiConfig(
       haikuModel: cleanString(models.haikuModel),
       sonnetModel: cleanString(models.sonnetModel),
       opusModel: cleanString(models.opusModel),
+      fableModel: cleanString(models.fableModel),
       subagentModel: cleanString(models.subagentModel)
     },
     modelSupports1m: {
@@ -487,6 +503,10 @@ export function normalizeThirdPartyApiConfig(
       opus: cleanBoolean(
         modelSupports1m.opus,
         DEFAULT_THIRD_PARTY_API.modelSupports1m.opus
+      ),
+      fable: cleanBoolean(
+        modelSupports1m.fable,
+        DEFAULT_THIRD_PARTY_API.modelSupports1m.fable
       )
     }
   }
@@ -950,6 +970,7 @@ export function buildClaudeEnv(
   const haikuModel = config.models.haikuModel.trim()
   const sonnetModel = config.models.sonnetModel.trim()
   const opusModel = config.models.opusModel.trim()
+  const fableModel = config.models.fableModel.trim()
   const subagentModel = config.models.subagentModel.trim()
   const availableModels = config.availableModels
     .map((model) => model.trim())
@@ -1004,6 +1025,9 @@ export function buildClaudeEnv(
     next.ANTHROPIC_DEFAULT_OPUS_MODEL = opusModel
     if (useLocalProxy) next.CLAUDINAL_PROXY_OPUS_MODEL = opusModel
   }
+  if (useLocalProxy && fableModel) {
+    next.CLAUDINAL_PROXY_FABLE_MODEL = fableModel
+  }
   if (useLocalProxy && availableModels.length > 0) {
     next.CLAUDINAL_PROXY_AVAILABLE_MODELS = JSON.stringify(availableModels)
   }
@@ -1043,6 +1067,7 @@ function mappedModelValues(
     provider.models.haikuModel,
     provider.models.sonnetModel,
     provider.models.opusModel,
+    provider.models.fableModel,
     provider.models.subagentModel
   ]
 }
@@ -1069,6 +1094,12 @@ export function providerComposerModelOptions(
       options.push({ value: "opus[1m]", label: "Opus 1M" })
     }
   }
+  if (provider.models.fableModel.trim()) {
+    options.push({ value: "fable", label: "Fable" })
+    if (provider.modelSupports1m.fable) {
+      options.push({ value: "fable[1m]", label: "Fable 1M" })
+    }
+  }
   if (provider.models.haikuModel.trim()) {
     options.push({ value: "haiku", label: "Haiku" })
   }
@@ -1085,6 +1116,12 @@ export function resolveThirdPartyDefaultComposerModel(
     provider.modelSupports1m.opus
   ) {
     return "opus[1m]"
+  }
+  if (
+    mainModel === provider.models.fableModel.trim() &&
+    provider.modelSupports1m.fable
+  ) {
+    return "fable[1m]"
   }
   if (
     mainModel === provider.models.sonnetModel.trim() &&
@@ -1106,6 +1143,9 @@ export function resolveThirdPartyComposerLaunchModel(
   }
   if (model === "opus" || model === "opus[1m]") {
     return provider.models.opusModel.trim() || model
+  }
+  if (model === "fable" || model === "fable[1m]") {
+    return provider.models.fableModel.trim() || model
   }
   if (model === "haiku") {
     return provider.models.haikuModel.trim() || model

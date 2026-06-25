@@ -45,7 +45,6 @@ import {
   type ProviderAuthField,
   type ProviderInputFormat,
   thirdPartyApiRequiresLocalProxy,
-  thirdPartyApiRoutingMode,
   thirdPartyApiUsesLocalProxy,
   type ThirdPartyApiProvider,
   type ThirdPartyApiStore
@@ -79,7 +78,7 @@ const AUTH_FIELD_OPTIONS: Array<{ value: ProviderAuthField; label: string }> = [
 type ModelRoleRow = {
   role: string
   label: string
-  modelKey: "sonnetModel" | "opusModel" | "haikuModel"
+  modelKey: "sonnetModel" | "opusModel" | "fableModel" | "haikuModel"
   supports1mKey?: keyof ModelSupports1mMapping
 }
 
@@ -95,6 +94,12 @@ const MODEL_ROLE_ROWS: ModelRoleRow[] = [
     label: "Opus",
     modelKey: "opusModel",
     supports1mKey: "opus"
+  },
+  {
+    role: "fable",
+    label: "Fable",
+    modelKey: "fableModel",
+    supports1mKey: "fable"
   },
   {
     role: "haiku",
@@ -568,9 +573,6 @@ export function ThirdPartyApi() {
   const editorUsesLocalProxy = editorConfig
     ? thirdPartyApiUsesLocalProxy(editorConfig)
     : false
-  const editorRoutingMode = editorConfig
-    ? thirdPartyApiRoutingMode(editorConfig)
-    : "direct"
   const renderModelSupports1mCell = (row: ModelRoleRow) => {
     const key = row.supports1mKey
     if (!key) {
@@ -769,15 +771,7 @@ export function ThirdPartyApi() {
                 </div>
                 {editorProxyRequirement ? (
                   <SettingsHint>{editorProxyRequirement}</SettingsHint>
-                ) : (
-                  <SettingsHint>
-                    当前为
-                    {editorRoutingMode === "proxy"
-                      ? " Claudinal 本地转发"
-                      : " Claude CLI 直连"}
-                    。网络代理设置仍会按需注入给 claude 进程。
-                  </SettingsHint>
-                )}
+                ) : null}
               </div>
             </SettingsCard>
 

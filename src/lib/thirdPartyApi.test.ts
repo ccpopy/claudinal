@@ -37,6 +37,7 @@ function makeConfig(patch: Partial<ThirdPartyApiConfig> = {}): ThirdPartyApiConf
       haikuModel: "claude-3-5-haiku",
       sonnetModel: "claude-3-7-sonnet",
       opusModel: "claude-opus-4",
+      fableModel: "",
       subagentModel: "claude-3-5-haiku"
     },
     availableModels: ["claude-3-7-sonnet", "claude-3-5-haiku", "claude-opus-4"],
@@ -63,7 +64,11 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(cfg.maxThinkingEnabled).toBe(false)
     expect(cfg.mainAlias).toBe("sonnet")
     expect(cfg.availableModels).toEqual([])
-    expect(cfg.modelSupports1m).toEqual({ sonnet: false, opus: false })
+    expect(cfg.modelSupports1m).toEqual({
+      sonnet: false,
+      opus: false,
+      fable: false
+    })
     expect(cfg.runtimeSettingsJson).toBe("")
     expect(cfg.models.mainModel).toBe("")
   })
@@ -131,18 +136,28 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     const cfg = normalizeThirdPartyApiConfig({
       modelSupports1m: {
         sonnet: true,
-        opus: true
+        opus: true,
+        fable: true
       }
     } as never)
-    expect(cfg.modelSupports1m).toEqual({ sonnet: true, opus: true })
+    expect(cfg.modelSupports1m).toEqual({
+      sonnet: true,
+      opus: true,
+      fable: true
+    })
 
     const invalid = normalizeThirdPartyApiConfig({
       modelSupports1m: {
         sonnet: "true",
-        opus: 1
+        opus: 1,
+        fable: "yes"
       }
     } as never)
-    expect(invalid.modelSupports1m).toEqual({ sonnet: false, opus: false })
+    expect(invalid.modelSupports1m).toEqual({
+      sonnet: false,
+      opus: false,
+      fable: false
+    })
   })
 
   it("migrates legacy disableAttributionHeader to cacheHitOptimizationEnabled", () => {
@@ -157,6 +172,10 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
       models: { mainModel: "X", opusModel: "X" } as never
     })
     expect(opus.mainAlias).toBe("opus")
+    const fable = normalizeThirdPartyApiConfig({
+      models: { mainModel: "F", fableModel: "F" } as never
+    })
+    expect(fable.mainAlias).toBe("fable")
     const haiku = normalizeThirdPartyApiConfig({
       models: { mainModel: "Y", haikuModel: "Y" } as never
     })
@@ -593,7 +612,15 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
   })
 
   it("emits the proxy-routed sentinel and target URL when local proxy routing is enabled", () => {
-    const env = buildClaudeEnv(makeConfig({ routingMode: "proxy" }))
+    const env = buildClaudeEnv(
+      makeConfig({
+        routingMode: "proxy",
+        models: {
+          ...makeConfig().models,
+          fableModel: "claude-fable-5"
+        }
+      })
+    )
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("claudinal-proxy")
     expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
     expect(env.CLAUDINAL_PROXY_TARGET_URL).toBe("https://api.example.com")
@@ -601,6 +628,7 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
     expect(env.CLAUDINAL_PROXY_INPUT_FORMAT).toBe("anthropic")
     expect(env.CLAUDINAL_PROXY_AUTH_FIELD).toBe("ANTHROPIC_AUTH_TOKEN")
     expect(env.CLAUDINAL_PROXY_USE_FULL_URL).toBe("0")
+    expect(env.CLAUDINAL_PROXY_FABLE_MODEL).toBe("claude-fable-5")
   })
 
   it("emits optional Claude Code behavior env vars only when enabled", () => {
@@ -670,6 +698,7 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
         haikuModel: "",
         sonnetModel: "",
         opusModel: "",
+        fableModel: "",
         subagentModel: ""
       }
     })
@@ -745,6 +774,7 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
       CLAUDINAL_PROXY_HAIKU_MODEL: "x",
       CLAUDINAL_PROXY_SONNET_MODEL: "x",
       CLAUDINAL_PROXY_OPUS_MODEL: "x",
+      CLAUDINAL_PROXY_FABLE_MODEL: "x",
       CLAUDINAL_PROXY_AVAILABLE_MODELS: "x",
       CLAUDINAL_PROXY_CCH_SEED: "x",
       CLAUDINAL_RUNTIME_SETTINGS_JSON: "x",
@@ -766,10 +796,11 @@ describe("thirdPartyApi.providerModelOptions", () => {
         haikuModel: "m4",
         sonnetModel: "",
         opusModel: "m3",
+        fableModel: "m6",
         subagentModel: ""
       }
     })
-    expect(list).toEqual(["m1", "m4", "m3"])
+    expect(list).toEqual(["m1", "m4", "m3", "m6"])
   })
 })
 
@@ -781,11 +812,13 @@ describe("thirdPartyApi.providerComposerModelOptions", () => {
         haikuModel: "gpt-5.4-mini",
         sonnetModel: "gpt-5.4",
         opusModel: "gpt-5.5",
+        fableModel: "gpt-5.6",
         subagentModel: "gpt-5.4-mini"
       },
       modelSupports1m: {
         sonnet: false,
-        opus: true
+        opus: true,
+        fable: true
       }
     })
 
@@ -793,6 +826,8 @@ describe("thirdPartyApi.providerComposerModelOptions", () => {
       { value: "sonnet", label: "Sonnet" },
       { value: "opus", label: "Opus" },
       { value: "opus[1m]", label: "Opus 1M" },
+      { value: "fable", label: "Fable" },
+      { value: "fable[1m]", label: "Fable 1M" },
       { value: "haiku", label: "Haiku" }
     ])
   })
@@ -804,15 +839,21 @@ describe("thirdPartyApi.providerComposerModelOptions", () => {
         haikuModel: "",
         sonnetModel: "gpt-5.4",
         opusModel: "gpt-5.5",
+        fableModel: "gpt-5.6",
         subagentModel: ""
       },
       modelSupports1m: {
         sonnet: false,
-        opus: false
+        opus: false,
+        fable: false
       }
     })
 
-    expect(list.map((option) => option.value)).toEqual(["sonnet", "opus"])
+    expect(list.map((option) => option.value)).toEqual([
+      "sonnet",
+      "opus",
+      "fable"
+    ])
   })
 })
 
@@ -825,10 +866,11 @@ describe("thirdPartyApi.providerModelInputOptions", () => {
         haikuModel: "m4",
         sonnetModel: "",
         opusModel: "m3",
+        fableModel: "m6",
         subagentModel: "m5"
       }
     })
-    expect(list).toEqual(["m1", "m2", "m3", "m4", "m5"])
+    expect(list).toEqual(["m1", "m2", "m3", "m4", "m6", "m5"])
   })
 })
 
@@ -843,11 +885,13 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
             haikuModel: "claude-3-5-haiku",
             sonnetModel: "claude-3-7-sonnet",
             opusModel: "claude-opus-4",
+            fableModel: "claude-fable-5",
             subagentModel: "claude-3-5-haiku"
           },
           modelSupports1m: {
             sonnet: false,
-            opus: true
+            opus: true,
+            fable: false
           }
         })
       )
@@ -861,15 +905,37 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
             haikuModel: "claude-3-5-haiku",
             sonnetModel: "claude-3-7-sonnet",
             opusModel: "claude-opus-4",
+            fableModel: "claude-fable-5",
             subagentModel: "claude-3-5-haiku"
           },
           modelSupports1m: {
             sonnet: true,
-            opus: false
+            opus: false,
+            fable: false
           }
         })
       )
     ).toBe("sonnet[1m]")
+
+    expect(
+      resolveThirdPartyDefaultComposerModel(
+        makeConfig({
+          models: {
+            mainModel: "claude-fable-5",
+            haikuModel: "claude-3-5-haiku",
+            sonnetModel: "claude-3-7-sonnet",
+            opusModel: "claude-opus-4",
+            fableModel: "claude-fable-5",
+            subagentModel: "claude-3-5-haiku"
+          },
+          modelSupports1m: {
+            sonnet: false,
+            opus: false,
+            fable: true
+          }
+        })
+      )
+    ).toBe("fable[1m]")
   })
 
   it("leaves Default empty when the matched role does not declare 1M support", () => {
@@ -881,11 +947,13 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
             haikuModel: "claude-3-5-haiku",
             sonnetModel: "claude-3-7-sonnet",
             opusModel: "claude-opus-4",
+            fableModel: "claude-fable-5",
             subagentModel: "claude-3-5-haiku"
           },
           modelSupports1m: {
             sonnet: true,
-            opus: false
+            opus: false,
+            fable: false
           }
         })
       )
@@ -899,11 +967,13 @@ describe("thirdPartyApi.resolveThirdPartyDefaultComposerModel", () => {
             haikuModel: "claude-3-5-haiku",
             sonnetModel: "claude-3-7-sonnet",
             opusModel: "claude-opus-4",
+            fableModel: "claude-fable-5",
             subagentModel: "claude-3-5-haiku"
           },
           modelSupports1m: {
             sonnet: true,
-            opus: true
+            opus: true,
+            fable: true
           }
         })
       )
@@ -919,6 +989,7 @@ describe("thirdPartyApi launch model resolution", () => {
         haikuModel: "provider-haiku",
         sonnetModel: "provider-sonnet-1m",
         opusModel: "provider-opus-1m",
+        fableModel: "provider-fable-1m",
         subagentModel: "provider-haiku"
       }
     })
@@ -928,6 +999,9 @@ describe("thirdPartyApi launch model resolution", () => {
     )
     expect(resolveThirdPartyComposerLaunchModel(cfg, "opus")).toBe(
       "provider-opus-1m"
+    )
+    expect(resolveThirdPartyComposerLaunchModel(cfg, "fable[1m]")).toBe(
+      "provider-fable-1m"
     )
     expect(resolveThirdPartyComposerLaunchModel(cfg, "haiku")).toBe(
       "provider-haiku"
@@ -945,11 +1019,13 @@ describe("thirdPartyApi launch model resolution", () => {
         haikuModel: "claude-3-5-haiku",
         sonnetModel: "claude-sonnet-4-5[1m]",
         opusModel: "claude-opus-4-8[1m]",
+        fableModel: "claude-fable-5[1m]",
         subagentModel: "claude-3-5-haiku"
       },
       modelSupports1m: {
         sonnet: true,
-        opus: true
+        opus: true,
+        fable: true
       }
     })
 

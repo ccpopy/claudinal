@@ -1081,6 +1081,9 @@ fn take_proxy_config(
         .remove("CLAUDINAL_PROXY_SONNET_MODEL")
         .unwrap_or_default();
     let opus_model = env.remove("CLAUDINAL_PROXY_OPUS_MODEL").unwrap_or_default();
+    let fable_model = env
+        .remove("CLAUDINAL_PROXY_FABLE_MODEL")
+        .unwrap_or_default();
     let available_models = env
         .remove("CLAUDINAL_PROXY_AVAILABLE_MODELS")
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
@@ -1106,6 +1109,7 @@ fn take_proxy_config(
         haiku_model,
         sonnet_model,
         opus_model,
+        fable_model,
         available_models,
         cch_seed,
     }))

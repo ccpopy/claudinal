@@ -23,6 +23,7 @@ pub struct ProxyConfig {
     pub haiku_model: String,
     pub sonnet_model: String,
     pub opus_model: String,
+    pub fable_model: String,
     pub available_models: Vec<String>,
     pub cch_seed: Option<u64>,
 }
@@ -1311,6 +1312,9 @@ fn mapped_model(source: &str, config: &ProxyConfig) -> String {
     if source_lower.contains("opus") && !config.opus_model.trim().is_empty() {
         return config.opus_model.trim().to_string();
     }
+    if source_lower.contains("fable") && !config.fable_model.trim().is_empty() {
+        return config.fable_model.trim().to_string();
+    }
     if source_lower.contains("sonnet") && !config.sonnet_model.trim().is_empty() {
         return config.sonnet_model.trim().to_string();
     }
@@ -1323,6 +1327,7 @@ fn configured_models(config: &ProxyConfig) -> Vec<String> {
         config.haiku_model.as_str(),
         config.sonnet_model.as_str(),
         config.opus_model.as_str(),
+        config.fable_model.as_str(),
     ]
     .into_iter()
     .map(str::trim)
@@ -1334,7 +1339,16 @@ fn configured_models(config: &ProxyConfig) -> Vec<String> {
 fn looks_like_claude_model(model: &str) -> bool {
     matches!(
         model,
-        "default" | "best" | "sonnet" | "opus" | "haiku" | "opusplan" | "sonnet[1m]" | "opus[1m]"
+        "default"
+            | "best"
+            | "sonnet"
+            | "opus"
+            | "fable"
+            | "haiku"
+            | "opusplan"
+            | "sonnet[1m]"
+            | "opus[1m]"
+            | "fable[1m]"
     ) || model.starts_with("claude-")
         || model.starts_with("anthropic.")
 }
@@ -1537,6 +1551,7 @@ mod tests {
             haiku_model: String::new(),
             sonnet_model: String::new(),
             opus_model: String::new(),
+            fable_model: String::new(),
             available_models: vec!["opus[1m]".into(), "mimo-v2.5-pro".into()],
             cch_seed: None,
         }
@@ -1560,6 +1575,13 @@ mod tests {
         let mut config = proxy_config();
         config.opus_model = "mimo-v2.5-pro".into();
         assert_eq!(mapped_model("opus[1m]", &config), "mimo-v2.5-pro");
+    }
+
+    #[test]
+    fn mapped_model_rewrites_fable_alias_with_family_mapping() {
+        let mut config = proxy_config();
+        config.fable_model = "claude-opus-4-8".into();
+        assert_eq!(mapped_model("fable[1m]", &config), "claude-opus-4-8");
     }
 
     #[test]
