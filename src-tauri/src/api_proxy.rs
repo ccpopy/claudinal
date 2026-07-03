@@ -9,6 +9,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::error::{Error, Result};
 
+/// 1M 上下文 beta 标志。第一方 API 已于 2026-04-30 退役该头（原生 1M 模型免头），
+/// 但按旧协议做门禁的第三方中转仍以它作为"单请求显式启用 1M"的开关。
+const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
+
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     pub target_url: String,
@@ -25,6 +29,7 @@ pub struct ProxyConfig {
     pub opus_model: String,
     pub fable_model: String,
     pub available_models: Vec<String>,
+    pub context_1m_models: Vec<String>,
     pub cch_seed: Option<u64>,
 }
 
@@ -194,6 +199,23 @@ async fn handle(
     }
     if let Some(seed) = config.cch_seed.filter(|_| messages_path && !openai_chat) {
         body = rewrite_cch(&body, seed)?;
+    }
+
+    // 对声明支持 1M 的模型请求 merge 1M beta 标志（按改写后的最终上游模型名匹配）。
+    // /v1/messages 与 /v1/messages/count_tokens 同一门禁，OpenAI 转换格式不适用。
+    // 映射可能原样保留配置里的 [1m] 尾缀（如 opus → "provider-opus[1m]"），
+    // 集合与请求模型两侧都按去尾缀形式比较，与前端 stripOneMillionContextSuffix 对齐。
+    if !config.context_1m_models.is_empty() && !openai_chat && json_request {
+        if let Some(model) = request_model.as_deref() {
+            let model = strip_context_1m_suffix(model);
+            if config
+                .context_1m_models
+                .iter()
+                .any(|item| strip_context_1m_suffix(item) == model)
+            {
+                merge_context_1m_beta(&mut headers);
+            }
+        }
     }
 
     let method = reqwest::Method::from_bytes(method.as_bytes())
@@ -473,6 +495,48 @@ fn rewrite_model(body: &[u8], config: &ProxyConfig) -> Result<(Vec<u8>, Option<S
     };
     let bytes = serde_json::to_vec(&value).map_err(Error::from)?;
     Ok((bytes, model))
+}
+
+/// 去掉 Claude Code 本地 `[1m]` 尾缀（大小写不敏感），得到线上模型名。
+/// CLI 发请求前会剥掉尾缀，但 mapped_model 可能把配置值（含尾缀）原样写进请求体，
+/// 因此 1M 集合匹配必须在两侧都做同样的归一化。
+fn strip_context_1m_suffix(model: &str) -> &str {
+    let trimmed = model.trim();
+    let len = trimmed.len();
+    if len >= 4
+        && trimmed.is_char_boundary(len - 4)
+        && trimmed[len - 4..].eq_ignore_ascii_case("[1m]")
+    {
+        trimmed[..len - 4].trim_end()
+    } else {
+        trimmed
+    }
+}
+
+/// 把 1M beta 标志 merge 进 `anthropic-beta` 头（大小写不敏感查找）。幂等：
+/// 已含该值不动；头存在但缺该值按官方"单头逗号多值"语法追加；不存在则新增，
+/// 禁止追加第二行同名头（多头行为官方未记载）。
+fn merge_context_1m_beta(headers: &mut Vec<(String, String)>) {
+    let already_present = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("anthropic-beta")
+            && value.split(',').any(|item| item.trim() == CONTEXT_1M_BETA)
+    });
+    if already_present {
+        return;
+    }
+    if let Some((_, value)) = headers
+        .iter_mut()
+        .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+    {
+        let existing = value.trim();
+        *value = if existing.is_empty() {
+            CONTEXT_1M_BETA.to_string()
+        } else {
+            format!("{existing},{CONTEXT_1M_BETA}")
+        };
+        return;
+    }
+    headers.push(("anthropic-beta".into(), CONTEXT_1M_BETA.into()));
 }
 
 fn rewrite_cch(body: &[u8], seed: u64) -> Result<Vec<u8>> {
@@ -1553,6 +1617,7 @@ mod tests {
             opus_model: String::new(),
             fable_model: String::new(),
             available_models: vec!["opus[1m]".into(), "mimo-v2.5-pro".into()],
+            context_1m_models: Vec::new(),
             cch_seed: None,
         }
     }
@@ -1858,14 +1923,69 @@ mod tests {
         assert_eq!(value["model"], "mimo-v2.5-pro");
     }
 
-    /// 读完一个 HTTP 请求（头 + Content-Length 定长体），供假上游使用。
-    async fn read_http_request(sock: &mut TcpStream) {
+    #[test]
+    fn merge_context_1m_beta_adds_header_when_missing() {
+        let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
+        merge_context_1m_beta(&mut headers);
+        assert_eq!(
+            headers.last(),
+            Some(&("anthropic-beta".to_string(), CONTEXT_1M_BETA.to_string()))
+        );
+    }
+
+    #[test]
+    fn merge_context_1m_beta_appends_comma_value_instead_of_second_line() {
+        // 头名大小写不敏感；merge 进已有头而非新增第二行同名头。
+        let mut headers = vec![(
+            "Anthropic-Beta".to_string(),
+            "prompt-caching-2024-07-31".to_string(),
+        )];
+        merge_context_1m_beta(&mut headers);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(
+            headers[0].1,
+            format!("prompt-caching-2024-07-31,{CONTEXT_1M_BETA}")
+        );
+    }
+
+    #[test]
+    fn merge_context_1m_beta_is_idempotent_when_value_present() {
+        // 逗号 split + trim 后已含该值：原样保留，不重复追加。
+        let original = format!("prompt-caching-2024-07-31, {CONTEXT_1M_BETA}");
+        let mut headers = vec![("anthropic-beta".to_string(), original.clone())];
+        merge_context_1m_beta(&mut headers);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].1, original);
+    }
+
+    #[test]
+    fn strip_context_1m_suffix_normalizes_launch_suffix() {
+        // 与前端 stripOneMillionContextSuffix 对齐：trim + 大小写不敏感去尾缀。
+        assert_eq!(
+            strip_context_1m_suffix("provider-opus[1m]"),
+            "provider-opus"
+        );
+        assert_eq!(
+            strip_context_1m_suffix(" claude-opus-4-8[1M] "),
+            "claude-opus-4-8"
+        );
+        assert_eq!(
+            strip_context_1m_suffix("provider-sonnet"),
+            "provider-sonnet"
+        );
+        assert_eq!(strip_context_1m_suffix("[1m]"), "");
+        // 尾缀只剥一层最外侧，且非尾部的 [1m] 不受影响。
+        assert_eq!(strip_context_1m_suffix("a[1m]b"), "a[1m]b");
+    }
+
+    /// 读完一个 HTTP 请求（头 + Content-Length 定长体）并返回原始字节，供假上游使用。
+    async fn read_http_request(sock: &mut TcpStream) -> Vec<u8> {
         let mut buf = Vec::new();
         loop {
             let mut chunk = [0u8; 1024];
             let n = sock.read(&mut chunk).await.expect("upstream read");
             if n == 0 {
-                return;
+                return buf;
             }
             buf.extend_from_slice(&chunk[..n]);
             if let Some(pos) = find_header_end(&buf) {
@@ -1876,7 +1996,7 @@ mod tests {
                     .and_then(|value| value.trim().parse::<usize>().ok())
                     .unwrap_or(0);
                 if buf.len() >= pos + 4 + content_length {
-                    return;
+                    return buf;
                 }
             }
         }
@@ -1903,12 +2023,13 @@ mod tests {
         false
     }
 
-    /// 通过本地代理发一个 /v1/messages 请求并按帧语义读完响应。
-    async fn proxy_roundtrip(proxy_url: &str, body: &[u8]) -> String {
+    /// 通过本地代理发一个 JSON POST 请求并按帧语义读完响应。
+    async fn proxy_roundtrip(proxy_url: &str, path: &str, body: &[u8]) -> String {
         let addr = proxy_url.strip_prefix("http://").expect("proxy url");
         let mut client = TcpStream::connect(addr).await.expect("connect proxy");
         let head = format!(
-            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            "POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            path,
             body.len()
         );
         client.write_all(head.as_bytes()).await.expect("write head");
@@ -2032,7 +2153,7 @@ mod tests {
             .expect("start proxy");
 
         let body = br#"{"model":"sonnet"}"#;
-        let first = proxy_roundtrip(&proxy_url, body).await;
+        let first = proxy_roundtrip(&proxy_url, "/v1/messages", body).await;
         assert!(first.starts_with("HTTP/1.1 429 Too Many Requests"));
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
@@ -2044,7 +2165,7 @@ mod tests {
         assert_eq!(event.model.as_deref(), Some("sonnet"));
         assert!(event.message.contains("Service Unavailable"));
 
-        let second = proxy_roundtrip(&proxy_url, body).await;
+        let second = proxy_roundtrip(&proxy_url, "/v1/messages", body).await;
         assert!(second.starts_with("HTTP/1.1 200 OK"));
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
@@ -2055,5 +2176,94 @@ mod tests {
             rx.try_recv().is_err(),
             "consecutive successes must not emit extra events"
         );
+    }
+
+    #[tokio::test]
+    async fn forwards_context_1m_beta_only_for_declared_models() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream");
+        let upstream_addr = upstream.local_addr().expect("upstream addr");
+        let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            for _ in 0..4 {
+                let (mut sock, _) = upstream.accept().await.expect("accept");
+                let request = read_http_request(&mut sock).await;
+                let _ = req_tx.send(String::from_utf8_lossy(&request).into_owned());
+                sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                )
+                .await
+                .expect("write response");
+                sock.flush().await.expect("flush response");
+            }
+        });
+
+        let mut config = proxy_config();
+        config.target_url = format!("http://{upstream_addr}");
+        config.sonnet_model = "provider-sonnet".into();
+        config.haiku_model = "provider-haiku".into();
+        config.opus_model = "provider-opus[1m]".into();
+        config.context_1m_models = vec!["provider-sonnet".into(), "provider-opus".into()];
+        let proxy_url = start(config, None).await.expect("start proxy");
+        let injected_header = format!("anthropic-beta: {CONTEXT_1M_BETA}");
+
+        // 改写后的上游模型命中集合：/v1/messages 注入
+        let sonnet_body = br#"{"model":"claude-sonnet-4-6"}"#;
+        proxy_roundtrip(&proxy_url, "/v1/messages", sonnet_body).await;
+        let first = req_rx.recv().await.expect("first upstream request");
+        assert!(first.to_ascii_lowercase().contains(&injected_header));
+
+        // 模型不在集合（haiku 角色）：不注入
+        let haiku_body = br#"{"model":"claude-haiku-4-5"}"#;
+        proxy_roundtrip(&proxy_url, "/v1/messages", haiku_body).await;
+        let second = req_rx.recv().await.expect("second upstream request");
+        assert!(!second.to_ascii_lowercase().contains("anthropic-beta"));
+
+        // /v1/messages/count_tokens 与 /v1/messages 同一门禁
+        proxy_roundtrip(&proxy_url, "/v1/messages/count_tokens", sonnet_body).await;
+        let third = req_rx.recv().await.expect("third upstream request");
+        assert!(third.to_ascii_lowercase().contains(&injected_header));
+
+        // 配置的角色模型带 [1m] 尾缀：映射结果 "provider-opus[1m]" 与集合里
+        // 去尾缀的 "provider-opus" 仍可匹配（两侧归一化比较）。
+        let opus_body = br#"{"model":"claude-opus-4-8"}"#;
+        proxy_roundtrip(&proxy_url, "/v1/messages", opus_body).await;
+        let fourth = req_rx.recv().await.expect("fourth upstream request");
+        assert!(fourth.to_ascii_lowercase().contains(&injected_header));
+    }
+
+    #[tokio::test]
+    async fn does_not_inject_context_1m_beta_for_openai_chat_upstreams() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream");
+        let upstream_addr = upstream.local_addr().expect("upstream addr");
+        let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            let (mut sock, _) = upstream.accept().await.expect("accept");
+            let request = read_http_request(&mut sock).await;
+            let _ = req_tx.send(String::from_utf8_lossy(&request).into_owned());
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            )
+            .await
+            .expect("write response");
+            sock.flush().await.expect("flush response");
+        });
+
+        let mut config = proxy_config();
+        config.target_url = format!("http://{upstream_addr}");
+        config.input_format = "openai-chat-completions".into();
+        config.opus_model = "gpt-5.5".into();
+        config.context_1m_models = vec!["gpt-5.5".into()];
+        let proxy_url = start(config, None).await.expect("start proxy");
+
+        // 映射后的模型在集合内，但 OpenAI 转换格式永不注入。
+        let body =
+            br#"{"model":"opus","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#;
+        proxy_roundtrip(&proxy_url, "/v1/messages", body).await;
+        let request = req_rx.recv().await.expect("upstream request");
+        assert!(!request.to_ascii_lowercase().contains("anthropic-beta"));
     }
 }

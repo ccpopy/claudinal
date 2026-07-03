@@ -57,6 +57,7 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(cfg.enablePromptCaching1h).toBe(true)
     expect(cfg.cchRewriteEnabled).toBe(false)
     expect(cfg.cchSeed).toBe("")
+    expect(cfg.context1mBetaEnabled).toBe(false)
     expect(cfg.disableTelemetry).toBe(false)
     expect(cfg.hideAiAttribution).toBe(false)
     expect(cfg.agentTeamsEnabled).toBe(false)
@@ -130,6 +131,18 @@ describe("thirdPartyApi.normalizeThirdPartyApiConfig", () => {
     expect(invalid.agentTeamsEnabled).toBe(false)
     expect(invalid.toolSearchEnabled).toBe(false)
     expect(invalid.maxThinkingEnabled).toBe(false)
+  })
+
+  it("normalizes the context 1M beta switch with a false default", () => {
+    expect(normalizeThirdPartyApiConfig({}).context1mBetaEnabled).toBe(false)
+    expect(
+      normalizeThirdPartyApiConfig({ context1mBetaEnabled: true })
+        .context1mBetaEnabled
+    ).toBe(true)
+    expect(
+      normalizeThirdPartyApiConfig({ context1mBetaEnabled: "true" as never })
+        .context1mBetaEnabled
+    ).toBe(false)
   })
 
   it("normalizes explicit model 1M capability declarations", () => {
@@ -238,6 +251,13 @@ describe("thirdPartyApi.runtimeSettings", () => {
     expect(() =>
       parseRuntimeSettingsJson('{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"max"}}')
     ).toThrow("运行时 settings.env.CLAUDE_CODE_EFFORT_LEVEL 由 Claudinal 管理")
+    expect(() =>
+      parseRuntimeSettingsJson(
+        '{"env":{"CLAUDINAL_PROXY_CONTEXT_1M_MODELS":"[]"}}'
+      )
+    ).toThrow(
+      "运行时 settings.env.CLAUDINAL_PROXY_CONTEXT_1M_MODELS 由 Claudinal 管理"
+    )
   })
 
   it("merges provider runtime settings with generated Claude env for preview", () => {
@@ -391,6 +411,22 @@ describe("thirdPartyApi.runtimeProfile", () => {
     const changed = makeConfig({
       id: "provider-a",
       routingMode: "proxy"
+    } as Partial<ThirdPartyApiConfig>)
+
+    expect(thirdPartyApiConnectionProfileKey(changed)).not.toBe(
+      thirdPartyApiConnectionProfileKey(base)
+    )
+    expect(thirdPartyApiRuntimeProfileKey(changed)).not.toBe(
+      thirdPartyApiRuntimeProfileKey(base)
+    )
+  })
+
+  it("changes profile keys when the context 1M beta switch changes", () => {
+    // 开关强制走本地代理：connection key 随 routingMode 变化，runtime key 另含原始字段。
+    const base = makeConfig({ id: "provider-a" } as Partial<ThirdPartyApiConfig>)
+    const changed = makeConfig({
+      id: "provider-a",
+      context1mBetaEnabled: true
     } as Partial<ThirdPartyApiConfig>)
 
     expect(thirdPartyApiConnectionProfileKey(changed)).not.toBe(
@@ -583,6 +619,12 @@ describe("thirdPartyApi routing mode", () => {
       )
     ).toBe(true)
   })
+
+  it("requires the local proxy when the context 1M beta switch is enabled", () => {
+    const cfg = makeConfig({ context1mBetaEnabled: true })
+    expect(thirdPartyApiRequiresLocalProxy(cfg)).toBe(true)
+    expect(thirdPartyApiUsesLocalProxy(cfg)).toBe(true)
+  })
 })
 
 describe("thirdPartyApi.buildClaudeEnv", () => {
@@ -738,6 +780,46 @@ describe("thirdPartyApi.buildClaudeEnv", () => {
     expect(env.CLAUDINAL_PROXY_USE_FULL_URL).toBe("1")
   })
 
+  it("serializes declared 1M models only when the context 1M beta switch is on", () => {
+    const env = buildClaudeEnv(
+      makeConfig({
+        context1mBetaEnabled: true,
+        models: {
+          mainModel: "provider-sonnet",
+          haikuModel: "provider-haiku",
+          sonnetModel: "provider-sonnet[1m]",
+          opusModel: " provider-sonnet ",
+          fableModel: "claude-fable-5[1m]",
+          subagentModel: ""
+        },
+        modelSupports1m: { sonnet: true, opus: true, fable: true }
+      })
+    )
+    // [1m] 尾缀剥离 + trim + 去重；开关本身强制走本地代理
+    expect(env.CLAUDINAL_PROXY_CONTEXT_1M_MODELS).toBe(
+      JSON.stringify(["provider-sonnet", "claude-fable-5"])
+    )
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("claudinal-proxy")
+
+    const off = buildClaudeEnv(makeConfig({ routingMode: "proxy" }))
+    expect(off.CLAUDINAL_PROXY_CONTEXT_1M_MODELS).toBeUndefined()
+  })
+
+  it("omits the context 1M models env when no role declares 1M support", () => {
+    // makeConfig 默认 modelSupports1m 全 false：开关开启也等效未启用（不下发键）
+    const env = buildClaudeEnv(makeConfig({ context1mBetaEnabled: true }))
+    expect(env.CLAUDINAL_PROXY_CONTEXT_1M_MODELS).toBeUndefined()
+
+    // fable 声明支持但 fableModel 为空 → 滤空后集合为空，同样不下发
+    const emptyModel = buildClaudeEnv(
+      makeConfig({
+        context1mBetaEnabled: true,
+        modelSupports1m: { sonnet: false, opus: false, fable: true }
+      })
+    )
+    expect(emptyModel.CLAUDINAL_PROXY_CONTEXT_1M_MODELS).toBeUndefined()
+  })
+
   it("does not write CLAUDINAL_PROXY_API_KEY when key is whitespace", () => {
     const env = buildClaudeEnv(makeConfig({ apiKey: "   " }))
     expect(env.CLAUDINAL_PROXY_API_KEY).toBeUndefined()
@@ -782,6 +864,7 @@ describe("thirdPartyApi.clearManagedClaudeEnv", () => {
       CLAUDINAL_PROXY_OPUS_MODEL: "x",
       CLAUDINAL_PROXY_FABLE_MODEL: "x",
       CLAUDINAL_PROXY_AVAILABLE_MODELS: "x",
+      CLAUDINAL_PROXY_CONTEXT_1M_MODELS: "x",
       CLAUDINAL_PROXY_CCH_SEED: "x",
       CLAUDINAL_RUNTIME_SETTINGS_JSON: "x",
       USER_VAR: "keep"

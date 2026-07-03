@@ -51,6 +51,7 @@ export interface ThirdPartyApiConfig {
   enablePromptCaching1h: boolean
   cchRewriteEnabled: boolean
   cchSeed: string
+  context1mBetaEnabled: boolean
   disableTelemetry: boolean
   hideAiAttribution: boolean
   agentTeamsEnabled: boolean
@@ -92,6 +93,7 @@ export const DEFAULT_THIRD_PARTY_API: ThirdPartyApiConfig = {
   enablePromptCaching1h: true,
   cchRewriteEnabled: false,
   cchSeed: "",
+  context1mBetaEnabled: false,
   disableTelemetry: false,
   hideAiAttribution: false,
   agentTeamsEnabled: false,
@@ -152,6 +154,7 @@ const MANAGED_ENV_KEYS = [
   "CLAUDINAL_PROXY_OPUS_MODEL",
   "CLAUDINAL_PROXY_FABLE_MODEL",
   "CLAUDINAL_PROXY_AVAILABLE_MODELS",
+  "CLAUDINAL_PROXY_CONTEXT_1M_MODELS",
   "CLAUDINAL_PROXY_CCH_SEED",
   "CLAUDINAL_RUNTIME_SETTINGS_JSON"
 ]
@@ -262,6 +265,7 @@ type ThirdPartyRoutingConfig = Pick<
   | "useFullUrl"
   | "cacheHitOptimizationEnabled"
   | "cchRewriteEnabled"
+  | "context1mBetaEnabled"
 >
 
 export function thirdPartyApiRequiresLocalProxy(
@@ -271,12 +275,14 @@ export function thirdPartyApiRequiresLocalProxy(
     | "useFullUrl"
     | "cacheHitOptimizationEnabled"
     | "cchRewriteEnabled"
+    | "context1mBetaEnabled"
   >
 ): boolean {
   return (
     config.inputFormat === "openai-chat-completions" ||
     config.useFullUrl ||
-    (!config.cacheHitOptimizationEnabled && config.cchRewriteEnabled)
+    (!config.cacheHitOptimizationEnabled && config.cchRewriteEnabled) ||
+    config.context1mBetaEnabled
   )
 }
 
@@ -336,7 +342,7 @@ export function thirdPartyApiRuntimeProfileKey(
   if (!config.enabled) return "official"
   const providerId = providerProfileId(config)
   const profile = {
-    version: 6,
+    version: 7,
     providerId,
     requestUrl: trimApiUrl(config.requestUrl),
     inputFormat: config.inputFormat,
@@ -347,6 +353,7 @@ export function thirdPartyApiRuntimeProfileKey(
     enablePromptCaching1h: config.enablePromptCaching1h,
     cchRewriteEnabled: config.cchRewriteEnabled,
     cchSeed: config.cchSeed.trim(),
+    context1mBetaEnabled: config.context1mBetaEnabled,
     disableTelemetry: config.disableTelemetry,
     hideAiAttribution: config.hideAiAttribution,
     agentTeamsEnabled: config.agentTeamsEnabled,
@@ -464,6 +471,10 @@ export function normalizeThirdPartyApiConfig(
       DEFAULT_THIRD_PARTY_API.cchRewriteEnabled
     ),
     cchSeed: cleanString(raw?.cchSeed),
+    context1mBetaEnabled: cleanBoolean(
+      raw?.context1mBetaEnabled,
+      DEFAULT_THIRD_PARTY_API.context1mBetaEnabled
+    ),
     disableTelemetry: cleanBoolean(
       raw?.disableTelemetry,
       DEFAULT_THIRD_PARTY_API.disableTelemetry
@@ -975,6 +986,17 @@ export function buildClaudeEnv(
   const availableModels = config.availableModels
     .map((model) => model.trim())
     .filter(Boolean)
+  // 声明支持 1M 的角色模型，去掉尾部 [1m] 后缀后与线上请求模型名一致，
+  // 供本地代理按模型收窄 anthropic-beta 1M 标志注入范围。
+  const context1mModels = config.context1mBetaEnabled
+    ? dedupeModelValues(
+        [
+          config.modelSupports1m.sonnet ? config.models.sonnetModel : "",
+          config.modelSupports1m.opus ? config.models.opusModel : "",
+          config.modelSupports1m.fable ? config.models.fableModel : ""
+        ].map(stripOneMillionContextSuffix)
+      )
+    : []
   const useLocalProxy = thirdPartyApiUsesLocalProxy(config)
 
   if (useLocalProxy) {
@@ -1030,6 +1052,9 @@ export function buildClaudeEnv(
   }
   if (useLocalProxy && availableModels.length > 0) {
     next.CLAUDINAL_PROXY_AVAILABLE_MODELS = JSON.stringify(availableModels)
+  }
+  if (useLocalProxy && context1mModels.length > 0) {
+    next.CLAUDINAL_PROXY_CONTEXT_1M_MODELS = JSON.stringify(context1mModels)
   }
   if (subagentModel) next.CLAUDE_CODE_SUBAGENT_MODEL = subagentModel
 
@@ -1136,6 +1161,13 @@ const ONE_MILLION_CONTEXT_SUFFIX = "[1m]"
 
 function hasOneMillionContextSuffix(model: string): boolean {
   return model.trim().toLowerCase().endsWith(ONE_MILLION_CONTEXT_SUFFIX)
+}
+
+function stripOneMillionContextSuffix(model: string): string {
+  const trimmed = model.trim()
+  return hasOneMillionContextSuffix(trimmed)
+    ? trimmed.slice(0, -ONE_MILLION_CONTEXT_SUFFIX.length).trim()
+    : trimmed
 }
 
 function preserveComposerContextSuffix(

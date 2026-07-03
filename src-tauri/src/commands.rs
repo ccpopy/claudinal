@@ -1092,6 +1092,14 @@ fn take_proxy_config(
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
         .collect();
+    let context_1m_models = env
+        .remove("CLAUDINAL_PROXY_CONTEXT_1M_MODELS")
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect();
     let cch_seed = env
         .remove("CLAUDINAL_PROXY_CCH_SEED")
         .map(|raw| parse_cch_seed(&raw))
@@ -1111,6 +1119,7 @@ fn take_proxy_config(
         opus_model,
         fable_model,
         available_models,
+        context_1m_models,
         cch_seed,
     }))
 }
@@ -3579,6 +3588,44 @@ mod tests {
         assert!(parse_cch_seed("").is_err());
         assert!(parse_cch_seed("0x10000000000000000").is_err());
         assert!(parse_cch_seed("not-a-seed").is_err());
+    }
+
+    #[test]
+    fn take_proxy_config_parses_context_1m_models() {
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "CLAUDINAL_PROXY_TARGET_URL".to_string(),
+            "https://api.example.com".to_string(),
+        );
+        env.insert(
+            "CLAUDINAL_PROXY_CONTEXT_1M_MODELS".to_string(),
+            r#"[" provider-sonnet ", "", "claude-fable-5"]"#.to_string(),
+        );
+
+        let config = take_proxy_config(&mut env, None)
+            .expect("proxy config")
+            .expect("config present");
+
+        assert_eq!(
+            config.context_1m_models,
+            vec!["provider-sonnet".to_string(), "claude-fable-5".to_string()]
+        );
+        assert!(!env.contains_key("CLAUDINAL_PROXY_CONTEXT_1M_MODELS"));
+    }
+
+    #[test]
+    fn take_proxy_config_defaults_context_1m_models_to_empty() {
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "CLAUDINAL_PROXY_TARGET_URL".to_string(),
+            "https://api.example.com".to_string(),
+        );
+
+        let config = take_proxy_config(&mut env, None)
+            .expect("proxy config")
+            .expect("config present");
+
+        assert!(config.context_1m_models.is_empty());
     }
 
     #[test]

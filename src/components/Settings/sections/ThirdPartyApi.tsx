@@ -135,6 +135,9 @@ function localProxyRequirementText(provider: ThirdPartyApiProvider): string | nu
   if (!provider.cacheHitOptimizationEnabled && provider.cchRewriteEnabled) {
     return "CCH 重算需要改写请求体，必须通过 Claudinal 本地转发代理。"
   }
+  if (provider.context1mBetaEnabled) {
+    return "注入 1M 上下文标志需要在转发时补 anthropic-beta 头，必须通过 Claudinal 本地转发代理。"
+  }
   return null
 }
 
@@ -943,6 +946,16 @@ export function ThirdPartyApi() {
                     description="写入 ENABLE_TOOL_SEARCH=true；仅在第三方网关支持 tool_reference 时开启。"
                     onCheckedChange={(toolSearchEnabled) =>
                       update({ toolSearchEnabled })
+                    }
+                  />
+                  <RuntimeOption
+                    id="third-party-context-1m-beta"
+                    checked={editorConfig.context1mBetaEnabled}
+                    disabled={loading || saving}
+                    label="注入 1M 上下文标志"
+                    description="中转商要求请求显式启用 1M 上下文时开启：对声明了 1M 支持的模型，转发时在 anthropic-beta 头补 context-1m-2025-08-07；开启后该供应商会话强制走本地代理转发。"
+                    onCheckedChange={(context1mBetaEnabled) =>
+                      update({ context1mBetaEnabled })
                     }
                   />
                   <RuntimeOption
