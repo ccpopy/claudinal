@@ -4,6 +4,7 @@ import {
   composerPrefsPatchFromCommandEvent,
   effortLabel,
   effortSource,
+  fallbackComposerPrefsForApiProfile,
   isComposerModelAllowed,
   isClaudeModelEntry,
   mergeComposerPrefs,
@@ -67,6 +68,19 @@ describe("composerPrefs.mergeComposerPrefs", () => {
     expect(
       mergeComposerPrefs({ model: "base", effort: "low" }, { model: "", effort: "high" })
     ).toEqual({ model: "base", effort: "high" })
+  })
+})
+
+describe("composerPrefs.fallbackComposerPrefsForApiProfile", () => {
+  it("uses the global default only for the official API profile", () => {
+    const globalDefault = { model: "claude-fable-5", effort: "max" }
+
+    expect(
+      fallbackComposerPrefsForApiProfile("official", globalDefault)
+    ).toEqual(globalDefault)
+    expect(
+      fallbackComposerPrefsForApiProfile("third-party:provider:abc", globalDefault)
+    ).toEqual({ model: "", effort: "" })
   })
 })
 

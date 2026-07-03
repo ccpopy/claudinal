@@ -58,6 +58,7 @@ import type { AppSettings } from "@/lib/settings"
 import {
   EMPTY_COMPOSER_PREFS,
   composerPrefsPatchFromCommandEvent,
+  fallbackComposerPrefsForApiProfile,
   isComposerModelAllowed,
   loadGlobalDefault,
   mergeComposerPrefs,
@@ -474,6 +475,10 @@ function currentApiLaunchProfileKey(): string {
   return thirdPartyApiRuntimeProfileKey({ ...provider, enabled: true })
 }
 
+function currentComposerDefault(globalDefault: ComposerPrefs): ComposerPrefs {
+  return fallbackComposerPrefsForApiProfile(currentApiProfileKey(), globalDefault)
+}
+
 function sidecarApiProfileKey(sidecar: unknown): string | null {
   if (!sidecar || typeof sidecar !== "object") return null
   const connectionRaw = (sidecar as { apiConnectionProfileKey?: unknown })
@@ -494,13 +499,6 @@ function sidecarApiLaunchProfileKey(sidecar: unknown): string | null {
 
 function sessionApiProfileEvidenceKey(project: Project, sid: string): string {
   return `${project.cwd}::${sid}`
-}
-
-function fallbackComposerPrefsForApiProfile(
-  apiProfileKey: string,
-  globalDefault: ComposerPrefs
-): ComposerPrefs {
-  return apiProfileKey === "official" ? globalDefault : EMPTY_COMPOSER_PREFS
 }
 
 function chatTitle(
@@ -1442,8 +1440,8 @@ export default function App() {
     loadGlobalDefault()
       .then((p) => {
         setGlobalDefault(p)
-        // 启动时 Composer 显示全局默认，作为新对话的起点
-        setComposerPrefs(p)
+        // 启动时 Composer 按当前 API profile 显示默认值；第三方不继承官方全局模型。
+        setComposerPrefs(currentComposerDefault(p))
       })
       .catch(() => {
         // 读 settings.json 失败不致命；保持默认 auto
@@ -2819,7 +2817,7 @@ export default function App() {
       setSelectedSessionMeta(null)
       sessionComposerRef.current = null
       setSessionComposer(null)
-      setComposerPrefs(globalDefault)
+      setComposerPrefs(currentComposerDefault(globalDefault))
       applyDefaultPermissionModeState()
       setCollaborationMode(false)
     },
@@ -2935,7 +2933,7 @@ export default function App() {
       setSelectedSessionMeta(null)
       sessionComposerRef.current = null
       setSessionComposer(null)
-      setComposerPrefs(globalDefault)
+      setComposerPrefs(currentComposerDefault(globalDefault))
       applyDefaultPermissionModeState()
       setProjects(listProjects())
       returnViewRef.current = "chat"
@@ -2964,7 +2962,7 @@ export default function App() {
       setSelectedSessionMeta(null)
       sessionComposerRef.current = null
       setSessionComposer(null)
-      setComposerPrefs(globalDefault)
+      setComposerPrefs(currentComposerDefault(globalDefault))
       applyDefaultPermissionModeState()
       dispatch({ kind: "reset" })
       setReviewDiffs([])
@@ -2995,10 +2993,10 @@ export default function App() {
     setReviewDiffs([])
     setSelectedSessionId(null)
     setSelectedSessionMeta(null)
-    // 新对话清掉会话级覆盖，回到全局默认
+    // 新对话清掉会话级覆盖，回到当前 API profile 的默认 Composer。
     sessionComposerRef.current = null
     setSessionComposer(null)
-    setComposerPrefs(globalDefault)
+    setComposerPrefs(currentComposerDefault(globalDefault))
     applyDefaultPermissionModeState()
     setCollaborationMode(false)
   }, [applyDefaultPermissionModeState, detachActiveSession, globalDefault])
@@ -3137,7 +3135,7 @@ export default function App() {
     setSelectedSessionMeta(null)
     sessionComposerRef.current = null
     setSessionComposer(null)
-    setComposerPrefs(globalDefault)
+    setComposerPrefs(currentComposerDefault(globalDefault))
     applyDefaultPermissionModeState()
   }, [applyDefaultPermissionModeState, detachActiveSession, globalDefault])
 
@@ -3175,7 +3173,7 @@ export default function App() {
       setSelectedSessionMeta(null)
       sessionComposerRef.current = null
       setSessionComposer(null)
-      setComposerPrefs(globalDefault)
+      setComposerPrefs(currentComposerDefault(globalDefault))
       applyDefaultPermissionModeState()
       setSidebarRefreshKey((k) => k + 1)
       toast.success("会话已删除")
@@ -3210,7 +3208,7 @@ export default function App() {
       setSelectedSessionMeta(null)
       sessionComposerRef.current = null
       setSessionComposer(null)
-      setComposerPrefs(globalDefault)
+      setComposerPrefs(currentComposerDefault(globalDefault))
       applyDefaultPermissionModeState()
       toast.success("会话已归档")
     } else {

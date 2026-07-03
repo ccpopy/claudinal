@@ -27,6 +27,13 @@ export const EMPTY_COMPOSER_PREFS: ComposerPrefs = { model: "", effort: "" }
 
 const LEGACY_KEY = "claudinal.composer.prefs"
 
+export function fallbackComposerPrefsForApiProfile(
+  apiProfileKey: string,
+  globalDefault: ComposerPrefs
+): ComposerPrefs {
+  return apiProfileKey === "official" ? globalDefault : EMPTY_COMPOSER_PREFS
+}
+
 /**
  * 一次性迁移：把旧 localStorage 里的值读出来当 fallback，然后立刻删除。
  * 仅在没有更优数据源时使用。
