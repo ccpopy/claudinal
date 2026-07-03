@@ -1042,7 +1042,7 @@ export function buildClaudeLaunchEnv(
 ): Record<string, string> {
   const next = buildClaudeEnv(config, existingEnv)
   const runtimeSettings = buildRuntimeSettingsExtra(config)
-  if (Object.keys(runtimeSettings).length > 0) {
+  if (config.enabled || Object.keys(runtimeSettings).length > 0) {
     next[CLAUDINAL_RUNTIME_SETTINGS_JSON_ENV_KEY] =
       JSON.stringify(runtimeSettings)
   }

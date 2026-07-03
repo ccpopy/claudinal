@@ -306,6 +306,12 @@ describe("thirdPartyApi.runtimeSettings", () => {
     ).toThrow("运行时 settings.env.ANTHROPIC_MODEL 由 Claudinal 管理")
   })
 
+  it("forces runtime settings for enabled provider launches", () => {
+    const env = buildClaudeLaunchEnv(makeConfig())
+
+    expect(env.CLAUDINAL_RUNTIME_SETTINGS_JSON).toBe("{}")
+  })
+
   it("adds managed top-level runtime settings JSON to launch env", () => {
     const env = buildClaudeLaunchEnv(
       makeConfig({
