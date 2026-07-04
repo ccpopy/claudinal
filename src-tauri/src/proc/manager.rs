@@ -32,6 +32,7 @@ pub struct SpawnOptions {
 struct Session {
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
+    runtime_settings_file: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -64,6 +65,13 @@ impl Manager {
         let claude = find_claude()?;
         ensure_required_claude_flags(&claude, &opts, &self.claude_help_cache).await?;
         let session_id = Uuid::new_v4().to_string();
+        let runtime_settings_file = opts
+            .settings_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|settings| !settings.is_empty())
+            .map(|settings| write_runtime_claude_settings_file(&session_id, settings))
+            .transpose()?;
         let collab_enabled = opts
             .env
             .as_ref()
@@ -96,8 +104,8 @@ impl Manager {
         if let Some(config) = &opts.mcp_config {
             cmd.arg("--mcp-config").arg(config);
         }
-        if let Some(settings) = &opts.settings_json {
-            cmd.arg("--settings").arg(settings);
+        if let Some(settings_file) = &runtime_settings_file {
+            cmd.arg("--settings").arg(settings_file);
         }
         let permission_prompt_tool = opts
             .permission_prompt_tool
@@ -127,7 +135,15 @@ impl Manager {
 
         hide_tokio_window(&mut cmd);
 
-        let mut child = cmd.spawn()?;
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                if let Some(path) = &runtime_settings_file {
+                    cleanup_runtime_settings_file(&session_id, path);
+                }
+                return Err(Error::from(error));
+            }
+        };
         let stdin = child
             .stdin
             .take()
@@ -150,6 +166,7 @@ impl Manager {
             let topic = event_topic.clone();
             let sid = session_id.clone();
             let cwd = opts.cwd.display().to_string();
+            let runtime_settings_file = runtime_settings_file.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout).lines();
                 loop {
@@ -236,6 +253,9 @@ impl Manager {
                         }
                     }
                 }
+                if let Some(path) = &runtime_settings_file {
+                    cleanup_runtime_settings_file(&sid, path);
+                }
             });
         }
 
@@ -256,6 +276,7 @@ impl Manager {
         let session = Arc::new(Session {
             stdin: Mutex::new(stdin),
             child: Mutex::new(child),
+            runtime_settings_file,
         });
         self.sessions.insert(session_id.clone(), session);
         Ok(session_id)
@@ -348,9 +369,49 @@ impl Manager {
             }
             let _ = child.start_kill();
             let _ = child.wait().await;
+            if let Some(path) = &session.runtime_settings_file {
+                cleanup_runtime_settings_file(session_id, path);
+            }
             info!(session = %session_id, "stopped");
         }
         Ok(())
+    }
+}
+
+fn write_runtime_claude_settings_file(session_id: &str, settings_json: &str) -> Result<PathBuf> {
+    let dir = std::env::temp_dir().join("claudinal");
+    std::fs::create_dir_all(&dir).map_err(Error::from)?;
+    let path = dir.join(format!(
+        "claude-settings-{}-{session_id}.json",
+        std::process::id()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(&path).map_err(Error::from)?;
+    std::io::Write::write_all(&mut file, settings_json.as_bytes()).map_err(Error::from)?;
+    Ok(path)
+}
+
+fn cleanup_runtime_settings_file(session_id: &str, path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => debug!(
+            session = %session_id,
+            path = %path.display(),
+            "removed runtime Claude settings file"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warn!(
+            session = %session_id,
+            path = %path.display(),
+            "remove runtime Claude settings file failed: {error}"
+        ),
     }
 }
 
@@ -546,7 +607,9 @@ fn kill_process_tree(_pid: u32) {}
 
 #[cfg(test)]
 mod tests {
-    use super::parse_effort_levels;
+    use super::{
+        cleanup_runtime_settings_file, parse_effort_levels, write_runtime_claude_settings_file,
+    };
 
     #[test]
     fn parse_standard_multiline_help() {
@@ -585,5 +648,32 @@ mod tests {
     fn parse_no_effort_flag_is_empty() {
         let help = "  --model <name>  Model selection\n  --foo <bar>  Baz (a, b)\n";
         assert!(parse_effort_levels(help).is_empty());
+    }
+
+    #[test]
+    fn runtime_claude_settings_file_contains_json_for_settings_path_mode() {
+        let session_id = format!("test-{}", uuid::Uuid::new_v4());
+        let path = write_runtime_claude_settings_file(
+            &session_id,
+            r#"{"env":{"ANTHROPIC_MODEL":"provider-main"}}"#,
+        )
+        .expect("write settings file");
+
+        let raw = std::fs::read_to_string(&path).expect("read settings file");
+        assert_eq!(raw, r#"{"env":{"ANTHROPIC_MODEL":"provider-main"}}"#);
+
+        cleanup_runtime_settings_file(&session_id, &path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn runtime_claude_settings_file_cleanup_tolerates_missing_file() {
+        let session_id = format!("test-{}", uuid::Uuid::new_v4());
+        let path = std::env::temp_dir()
+            .join("claudinal")
+            .join(format!("missing-{session_id}.json"));
+
+        cleanup_runtime_settings_file(&session_id, &path);
+        assert!(!path.exists());
     }
 }

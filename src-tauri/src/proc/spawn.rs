@@ -142,7 +142,7 @@ fn claude_executables_in_dir(dir: &Path) -> Vec<PathBuf> {
     }
     #[cfg(target_os = "windows")]
     {
-        ["claude.cmd", "claude.exe", "claude.ps1", "claude"]
+        ["claude.exe", "claude.cmd", "claude.ps1", "claude"]
             .iter()
             .map(|name| dir.join(name))
             .collect()
@@ -206,4 +206,24 @@ fn npm_prefix_command() -> Option<std::process::Command> {
     let mut cmd = std::process::Command::new(npm);
     cmd.args(["config", "get", "prefix"]);
     Some(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_prefers_native_exe_before_shell_shims_in_same_directory() {
+        let dir = Path::new(r"C:\Users\tester\AppData\Roaming\npm");
+        let names = claude_executables_in_dir(dir)
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["claude.exe", "claude.cmd", "claude.ps1", "claude"]
+        );
+    }
 }
