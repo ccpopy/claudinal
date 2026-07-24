@@ -1,6 +1,18 @@
 import type { ReviewRunDiff } from "@/lib/diff"
 import type { WorktreeDiff, WorktreeFileDiff } from "@/lib/ipc"
 
+export function shouldSyncRunReviewToConversation(
+  activeRuntimeId: string | null,
+  runRuntimeId: string,
+  selectedSessionId: string | null,
+  runSessionId: string | null
+): boolean {
+  return (
+    activeRuntimeId === runRuntimeId ||
+    (runSessionId !== null && selectedSessionId === runSessionId)
+  )
+}
+
 /**
  * sidecar.reviewDiffs 的兼容性读取。
  *

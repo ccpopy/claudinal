@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button"
 import {
   chatTimelinePreview,
   chatTimelineRoleLabel,
-  formatTimelineTime
+  formatTimelineTime,
+  timelineTargetIntersectsViewport
 } from "@/lib/chatTimeline"
 import type { ReviewRunDiff } from "@/lib/diff"
 import { matchReviewsToResults } from "@/lib/diff"
@@ -18,6 +19,7 @@ import { RunReviewCard } from "./RunReviewCard"
 interface Props {
   entries: UIEntry[]
   streaming: boolean
+  cwd?: string | null
   /** 默认 true：每次 entries / streaming 变化把 viewport 滚到底部（直播会话用）。
    *  传 false 表示纯只读预览（如归档预览），从顶部开始让用户自行下滚。 */
   autoScroll?: boolean
@@ -174,6 +176,7 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
 export function MessageStream({
   entries,
   streaming,
+  cwd,
   autoScroll = true,
   reviews = [],
   onShowDiff,
@@ -183,8 +186,12 @@ export function MessageStream({
   const ref = useRef<HTMLDivElement>(null)
   const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const activeTimelineIdRef = useRef<string | null>(null)
+  const visibleTimelineIdsKeyRef = useRef("")
   const [pinnedToBottom, setPinnedToBottom] = useState(true)
   const [activeTimelineId, setActiveTimelineId] = useState<string | null>(null)
+  const [visibleTimelineIds, setVisibleTimelineIds] = useState<ReadonlySet<string>>(
+    () => new Set()
+  )
   const [timelineVisible, setTimelineVisible] = useState(false)
 
   const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
@@ -243,19 +250,41 @@ export function MessageStream({
     []
   )
 
-  const updateActiveTimeline = useCallback(() => {
+  const updateTimelineState = useCallback(() => {
     const el = ref.current
     const viewport = el?.querySelector(
       "[data-slot='scroll-area-viewport']"
     ) as HTMLElement | null
     if (!viewport || timelineItems.length === 0) return
-    const anchorTop = viewport.scrollTop + viewport.clientHeight * 0.32
+    const viewportTop = viewport.scrollTop
+    const viewportHeight = viewport.clientHeight
+    const anchorTop = viewportTop + viewportHeight * 0.32
+    const nextVisibleIds: string[] = []
     let next = timelineItems[0].id
+    let passedAnchor = false
     for (const item of timelineItems) {
       const target = timelineTargetRefs.current.get(item.id)
       if (!target) continue
-      if (target.offsetTop <= anchorTop) next = item.id
-      else break
+      if (
+        timelineTargetIntersectsViewport(
+          target.offsetTop,
+          target.offsetHeight,
+          viewportTop,
+          viewportHeight
+        )
+      ) {
+        nextVisibleIds.push(item.id)
+      }
+      if (!passedAnchor && target.offsetTop <= anchorTop) {
+        next = item.id
+      } else {
+        passedAnchor = true
+      }
+    }
+    const nextVisibleKey = nextVisibleIds.join("\u0000")
+    if (nextVisibleKey !== visibleTimelineIdsKeyRef.current) {
+      visibleTimelineIdsKeyRef.current = nextVisibleKey
+      setVisibleTimelineIds(new Set(nextVisibleIds))
     }
     if (next === activeTimelineIdRef.current) return
     activeTimelineIdRef.current = next
@@ -274,12 +303,12 @@ export function MessageStream({
         viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
       setTimelineVisible(viewport.scrollHeight > viewport.clientHeight)
       if (autoScroll) setPinnedToBottom(distance < 32)
-      updateActiveTimeline()
+      updateTimelineState()
     }
     viewport.addEventListener("scroll", onScroll, { passive: true })
     onScroll()
     return () => viewport.removeEventListener("scroll", onScroll)
-  }, [autoScroll, updateActiveTimeline])
+  }, [autoScroll, updateTimelineState])
 
   const scrollToBottom = () => {
     const el = ref.current
@@ -289,7 +318,7 @@ export function MessageStream({
     if (!viewport) return
     viewport.scrollTop = viewport.scrollHeight
     setPinnedToBottom(true)
-    updateActiveTimeline()
+    updateTimelineState()
   }
 
   useEffect(() => {
@@ -341,6 +370,7 @@ export function MessageStream({
               >
                 <MessageCard
                   entry={g.msg}
+                  cwd={cwd}
                   retryableMessageIds={retryableMessageIds}
                   onRetryMessage={onRetryMessage}
                 />
@@ -353,6 +383,7 @@ export function MessageStream({
                 key={g.key}
                 steps={g.steps}
                 running={g.running}
+                cwd={cwd}
                 durationMs={g.durationMs}
                 startTs={g.startTs}
                 endTs={g.endTs}
@@ -365,12 +396,14 @@ export function MessageStream({
               <div key={g.key}>
                 <MessageCard
                   entry={g.entry}
+                  cwd={cwd}
                   retryableMessageIds={retryableMessageIds}
                   onRetryMessage={onRetryMessage}
                 />
                 {review && (
                   <RunReviewCard
                     review={review}
+                    cwd={cwd}
                     onShowDiff={(path) => onShowDiff?.(review, path)}
                   />
                 )}
@@ -381,6 +414,7 @@ export function MessageStream({
             <MessageCard
               key={g.key}
               entry={g.entry}
+              cwd={cwd}
               retryableMessageIds={retryableMessageIds}
               onRetryMessage={onRetryMessage}
             />
@@ -390,6 +424,7 @@ export function MessageStream({
       <ChatTimelineNav
         items={timelineVisible ? timelineItems : []}
         activeId={activeTimelineId}
+        visibleIds={visibleTimelineIds}
         onSelect={scrollToTimelineItem}
       />
       {autoScroll && !pinnedToBottom && (

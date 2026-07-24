@@ -40,7 +40,10 @@ import {
   type SessionMeta
 } from "@/lib/ipc"
 import type { ReviewRunDiff } from "@/lib/diff"
-import { parseStoredReviewDiffs } from "@/lib/reviewDiffs"
+import {
+  parseStoredReviewDiffs,
+  shouldSyncRunReviewToConversation
+} from "@/lib/reviewDiffs"
 import { findPermissionMemoryMatch } from "@/lib/permissionMemory"
 import {
   buildProxyEnv,
@@ -50,6 +53,7 @@ import {
 import {
   proxyStatusErrorText,
   reduceProxyStatus,
+  shouldTrackProxyStatus,
   type UpstreamStatusState
 } from "@/lib/proxyStatus"
 import { UpstreamStatusBanner } from "@/components/UpstreamStatusBanner"
@@ -103,7 +107,6 @@ import {
   providerComposerModelOptions,
   resolveThirdPartyComposerLaunchModel,
   resolveThirdPartyDefaultLaunchModel,
-  shouldResumeWithApiProfile,
   thirdPartyApiConnectionProfileKey,
   thirdPartyApiRuntimeProfileKey,
   trimApiUrl
@@ -130,6 +133,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { getSessionTitle, setSessionTitle } from "@/lib/sessionTitles"
 import {
   cleanSessionTitleText,
+  sessionDisplayTitle,
   sessionGeneratedTitle
 } from "@/lib/sessionDisplayTitle"
 import {
@@ -293,13 +297,7 @@ type SentInput = {
   documents: DocumentPayload[]
   cliBlocks: Array<Record<string, unknown>>
   skillInvocation?: SkillInvocation | null
-  apiProfileKey: string
-  apiLaunchProfileKey: string
   ts: number
-}
-type SessionApiProfileEvidence = {
-  apiProfileKey: string
-  apiLaunchProfileKey: string
 }
 type SendOptions = {
   mode?: QueuedInputMode
@@ -308,6 +306,11 @@ type SendOptions = {
   skillInvocation?: SkillInvocation | null
   sentAt?: number
   bypassPreprocess?: boolean
+}
+type PendingDeleteSession = {
+  project: Project
+  sessionId: string
+  title: string
 }
 type ReturnView = "chat" | "plugins" | "history"
 type ChatReturnTarget =
@@ -497,10 +500,6 @@ function sidecarApiLaunchProfileKey(sidecar: unknown): string | null {
   return sidecarApiProfileKey(sidecar)
 }
 
-function sessionApiProfileEvidenceKey(project: Project, sid: string): string {
-  return `${project.cwd}::${sid}`
-}
-
 function chatTitle(
   state: ReturnType<typeof reducerInit>,
   project: Project,
@@ -585,14 +584,6 @@ const SEND_STEP_WARN_MS = 1_000
 
 /** 软中断兜底：interrupt 发出后超过该时长仍在 streaming，则强杀会话进程。 */
 const INTERRUPT_FALLBACK_MS = 6_000
-
-/**
- * `ensureSession` 的中止信号：选中会话的归属与当前 API 供应商不一致，
- * 本次发送被主动放弃——不 spawn、不重置对话、不切换选中会话。
- * 与「启动失败」的 null 区分开（失败路径自带错误 toast），
- * 调用方收到该信号后需把本次输入完整还原给用户。
- */
-const ENSURE_SESSION_BLOCKED: unique symbol = Symbol("ensure-session-blocked")
 
 function monotonicMs(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now()
@@ -723,7 +714,8 @@ export default function App() {
   const [showCollabFlow, setShowCollabFlow] = useState(false)
   const [collabSettingsTick, setCollabSettingsTick] = useState(0)
   const [installedSkillCommands, setInstalledSkillCommands] = useState<string[]>([])
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [pendingDeleteSession, setPendingDeleteSession] =
+    useState<PendingDeleteSession | null>(null)
   const [pendingRemoveProjectId, setPendingRemoveProjectId] = useState<
     string | null
   >(null)
@@ -745,9 +737,6 @@ export default function App() {
   const activeRuntimeIdRef = useRef<string | null>(null)
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
   const sentInputsRef = useRef<Map<string, SentInput>>(new Map())
-  const sessionApiProfilesRef = useRef<Map<string, SessionApiProfileEvidence>>(
-    new Map()
-  )
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
   const composerDraftsRef = useRef<Map<string, ComposerDraft>>(new Map())
   const apiProfileKeyRef = useRef(currentApiProfileKey())
@@ -792,33 +781,6 @@ export default function App() {
     }
     setSentInputVersion((version) => version + 1)
   }, [])
-
-  const rememberSessionApiProfile = useCallback(
-    (
-      p: Project,
-      sid: string,
-      apiProfileKey: string,
-      apiLaunchProfileKey: string
-    ) => {
-      const map = sessionApiProfilesRef.current
-      map.set(sessionApiProfileEvidenceKey(p, sid), {
-        apiProfileKey,
-        apiLaunchProfileKey
-      })
-      if (map.size > 200) {
-        const first = map.keys().next().value
-        if (first) map.delete(first)
-      }
-    },
-    []
-  )
-
-  const getRememberedSessionApiProfile = useCallback(
-    (p: Project, sid: string): SessionApiProfileEvidence | null =>
-      sessionApiProfilesRef.current.get(sessionApiProfileEvidenceKey(p, sid)) ??
-      null,
-    []
-  )
 
   const applyPermissionModeState = useCallback(
     (
@@ -995,7 +957,13 @@ export default function App() {
     run.reviewSnapshotId = null
     const appendReview = (review: ReviewRunDiff) => {
       run.reviewDiffs = [...run.reviewDiffs, review]
-      if (activeRuntimeIdRef.current === run.runtimeId) {
+      const runSessionId = run.jsonlSessionId ?? findInitSessionId(run.state)
+      if (shouldSyncRunReviewToConversation(
+        activeRuntimeIdRef.current,
+        run.runtimeId,
+        selectedSessionIdRef.current,
+        runSessionId
+      )) {
         setReviewDiffs(run.reviewDiffs)
       }
       persistReviewDiffs(run)
@@ -1060,20 +1028,6 @@ export default function App() {
     )
   }, [])
 
-  /**
-   * 发送被中止（会话归属与当前 API 供应商不一致）时，把本次输入完整还原到聊天框。
-   * 走 externalText/externalImages/externalDocuments 通道：Composer 在 onSend 后会
-   * 立即清空自身内容，而这里的还原发生在 send 的异步判定之后，天然覆盖清空后的状态。
-   */
-  const restoreBlockedSendInput = useCallback(
-    (text: string, images: ImagePayload[], documents: DocumentPayload[]) => {
-      if (text) setDraft(text)
-      setDraftImages(images)
-      setDraftDocuments(documents)
-    },
-    []
-  )
-
   const rememberComposerDraft = useCallback(
     (key: string | undefined, next: ComposerDraft) => {
       if (!key) return
@@ -1104,23 +1058,27 @@ export default function App() {
   const closeRunningSession = useCallback(
     async (
       runtimeId: string,
-      opts: { dropQueued?: boolean; stopProcess?: boolean } = {}
+      opts: {
+        dropQueued?: boolean
+        stopProcess?: boolean
+        preserveConversationState?: boolean
+      } = {}
     ) => {
       const run = runningSessionsRef.current.get(runtimeId)
       if (!run) {
         setPermissionRequests((cur) =>
           cur.filter((request) => request.session_id !== runtimeId)
         )
-        if (opts.stopProcess !== false) {
-          await stopSession(runtimeId).catch((e) => console.error(e))
-        }
         if (activeRuntimeIdRef.current === runtimeId) {
           activeRuntimeIdRef.current = null
           sessionIdRef.current = null
           setSessionId(null)
           setStreaming(false)
-          setReviewDiffs([])
+          if (!opts.preserveConversationState) setReviewDiffs([])
           collabMcpEnabledRef.current = false
+        }
+        if (opts.stopProcess !== false) {
+          await stopSession(runtimeId).catch((e) => console.error(e))
         }
         return
       }
@@ -1128,15 +1086,6 @@ export default function App() {
       const isActive = activeRuntimeIdRef.current === runtimeId
       // 关闭即强杀：清掉软中断兜底定时器，避免定时器在 run 移除后再触发误杀
       clearInterruptState(run)
-      const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
-      if (sid) {
-        rememberSessionApiProfile(
-          run.project,
-          sid,
-          run.apiProfileKey,
-          run.apiLaunchProfileKey
-        )
-      }
       if (opts.dropQueued !== false && run.queuedInputs.length > 0) {
         run.queuedInputs = []
       }
@@ -1148,25 +1097,20 @@ export default function App() {
       setPermissionRequests((cur) =>
         cur.filter((request) => request.session_id !== runtimeId)
       )
-      if (opts.stopProcess !== false) {
-        await stopSession(runtimeId).catch((e) => console.error(e))
-      }
       if (isActive) {
         activeRuntimeIdRef.current = null
         sessionIdRef.current = null
         setSessionId(null)
         setStreaming(false)
-        setReviewDiffs([])
+        if (!opts.preserveConversationState) setReviewDiffs([])
         collabMcpEnabledRef.current = false
+      }
+      if (opts.stopProcess !== false) {
+        await stopSession(runtimeId).catch((e) => console.error(e))
       }
       setRunningTick((tick) => tick + 1)
     },
-    [
-      applyRunningAction,
-      clearInterruptState,
-      discardRunReview,
-      rememberSessionApiProfile
-    ]
+    [applyRunningAction, clearInterruptState, discardRunReview]
   )
 
   const deleteSessionRecord = useCallback(async (p: Project, sid: string) => {
@@ -1176,24 +1120,27 @@ export default function App() {
     setSidebarRefreshKey((k) => k + 1)
   }, [])
 
-  const refreshActiveThirdPartyRuntime = useCallback(
-    (message = "第三方 API 配置已刷新，下一次发送会使用新配置") => {
+  const refreshActiveApiRuntime = useCallback(
+    (message = "API 配置已刷新，当前会话上下文已保留，下一次发送会使用新配置") => {
       const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
       if (!runtimeId) return
       const run = runningSessionsRef.current.get(runtimeId)
-      const profileKey = run?.apiProfileKey ?? apiProfileKeyRef.current
-      if (profileKey === "official") return
 
       if (run?.streaming || (run && run.pendingPermissionRequestIds.size > 0)) {
         pendingApiRuntimeRefreshRef.current = true
         toast.warning(
-          "第三方 API 配置已保存；当前请求结束后会刷新运行会话，下一次发送会使用新配置"
+          "API 配置已保存；当前请求结束后会刷新运行会话，当前会话上下文会保留"
         )
         return
       }
 
       pendingApiRuntimeRefreshRef.current = false
       pendingComposerRuntimeRefreshRef.current = false
+      if (run && run.queuedInputs.length > 0) {
+        restoreQueuedInputsToDraft(run.queuedInputs)
+        run.queuedInputs = []
+        setRunningTick((tick) => tick + 1)
+      }
       const sid = run?.jsonlSessionId ?? (run ? findInitSessionId(run.state) : null)
       if (sid) {
         setSelectedSessionId((cur) => {
@@ -1202,13 +1149,16 @@ export default function App() {
           return next
         })
       }
-      void closeRunningSession(runtimeId, { dropQueued: false })
+      void closeRunningSession(runtimeId, {
+        dropQueued: false,
+        preserveConversationState: true
+      })
         .then(() => toast.info(message))
         .catch((error) => {
-          toast.error(`刷新第三方 API 会话失败: ${String(error)}`)
+          toast.error(`刷新 API 会话失败: ${String(error)}`)
         })
     },
-    [closeRunningSession]
+    [closeRunningSession, restoreQueuedInputsToDraft]
   )
 
   const refreshActiveComposerRuntime = useCallback(
@@ -1322,8 +1272,7 @@ export default function App() {
       sid: string,
       apiProfileKey: string,
       apiLaunchProfileKey: string
-    ): Promise<{ profileKey: string; launchProfileKey: string | null }> => {
-      rememberSessionApiProfile(p, sid, apiProfileKey, apiLaunchProfileKey)
+    ): Promise<void> => {
       const existing = await readSessionSidecar(p.cwd, sid)
       const base = (
         existing && typeof existing === "object" && !Array.isArray(existing)
@@ -1331,7 +1280,6 @@ export default function App() {
           : {}
       ) as Record<string, unknown>
       const storedProfileKey = sidecarApiProfileKey(base)
-      const storedLaunchProfileKey = sidecarApiLaunchProfileKey(base)
       const profileKey = storedProfileKey ?? apiProfileKey
       const hasConnectionProfile =
         typeof base.apiConnectionProfileKey === "string" &&
@@ -1342,7 +1290,6 @@ export default function App() {
         typeof base.apiLaunchProfileKey === "string" &&
         base.apiLaunchProfileKey.trim()
       const next: Record<string, unknown> = { ...base }
-      let launchProfileKey = storedLaunchProfileKey
       let changed = false
 
       if (!hasConnectionProfile) {
@@ -1355,15 +1302,13 @@ export default function App() {
       }
       if (!hasLaunchProfile && !storedProfileKey) {
         next.apiLaunchProfileKey = apiLaunchProfileKey
-        launchProfileKey = apiLaunchProfileKey
         changed = true
       }
       if (changed) {
         await writeSessionSidecar(p.cwd, sid, next)
       }
-      return { profileKey, launchProfileKey }
     },
-    [rememberSessionApiProfile]
+    []
   )
 
   const stopRunningSessionForJsonl = useCallback(
@@ -1623,21 +1568,6 @@ export default function App() {
         fallbackComposerPrefsForApiProfile(profileKey, globalDefault)
       )
     }
-    const resetConversationAfterApiConnectionChange = () => {
-      pendingApiRuntimeRefreshRef.current = false
-      pendingComposerRuntimeRefreshRef.current = false
-      activeRuntimeIdRef.current = null
-      sessionIdRef.current = null
-      setSessionId(null)
-      setStreaming(false)
-      dispatch({ kind: "reset" })
-      setReviewDiffs([])
-      setSelectedSessionId(null)
-      setSelectedSessionMeta(null)
-      clearProfileBoundLaunchPrefs(currentApiProfileKey())
-      applyDefaultPermissionModeState()
-      collabMcpEnabledRef.current = false
-    }
     const refreshThirdPartyApi = () => {
       const previousProfileKey = apiProfileKeyRef.current
       const nextProfileKey = currentApiProfileKey()
@@ -1647,30 +1577,33 @@ export default function App() {
       apiLaunchProfileKeyRef.current = nextLaunchProfileKey
       setThirdPartyApiVersion((version) => version + 1)
       if (previousProfileKey !== nextProfileKey) {
+        clearProfileBoundLaunchPrefs(nextProfileKey)
         const runtimeId = activeRuntimeIdRef.current
         const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
         if (run?.streaming || (run && run.pendingPermissionRequestIds.size > 0)) {
           pendingApiRuntimeRefreshRef.current = true
           toast.warning(
-            "第三方 API 连接配置已切换；当前运行中的会话仍使用原连接，结束后新对话会使用新连接"
+            "API 提供商已切换；当前请求仍使用原连接，结束后会保留当前会话，下一次发送使用新连接"
+          )
+        } else if (runtimeId) {
+          refreshActiveApiRuntime(
+            "API 提供商已切换，当前会话上下文已保留；下一次发送将使用新连接"
           )
         } else {
-          if (runtimeId) {
-            void closeRunningSession(runtimeId, { dropQueued: false }).catch((error) =>
-              console.error("关闭旧 API 会话失败:", error)
-            )
-          }
-          resetConversationAfterApiConnectionChange()
-          toast.info("第三方 API 连接配置已切换，已自动创建新会话")
+          pendingApiRuntimeRefreshRef.current = false
+          pendingComposerRuntimeRefreshRef.current = false
+          toast.info(
+            "API 提供商已切换，当前会话上下文已保留；下一次发送将使用新连接"
+          )
         }
         setSidebarRefreshKey((k) => k + 1)
       } else if (previousLaunchProfileKey !== nextLaunchProfileKey) {
         clearProfileBoundLaunchPrefs(nextProfileKey)
-        refreshActiveThirdPartyRuntime(
+        refreshActiveApiRuntime(
           "第三方 API 模型配置已刷新，当前会话上下文已保留"
         )
-      } else {
-        refreshActiveThirdPartyRuntime()
+      } else if (nextProfileKey !== "official") {
+        refreshActiveApiRuntime()
       }
       refreshComposerDefaults()
       if (!isOfficialApi()) {
@@ -1700,7 +1633,7 @@ export default function App() {
     applyDefaultPermissionModeState,
     applyPermissionModeState,
     closeRunningSession,
-    refreshActiveThirdPartyRuntime,
+    refreshActiveApiRuntime,
     refreshActiveComposerRuntime,
     globalDefault
   ])
@@ -1727,8 +1660,6 @@ export default function App() {
           documents: item.documents,
           cliBlocks: item.cliBlocks,
           skillInvocation: item.skillInvocation,
-          apiProfileKey: run.apiProfileKey,
-          apiLaunchProfileKey: run.apiLaunchProfileKey,
           ts: sentAt
         })
         applyRunningAction(run, {
@@ -1756,9 +1687,7 @@ export default function App() {
     ]
   )
 
-  const ensureSession = useCallback(async (): Promise<
-    string | typeof ENSURE_SESSION_BLOCKED | null
-  > => {
+  const ensureSession = useCallback(async (): Promise<string | null> => {
     if (!project) {
       setShowAdd(true)
       return null
@@ -1797,48 +1726,7 @@ export default function App() {
       const launchReviewDiffs = resumeSessionId ? reviewDiffs : []
       if (resumeSessionId) {
         const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
-        let storedProfileKey = sidecarApiProfileKey(sidecar)
-        let storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
-        if (!shouldResumeWithApiProfile(storedProfileKey, apiProfileKey)) {
-          const runningOwner = storedProfileKey
-            ? null
-            : findRunningSession(project, resumeSessionId)
-          const rememberedOwner =
-            storedProfileKey || runningOwner
-              ? null
-              : getRememberedSessionApiProfile(project, resumeSessionId)
-          const inMemoryOwner = runningOwner
-            ? {
-                apiProfileKey: runningOwner.apiProfileKey,
-                apiLaunchProfileKey: runningOwner.apiLaunchProfileKey
-              }
-            : rememberedOwner
-          if (
-            inMemoryOwner &&
-            shouldResumeWithApiProfile(inMemoryOwner.apiProfileKey, apiProfileKey)
-          ) {
-            const ensured = await ensureSidecarApiProfile(
-              project,
-              resumeSessionId,
-              inMemoryOwner.apiProfileKey,
-              inMemoryOwner.apiLaunchProfileKey
-            )
-            storedProfileKey = ensured.profileKey
-            storedLaunchProfileKey = ensured.launchProfileKey
-          } else {
-            const blockedProfileKey =
-              storedProfileKey ?? inMemoryOwner?.apiProfileKey ?? null
-            // 跨供应商（或归属无法确认）的旧会话：中止本次发送。
-            // 不自动新建会话、不重置对话状态、不切换选中会话——
-            // 跨供应商续会话会把原供应商的完整对话历史发给另一家，必须由用户显式决定。
-            toast.info(
-              blockedProfileKey
-                ? "此会话属于其他 API 供应商，已停止发送并保留输入内容。切回原供应商可直接继续；或新建会话后重新发送。"
-                : "无法确认此会话所属的 API 供应商，已停止发送并保留输入内容。可新建会话后重新发送。"
-            )
-            return ENSURE_SESSION_BLOCKED
-          }
-        }
+        const storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
         const canUseLaunchPrefs = canUseApiProfileLaunchPrefs(
           storedLaunchProfileKey,
           apiLaunchProfileKey
@@ -2111,10 +1999,9 @@ export default function App() {
           }
           if (
             pendingApiRuntimeRefreshRef.current &&
-            activeRuntimeIdRef.current === run.runtimeId &&
-            run.apiProfileKey !== "official"
+            activeRuntimeIdRef.current === run.runtimeId
           ) {
-            refreshActiveThirdPartyRuntime()
+            refreshActiveApiRuntime()
           } else if (
             pendingComposerRuntimeRefreshRef.current &&
             activeRuntimeIdRef.current === run.runtimeId
@@ -2129,6 +2016,7 @@ export default function App() {
         reportNetworkError(run.runtimeId, "stderr", line)
       })
       const u3 = await listenSessionProxyStatus(id, (ev) => {
+        if (!shouldTrackProxyStatus(run.streaming, run.interrupting)) return
         run.upstreamStatus = reduceProxyStatus(run.upstreamStatus, ev, Date.now())
         setRunningTick((tick) => tick + 1)
         if (ev.kind === "upstream-error" || ev.kind === "network-error") {
@@ -2161,11 +2049,9 @@ export default function App() {
     finishRunReview,
     sendQueuedFollowup,
     closeRunningSession,
-    findRunningSession,
-    getRememberedSessionApiProfile,
     ensureSidecarApiProfile,
     reportNetworkError,
-    refreshActiveThirdPartyRuntime,
+    refreshActiveApiRuntime,
     refreshActiveComposerRuntime,
     globalDefault
   ])
@@ -2324,10 +2210,6 @@ export default function App() {
 
       if (streaming) {
         const id = sessionIdRef.current ?? (await ensureSession())
-        if (id === ENSURE_SESSION_BLOCKED) {
-          restoreBlockedSendInput(text, images, documents)
-          return
-        }
         if (!id) {
           return
         }
@@ -2361,8 +2243,6 @@ export default function App() {
             documents,
             cliBlocks: blocks,
             skillInvocation,
-            apiProfileKey: run.apiProfileKey,
-            apiLaunchProfileKey: run.apiLaunchProfileKey,
             ts: sentAt
           }
           rememberSentInput(sentInput)
@@ -2382,10 +2262,6 @@ export default function App() {
       }
 
       const id = await measureSendStep("ensureSession", ensureSession)
-      if (id === ENSURE_SESSION_BLOCKED) {
-        restoreBlockedSendInput(text, images, documents)
-        return
-      }
       if (!id) return
       const run = runningSessionsRef.current.get(id)
       const sentAt = options.sentAt ?? Date.now()
@@ -2396,9 +2272,6 @@ export default function App() {
         documents,
         cliBlocks: blocks,
         skillInvocation,
-        apiProfileKey: run?.apiProfileKey ?? currentApiProfileKey(),
-        apiLaunchProfileKey:
-          run?.apiLaunchProfileKey ?? currentApiLaunchProfileKey(),
         ts: sentAt
       }
       if (run) {
@@ -2434,7 +2307,6 @@ export default function App() {
     [
       streaming,
       ensureSession,
-      restoreBlockedSendInput,
       teardown,
       applyRunningAction,
       setRunningSessionStreaming,
@@ -2494,22 +2366,6 @@ export default function App() {
         findInitSessionId(stateRef.current)
 
       try {
-        const retryProfileKey = sid
-          ? (
-              await ensureSidecarApiProfile(
-                project,
-                sid,
-                item.apiProfileKey,
-                item.apiLaunchProfileKey
-              )
-            ).profileKey
-          : item.apiProfileKey
-        if (!shouldResumeWithApiProfile(retryProfileKey, currentApiProfileKey())) {
-          toast.info(
-            "此会话属于其他 API 供应商，已停止发送并保留输入内容。切回原供应商可直接继续；或新建会话后重新发送。"
-          )
-          return
-        }
         if (runtimeId) {
           await closeRunningSession(runtimeId, { dropQueued: false })
         }
@@ -2571,7 +2427,6 @@ export default function App() {
       clearRetrySidecarTail,
       closeRunningSession,
       deleteSessionRecord,
-      ensureSidecarApiProfile,
       project,
       send,
       streaming
@@ -2601,6 +2456,7 @@ export default function App() {
     }
     // ② interrupting 标志驱动停止按钮 spinner（runningTick 触发渲染）
     run.interrupting = true
+    run.upstreamStatus = null
     // ③ 兜底：超时仍在 streaming 则强杀该 run 自身。
     //    不走 teardown（stopActiveSession 以"当前活动会话"为目标，
     //    兜底触发时用户可能已切到别的会话，会误杀新会话）
@@ -2695,8 +2551,6 @@ export default function App() {
           documents: found.item.documents,
           cliBlocks: found.item.cliBlocks,
           skillInvocation: found.item.skillInvocation,
-          apiProfileKey: found.run.apiProfileKey,
-          apiLaunchProfileKey: found.run.apiLaunchProfileKey,
           ts: sentAt
         })
         applyRunningAction(found.run, {
@@ -3146,45 +3000,70 @@ export default function App() {
       toast.error("当前没有会话，无法删除")
       return
     }
-    setShowDeleteConfirm(true)
-  }, [project, selectedSessionId, state])
+    const sessionMeta =
+      selectedSessionMeta?.id === target ? selectedSessionMeta : null
+    setPendingDeleteSession({
+      project,
+      sessionId: target,
+      title: sessionMeta
+        ? sessionDisplayTitle(sessionMeta)
+        : getSessionTitle(target) ?? target.slice(0, 8)
+    })
+  }, [project, selectedSessionId, selectedSessionMeta, state])
+
+  const requestDeleteSession = useCallback(
+    (targetProject: Project, session: SessionMeta) => {
+      setPendingDeleteSession({
+        project: targetProject,
+        sessionId: session.id,
+        title: sessionDisplayTitle(session)
+      })
+    },
+    []
+  )
 
   const performDelete = useCallback(async () => {
-    if (!project) return
-    const target = selectedSessionId ?? findInitSessionId(state)
-    if (!target) {
-      setShowDeleteConfirm(false)
-      return
-    }
-    await stopRunningSessionForJsonl(project, target)
+    const target = pendingDeleteSession
+    if (!target) return
+    const currentSessionId =
+      selectedSessionIdRef.current ?? findInitSessionId(stateRef.current)
+    const deletingCurrent =
+      project?.id === target.project.id && currentSessionId === target.sessionId
+    if (deletingCurrent) ++switchTokenRef.current
     try {
-      await deleteSessionJsonl(project.cwd, target)
-      // 删除后顺手把残留的置顶 / 归档记录清掉，避免侧栏 / 归档页出现幽灵条目
-      unpin(project.id, target)
-      unarchive(project.id, target)
-      setShowDeleteConfirm(false)
-      activeRuntimeIdRef.current = null
-      sessionIdRef.current = null
-      setSessionId(null)
-      setStreaming(false)
-      dispatch({ kind: "reset" })
-      setReviewDiffs([])
-      setSelectedSessionId(null)
-      setSelectedSessionMeta(null)
-      sessionComposerRef.current = null
-      setSessionComposer(null)
-      setComposerPrefs(currentComposerDefault(globalDefault))
-      applyDefaultPermissionModeState()
-      setSidebarRefreshKey((k) => k + 1)
+      await stopRunningSessionForJsonl(target.project, target.sessionId)
+      await deleteSessionRecord(target.project, target.sessionId)
+      composerDraftsRef.current.delete(
+        composerDraftKey(target.project.id, target.sessionId)
+      )
+      setPendingDeleteSession(null)
+      if (deletingCurrent) {
+        activeRuntimeIdRef.current = null
+        sessionIdRef.current = null
+        selectedSessionIdRef.current = null
+        setSessionId(null)
+        setStreaming(false)
+        dispatch({ kind: "reset" })
+        setReviewDiffs([])
+        setSelectedSessionId(null)
+        setSelectedSessionMeta(null)
+        sessionComposerRef.current = null
+        setSessionComposer(null)
+        setComposerPrefs(currentComposerDefault(globalDefault))
+        applyDefaultPermissionModeState()
+        setShowRename(false)
+        setShowDiff(false)
+        setCollaborationMode(false)
+      }
       toast.success("会话已删除")
     } catch (e) {
       toast.error(`删除失败: ${String(e)}`)
     }
   }, [
     applyDefaultPermissionModeState,
+    deleteSessionRecord,
+    pendingDeleteSession,
     project,
-    selectedSessionId,
-    state,
     stopRunningSessionForJsonl,
     globalDefault
   ])
@@ -3471,6 +3350,7 @@ export default function App() {
                       setShowHistory(false)
                       switchSession(p, s)
                     }}
+                    onDeleteSession={requestDeleteSession}
                     onAdd={() => setShowAdd(true)}
                     onRemove={handleRemove}
                     onNewConversation={() => {
@@ -3637,6 +3517,7 @@ export default function App() {
                     key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
                     entries={state.entries}
                     streaming={streaming}
+                    cwd={project?.cwd ?? null}
                     reviews={reviewDiffs}
                     onShowDiff={openReviewDiff}
                     retryableMessageIds={retryableMessageIds}
@@ -3758,19 +3639,25 @@ export default function App() {
             />
           </Suspense>
         )}
-        {showDeleteConfirm && (
+        {pendingDeleteSession && (
           <Suspense fallback={null}>
             <ConfirmDialog
-              open={showDeleteConfirm}
-              onOpenChange={setShowDeleteConfirm}
+              open={!!pendingDeleteSession}
+              onOpenChange={(open) => {
+                if (!open) setPendingDeleteSession(null)
+              }}
               title="删除会话"
               destructive
               confirmText="删除"
               description={
                 <span>
-                  将永久删除会话{" "}
+                  将永久删除会话「
+                  <span className="font-medium">
+                    {pendingDeleteSession.title}
+                  </span>
+                  」{" "}
                   <code className="font-mono text-xs">
-                    {(jsonlSessionId ?? "").slice(0, 8)}
+                    {pendingDeleteSession.sessionId.slice(0, 8)}
                   </code>{" "}
                   的 jsonl 文件，此操作不可恢复。
                 </span>

@@ -1,11 +1,22 @@
-import { useEffect, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent
+} from "react"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { chatTimelineMarkerWidth } from "@/lib/chatTimeline"
 import { cn } from "@/lib/utils"
+
+const MARKER_HEIGHT = 2
+const MARKER_GAP = 8
+const MARKER_PITCH = MARKER_HEIGHT + MARKER_GAP
 
 export interface ChatTimelineItem {
   id: string
@@ -19,13 +30,24 @@ export interface ChatTimelineItem {
 interface Props {
   items: ChatTimelineItem[]
   activeId: string | null
+  visibleIds: ReadonlySet<string>
   onSelect: (id: string) => void
 }
 
-export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
+export function ChatTimelineNav({
+  items,
+  activeId,
+  visibleIds,
+  onSelect
+}: Props) {
   const boundaryRef = useRef<HTMLElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
+  const pointerFrameRef = useRef<number | null>(null)
+  const pendingPointerYRef = useRef<number | null>(null)
   const [railHeight, setRailHeight] = useState<number | null>(null)
+  const [pointerY, setPointerY] = useState<number | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [focusedId, setFocusedId] = useState<string | null>(null)
 
   useEffect(() => {
     const boundary = boundaryRef.current
@@ -47,54 +69,112 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
     return () => observer.disconnect()
   }, [items])
 
+  useEffect(
+    () => () => {
+      if (pointerFrameRef.current !== null) {
+        window.cancelAnimationFrame(pointerFrameRef.current)
+      }
+    },
+    []
+  )
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const content = contentRef.current
+      if (!content) return
+      pendingPointerYRef.current = event.clientY - content.getBoundingClientRect().top
+      if (pointerFrameRef.current !== null) return
+      pointerFrameRef.current = window.requestAnimationFrame(() => {
+        pointerFrameRef.current = null
+        setPointerY(pendingPointerYRef.current)
+      })
+    },
+    []
+  )
+
+  const handlePointerLeave = useCallback(() => {
+    pendingPointerYRef.current = null
+    if (pointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(pointerFrameRef.current)
+      pointerFrameRef.current = null
+    }
+    setPointerY(null)
+    setHoveredId(null)
+  }, [])
+
   if (items.length === 0) return null
   return (
     <nav
       ref={boundaryRef}
       aria-label="对话时间线导航"
-      // right 基准对齐 MessageStream 内容 max-width：右缘外侧 = 50% − 内容半宽 − 时间线宽(w-10=2.5rem)
+      // left 基准对齐 MessageStream 内容 max-width：左缘外侧 = 50% − 内容半宽 − 时间线宽(w-10=2.5rem)
       // lg 内容 max-w-3xl=48rem(半宽24)→26.5；xl max-w-4xl=56rem(半宽28)→30.5；2xl max-w-5xl=64rem(半宽32)→34.5
-      className="pointer-events-none absolute bottom-6 right-[max(0.5rem,calc(50%-26.5rem))] top-6 z-20 hidden w-10 items-center lg:flex xl:right-[max(0.5rem,calc(50%-30.5rem))] 2xl:right-[max(0.5rem,calc(50%-34.5rem))]"
+      className="pointer-events-none absolute bottom-6 left-[max(0.5rem,calc(50%-26.5rem))] top-6 z-20 hidden w-10 items-center lg:flex xl:left-[max(0.5rem,calc(50%-30.5rem))] 2xl:left-[max(0.5rem,calc(50%-34.5rem))]"
     >
       <div
         className="pointer-events-auto relative w-full"
         style={railHeight ? { height: railHeight } : undefined}
       >
         <ScrollArea className="h-full w-full">
-          <div ref={contentRef} className="flex flex-col gap-[13px] pr-2.5">
-            {items.map((item) => {
+          <div
+            ref={contentRef}
+            className="flex cursor-pointer flex-col gap-2 pr-2.5"
+            onPointerMove={handlePointerMove}
+            onPointerLeave={handlePointerLeave}
+          >
+            {items.map((item, index) => {
               const active = item.id === activeId
-              const isUser = item.role === "user"
+              const visible = visibleIds.has(item.id)
+              const hovered = item.id === hoveredId
+              const focused = item.id === focusedId
+              const markerCenterY = index * MARKER_PITCH + MARKER_HEIGHT / 2
+              const markerWidth = chatTimelineMarkerWidth(
+                hovered || focused ? markerCenterY : pointerY,
+                markerCenterY
+              )
               return (
-                <Tooltip key={item.id}>
+                <Tooltip
+                  key={item.id}
+                  delayDuration={0}
+                  disableHoverableContent
+                >
                   <TooltipTrigger asChild>
                     <button
                       type="button"
                       aria-label={`跳转到${item.label}`}
                       aria-current={active ? "location" : undefined}
                       onClick={() => onSelect(item.id)}
+                      onPointerEnter={() => setHoveredId(item.id)}
+                      onPointerLeave={() => setHoveredId((id) =>
+                        id === item.id ? null : id
+                      )}
+                      onFocus={() => setFocusedId(item.id)}
+                      onBlur={() => setFocusedId((id) =>
+                        id === item.id ? null : id
+                      )}
                       className={cn(
-                        "group ml-auto flex h-[3px] w-full shrink-0 items-center justify-end rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                        "group relative flex h-0.5 w-full shrink-0 items-center justify-start rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                         item.queued && "opacity-60"
                       )}
                     >
+                      <span aria-hidden className="absolute -inset-y-1 inset-x-0" />
                       <span
                         className={cn(
-                          "h-full rounded-full transition-all duration-150 ease-out",
-                          isUser
-                            ? "w-6 bg-muted-foreground/55 group-hover:w-7 group-hover:bg-foreground/70"
-                            : "w-3.5 bg-muted-foreground/35 group-hover:w-6 group-hover:bg-foreground/70",
-                          active &&
-                            "w-7 bg-foreground/85 group-hover:bg-foreground/85"
+                          "h-full rounded-full transition-[width,background-color,opacity] duration-100 ease-out motion-reduce:transition-none",
+                          visible || active
+                            ? "bg-foreground/70"
+                            : "bg-muted-foreground/30",
+                          (hovered || focused) && "bg-foreground/90"
                         )}
+                        style={{ width: markerWidth }}
                       />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent
-                    side="left"
+                    side="right"
                     align="center"
                     sideOffset={10}
-                    className="w-64 rounded-lg p-3"
+                    className="pointer-events-none w-72 rounded-xl p-3 shadow-lg data-[state=closed]:hidden [animation-duration:0ms] sm:w-80"
                   >
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
@@ -103,8 +183,8 @@ export function ChatTimelineNav({ items, activeId, onSelect }: Props) {
                           <span className="font-mono">{item.time}</span>
                         )}
                       </div>
-                      <div className="max-h-20 overflow-y-auto pr-3">
-                        <div className="min-w-0 whitespace-normal text-justify text-sm leading-relaxed text-card-foreground break-words [overflow-wrap:anywhere]">
+                      <div className="min-w-0 overflow-hidden">
+                        <div className="line-clamp-4 min-w-0 whitespace-normal break-words text-sm leading-relaxed text-card-foreground [overflow-wrap:anywhere]">
                           {item.preview}
                         </div>
                       </div>

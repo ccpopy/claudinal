@@ -29,12 +29,14 @@ export function BlockView({
   role,
   block,
   variant,
-  onRetry
+  onRetry,
+  cwd
 }: {
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
   onRetry?: () => void | Promise<void>
+  cwd?: string | null
 }) {
   if (block.type === "text") {
     return (
@@ -43,6 +45,7 @@ export function BlockView({
         block={block}
         variant={variant}
         onRetry={onRetry}
+        cwd={cwd}
       />
     )
   }
@@ -71,12 +74,14 @@ function TextBlock({
   role,
   block,
   variant,
-  onRetry
+  onRetry,
+  cwd
 }: {
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
   onRetry?: () => void | Promise<void>
+  cwd?: string | null
 }) {
   if (!block.text && !block.partial) return null
   if (role === "user") {
@@ -121,6 +126,7 @@ function TextBlock({
       <AssistantMarkdown
         text={block.text ?? ""}
         partial={!!block.partial}
+        cwd={cwd}
       />
       {!block.partial && block.text && (
         <CopyButton

@@ -59,6 +59,11 @@ import {
   listSidebarExpandedProjectIds,
   saveSidebarExpandedProjectIds
 } from "@/lib/sidebarState"
+import {
+  deriveSidebarActivity,
+  sidebarSessionKey,
+  type SidebarSessionRef
+} from "@/lib/sidebarActivity"
 
 const SearchPalette = lazy(() =>
   import("@/components/SearchPalette").then((m) => ({ default: m.SearchPalette }))
@@ -70,11 +75,12 @@ interface Props {
   selectedSessionId: string | null
   streamingProjectId: string | null
   streamingSessionId: string | null
-  streamingSessionRefs?: Array<{ projectId: string; sessionId: string }>
-  waitingSessionRefs?: Array<{ projectId: string; sessionId: string }>
+  streamingSessionRefs?: SidebarSessionRef[]
+  waitingSessionRefs?: SidebarSessionRef[]
   inPlugins?: boolean
   onSelectProject: (p: Project) => void
   onSelectSession: (p: Project, s: SessionMeta) => void
+  onDeleteSession: (p: Project, s: SessionMeta) => void
   onAdd: () => void
   onRemove: (id: string) => void
   onNewConversation: () => void
@@ -140,6 +146,7 @@ export function Sidebar({
   inPlugins = false,
   onSelectProject,
   onSelectSession,
+  onDeleteSession,
   onAdd,
   onRemove,
   onNewConversation,
@@ -172,23 +179,25 @@ export function Sidebar({
     () => new Set(pinnedProjects.map((p) => p.projectId)),
     [pinnedProjects]
   )
-  const streamingSet = useMemo(() => {
-    const set = new Set<string>()
-    if (streamingProjectId && streamingSessionId) {
-      set.add(`${streamingProjectId}::${streamingSessionId}`)
-    }
-    for (const ref of streamingSessionRefs) {
-      set.add(`${ref.projectId}::${ref.sessionId}`)
-    }
-    return set
-  }, [streamingProjectId, streamingSessionId, streamingSessionRefs])
-  const waitingSet = useMemo(() => {
-    const set = new Set<string>()
-    for (const ref of waitingSessionRefs) {
-      set.add(`${ref.projectId}::${ref.sessionId}`)
-    }
-    return set
-  }, [waitingSessionRefs])
+  const {
+    streamingSessionKeys: streamingSet,
+    waitingSessionKeys: waitingSet,
+    busyProjectIds
+  } = useMemo(
+    () =>
+      deriveSidebarActivity({
+        streamingProjectId,
+        streamingSessionId,
+        streamingSessionRefs,
+        waitingSessionRefs
+      }),
+    [
+      streamingProjectId,
+      streamingSessionId,
+      streamingSessionRefs,
+      waitingSessionRefs
+    ]
+  )
 
   const refreshPinned = useCallback(() => {
     const next = listPinned()
@@ -534,10 +543,13 @@ export function Sidebar({
                       selectedSessionId === session.id
                     }
                     streaming={
-                      streamingSet.has(`${project.id}::${session.id}`)
+                      streamingSet.has(sidebarSessionKey(project.id, session.id))
                     }
-                    waiting={waitingSet.has(`${project.id}::${session.id}`)}
+                    waiting={waitingSet.has(
+                      sidebarSessionKey(project.id, session.id)
+                    )}
                     onSelect={() => onSelectSession(project, session)}
+                    onDelete={() => onDeleteSession(project, session)}
                     onCopyId={() => copyText(session.id, "会话 ID")}
                     onTogglePin={() =>
                       togglePinAndRefresh(project.id, session.id)
@@ -558,6 +570,7 @@ export function Sidebar({
                     visibleSessions={computeVisibleSessions(p)}
                     selectedProjectId={selectedProjectId}
                     selectedSessionId={selectedSessionId}
+                    busy={busyProjectIds.has(p.id)}
                     streamingSet={streamingSet}
                     waitingSet={waitingSet}
                     onMenuOpenChange={(open) =>
@@ -573,6 +586,7 @@ export function Sidebar({
                     }
                     onRemove={() => onRemove(p.id)}
                     onSelectSession={(s) => onSelectSession(p, s)}
+                    onDeleteSession={(s) => onDeleteSession(p, s)}
                     onCopySessionId={(s) => copyText(s.id, "会话 ID")}
                     onToggleSessionPin={(s) =>
                       togglePinAndRefresh(p.id, s.id)
@@ -635,6 +649,7 @@ export function Sidebar({
                       visibleSessions={visibleSessions}
                       selectedProjectId={selectedProjectId}
                       selectedSessionId={selectedSessionId}
+                      busy={busyProjectIds.has(p.id)}
                       streamingSet={streamingSet}
                       waitingSet={waitingSet}
                       onMenuOpenChange={(open) =>
@@ -650,6 +665,7 @@ export function Sidebar({
                       }
                       onRemove={() => onRemove(p.id)}
                       onSelectSession={(s) => onSelectSession(p, s)}
+                      onDeleteSession={(s) => onDeleteSession(p, s)}
                       onCopySessionId={(s) => copyText(s.id, "会话 ID")}
                       onToggleSessionPin={(s) => togglePinAndRefresh(p.id, s.id)}
                     />
@@ -698,6 +714,7 @@ function SessionRow({
   streaming,
   waiting,
   onSelect,
+  onDelete,
   onCopyId,
   onTogglePin
 }: {
@@ -708,6 +725,7 @@ function SessionRow({
   streaming: boolean
   waiting: boolean
   onSelect: () => void
+  onDelete: () => void
   onCopyId: () => void
   onTogglePin: () => void
 }) {
@@ -750,25 +768,38 @@ function SessionRow({
         </TooltipContent>
       </Tooltip>
       <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
-      {waiting ? (
-        <span className="shrink-0 rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary transition-opacity group-hover/session:opacity-0">
-          等待中
-        </span>
-      ) : streaming ? (
-        <Loader2
-          aria-label="运行中"
-          className="size-3 shrink-0 animate-spin text-primary transition-opacity group-hover/session:opacity-0"
-        />
-      ) : (
-        <span className="shrink-0 text-right text-[11px] tabular-nums text-sidebar-foreground/60 transition-opacity group-hover/session:opacity-0">
-          {compactTime}
-        </span>
-      )}
-      <Tooltip>
-        <TooltipTrigger asChild>
+      <div className="relative flex h-5 w-10 shrink-0 items-center justify-end">
+        {waiting ? (
+          <span className="rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">
+            等待中
+          </span>
+        ) : streaming ? (
+          <Loader2
+            aria-label="运行中"
+            className="size-3 animate-spin text-primary transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0"
+          />
+        ) : (
+          <span className="text-right text-[11px] tabular-nums text-sidebar-foreground/60 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">
+            {compactTime}
+          </span>
+        )}
+        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:opacity-100">
           <button
             type="button"
-            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/60 opacity-0 group-hover/session:opacity-100 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-opacity"
+            title=""
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+            aria-label="删除会话"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+          >
+            <Trash2 className="size-3" />
+          </button>
+          <button
+            type="button"
+            title=""
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
             aria-label="复制会话 ID"
             onClick={(e) => {
               e.stopPropagation()
@@ -777,9 +808,8 @@ function SessionRow({
           >
             <Copy className="size-3" />
           </button>
-        </TooltipTrigger>
-        <TooltipContent side="right">复制会话 ID</TooltipContent>
-      </Tooltip>
+        </div>
+      </div>
     </div>
   )
 }
@@ -794,6 +824,7 @@ function ProjectNode({
   visibleSessions,
   selectedProjectId,
   selectedSessionId,
+  busy,
   streamingSet,
   waitingSet,
   onMenuOpenChange,
@@ -803,6 +834,7 @@ function ProjectNode({
   onOpenInExplorer,
   onRemove,
   onSelectSession,
+  onDeleteSession,
   onCopySessionId,
   onToggleSessionPin
 }: {
@@ -815,6 +847,7 @@ function ProjectNode({
   visibleSessions: SessionMeta[]
   selectedProjectId: string | null
   selectedSessionId: string | null
+  busy: boolean
   streamingSet: Set<string>
   waitingSet: Set<string>
   onMenuOpenChange: (open: boolean) => void
@@ -824,6 +857,7 @@ function ProjectNode({
   onOpenInExplorer: () => void
   onRemove: () => void
   onSelectSession: (session: SessionMeta) => void
+  onDeleteSession: (session: SessionMeta) => void
   onCopySessionId: (session: SessionMeta) => void
   onToggleSessionPin: (session: SessionMeta) => void
 }) {
@@ -848,56 +882,65 @@ function ProjectNode({
           <FolderOpen className="size-3.5 shrink-0 text-sidebar-foreground/60" />
           <span className="truncate">{project.name}</span>
         </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenProject()
-          }}
-          className={cn(
-            "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
-            menuOpen && "opacity-100"
+        <div className="relative flex h-5 w-10 shrink-0 items-center justify-end">
+          {!isExpanded && busy && (
+            <Loader2
+              aria-label="项目中有运行中的会话"
+              className="size-3 animate-spin text-primary transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
+            />
           )}
-          aria-label="在此项目新开会话"
-        >
-          <SquarePen className="size-3.5" />
-        </button>
-        <DropdownMenu open={menuOpen} onOpenChange={onMenuOpenChange}>
-          <DropdownMenuTrigger asChild>
+          <div
+            className={cn(
+              "pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:opacity-100",
+              menuOpen && "pointer-events-auto opacity-100"
+            )}
+          >
             <button
               type="button"
-              onClick={(e) => e.stopPropagation()}
-              className={cn(
-                "size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100",
-                menuOpen && "opacity-100"
-              )}
-              aria-label="更多项目操作"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenProject()
+              }}
+              className="size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+              aria-label="在此项目新开会话"
             >
-              <MoreHorizontal className="size-3.5" />
+              <SquarePen className="size-3.5" />
             </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            side="bottom"
-            className="min-w-[180px]"
-          >
-            <DropdownMenuItem onSelect={onTogglePin}>
-              {isPinned ? <PinOff /> : <Pin />}
-              <span>{isPinned ? "取消置顶" : "置顶项目"}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onOpenInExplorer}>
-              <FolderOpen />
-              <span>在资源管理器中打开</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={onRemove}
-              className="text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"
-            >
-              <Trash2 />
-              <span>移除</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            <DropdownMenu open={menuOpen} onOpenChange={onMenuOpenChange}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => e.stopPropagation()}
+                  className="size-5 inline-flex items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                  aria-label="更多项目操作"
+                >
+                  <MoreHorizontal className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                side="bottom"
+                className="min-w-[180px]"
+              >
+                <DropdownMenuItem onSelect={onTogglePin}>
+                  {isPinned ? <PinOff /> : <Pin />}
+                  <span>{isPinned ? "取消置顶" : "置顶项目"}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onOpenInExplorer}>
+                  <FolderOpen />
+                  <span>在资源管理器中打开</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={onRemove}
+                  className="text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"
+                >
+                  <Trash2 />
+                  <span>移除</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
       </div>
 
       <CollapsibleContent className="sidebar-project-sessions min-w-0 max-w-full">
@@ -927,9 +970,10 @@ function ProjectNode({
                   selectedProjectId === project.id &&
                   selectedSessionId === s.id
                 }
-                streaming={streamingSet.has(`${project.id}::${s.id}`)}
-                waiting={waitingSet.has(`${project.id}::${s.id}`)}
+                streaming={streamingSet.has(sidebarSessionKey(project.id, s.id))}
+                waiting={waitingSet.has(sidebarSessionKey(project.id, s.id))}
                 onSelect={() => onSelectSession(s)}
+                onDelete={() => onDeleteSession(s)}
                 onCopyId={() => onCopySessionId(s)}
                 onTogglePin={() => onToggleSessionPin(s)}
               />

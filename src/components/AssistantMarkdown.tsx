@@ -1,15 +1,28 @@
-import { memo, useDeferredValue, useEffect, useRef, useState } from "react"
+import {
+  createContext,
+  memo,
+  useContext,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState
+} from "react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
+import { LocalFileContextMenu } from "@/components/LocalFileContextMenu"
+import { LocalFileIcon } from "@/components/LocalFileIcon"
 import { openPath } from "@/lib/ipc"
-import { normalizeOpenablePath } from "@/lib/localPath"
+import { resolveMarkdownFilePath, resolveOpenablePath } from "@/lib/localPath"
 import { cn } from "@/lib/utils"
 
 interface Props {
   text: string
   partial?: boolean
+  cwd?: string | null
 }
+
+const MarkdownCwdContext = createContext<string | null>(null)
 
 const components: Components = {
   p: ({ node: _node, className, ...props }) => (
@@ -75,17 +88,30 @@ const components: Components = {
       {...props}
     />
   ),
-  a: ({ node: _node, className, href, children, ...props }) => {
-    const localPath = href ? normalizeOpenablePath(href) : null
+  a: function MarkdownLink({
+    node: _node,
+    className,
+    href,
+    children,
+    ...props
+  }) {
+    const cwd = useContext(MarkdownCwdContext)
+    const localPath = href ? resolveOpenablePath(href, cwd) : null
     if (localPath) {
       return (
-        <button
-          type="button"
-          className={cn("text-primary underline-offset-4 hover:underline", className)}
-          onClick={() => void openLocalPath(localPath)}
-        >
-          {children}
-        </button>
+        <LocalFileContextMenu path={localPath}>
+          <button
+            type="button"
+            className={cn(
+              "inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline",
+              className
+            )}
+            onClick={() => void openLocalPath(localPath)}
+          >
+            <LocalFileIcon path={localPath} />
+            <span>{children}</span>
+          </button>
+        </LocalFileContextMenu>
       )
     }
     return (
@@ -138,23 +164,27 @@ const components: Components = {
       {...props}
     />
   ),
-  code: ({ node: _node, className, children, ...props }) => {
+  code: function MarkdownCode({ node: _node, className, children, ...props }) {
+    const cwd = useContext(MarkdownCwdContext)
     const isInline = !className?.includes("language-")
     if (isInline) {
       const text = String(children)
-      const localPath = normalizeOpenablePath(text)
+      const localPath = resolveMarkdownFilePath(text, cwd)
       if (localPath) {
         return (
-          <button
-            type="button"
-            className={cn(
-              "rounded-[5px] bg-muted/70 px-1.5 py-0.5 align-baseline font-mono text-[0.86em] leading-normal text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]",
-              className
-            )}
-            onClick={() => void openLocalPath(localPath)}
-          >
-            {children}
-          </button>
+          <LocalFileContextMenu path={localPath}>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1 rounded-[5px] bg-muted/70 px-1.5 py-0.5 align-baseline font-mono text-[0.86em] leading-normal text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]",
+                className
+              )}
+              onClick={() => void openLocalPath(localPath)}
+            >
+              <LocalFileIcon path={localPath} />
+              <span>{children}</span>
+            </button>
+          </LocalFileContextMenu>
         )
       }
       return (
@@ -249,12 +279,14 @@ const MarkdownInner = memo(function MarkdownInner({ text }: { text: string }) {
   )
 })
 
-export function AssistantMarkdown({ text, partial }: Props) {
+export function AssistantMarkdown({ text, partial, cwd }: Props) {
   const throttled = useThrottledText(text, !!partial)
   const deferred = useDeferredValue(throttled)
   return (
     <div className="max-w-none text-left text-sm font-normal leading-normal text-foreground [line-break:auto] [overflow-wrap:break-word] [text-align:start] [text-wrap:pretty] [word-break:normal]">
-      <MarkdownInner text={deferred} />
+      <MarkdownCwdContext.Provider value={cwd ?? null}>
+        <MarkdownInner text={deferred} />
+      </MarkdownCwdContext.Provider>
       {partial && <span className="caret">▍</span>}
     </div>
   )

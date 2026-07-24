@@ -3,6 +3,7 @@ import {
   describeUpstreamStatus,
   proxyStatusErrorText,
   reduceProxyStatus,
+  shouldTrackProxyStatus,
   type UpstreamStatusState
 } from "./proxyStatus"
 
@@ -71,6 +72,15 @@ describe("proxyStatus.reduceProxyStatus", () => {
       NOW
     )
     expect(reduceProxyStatus(first, { kind: "future-kind" }, NOW + 1)).toBe(first)
+  })
+})
+
+describe("proxyStatus.shouldTrackProxyStatus", () => {
+  it("tracks upstream retries only for an active non-interrupting turn", () => {
+    expect(shouldTrackProxyStatus(true, false)).toBe(true)
+    expect(shouldTrackProxyStatus(true, true)).toBe(false)
+    expect(shouldTrackProxyStatus(false, false)).toBe(false)
+    expect(shouldTrackProxyStatus(false, true)).toBe(false)
   })
 })
 

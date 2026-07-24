@@ -42,6 +42,7 @@ const CLAUDE_CLI_PROXY_ENV_KEYS: &[&str] = &[
 const CLAUDE_CLI_REFERENCE_URL: &str =
     "https://docs.anthropic.com/en/docs/claude-code/cli-reference";
 const CLAUDE_CLI_SETUP_URL: &str = "https://code.claude.com/docs/en/setup";
+const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// 把字符串内容原子写入磁盘：先写到 `<path>.tmp.<pid>`，再 rename 到目标路径。
 /// 这样即使写入过程中崩溃 / 断电，也不会留下半截文件。所有 GUI 直接管理的
@@ -3260,6 +3261,90 @@ mod tests {
     }
 
     #[test]
+    fn path_open_target_accepts_allowlisted_values_and_rejects_unknown_values() {
+        assert_eq!(
+            serde_json::to_value(PATH_OPEN_TARGET_ORDER).unwrap(),
+            serde_json::json!([
+                "vscode",
+                "visual_studio",
+                "antigravity",
+                "github_desktop",
+                "default_app",
+                "file_explorer",
+                "terminal",
+                "git_bash",
+                "wsl"
+            ])
+        );
+        assert_eq!(
+            serde_json::from_str::<PathOpenTarget>(r#""vscode""#).unwrap(),
+            PathOpenTarget::Vscode
+        );
+        assert_eq!(
+            serde_json::from_str::<PathOpenTarget>(r#""visual_studio""#).unwrap(),
+            PathOpenTarget::VisualStudio
+        );
+        assert_eq!(
+            serde_json::from_str::<PathOpenTarget>(r#""git_bash""#).unwrap(),
+            PathOpenTarget::GitBash
+        );
+        assert!(serde_json::from_str::<PathOpenTarget>(r#""cmd.exe /C bad""#).is_err());
+    }
+
+    #[test]
+    fn available_path_open_target_filter_preserves_order_and_hides_missing_apps() {
+        let available = collect_available_path_open_targets(|target| {
+            matches!(
+                target,
+                PathOpenTarget::VisualStudio | PathOpenTarget::DefaultApp | PathOpenTarget::Wsl
+            )
+        });
+        assert_eq!(
+            available,
+            vec![
+                PathOpenTarget::VisualStudio,
+                PathOpenTarget::DefaultApp,
+                PathOpenTarget::Wsl
+            ]
+        );
+    }
+
+    #[test]
+    fn github_desktop_protocol_path_is_percent_encoded() {
+        assert_eq!(
+            percent_encode_uri_component(r"C:\repo name\开发"),
+            "C%3A%5Crepo%20name%5C%E5%BC%80%E5%8F%91"
+        );
+    }
+
+    #[test]
+    fn text_file_reader_enforces_file_utf8_and_size_boundaries() {
+        let root =
+            std::env::temp_dir().join(format!("claudinal-text-file-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let text_path = root.join("text.txt");
+        let binary_path = root.join("binary.dat");
+        std::fs::write(&text_path, "four").unwrap();
+        std::fs::write(&binary_path, [0xff, 0xfe]).unwrap();
+
+        assert_eq!(read_text_file_with_limit(&text_path, 4).unwrap(), "four");
+        assert!(read_text_file_with_limit(&text_path, 3)
+            .expect_err("oversized")
+            .to_string()
+            .contains("file is too large"));
+        assert!(read_text_file_with_limit(&binary_path, 4)
+            .expect_err("invalid utf8")
+            .to_string()
+            .contains("not valid UTF-8"));
+        assert!(read_text_file_with_limit(&root, 4)
+            .expect_err("directory")
+            .to_string()
+            .contains("not a file"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn package_manager_arg_validator_allows_safe_tokens() {
         for arg in [
             "upgrade",
@@ -4861,40 +4946,7 @@ pub async fn open_path(path: String) -> Result<OpenPathResult> {
     } else {
         None
     };
-    let open_target = |target: &std::path::Path| -> Result<()> {
-        #[cfg(target_os = "windows")]
-        {
-            if target.is_dir() {
-                let mut cmd = std::process::Command::new("explorer");
-                cmd.arg(target);
-                hide_std_window(&mut cmd);
-                cmd.spawn().map_err(Error::from)?;
-            } else {
-                let mut cmd = std::process::Command::new("cmd");
-                cmd.args(["/c", "start", ""]);
-                cmd.arg(target);
-                hide_std_window(&mut cmd);
-                cmd.spawn().map_err(Error::from)?;
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open")
-                .arg(target)
-                .spawn()
-                .map_err(Error::from)?;
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            std::process::Command::new("xdg-open")
-                .arg(target)
-                .spawn()
-                .map_err(Error::from)?;
-        }
-        Ok(())
-    };
-
-    match open_target(&p) {
+    match open_default_path(&p) {
         Ok(()) => Ok(OpenPathResult {
             action: "opened".into(),
             path,
@@ -4904,7 +4956,7 @@ pub async fn open_path(path: String) -> Result<OpenPathResult> {
             let Some(parent) = fallback else {
                 return Err(err);
             };
-            open_target(&parent)?;
+            open_default_path(&parent)?;
             Ok(OpenPathResult {
                 action: "revealed_parent".into(),
                 path,
@@ -4912,6 +4964,777 @@ pub async fn open_path(path: String) -> Result<OpenPathResult> {
             })
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PathOpenTarget {
+    Vscode,
+    VisualStudio,
+    Antigravity,
+    GithubDesktop,
+    DefaultApp,
+    FileExplorer,
+    Terminal,
+    GitBash,
+    Wsl,
+}
+
+const PATH_OPEN_TARGET_ORDER: [PathOpenTarget; 9] = [
+    PathOpenTarget::Vscode,
+    PathOpenTarget::VisualStudio,
+    PathOpenTarget::Antigravity,
+    PathOpenTarget::GithubDesktop,
+    PathOpenTarget::DefaultApp,
+    PathOpenTarget::FileExplorer,
+    PathOpenTarget::Terminal,
+    PathOpenTarget::GitBash,
+    PathOpenTarget::Wsl,
+];
+
+fn collect_available_path_open_targets(
+    mut is_available: impl FnMut(PathOpenTarget) -> bool,
+) -> Vec<PathOpenTarget> {
+    PATH_OPEN_TARGET_ORDER
+        .into_iter()
+        .filter(|target| is_available(*target))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_application_available(name: &str) -> bool {
+    let bundle = format!("{name}.app");
+    let mut candidates = vec![
+        std::path::PathBuf::from("/Applications").join(&bundle),
+        std::path::PathBuf::from("/System/Applications").join(&bundle),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("Applications").join(&bundle));
+    }
+    if candidates.into_iter().any(|candidate| candidate.is_dir()) {
+        return true;
+    }
+
+    let query = format!(
+        "kMDItemContentType == 'com.apple.application-bundle' && kMDItemFSName == '{bundle}'"
+    );
+    std::process::Command::new("mdfind")
+        .arg(query)
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+        })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_url_scheme_handler_available(scheme: &str) -> bool {
+    let mime = format!("x-scheme-handler/{scheme}");
+    std::process::Command::new("xdg-mime")
+        .args(["query", "default", &mime])
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_wsl_executable() -> Option<std::path::PathBuf> {
+    let executable = which::which("wsl.exe").ok()?;
+    let mut command = std::process::Command::new(&executable);
+    command.args(["--list", "--quiet"]);
+    hide_std_window(&mut command);
+    let output = command.output().ok()?;
+    if !output.status.success()
+        || !output
+            .stdout
+            .iter()
+            .any(|byte| !matches!(*byte, 0 | b'\r' | b'\n' | b' ' | b'\t'))
+    {
+        return None;
+    }
+    Some(executable)
+}
+
+fn path_open_target_available(target: PathOpenTarget) -> bool {
+    match target {
+        PathOpenTarget::Vscode => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_vscode_executable().is_some()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                which::which("code").is_ok() || macos_application_available("Visual Studio Code")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                which::which("code").is_ok()
+            }
+        }
+        PathOpenTarget::VisualStudio => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_visual_studio_executable().is_some()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                macos_application_available("Visual Studio")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                false
+            }
+        }
+        PathOpenTarget::Antigravity => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_antigravity_executable().is_some()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                which::which("antigravity").is_ok() || macos_application_available("Antigravity")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                which::which("antigravity").is_ok()
+            }
+        }
+        PathOpenTarget::GithubDesktop => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_github_desktop_installed()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                macos_application_available("GitHub Desktop")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                which::which("xdg-open").is_ok()
+                    && linux_url_scheme_handler_available("x-github-client")
+            }
+        }
+        PathOpenTarget::DefaultApp => {
+            #[cfg(target_os = "windows")]
+            {
+                which::which("rundll32.exe").is_ok() || which::which("explorer.exe").is_ok()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                which::which("open").is_ok()
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                which::which("xdg-open").is_ok()
+            }
+        }
+        PathOpenTarget::FileExplorer => {
+            #[cfg(target_os = "windows")]
+            {
+                which::which("explorer.exe").is_ok()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                which::which("open").is_ok()
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                which::which("xdg-open").is_ok()
+            }
+        }
+        PathOpenTarget::Terminal => {
+            #[cfg(target_os = "windows")]
+            {
+                which::which("wt.exe").is_ok() || which::which("powershell.exe").is_ok()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                macos_application_available("Terminal")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                which::which("x-terminal-emulator").is_ok()
+                    || which::which("gnome-terminal").is_ok()
+            }
+        }
+        PathOpenTarget::GitBash => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_git_bash_executable().is_some()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                false
+            }
+        }
+        PathOpenTarget::Wsl => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_wsl_executable().is_some()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                false
+            }
+        }
+    }
+}
+
+fn existing_path(path: &str) -> Result<std::path::PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(Error::Other("path is empty".into()));
+    }
+    let path = std::path::PathBuf::from(trimmed);
+    if !path.exists() {
+        return Err(Error::Other(format!("path not found: {trimmed}")));
+    }
+    Ok(path)
+}
+
+fn containing_directory(path: &std::path::Path) -> Result<&std::path::Path> {
+    if path.is_dir() {
+        return Ok(path);
+    }
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| Error::Other(format!("path has no parent: {}", path.display())))
+}
+
+fn repository_or_containing_directory(path: &std::path::Path) -> Result<std::path::PathBuf> {
+    let directory = containing_directory(path)?;
+    Ok(directory
+        .ancestors()
+        .find(|candidate| candidate.join(".git").exists())
+        .unwrap_or(directory)
+        .to_path_buf())
+}
+
+fn open_default_path(target: &std::path::Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        if target.is_dir() {
+            let mut cmd = std::process::Command::new("explorer.exe");
+            cmd.arg(target);
+            hide_std_window(&mut cmd);
+            cmd.spawn().map_err(Error::from)?;
+        } else {
+            let mut cmd = std::process::Command::new("rundll32.exe");
+            cmd.arg("url.dll,FileProtocolHandler").arg(target);
+            hide_std_window(&mut cmd);
+            cmd.spawn().map_err(Error::from)?;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(target)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_vscode_executable() -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    for key in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(key) {
+            candidates.push(
+                std::path::PathBuf::from(root)
+                    .join("Microsoft VS Code")
+                    .join("Code.exe"),
+            );
+        }
+    }
+    for name in ["Code.exe", "code.exe", "code"] {
+        if let Ok(path) = which::which(name) {
+            candidates.push(path);
+        }
+    }
+    for candidate in candidates {
+        if candidate.is_file()
+            && candidate
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        {
+            return Some(candidate);
+        }
+        let inferred = candidate
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(|root| root.join("Code.exe"));
+        if let Some(inferred) = inferred.filter(|path| path.is_file()) {
+            return Some(inferred);
+        }
+    }
+    None
+}
+
+fn open_with_vscode(path: &std::path::Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let executable = windows_vscode_executable()
+            .ok_or_else(|| Error::Other("未找到 VS Code，请先安装或将 code 加入 PATH".into()))?;
+        let mut command = std::process::Command::new(executable);
+        command.arg(path);
+        hide_std_window(&mut command);
+        command.spawn().map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(executable) = which::which("code") {
+            std::process::Command::new(executable)
+                .arg(path)
+                .spawn()
+                .map_err(Error::from)?;
+            return Ok(());
+        }
+        if !macos_application_available("Visual Studio Code") {
+            return Err(Error::Other("未找到 VS Code".into()));
+        }
+        std::process::Command::new("open")
+            .args(["-a", "Visual Studio Code"])
+            .arg(path)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let executable = which::which("code")
+            .map_err(|_| Error::Other("未找到 VS Code，请先安装或将 code 加入 PATH".into()))?;
+        std::process::Command::new(executable)
+            .arg(path)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_visual_studio_executable() -> Option<std::path::PathBuf> {
+    if let Ok(path) = which::which("devenv.exe") {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let mut roots = Vec::new();
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(key) {
+            roots.push(std::path::PathBuf::from(root));
+        }
+    }
+    for root in &roots {
+        let vswhere = root
+            .join("Microsoft Visual Studio")
+            .join("Installer")
+            .join("vswhere.exe");
+        if vswhere.is_file() {
+            let mut command = std::process::Command::new(&vswhere);
+            command.args(["-latest", "-products", "*", "-property", "productPath"]);
+            hide_std_window(&mut command);
+            if let Ok(output) = command.output() {
+                let path = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    for root in roots {
+        for year in ["2022", "2019"] {
+            for edition in ["Community", "Professional", "Enterprise"] {
+                let candidate = root
+                    .join("Microsoft Visual Studio")
+                    .join(year)
+                    .join(edition)
+                    .join("Common7")
+                    .join("IDE")
+                    .join("devenv.exe");
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn open_with_visual_studio(path: &std::path::Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let executable = windows_visual_studio_executable()
+            .ok_or_else(|| Error::Other("未找到 Visual Studio".into()))?;
+        let mut command = std::process::Command::new(executable);
+        command.arg(path);
+        hide_std_window(&mut command);
+        command.spawn().map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Visual Studio"])
+            .arg(path)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = path;
+        Err(Error::Other("当前平台不支持 Visual Studio 打开方式".into()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_antigravity_executable() -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+        let root = std::path::PathBuf::from(root);
+        candidates.push(
+            root.join("Programs")
+                .join("Antigravity")
+                .join("Antigravity.exe"),
+        );
+        candidates.push(root.join("Antigravity").join("Antigravity.exe"));
+    }
+    for name in ["Antigravity.exe", "antigravity.exe", "antigravity"] {
+        if let Ok(path) = which::which(name) {
+            candidates.push(path);
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn open_with_antigravity(path: &std::path::Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let executable = windows_antigravity_executable()
+            .ok_or_else(|| Error::Other("未找到 Antigravity".into()))?;
+        let mut command = std::process::Command::new(executable);
+        command.arg(path);
+        hide_std_window(&mut command);
+        command.spawn().map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(executable) = which::which("antigravity") {
+            std::process::Command::new(executable)
+                .arg(path)
+                .spawn()
+                .map_err(Error::from)?;
+            return Ok(());
+        }
+        if !macos_application_available("Antigravity") {
+            return Err(Error::Other("未找到 Antigravity".into()));
+        }
+        std::process::Command::new("open")
+            .args(["-a", "Antigravity"])
+            .arg(path)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let executable =
+            which::which("antigravity").map_err(|_| Error::Other("未找到 Antigravity".into()))?;
+        std::process::Command::new(executable)
+            .arg(path)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+}
+
+fn percent_encode_uri_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(*byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+#[cfg(target_os = "windows")]
+fn windows_github_desktop_installed() -> bool {
+    if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+        if std::path::PathBuf::from(root)
+            .join("GitHubDesktop")
+            .join("GitHubDesktop.exe")
+            .is_file()
+        {
+            return true;
+        }
+    }
+    which::which("GitHubDesktop.exe").is_ok()
+}
+
+fn open_with_github_desktop(path: &std::path::Path) -> Result<()> {
+    let directory = repository_or_containing_directory(path)?;
+    let url = format!(
+        "x-github-client://openLocalRepo/{}",
+        percent_encode_uri_component(&directory.display().to_string())
+    );
+    #[cfg(target_os = "windows")]
+    {
+        if !windows_github_desktop_installed() {
+            return Err(Error::Other("未找到 GitHub Desktop".into()));
+        }
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler").arg(url);
+        hide_std_window(&mut command);
+        command.spawn().map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+}
+
+fn open_terminal(path: &std::path::Path) -> Result<()> {
+    let cwd = containing_directory(path)?;
+    #[cfg(target_os = "windows")]
+    {
+        let mut windows_terminal = std::process::Command::new("wt.exe");
+        windows_terminal.arg("-d").arg(cwd);
+        hide_std_window(&mut windows_terminal);
+        if windows_terminal.spawn().is_ok() {
+            return Ok(());
+        }
+
+        // The user explicitly selected an interactive terminal, so this fallback
+        // intentionally remains visible and inherits the requested working directory.
+        std::process::Command::new("powershell.exe")
+            .args(["-NoExit", "-NoLogo"])
+            .current_dir(cwd)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Terminal"])
+            .arg(cwd)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if std::process::Command::new("x-terminal-emulator")
+            .current_dir(cwd)
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        std::process::Command::new("gnome-terminal")
+            .arg(format!("--working-directory={}", cwd.display()))
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_git_bash_executable() -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = which::which("git-bash.exe") {
+        candidates.push(path);
+    }
+    if let Ok(git) = which::which("git.exe") {
+        if let Some(root) = git.parent().and_then(std::path::Path::parent) {
+            candidates.push(root.join("git-bash.exe"));
+        }
+    }
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(key) {
+            candidates.push(
+                std::path::PathBuf::from(root)
+                    .join("Git")
+                    .join("git-bash.exe"),
+            );
+        }
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn open_git_bash(path: &std::path::Path) -> Result<()> {
+    let cwd = containing_directory(path)?;
+    #[cfg(target_os = "windows")]
+    {
+        let executable =
+            windows_git_bash_executable().ok_or_else(|| Error::Other("未找到 Git Bash".into()))?;
+        std::process::Command::new(executable)
+            .current_dir(cwd)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cwd;
+        Err(Error::Other("Git Bash 打开方式仅支持 Windows".into()))
+    }
+}
+
+fn open_wsl(path: &std::path::Path) -> Result<()> {
+    let cwd = containing_directory(path)?;
+    #[cfg(target_os = "windows")]
+    {
+        let executable = windows_wsl_executable()
+            .ok_or_else(|| Error::Other("未找到可用的 WSL 发行版".into()))?;
+        let mut windows_terminal = std::process::Command::new("wt.exe");
+        windows_terminal
+            .arg("-d")
+            .arg(cwd)
+            .arg(&executable)
+            .arg("--cd")
+            .arg(cwd);
+        hide_std_window(&mut windows_terminal);
+        if windows_terminal.spawn().is_ok() {
+            return Ok(());
+        }
+        std::process::Command::new(executable)
+            .arg("--cd")
+            .arg(cwd)
+            .spawn()
+            .map_err(Error::from)?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cwd;
+        Err(Error::Other("WSL 打开方式仅支持 Windows".into()))
+    }
+}
+
+fn read_text_file_with_limit(path: &std::path::Path, max_bytes: u64) -> Result<String> {
+    let metadata = std::fs::metadata(path).map_err(Error::from)?;
+    if !metadata.is_file() {
+        return Err(Error::Other(format!(
+            "path is not a file: {}",
+            path.display()
+        )));
+    }
+    if metadata.len() > max_bytes {
+        return Err(Error::Other(format!(
+            "file is too large to copy: {} bytes (limit {} bytes)",
+            metadata.len(),
+            max_bytes
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(Error::from)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(Error::Other(format!(
+            "file is too large to copy: {} bytes (limit {} bytes)",
+            bytes.len(),
+            max_bytes
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| Error::Other(format!("file is not valid UTF-8 text: {}", path.display())))
+}
+
+fn reveal_existing_path(path: &std::path::Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = std::process::Command::new("explorer.exe");
+        if path.is_file() {
+            command.arg("/select,").arg(&path);
+        } else {
+            command.arg(&path);
+        }
+        hide_std_window(&mut command);
+        command.spawn().map_err(Error::from)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        if path.is_file() {
+            command.arg("-R");
+        }
+        command.arg(&path).spawn().map_err(Error::from)?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let target = if path.is_file() {
+            containing_directory(path)?
+        } else {
+            path
+        };
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(Error::from)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reveal_path(path: String) -> Result<()> {
+    let path = existing_path(&path)?;
+    reveal_existing_path(&path)
+}
+
+#[tauri::command]
+pub async fn available_path_open_targets() -> Result<Vec<PathOpenTarget>> {
+    tokio::task::spawn_blocking(|| collect_available_path_open_targets(path_open_target_available))
+        .await
+        .map_err(|error| Error::Other(format!("检测文件打开方式失败: {error}")))
+}
+
+#[tauri::command]
+pub async fn open_path_with(path: String, opener: PathOpenTarget) -> Result<()> {
+    let path = existing_path(&path)?;
+    match opener {
+        PathOpenTarget::Vscode => open_with_vscode(&path),
+        PathOpenTarget::VisualStudio => open_with_visual_studio(&path),
+        PathOpenTarget::Antigravity => open_with_antigravity(&path),
+        PathOpenTarget::GithubDesktop => open_with_github_desktop(&path),
+        PathOpenTarget::DefaultApp => open_default_path(&path),
+        PathOpenTarget::FileExplorer => reveal_existing_path(&path),
+        PathOpenTarget::Terminal => open_terminal(&path),
+        PathOpenTarget::GitBash => open_git_bash(&path),
+        PathOpenTarget::Wsl => open_wsl(&path),
+    }
+}
+
+#[tauri::command]
+pub async fn read_text_file(path: String) -> Result<String> {
+    let path = existing_path(&path)?;
+    read_text_file_with_limit(&path, MAX_TEXT_FILE_BYTES)
 }
 
 #[derive(Serialize)]

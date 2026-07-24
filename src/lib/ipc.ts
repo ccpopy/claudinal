@@ -97,6 +97,17 @@ export interface OpenPathResult {
   fallbackPath?: string | null
 }
 
+export type PathOpenTarget =
+  | "vscode"
+  | "visual_studio"
+  | "antigravity"
+  | "github_desktop"
+  | "default_app"
+  | "file_explorer"
+  | "terminal"
+  | "git_bash"
+  | "wsl"
+
 export interface GithubCliStatus {
   installed: boolean
   path: string | null
@@ -470,6 +481,25 @@ export async function writeSessionSidecar(
 
 export async function openPath(path: string): Promise<OpenPathResult> {
   return invoke<OpenPathResult>("open_path", { path })
+}
+
+export async function revealPath(path: string): Promise<void> {
+  return invoke("reveal_path", { path })
+}
+
+export async function listAvailablePathOpenTargets(): Promise<PathOpenTarget[]> {
+  return invoke<PathOpenTarget[]>("available_path_open_targets")
+}
+
+export async function openPathWith(
+  path: string,
+  opener: PathOpenTarget
+): Promise<void> {
+  return invoke("open_path_with", { path, opener })
+}
+
+export async function readTextFile(path: string): Promise<string> {
+  return invoke<string>("read_text_file", { path })
 }
 
 export interface ProjectActionResult {

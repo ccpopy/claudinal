@@ -252,7 +252,6 @@ function runtimeProfileHash(value: string): string {
 }
 
 const THIRD_PARTY_CONNECTION_PROFILE_PREFIX = "third-party-connection:"
-const THIRD_PARTY_RUNTIME_PROFILE_PREFIX = "third-party:"
 
 function providerProfileId(config: ThirdPartyApiConfig & { id?: string }): string {
   return cleanString(config.id).trim() || "active"
@@ -297,24 +296,6 @@ export function thirdPartyApiUsesLocalProxy(
   config: ThirdPartyRoutingConfig
 ): boolean {
   return thirdPartyApiRoutingMode(config) === "proxy"
-}
-
-function thirdPartyProviderIdFromProfileKey(key: string | null): string | null {
-  if (!key) return null
-  const prefix = key.startsWith(THIRD_PARTY_CONNECTION_PROFILE_PREFIX)
-    ? THIRD_PARTY_CONNECTION_PROFILE_PREFIX
-    : key.startsWith(THIRD_PARTY_RUNTIME_PROFILE_PREFIX)
-      ? THIRD_PARTY_RUNTIME_PROFILE_PREFIX
-      : null
-  if (!prefix) return null
-  const rest = key.slice(prefix.length)
-  const encodedProviderId = rest.split(":", 1)[0]
-  if (!encodedProviderId) return null
-  try {
-    return decodeURIComponent(encodedProviderId)
-  } catch {
-    return encodedProviderId
-  }
 }
 
 export function thirdPartyApiConnectionProfileKey(
@@ -381,27 +362,6 @@ export function thirdPartyApiRuntimeProfileKey(
   return `third-party:${encodeURIComponent(providerId)}:${runtimeProfileHash(
     JSON.stringify(profile)
   )}`
-}
-
-/**
- * 旧会话能否带着当前 API 配置直接 `--resume`。
- * `claude --resume` 重放的是本地 jsonl，对端点 / 密钥 / 模型映射没有技术依赖，
- * 因此第三方场景只要求归属同一供应商条目（providerId 相等）即可续——
- * 请求地址、apiKey、协议、鉴权字段等连接细节变化不作废历史会话。
- * 跨供应商、官方与第三方互切、旧会话无归属记录时返回 false，由调用方决定如何处理。
- */
-export function shouldResumeWithApiProfile(
-  storedProfileKey: string | null,
-  currentProfileKey: string
-): boolean {
-  const stored = storedProfileKey?.trim() || null
-  if (currentProfileKey === "official") {
-    return !stored || stored === "official"
-  }
-  const currentProviderId = thirdPartyProviderIdFromProfileKey(currentProfileKey)
-  const storedProviderId = thirdPartyProviderIdFromProfileKey(stored)
-  if (!currentProviderId || !storedProviderId) return false
-  return storedProviderId === currentProviderId
 }
 
 export function canUseApiProfileLaunchPrefs(

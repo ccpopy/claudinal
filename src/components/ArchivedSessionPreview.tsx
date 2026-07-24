@@ -162,7 +162,7 @@ export function ArchivedSessionPreview({
                   </div>
                 }
               >
-                <PreviewBody state={state} />
+                <PreviewBody state={state} cwd={target?.project.cwd ?? null} />
               </Suspense>
             )}
           </div>
@@ -172,12 +172,13 @@ export function ArchivedSessionPreview({
   )
 }
 
-function PreviewBody({ state }: { state: State }) {
+function PreviewBody({ state, cwd }: { state: State; cwd?: string | null }) {
   return (
     <MessageStream
       entries={state.entries}
       streaming={false}
       autoScroll={false}
+      cwd={cwd}
     />
   )
 }

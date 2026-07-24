@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { FileDiffPreview } from "@/components/DiffPreview"
+import { LocalFileContextMenu } from "@/components/LocalFileContextMenu"
 import { RollingNumber } from "@/components/RollingNumber"
 import {
   collectLatestRunToolChanges,
@@ -99,6 +100,7 @@ export function RunStatusStrip({
               <FileChangeRow
                 key={`${change.source}:${change.path}`}
                 change={change}
+                cwd={cwd}
                 onClick={() => onShowDiff?.(change.path)}
               />
             ))}
@@ -111,9 +113,11 @@ export function RunStatusStrip({
 
 function FileChangeRow({
   change,
+  cwd,
   onClick
 }: {
   change: FileChange
+  cwd?: string | null
   onClick: () => void
 }) {
   const Icon =
@@ -123,30 +127,32 @@ function FileChangeRow({
         ? FilePlus
         : FileEdit
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group flex w-full items-center gap-2 rounded px-2 py-1 text-left transition-colors hover:bg-accent/60"
-      title={change.path}
-    >
-      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate font-mono text-foreground/90">
-        {change.path}
-      </span>
-      {change.binary ? (
-        <span className="shrink-0 text-muted-foreground">二进制</span>
-      ) : (
-        <>
-          <span className="shrink-0 font-mono text-connected">
-            +{change.adds}
-          </span>
-          <span className="shrink-0 font-mono text-destructive">
-            -{change.dels}
-          </span>
-        </>
-      )}
-      <GitCompareArrows className="size-3.5 shrink-0 text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100" />
-    </button>
+    <LocalFileContextMenu path={change.path} cwd={cwd}>
+      <button
+        type="button"
+        onClick={onClick}
+        className="group flex w-full items-center gap-2 rounded px-2 py-1 text-left transition-colors hover:bg-accent/60"
+        title={change.path}
+      >
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-mono text-foreground/90">
+          {change.path}
+        </span>
+        {change.binary ? (
+          <span className="shrink-0 text-muted-foreground">二进制</span>
+        ) : (
+          <>
+            <span className="shrink-0 font-mono text-connected">
+              +{change.adds}
+            </span>
+            <span className="shrink-0 font-mono text-destructive">
+              -{change.dels}
+            </span>
+          </>
+        )}
+        <GitCompareArrows className="size-3.5 shrink-0 text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100" />
+      </button>
+    </LocalFileContextMenu>
   )
 }
 
@@ -165,9 +171,11 @@ function summarizeChanges(changes: FileChange[]) {
 
 export function RunReviewCard({
   review,
+  cwd,
   onShowDiff
 }: {
   review: ReviewRunDiff
+  cwd?: string | null
   onShowDiff?: (path?: string) => void
 }) {
   const [open, setOpen] = useState(true)
@@ -238,6 +246,7 @@ export function RunReviewCard({
                   key={fileKey}
                   file={file}
                   change={change}
+                  cwd={cwd}
                   sourceLabel={sourceLabel}
                   expanded={expandedFileKey === fileKey}
                   onToggle={() =>
@@ -281,6 +290,7 @@ export function RunReviewCard({
 function ReviewFileRow({
   file,
   change,
+  cwd,
   sourceLabel,
   expanded,
   onToggle,
@@ -288,6 +298,7 @@ function ReviewFileRow({
 }: {
   file: WorktreeFileDiff
   change: FileChange
+  cwd?: string | null
   sourceLabel: string
   expanded: boolean
   onToggle: () => void
@@ -300,79 +311,81 @@ function ReviewFileRow({
         ? FilePlus
         : FileEdit
   return (
-    <div
-      className={cn(
-        "overflow-hidden rounded-md border transition-colors",
-        expanded ? "border-border bg-muted/20" : "border-transparent"
-      )}
-    >
-      <div className="flex min-w-0 items-center gap-1">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="group flex h-8 min-w-0 flex-1 items-center gap-2 rounded px-2 text-left transition-colors hover:bg-accent/60"
-          aria-expanded={expanded}
-          title={file.path}
-        >
-          <ChevronRight
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              expanded && "rotate-90"
-            )}
-          />
-          <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate font-mono text-foreground/90">
-            {file.path}
-          </span>
-          <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
-            {sourceLabel}
-          </span>
-          <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
-            {statusLabel(file.status)}
-          </span>
-          {file.binary ? (
-            <span className="shrink-0 text-muted-foreground">二进制</span>
-          ) : (
-            <>
-              <span className="shrink-0 font-mono text-connected">
-                +{file.additions}
-              </span>
-              <span className="shrink-0 font-mono text-destructive">
-                -{file.deletions}
-              </span>
-            </>
-          )}
-        </button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-7 shrink-0 text-muted-foreground"
-          onClick={onOpenDiff}
-          aria-label={`在侧栏审核 ${file.path}`}
-          title="在侧栏审核"
-        >
-          <GitCompareArrows className="size-3.5" />
-        </Button>
-      </div>
+    <LocalFileContextMenu path={file.path} cwd={cwd}>
       <div
         className={cn(
-          "grid transition-[grid-template-rows] duration-200",
-          expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          "overflow-hidden rounded-md border transition-colors",
+          expanded ? "border-border bg-muted/20" : "border-transparent"
         )}
       >
-        <div className="overflow-hidden">
-          <div className="border-t px-2 py-2">
-            <FileDiffPreview
-              change={change}
-              compact
-              bounded
-              maxHeightClassName="max-h-72"
+        <div className="flex min-w-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="group flex h-8 min-w-0 flex-1 items-center gap-2 rounded px-2 text-left transition-colors hover:bg-accent/60"
+            aria-expanded={expanded}
+            title={file.path}
+          >
+            <ChevronRight
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground transition-transform",
+                expanded && "rotate-90"
+              )}
             />
+            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate font-mono text-foreground/90">
+              {file.path}
+            </span>
+            <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
+              {sourceLabel}
+            </span>
+            <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
+              {statusLabel(file.status)}
+            </span>
+            {file.binary ? (
+              <span className="shrink-0 text-muted-foreground">二进制</span>
+            ) : (
+              <>
+                <span className="shrink-0 font-mono text-connected">
+                  +{file.additions}
+                </span>
+                <span className="shrink-0 font-mono text-destructive">
+                  -{file.deletions}
+                </span>
+              </>
+            )}
+          </button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 text-muted-foreground"
+            onClick={onOpenDiff}
+            aria-label={`在侧栏审核 ${file.path}`}
+            title="在侧栏审核"
+          >
+            <GitCompareArrows className="size-3.5" />
+          </Button>
+        </div>
+        <div
+          className={cn(
+            "grid transition-[grid-template-rows] duration-200",
+            expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          )}
+        >
+          <div className="overflow-hidden">
+            <div className="border-t px-2 py-2">
+              <FileDiffPreview
+                change={change}
+                compact
+                bounded
+                maxHeightClassName="max-h-72"
+              />
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </LocalFileContextMenu>
   )
 }
 

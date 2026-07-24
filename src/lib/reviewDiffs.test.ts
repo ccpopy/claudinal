@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { parseStoredReviewDiffs } from "./reviewDiffs"
+import {
+  parseStoredReviewDiffs,
+  shouldSyncRunReviewToConversation
+} from "./reviewDiffs"
 
 function validEntry(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -88,5 +91,35 @@ describe("parseStoredReviewDiffs", () => {
       reviewDiffs: [broken, validEntry({ id: "ok" })]
     })
     expect(parsed.map((entry) => entry.id)).toEqual(["ok"])
+  })
+})
+
+describe("shouldSyncRunReviewToConversation", () => {
+  it("keeps the latest review visible while the runtime is active", () => {
+    expect(
+      shouldSyncRunReviewToConversation("runtime-1", "runtime-1", null, null)
+    ).toBe(true)
+  })
+
+  it("keeps the latest review visible after an API runtime refresh", () => {
+    expect(
+      shouldSyncRunReviewToConversation(
+        null,
+        "runtime-1",
+        "session-1",
+        "session-1"
+      )
+    ).toBe(true)
+  })
+
+  it("does not overwrite review state after the user selects another session", () => {
+    expect(
+      shouldSyncRunReviewToConversation(
+        "runtime-2",
+        "runtime-1",
+        "session-2",
+        "session-1"
+      )
+    ).toBe(false)
   })
 })

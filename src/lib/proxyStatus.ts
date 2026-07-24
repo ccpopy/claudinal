@@ -14,6 +14,13 @@ export interface UpstreamStatusState {
   lastAt: number
 }
 
+export function shouldTrackProxyStatus(
+  streaming: boolean,
+  interrupting: boolean
+): boolean {
+  return streaming && !interrupting
+}
+
 export function reduceProxyStatus(
   current: UpstreamStatusState | null,
   ev: ProxyStatusEvent,

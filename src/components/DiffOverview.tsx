@@ -40,6 +40,7 @@ import {
 } from "@/lib/diff"
 import type { UIEntry } from "@/types/ui"
 import { FileDiffPreview, type DiffViewMode } from "@/components/DiffPreview"
+import { LocalFileContextMenu } from "@/components/LocalFileContextMenu"
 
 interface Props {
   open: boolean
@@ -370,42 +371,47 @@ export function DiffOverview({
             <ScrollArea className="border-r min-h-0">
               <div className="flex flex-col gap-0.5 p-2">
                 {changes.map((c, i) => (
-                  <button
-                    key={c.path}
-                    type="button"
-                    onClick={() => setActiveIdx(i)}
-                    className={cn(
-                      "text-left px-2 py-1.5 rounded-md text-xs transition-colors",
-                      safeActiveIdx === i
-                        ? "bg-accent text-accent-foreground"
-                        : "hover:bg-accent/60 text-muted-foreground"
-                    )}
-                    title={c.path}
+                  <LocalFileContextMenu
+                    key={`${c.source}:${c.path}`}
+                    path={c.path}
+                    cwd={cwd}
                   >
-                    <div className="flex items-center gap-1.5">
-                      {c.kind === "create" ? (
-                        <FilePlus className="size-3 text-connected shrink-0" />
-                      ) : c.kind === "delete" ? (
-                        <FileX className="size-3 text-destructive shrink-0" />
-                      ) : (
-                        <FileEdit className="size-3 shrink-0" />
+                    <button
+                      type="button"
+                      onClick={() => setActiveIdx(i)}
+                      className={cn(
+                        "text-left px-2 py-1.5 rounded-md text-xs transition-colors",
+                        safeActiveIdx === i
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-accent/60 text-muted-foreground"
                       )}
-                      <span className="truncate font-mono">{c.basename}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] mt-0.5 ml-4 tabular-nums">
-                      <span className="text-connected">+{c.adds}</span>
-                      <span className="text-destructive">-{c.dels}</span>
-                      <span className="text-muted-foreground">
-                        {c.source === "git"
-                          ? SOURCE_LABEL.git
-                          : c.source === "session"
-                            ? SOURCE_LABEL.session
-                            : c.source === "snapshot"
-                              ? SOURCE_LABEL.snapshot
-                              : SOURCE_LABEL.status}
-                      </span>
-                    </div>
-                  </button>
+                      title={c.path}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        {c.kind === "create" ? (
+                          <FilePlus className="size-3 text-connected shrink-0" />
+                        ) : c.kind === "delete" ? (
+                          <FileX className="size-3 text-destructive shrink-0" />
+                        ) : (
+                          <FileEdit className="size-3 shrink-0" />
+                        )}
+                        <span className="truncate font-mono">{c.basename}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] mt-0.5 ml-4 tabular-nums">
+                        <span className="text-connected">+{c.adds}</span>
+                        <span className="text-destructive">-{c.dels}</span>
+                        <span className="text-muted-foreground">
+                          {c.source === "git"
+                            ? SOURCE_LABEL.git
+                            : c.source === "session"
+                              ? SOURCE_LABEL.session
+                              : c.source === "snapshot"
+                                ? SOURCE_LABEL.snapshot
+                                : SOURCE_LABEL.status}
+                        </span>
+                      </div>
+                    </button>
+                  </LocalFileContextMenu>
                 ))}
               </div>
             </ScrollArea>
@@ -431,12 +437,14 @@ export function DiffOverview({
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0 text-xs font-mono text-muted-foreground break-all">
-                      {active.path}
-                      {active.oldPath && active.oldPath !== active.path && (
-                        <span> ← {active.oldPath}</span>
-                      )}
-                    </div>
+                    <LocalFileContextMenu path={active.path} cwd={cwd}>
+                      <div className="min-w-0 text-xs font-mono text-muted-foreground break-all">
+                        {active.path}
+                        {active.oldPath && active.oldPath !== active.path && (
+                          <span> ← {active.oldPath}</span>
+                        )}
+                      </div>
+                    </LocalFileContextMenu>
                     <div className="flex shrink-0 items-center gap-1">
                       <Tooltip>
                         <TooltipTrigger asChild>

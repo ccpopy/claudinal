@@ -19,12 +19,14 @@ import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
 
 interface Props {
   entry: UIEntry
+  cwd?: string | null
   onRetryMessage?: (messageId: string) => void | Promise<void>
   retryableMessageIds?: ReadonlySet<string>
 }
 
 export function MessageCard({
   entry,
+  cwd,
   onRetryMessage,
   retryableMessageIds
 }: Props) {
@@ -32,6 +34,7 @@ export function MessageCard({
     return (
       <MessageView
         msg={entry}
+        cwd={cwd}
         onRetryMessage={onRetryMessage}
         retryableMessageIds={retryableMessageIds}
       />
@@ -53,10 +56,12 @@ export function MessageCard({
 
 function MessageView({
   msg,
+  cwd,
   onRetryMessage,
   retryableMessageIds
 }: {
   msg: UIMessage
+  cwd?: string | null
   onRetryMessage?: (messageId: string) => void | Promise<void>
   retryableMessageIds?: ReadonlySet<string>
 }) {
@@ -72,6 +77,7 @@ function MessageView({
     return (
       <GuideMessageView
         msg={msg}
+        cwd={cwd}
         onRetry={
           onRetryMessage && retryableMessageIds?.has(msg.id)
             ? () => onRetryMessage?.(msg.id)
@@ -87,7 +93,13 @@ function MessageView({
   return (
     <div className="flex flex-col gap-2 items-stretch">
       {msg.blocks.map((b, i) => (
-        <BlockView key={i} role={msg.role} block={b} onRetry={onRetry} />
+        <BlockView
+          key={i}
+          role={msg.role}
+          block={b}
+          onRetry={onRetry}
+          cwd={cwd}
+        />
       ))}
     </div>
   )
@@ -101,9 +113,11 @@ function MessageView({
  */
 function GuideMessageView({
   msg,
+  cwd,
   onRetry
 }: {
   msg: UIMessage
+  cwd?: string | null
   onRetry?: () => void | Promise<void>
 }) {
   return (
@@ -121,6 +135,7 @@ function GuideMessageView({
               block={b}
               variant="guide"
               onRetry={onRetry}
+              cwd={cwd}
             />
           ))}
         </div>

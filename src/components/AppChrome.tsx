@@ -10,6 +10,7 @@ import {
   X
 } from "lucide-react"
 import type * as React from "react"
+import { useRef } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { toast } from "sonner"
 import {
@@ -41,6 +42,51 @@ const MENU_GROUPS = [
   { label: "帮助", key: "help" }
 ] as const
 
+const TITLEBAR_INTERACTIVE_SELECTOR = [
+  "button",
+  "a",
+  "input",
+  "textarea",
+  "select",
+  "label",
+  "summary",
+  "[contenteditable]:not([contenteditable='false'])",
+  "[role=button]",
+  "[role=link]",
+  "[role=menu]",
+  "[role=menuitem]",
+  "[role=dialog]",
+  "[data-radix-popper-content-wrapper]"
+].join(", ")
+const TITLEBAR_DRAG_THRESHOLD_PX = 3
+
+export type TitlebarMouseDownAction = "prepare-drag" | "toggle-maximize" | null
+
+export function titlebarMouseDownAction(
+  button: number,
+  detail: number,
+  interactive: boolean
+): TitlebarMouseDownAction {
+  if (button !== 0 || interactive) return null
+  if (detail === 1) return "prepare-drag"
+  if (detail === 2) return "toggle-maximize"
+  return null
+}
+
+export function titlebarDragThresholdReached(
+  origin: { x: number; y: number },
+  current: { x: number; y: number },
+  buttons: number
+): boolean {
+  if ((buttons & 1) === 0) return false
+  const movedX = current.x - origin.x
+  const movedY = current.y - origin.y
+  return (
+    movedX * movedX + movedY * movedY >=
+    TITLEBAR_DRAG_THRESHOLD_PX * TITLEBAR_DRAG_THRESHOLD_PX
+  )
+}
+
 export function AppChrome({
   sidebarVisible,
   inSettings = false,
@@ -51,32 +97,64 @@ export function AppChrome({
   onOpenSettings
 }: Props) {
   const win = getCurrentWindow()
+  const titlebarDragOriginRef = useRef<{ x: number; y: number } | null>(null)
   const minimize = () => win.minimize().catch((e) => toast.error(String(e)))
   const toggleMaximize = () =>
     win.toggleMaximize().catch((e) => toast.error(String(e)))
   const close = () => win.close().catch((e) => toast.error(String(e)))
-  const startDragging = (event: React.MouseEvent<HTMLElement>) => {
-    if (event.button !== 0) return
+  const handleTitlebarMouseDown = (event: React.MouseEvent<HTMLElement>) => {
     const target = event.target as HTMLElement
-    if (
-      target.closest(
-        "button, a, input, textarea, select, [role=menu], [role=menuitem], [role=dialog], [data-radix-popper-content-wrapper]"
-      )
+    const action = titlebarMouseDownAction(
+      event.button,
+      event.detail,
+      Boolean(target.closest(TITLEBAR_INTERACTIVE_SELECTOR))
     )
+    if (!action) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    if (action === "toggle-maximize") {
+      titlebarDragOriginRef.current = null
+      void toggleMaximize()
       return
-    win.startDragging().catch(() => undefined)
+    }
+    titlebarDragOriginRef.current = { x: event.screenX, y: event.screenY }
+  }
+  const handleTitlebarMouseMove = (event: React.MouseEvent<HTMLElement>) => {
+    const origin = titlebarDragOriginRef.current
+    if (!origin) return
+    if ((event.buttons & 1) === 0) {
+      titlebarDragOriginRef.current = null
+      return
+    }
+    if (
+      !titlebarDragThresholdReached(
+        origin,
+        { x: event.screenX, y: event.screenY },
+        event.buttons
+      )
+    ) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    titlebarDragOriginRef.current = null
+    void win.startDragging().catch(() => undefined)
+  }
+  const clearTitlebarDrag = () => {
+    titlebarDragOriginRef.current = null
   }
 
+  // Keep one titlebar event path: mixing this handler with Tauri drag-region
+  // attributes dispatches start-drag/maximize commands twice on Windows.
   return (
     <header
-      data-tauri-drag-region
-      onMouseDown={startDragging}
+      onMouseDown={handleTitlebarMouseDown}
+      onMouseMove={handleTitlebarMouseMove}
+      onMouseLeave={handleTitlebarMouseMove}
+      onMouseUp={clearTitlebarDrag}
       className="h-9 shrink-0 select-none border-b border-border bg-background text-foreground"
     >
-      <div
-        data-tauri-drag-region
-        className="flex h-full items-center justify-between"
-      >
+      <div className="flex h-full items-center justify-between">
         <div className="flex h-full min-w-0 items-center gap-1 px-2">
           <ChromeIconButton
             active={sidebarVisible}
@@ -116,10 +194,7 @@ export function AppChrome({
           </nav>
         </div>
 
-        <div
-          data-tauri-drag-region
-          className="pointer-events-none absolute left-1/2 flex -translate-x-1/2 items-center gap-1.5 text-xs font-medium text-foreground/75"
-        >
+        <div className="pointer-events-none absolute left-1/2 flex -translate-x-1/2 items-center gap-1.5 text-xs font-medium text-foreground/75">
           <img
             src={claudinalIconUrl}
             alt=""

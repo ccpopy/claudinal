@@ -12,6 +12,7 @@ export interface RunStep {
 interface Props {
   steps: RunStep[]
   running: boolean
+  cwd?: string | null
   durationMs?: number
   startTs?: number
   endTs?: number
@@ -44,6 +45,7 @@ function computeRunMs(
 export function RunGroup({
   steps,
   running,
+  cwd,
   durationMs,
   startTs,
   endTs
@@ -101,7 +103,12 @@ export function RunGroup({
               )}
             >
               {steps.map((s) => (
-                <BlockView key={s.key} role="assistant" block={s.block} />
+                <BlockView
+                  key={s.key}
+                  role="assistant"
+                  block={s.block}
+                  cwd={cwd}
+                />
               ))}
             </div>
           </div>
