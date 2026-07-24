@@ -12,6 +12,84 @@ const EXTENSIONLESS_FILE_NAMES = new Set([
   "readme"
 ])
 
+const KNOWN_DOTFILE_NAMES = new Set([
+  ".babelrc",
+  ".browserslistrc",
+  ".dockerignore",
+  ".editorconfig",
+  ".eslintignore",
+  ".eslintrc",
+  ".gitattributes",
+  ".gitignore",
+  ".gitkeep",
+  ".gitmodules",
+  ".npmignore",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierignore",
+  ".prettierrc",
+  ".python-version",
+  ".ruby-version",
+  ".stylelintignore",
+  ".stylelintrc",
+  ".swcrc",
+  ".tool-versions",
+  ".yarnrc"
+])
+
+const CONFIG_DOTFILE_STEMS = new Set([
+  ".babelrc",
+  ".eslintrc",
+  ".prettierrc",
+  ".stylelintrc",
+  ".yarnrc"
+])
+
+const CONFIG_DOTFILE_EXTENSIONS = new Set([
+  "cjs",
+  "js",
+  "json",
+  "jsonc",
+  "mjs",
+  "toml",
+  "yaml",
+  "yml"
+])
+
+// Bare inline-code tokens are ambiguous: `Math.round` and a filename have the
+// same shape. Keep this list intentionally conservative. Explicit relative,
+// absolute, and file:// paths are accepted before this allowlist is consulted.
+const BARE_FILE_EXTENSION_GROUPS = [
+  // Source code and web assets.
+  "c cc cjs coffee cpp cs cts cxx dart go h hh hpp hxx java js jsx kt kts mjs mts php py pyw rb rs swift ts tsx",
+  "astro cshtml css ejs handlebars hbs htm html json jsonc jsonl less markdown md mdx pug razor sass scss styl stylus svelte vue xhtml xml xsl xslt",
+  // Archives, packages, and binaries.
+  "7z apk bin bz bz2 cab class dat deb dll dmg dylib ear exe gz iso jar lz lz4 msi rar rpm so tar tgz war wasm xz zip zst",
+  // Configuration, shell, credential, and data files.
+  "asc bash bat cer cfg cmd conf config crt env fish gpg ini key lock p12 pem pfx properties ps1 psd1 psm1 pub sh toml yaml yml zsh",
+  "db db3 ipynb mdb sql sqlite sqlite3",
+  // Documents and media.
+  "csv doc docm docx dot dotx numbers odp ods odt pages pdf ppt pptm pptx rtf text tsv txt xls xlsb xlsm xlsx",
+  "aac ai avi avif bmp eot fig flac flv gif heic ico jpeg jpg m4a m4v mkv mov mp3 mp4 mpeg mpg ogg opus otf png psd sketch svg tif tiff ttf wav webm webp wma wmv woff woff2 xd",
+  "azw azw3 epub mobi"
+]
+
+const BARE_FILE_EXTENSIONS = new Set(
+  BARE_FILE_EXTENSION_GROUPS.flatMap((group) => group.split(" "))
+)
+
+function isKnownDotfileName(name: string): boolean {
+  if (KNOWN_DOTFILE_NAMES.has(name)) return true
+  if (/^\.env(?:\.[a-z\d_-]+)*$/i.test(name)) return true
+
+  const separatorIndex = name.lastIndexOf(".")
+  if (separatorIndex <= 0) return false
+  return (
+    CONFIG_DOTFILE_STEMS.has(name.slice(0, separatorIndex)) &&
+    CONFIG_DOTFILE_EXTENSIONS.has(name.slice(separatorIndex + 1))
+  )
+}
+
 function trimPathReference(value: string): string {
   return value.trim().replace(/^<|>$/g, "")
 }
@@ -84,9 +162,10 @@ export function isLikelyMarkdownFileReference(value: string): boolean {
 
   const name = basename(reference).toLowerCase()
   if (!name) return false
-  if (/^\.[a-z\d][a-z\d._-]*$/i.test(name)) return true
+  if (name.startsWith(".")) return isKnownDotfileName(name)
   if (EXTENSIONLESS_FILE_NAMES.has(name)) return true
-  return /\.(?:[a-z][a-z\d]{0,11}|7z)$/i.test(name)
+  const extension = name.includes(".") ? name.split(".").pop() ?? "" : ""
+  return BARE_FILE_EXTENSIONS.has(extension)
 }
 
 export function resolveMarkdownFilePath(

@@ -77,4 +77,72 @@ describe("localPath", () => {
       "F:\\project\\claudecli\\release.7z"
     )
   })
+
+  it("keeps common web, archive, office, and configuration files", () => {
+    const cwd = "F:\\project\\claudecli"
+    const references = [
+      "index.html",
+      "styles.css",
+      "Component.vue",
+      "theme.sass",
+      "archive.zip",
+      "report.docx",
+      "sheet.xlsx",
+      "guide.pdf",
+      ".editorconfig",
+      ".npmrc",
+      ".env.local",
+      ".eslintrc.json"
+    ]
+
+    for (const reference of references) {
+      expect(isLikelyMarkdownFileReference(reference), reference).toBe(true)
+      expect(resolveMarkdownFilePath(reference, cwd), reference).not.toBeNull()
+    }
+  })
+
+  it("rejects domains, css values, and api members in inline code", () => {
+    const cwd = "F:\\project\\claudecli"
+    const references = [
+      ".local",
+      "api.localserver.com",
+      "xx.local",
+      "Math.round",
+      "element.className",
+      "classList.toggle",
+      "Element.closest",
+      "requestAnimationFrame",
+      "setTimeout(16)",
+      "matchMedia",
+      "getBoundingClientRect()",
+      "0.35",
+      "-123.4px",
+      "cubic-bezier",
+      "border-radius",
+      "rgba",
+      "-webkit-"
+    ]
+
+    for (const reference of references) {
+      expect(isLikelyMarkdownFileReference(reference), reference).toBe(false)
+      expect(resolveMarkdownFilePath(reference, cwd), reference).toBeNull()
+    }
+  })
+
+  it("requires an explicit path for unknown file extensions", () => {
+    const cwd = "F:\\project\\claudecli"
+    expect(resolveMarkdownFilePath("artifact.unknown", cwd)).toBeNull()
+    expect(resolveMarkdownFilePath("src/artifact.unknown", cwd)).toBeNull()
+    expect(resolveMarkdownFilePath(".random", cwd)).toBeNull()
+    expect(resolveMarkdownFilePath(".json", cwd)).toBeNull()
+    expect(resolveMarkdownFilePath("./artifact.unknown", cwd)).toBe(
+      "F:\\project\\claudecli\\artifact.unknown"
+    )
+    expect(resolveMarkdownFilePath("./.random", cwd)).toBe(
+      "F:\\project\\claudecli\\.random"
+    )
+    expect(resolveMarkdownFilePath("../artifact.unknown", cwd)).toBe(
+      "F:\\project\\claudecli\\..\\artifact.unknown"
+    )
+  })
 })
