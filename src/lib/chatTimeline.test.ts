@@ -3,6 +3,7 @@ import type { UIMessage } from "@/types/ui"
 import {
   chatTimelineMarkerWidth,
   chatTimelinePreview,
+  chatTimelineRailLeft,
   chatTimelineRoleLabel,
   formatTimelineTime,
   timelineTargetIntersectsViewport
@@ -112,6 +113,14 @@ describe("chatTimeline", () => {
     expect(chatTimelineMarkerWidth(20, 20)).toBeGreaterThan(
       chatTimelineMarkerWidth(36, 20)
     )
+  })
+
+  it("anchors the timeline to the panel left without entering the message column", () => {
+    expect(chatTimelineRailLeft(235)).toBe(24)
+    expect(chatTimelineRailLeft(56)).toBe(16)
+    expect(chatTimelineRailLeft(52)).toBe(12)
+    expect(chatTimelineRailLeft(47)).toBeNull()
+    expect(chatTimelineRailLeft(Number.NaN)).toBeNull()
   })
 
   it("detects timeline messages intersecting the scroll viewport", () => {

@@ -358,7 +358,10 @@ export function MessageStream({
   let reviewIndex = 0
   return (
     <ScrollArea ref={ref} className="relative flex-1 min-h-0 overflow-hidden">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 py-6 xl:max-w-4xl 2xl:max-w-5xl">
+      <div
+        data-message-stream-content
+        className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 py-6 xl:max-w-4xl 2xl:max-w-5xl"
+      >
         {groups.map((g) => {
           if (g.kind === "msg") {
             return (

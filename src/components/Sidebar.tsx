@@ -865,7 +865,7 @@ function ProjectNode({
     <Collapsible open={isExpanded} className="flex flex-col min-w-0">
       <div
         className={cn(
-          "group relative flex items-center h-8 px-2 gap-1.5 rounded-md text-sm transition-colors min-w-0",
+          "group/project relative flex items-center h-8 px-2 gap-1.5 rounded-md text-sm transition-colors min-w-0",
           isSelected
             ? "bg-sidebar-accent text-sidebar-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-r before:bg-primary before:content-['']"
             : "hover:bg-sidebar-accent/50"
@@ -882,16 +882,19 @@ function ProjectNode({
           <FolderOpen className="size-3.5 shrink-0 text-sidebar-foreground/60" />
           <span className="truncate">{project.name}</span>
         </button>
-        <div className="relative flex h-5 w-10 shrink-0 items-center justify-end">
+        <div className="group/project-actions relative flex h-5 w-10 shrink-0 items-center justify-end">
           {!isExpanded && busy && (
             <Loader2
               aria-label="项目中有运行中的会话"
-              className="size-3 animate-spin text-primary transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
+              className={cn(
+                "size-3 animate-spin text-primary transition-opacity group-hover/project:opacity-0 group-focus-within/project-actions:opacity-0",
+                menuOpen && "opacity-0"
+              )}
             />
           )}
           <div
             className={cn(
-              "pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:opacity-100",
+              "pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project-actions:pointer-events-auto group-focus-within/project-actions:opacity-100",
               menuOpen && "pointer-events-auto opacity-100"
             )}
           >

@@ -11,7 +11,10 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { chatTimelineMarkerWidth } from "@/lib/chatTimeline"
+import {
+  chatTimelineMarkerWidth,
+  chatTimelineRailLeft
+} from "@/lib/chatTimeline"
 import { cn } from "@/lib/utils"
 
 const MARKER_HEIGHT = 2
@@ -40,14 +43,41 @@ export function ChatTimelineNav({
   visibleIds,
   onSelect
 }: Props) {
+  const hasItems = items.length > 0
   const boundaryRef = useRef<HTMLElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const pointerFrameRef = useRef<number | null>(null)
   const pendingPointerYRef = useRef<number | null>(null)
+  const pointerInsideRef = useRef(false)
+  const pointerSessionRef = useRef(0)
   const [railHeight, setRailHeight] = useState<number | null>(null)
+  const [railLeft, setRailLeft] = useState<number | null>(null)
   const [pointerY, setPointerY] = useState<number | null>(null)
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [focusedId, setFocusedId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const boundary = boundaryRef.current
+    const container = boundary?.closest<HTMLElement>("[data-slot='scroll-area']")
+    const messageColumn = container?.querySelector<HTMLElement>(
+      "[data-message-stream-content]"
+    )
+    if (!container || !messageColumn) return
+
+    const measure = () => {
+      const containerRect = container.getBoundingClientRect()
+      const messageColumnRect = messageColumn.getBoundingClientRect()
+      const next = chatTimelineRailLeft(messageColumnRect.left - containerRect.left)
+      setRailLeft((current) => (current === next ? current : next))
+    }
+
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(container)
+    observer.observe(messageColumn)
+    return () => {
+      observer.disconnect()
+    }
+  }, [hasItems])
 
   useEffect(() => {
     const boundary = boundaryRef.current
@@ -67,13 +97,16 @@ export function ChatTimelineNav({
     observer.observe(boundary)
     observer.observe(content)
     return () => observer.disconnect()
-  }, [items])
+  }, [items, railLeft])
 
   useEffect(
     () => () => {
       if (pointerFrameRef.current !== null) {
         window.cancelAnimationFrame(pointerFrameRef.current)
       }
+      pointerInsideRef.current = false
+      pointerSessionRef.current += 1
+      pendingPointerYRef.current = null
     },
     []
   )
@@ -82,34 +115,47 @@ export function ChatTimelineNav({
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const content = contentRef.current
       if (!content) return
+      pointerInsideRef.current = true
       pendingPointerYRef.current = event.clientY - content.getBoundingClientRect().top
       if (pointerFrameRef.current !== null) return
+      const session = pointerSessionRef.current
       pointerFrameRef.current = window.requestAnimationFrame(() => {
         pointerFrameRef.current = null
+        if (
+          !pointerInsideRef.current ||
+          session !== pointerSessionRef.current ||
+          pendingPointerYRef.current === null
+        ) {
+          return
+        }
         setPointerY(pendingPointerYRef.current)
       })
     },
     []
   )
 
-  const handlePointerLeave = useCallback(() => {
+  const resetPointerInteraction = useCallback(() => {
+    pointerInsideRef.current = false
+    pointerSessionRef.current += 1
     pendingPointerYRef.current = null
     if (pointerFrameRef.current !== null) {
       window.cancelAnimationFrame(pointerFrameRef.current)
       pointerFrameRef.current = null
     }
     setPointerY(null)
-    setHoveredId(null)
   }, [])
 
-  if (items.length === 0) return null
+  if (!hasItems) return null
   return (
     <nav
       ref={boundaryRef}
       aria-label="对话时间线导航"
-      // left 基准对齐 MessageStream 内容 max-width：左缘外侧 = 50% − 内容半宽 − 时间线宽(w-10=2.5rem)
-      // lg 内容 max-w-3xl=48rem(半宽24)→26.5；xl max-w-4xl=56rem(半宽28)→30.5；2xl max-w-5xl=64rem(半宽32)→34.5
-      className="pointer-events-none absolute bottom-6 left-[max(0.5rem,calc(50%-26.5rem))] top-6 z-20 hidden w-10 items-center lg:flex xl:left-[max(0.5rem,calc(50%-30.5rem))] 2xl:left-[max(0.5rem,calc(50%-34.5rem))]"
+      // 宽屏固定贴近主面板左缘；空间变窄时跟随消息列左缘，放不下完整 rail 就隐藏。
+      className="pointer-events-none absolute bottom-6 top-6 z-20 hidden w-10 items-center lg:flex"
+      style={{
+        display: railLeft === null ? "none" : undefined,
+        left: railLeft ?? undefined
+      }}
     >
       <div
         className="pointer-events-auto relative w-full"
@@ -119,17 +165,20 @@ export function ChatTimelineNav({
           <div
             ref={contentRef}
             className="flex cursor-pointer flex-col gap-2 pr-2.5"
+            onPointerEnter={() => {
+              pointerInsideRef.current = true
+            }}
             onPointerMove={handlePointerMove}
-            onPointerLeave={handlePointerLeave}
+            onPointerLeave={resetPointerInteraction}
+            onPointerCancel={resetPointerInteraction}
           >
             {items.map((item, index) => {
               const active = item.id === activeId
               const visible = visibleIds.has(item.id)
-              const hovered = item.id === hoveredId
               const focused = item.id === focusedId
               const markerCenterY = index * MARKER_PITCH + MARKER_HEIGHT / 2
               const markerWidth = chatTimelineMarkerWidth(
-                hovered || focused ? markerCenterY : pointerY,
+                focused ? markerCenterY : pointerY,
                 markerCenterY
               )
               return (
@@ -144,16 +193,18 @@ export function ChatTimelineNav({
                       aria-label={`跳转到${item.label}`}
                       aria-current={active ? "location" : undefined}
                       onClick={() => onSelect(item.id)}
-                      onPointerEnter={() => setHoveredId(item.id)}
-                      onPointerLeave={() => setHoveredId((id) =>
-                        id === item.id ? null : id
-                      )}
-                      onFocus={() => setFocusedId(item.id)}
+                      onFocus={(event) =>
+                        setFocusedId(
+                          event.currentTarget.matches(":focus-visible")
+                            ? item.id
+                            : null
+                        )
+                      }
                       onBlur={() => setFocusedId((id) =>
                         id === item.id ? null : id
                       )}
                       className={cn(
-                        "group relative flex h-0.5 w-full shrink-0 items-center justify-start rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                        "group/timeline-marker relative flex h-0.5 w-full shrink-0 items-center justify-start rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                         item.queued && "opacity-60"
                       )}
                     >
@@ -164,7 +215,8 @@ export function ChatTimelineNav({
                           visible || active
                             ? "bg-foreground/70"
                             : "bg-muted-foreground/30",
-                          (hovered || focused) && "bg-foreground/90"
+                          "group-hover/timeline-marker:bg-foreground/90",
+                          focused && "bg-foreground/90"
                         )}
                         style={{ width: markerWidth }}
                       />

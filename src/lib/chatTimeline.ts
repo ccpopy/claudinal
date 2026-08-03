@@ -4,6 +4,9 @@ const PREVIEW_LIMIT = 180
 const MARKER_IDLE_WIDTH = 6
 const MARKER_MAX_WIDTH = 28
 const MARKER_INFLUENCE_RADIUS = 44
+const TIMELINE_RAIL_WIDTH = 40
+const TIMELINE_RAIL_LEFT_ANCHOR = 24
+const TIMELINE_RAIL_MIN_LEFT_INSET = 8
 
 function compactText(text: string): string {
   return text.replace(/\s+/g, " ").trim()
@@ -111,6 +114,16 @@ export function chatTimelineMarkerWidth(
   const influence = 1 - distance / MARKER_INFLUENCE_RADIUS
   const eased = influence * influence * (3 - 2 * influence)
   return MARKER_IDLE_WIDTH + (MARKER_MAX_WIDTH - MARKER_IDLE_WIDTH) * eased
+}
+
+export function chatTimelineRailLeft(
+  messageColumnLeft: number
+): number | null {
+  if (!Number.isFinite(messageColumnLeft) || messageColumnLeft <= 0) return null
+  const contentAlignedLeft = messageColumnLeft - TIMELINE_RAIL_WIDTH
+
+  if (contentAlignedLeft < TIMELINE_RAIL_MIN_LEFT_INSET) return null
+  return Math.min(TIMELINE_RAIL_LEFT_ANCHOR, contentAlignedLeft)
 }
 
 export function timelineTargetIntersectsViewport(
