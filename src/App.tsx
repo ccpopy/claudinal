@@ -20,6 +20,8 @@ import {
   reviewSnapshotStart,
   reviewSnapshotFinish,
   spawnSession,
+  claudeWorkspaceTrustInfo,
+  trustClaudeWorkspace,
   sendUserMessage,
   sendSkillInvocation,
   stopSession,
@@ -160,6 +162,10 @@ import {
   type SessionPermissionModeSource
 } from "@/lib/sessionPermissionMode"
 import { isEditableShortcutTarget } from "@/lib/keyboard"
+import {
+  shouldPromptClaudeWorkspaceTrust,
+  type ClaudeWorkspaceTrustInfo
+} from "@/lib/claudeWorkspaceTrust"
 
 const SUGGESTIONS = [
   "帮我想个合适的入门任务，把它实现出来，再一步步给我讲解决方案",
@@ -181,6 +187,11 @@ const Composer = lazy(() =>
 const ConfirmDialog = lazy(() =>
   import("@/components/ConfirmDialog").then((m) => ({
     default: m.ConfirmDialog
+  }))
+)
+const ClaudeWorkspaceTrustDialog = lazy(() =>
+  import("@/components/ClaudeWorkspaceTrustDialog").then((m) => ({
+    default: m.ClaudeWorkspaceTrustDialog
   }))
 )
 const MessageStream = lazy(() =>
@@ -311,6 +322,10 @@ type PendingDeleteSession = {
   project: Project
   sessionId: string
   title: string
+}
+type PendingClaudeWorkspaceTrust = {
+  cwd: string
+  info: ClaudeWorkspaceTrustInfo
 }
 type ReturnView = "chat" | "plugins" | "history"
 type ChatReturnTarget =
@@ -729,6 +744,8 @@ export default function App() {
   const [permissionRequests, setPermissionRequests] = useState<
     PermissionRequestPayload[]
   >([])
+  const [pendingClaudeWorkspaceTrust, setPendingClaudeWorkspaceTrust] =
+    useState<PendingClaudeWorkspaceTrust | null>(null)
   const [sentInputVersion, setSentInputVersion] = useState(0)
   // fork 功能已废弃，未来基于 CLI --fork-session 重做（plan.md §9.1.1）
   const stateRef = useRef<ReducerState>(reducerInit())
@@ -759,6 +776,10 @@ export default function App() {
     key: string
     value: Array<{ projectId: string; sessionId: string }>
   }>({ key: "", value: [] })
+  const claudeWorkspaceTrustDecisionRef = useRef<
+    ((trusted: boolean) => void) | null
+  >(null)
+  const claudeWorkspaceTrustCheckRef = useRef<Promise<boolean> | null>(null)
 
   useEffect(() => {
     stateRef.current = state
@@ -771,6 +792,77 @@ export default function App() {
   useEffect(() => {
     installedSkillCommandsRef.current = installedSkillCommands
   }, [installedSkillCommands])
+
+  const settleClaudeWorkspaceTrust = useCallback((trusted: boolean) => {
+    const resolve = claudeWorkspaceTrustDecisionRef.current
+    claudeWorkspaceTrustDecisionRef.current = null
+    setPendingClaudeWorkspaceTrust(null)
+    resolve?.(trusted)
+  }, [])
+
+  const ensureClaudeWorkspaceTrust = useCallback(async (): Promise<boolean> => {
+    if (!project) return true
+    if (activeRuntimeIdRef.current ?? sessionIdRef.current) return true
+    if (claudeWorkspaceTrustCheckRef.current) {
+      return claudeWorkspaceTrustCheckRef.current
+    }
+
+    const cwd = project.cwd
+    const switchToken = switchTokenRef.current
+    const check = (async () => {
+      let info: ClaudeWorkspaceTrustInfo
+      try {
+        info = await claudeWorkspaceTrustInfo(cwd)
+      } catch (error) {
+        toast.error(`检查 Claude 工作区信任失败：${String(error)}`)
+        return false
+      }
+      if (switchToken !== switchTokenRef.current) return false
+      if (!shouldPromptClaudeWorkspaceTrust(info)) return true
+
+      return new Promise<boolean>((resolve) => {
+        claudeWorkspaceTrustDecisionRef.current = resolve
+        setPendingClaudeWorkspaceTrust({ cwd, info })
+      })
+    })()
+    claudeWorkspaceTrustCheckRef.current = check
+    try {
+      return await check
+    } finally {
+      if (claudeWorkspaceTrustCheckRef.current === check) {
+        claudeWorkspaceTrustCheckRef.current = null
+      }
+    }
+  }, [project])
+
+  const trustPendingClaudeWorkspace = useCallback(async () => {
+    if (!pendingClaudeWorkspaceTrust) {
+      throw new Error("没有待确认的 Claude 工作区")
+    }
+    const info = await trustClaudeWorkspace(pendingClaudeWorkspaceTrust.cwd)
+    if (!info.trusted) {
+      throw new Error("Claude 工作区信任状态未写入")
+    }
+    settleClaudeWorkspaceTrust(true)
+  }, [pendingClaudeWorkspaceTrust, settleClaudeWorkspaceTrust])
+
+  useEffect(() => {
+    if (
+      pendingClaudeWorkspaceTrust &&
+      pendingClaudeWorkspaceTrust.cwd !== project?.cwd
+    ) {
+      settleClaudeWorkspaceTrust(false)
+    }
+  }, [pendingClaudeWorkspaceTrust, project?.cwd, settleClaudeWorkspaceTrust])
+
+  useEffect(
+    () => () => {
+      const resolve = claudeWorkspaceTrustDecisionRef.current
+      claudeWorkspaceTrustDecisionRef.current = null
+      resolve?.(false)
+    },
+    []
+  )
 
   const rememberSentInput = useCallback((input: SentInput) => {
     const map = sentInputsRef.current
@@ -1694,6 +1786,7 @@ export default function App() {
     }
     const activeSessionId = activeRuntimeIdRef.current ?? sessionIdRef.current
     if (activeSessionId) return activeSessionId
+    if (!(await ensureClaudeWorkspaceTrust())) return null
     let createdRuntimeId: string | null = null
     try {
       const proxyEnv = buildProxyEnv(await loadProxyAsync())
@@ -2042,6 +2135,7 @@ export default function App() {
     reviewDiffs,
     composerPrefs,
     sessionComposer,
+    ensureClaudeWorkspaceTrust,
     sessionPermissionMode,
     applyRunningAction,
     setRunningSessionStreaming,
@@ -2316,6 +2410,16 @@ export default function App() {
       applyDefaultPermissionModeState,
       rememberSentInput
     ]
+  )
+
+  const prepareComposerSend = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim()
+      if (trimmed === "/clear" || trimmed === "/reset") return true
+      if (collaborationMode && !loadCollabSettings().enabled) return true
+      return ensureClaudeWorkspaceTrust()
+    },
+    [collaborationMode, ensureClaudeWorkspaceTrust]
   )
 
   const clearRetrySidecarTail = useCallback(
@@ -3452,6 +3556,7 @@ export default function App() {
                         )}
                       <Suspense fallback={<ComposerLoader />}>
                         <Composer
+                          onBeforeSend={prepareComposerSend}
                           onSend={send}
                           onStop={stop}
                             onRecallQueued={recallLatestQueuedInput}
@@ -3566,6 +3671,7 @@ export default function App() {
                 )}
                 <Suspense fallback={<ComposerLoader />}>
                   <Composer
+                    onBeforeSend={prepareComposerSend}
                     onSend={send}
                     onStop={stop}
                     onRecallQueued={recallLatestQueuedInput}
@@ -3731,6 +3837,16 @@ export default function App() {
               onOpenChange={setShowCollabFlow}
               cwd={project?.cwd ?? null}
               currentSessionId={jsonlSessionId}
+            />
+          </Suspense>
+        )}
+        {pendingClaudeWorkspaceTrust && (
+          <Suspense fallback={null}>
+            <ClaudeWorkspaceTrustDialog
+              open
+              info={pendingClaudeWorkspaceTrust.info}
+              onCancel={() => settleClaudeWorkspaceTrust(false)}
+              onTrust={trustPendingClaudeWorkspace}
             />
           </Suspense>
         )}

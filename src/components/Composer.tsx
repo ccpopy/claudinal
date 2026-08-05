@@ -101,6 +101,11 @@ import { ImageLightbox } from "./ImageLightbox"
 import { ModelEffortPicker } from "./composer/ModelEffortPicker"
 
 interface Props {
+  onBeforeSend?: (
+    text: string,
+    images: ImagePayload[],
+    documents: DocumentPayload[]
+  ) => boolean | Promise<boolean>
   onSend: (
     text: string,
     images: ImagePayload[],
@@ -216,6 +221,7 @@ function buildOutgoingText(text: string, files: FileAttachment[]) {
 }
 
 export function Composer({
+  onBeforeSend,
   onSend,
   onStop,
   onRecallQueued,
@@ -470,19 +476,39 @@ export function Composer({
       .catch(() => setInstalledPlugins([]))
   }, [plusOpen])
 
-  const send = (mode?: "guide" | "followup") => {
+  const preparingSendRef = useRef(false)
+  const [preparingSend, setPreparingSend] = useState(false)
+
+  const send = async (mode?: "guide" | "followup") => {
+    if (preparingSendRef.current) return
     const t = text.trim()
     const outgoingText = buildOutgoingText(t, fileAttachments)
     if (!outgoingText && images.length === 0 && documents.length === 0) return
+    const outgoingImages = images.map((i) => ({ data: i.data, mime: i.mime }))
+    const outgoingDocuments = documents.map((document) => ({
+      data: document.data,
+      mime: document.mime,
+      name: document.name,
+      size: document.size
+    }))
+    preparingSendRef.current = true
+    setPreparingSend(true)
+    try {
+      const canContinue =
+        (await onBeforeSend?.(
+          outgoingText,
+          outgoingImages,
+          outgoingDocuments
+        )) ?? true
+      if (!canContinue) return
+    } finally {
+      preparingSendRef.current = false
+      setPreparingSend(false)
+    }
     onSend(
       outgoingText,
-      images.map((i) => ({ data: i.data, mime: i.mime })),
-      documents.map((document) => ({
-        data: document.data,
-        mime: document.mime,
-        name: document.name,
-        size: document.size
-      })),
+      outgoingImages,
+      outgoingDocuments,
       mode ? { mode } : undefined
     )
     setText("")
@@ -1059,8 +1085,8 @@ export function Composer({
                 </Button>
               )}
               <Button
-                onClick={() => send(streaming ? "followup" : undefined)}
-                disabled={disabled || !canSend}
+                onClick={() => void send(streaming ? "followup" : undefined)}
+                disabled={disabled || preparingSend || !canSend}
                 variant={streaming ? "outline" : "default"}
                 size={streaming ? "sm" : "icon"}
                 aria-label={streaming ? "排入后续消息" : "发送"}
@@ -1074,7 +1100,9 @@ export function Composer({
                   streaming ? "px-2.5 text-xs" : "w-8"
                 )}
               >
-                {streaming ? (
+                {preparingSend ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : streaming ? (
                   <>
                     <CornerDownRight className="size-3.5" />
                     排队

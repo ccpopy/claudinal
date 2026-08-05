@@ -54,19 +54,56 @@ fn atomic_write_str(path: &std::path::Path, contents: &str) -> Result<()> {
         }
     }
     let pid = std::process::id();
+    let nonce = uuid::Uuid::new_v4();
     let mut tmp = path.to_path_buf();
     let suffix = match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{ext}.tmp.{pid}"),
-        None => format!("tmp.{pid}"),
+        Some(ext) => format!("{ext}.tmp.{pid}.{nonce}"),
+        None => format!("tmp.{pid}.{nonce}"),
     };
     tmp.set_extension(suffix);
     std::fs::write(&tmp, contents).map_err(Error::from)?;
-    if let Err(err) = std::fs::rename(&tmp, path) {
+    if let Err(err) = atomic_replace_file(&tmp, path) {
         // rename 失败时尽力清理临时文件，避免残留
         let _ = std::fs::remove_file(&tmp);
         return Err(Error::from(err));
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn atomic_replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+#[cfg(target_os = "windows")]
+fn atomic_replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from_wide = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let to_wide = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            from_wide.as_ptr(),
+            to_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -4147,6 +4184,14 @@ prunable gitdir file points to non-existent location
             normalize_claude_project_key("/Users/me/repo"),
             "/Users/me/repo"
         );
+        assert_eq!(
+            normalize_claude_project_key(r"\\?\F:\project\claudecli\"),
+            "F:/project/claudecli"
+        );
+        assert_eq!(
+            normalize_claude_project_key(r"\\?\UNC\server\share\repo\"),
+            "//server/share/repo"
+        );
     }
 
     #[test]
@@ -4170,6 +4215,218 @@ prunable gitdir file points to non-existent location
             claude_project_key_for_write(&claude_json, "F:\\project\\claudecli\\"),
             "F:/project/claudecli"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn claude_workspace_project_key_preserves_the_launch_drive_case() {
+        let root = workspace_trust_test_dir("drive-case");
+        let raw = root.display().to_string();
+        let lower_drive = format!("{}{}", raw[..1].to_ascii_lowercase(), &raw[1..]);
+
+        let key = claude_workspace_project_key(&lower_drive).unwrap();
+
+        assert!(key.starts_with(&raw[..1].to_ascii_lowercase()));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    fn workspace_trust_test_dir(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "claudinal-workspace-trust-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        root
+    }
+
+    fn project_key_variant(project_key: &str) -> String {
+        let variant = project_key.replace('/', "\\");
+        if variant != project_key {
+            variant
+        } else {
+            format!("{project_key}/")
+        }
+    }
+
+    #[test]
+    fn claude_workspace_trust_info_counts_allow_rules_and_requires_exact_key() {
+        let root = workspace_trust_test_dir("info");
+        std::fs::write(
+            root.join(".claude/settings.json"),
+            r#"{"permissions":{"allow":["Read","Edit"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".claude/settings.local.json"),
+            r#"{"permissions":{"allow":["Bash(git status)"]}}"#,
+        )
+        .unwrap();
+        let project_key = claude_workspace_project_key(root.to_str().unwrap()).unwrap();
+        let config_path = root.join("claude.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string(&serde_json::json!({
+                "projects": {
+                    project_key_variant(&project_key): {
+                        "hasTrustDialogAccepted": true
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let info = claude_workspace_trust_info_at(root.to_str().unwrap(), &config_path).unwrap();
+
+        assert_eq!(info.project_key, project_key);
+        assert!(!info.trusted);
+        assert_eq!(info.allow_count, 3);
+        assert_eq!(
+            info.settings_sources,
+            vec![
+                ".claude/settings.json".to_string(),
+                ".claude/settings.local.json".to_string()
+            ]
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn trust_claude_workspace_preserves_root_other_projects_and_unknown_fields() {
+        let root = workspace_trust_test_dir("preserve");
+        std::fs::write(
+            root.join(".claude/settings.local.json"),
+            r#"{"permissions":{"allow":["Edit"]}}"#,
+        )
+        .unwrap();
+        let project_key = claude_workspace_project_key(root.to_str().unwrap()).unwrap();
+        let config_path = root.join("claude.json");
+        let existing = serde_json::json!({
+            "theme": "dark",
+            "projects": {
+                project_key.clone(): {
+                    "hasTrustDialogAccepted": false,
+                    "mcpServers": { "fs": { "command": "fs" } },
+                    "unknownProjectField": 42
+                },
+                "F:/other/project": {
+                    "hasTrustDialogAccepted": true,
+                    "keep": "yes"
+                }
+            }
+        });
+        std::fs::write(&config_path, serde_json::to_string(&existing).unwrap()).unwrap();
+
+        let info = trust_claude_workspace_at(root.to_str().unwrap(), &config_path).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+        assert!(info.trusted);
+        assert_eq!(written["theme"], "dark");
+        assert_eq!(
+            written["projects"][&project_key]["hasTrustDialogAccepted"],
+            true
+        );
+        assert_eq!(written["projects"][&project_key]["unknownProjectField"], 42);
+        assert_eq!(
+            written["projects"][&project_key]["mcpServers"]["fs"]["command"],
+            "fs"
+        );
+        assert_eq!(written["projects"]["F:/other/project"]["keep"], "yes");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn trust_claude_workspace_creates_exact_key_without_removing_path_variant() {
+        let root = workspace_trust_test_dir("variant");
+        let project_key = claude_workspace_project_key(root.to_str().unwrap()).unwrap();
+        let variant = project_key_variant(&project_key);
+        assert_ne!(variant, project_key);
+        let config_path = root.join("claude.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string(&serde_json::json!({
+                "projects": {
+                    variant.clone(): {
+                        "hasTrustDialogAccepted": false,
+                        "keepVariant": "copied"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        trust_claude_workspace_at(root.to_str().unwrap(), &config_path).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let projects = written["projects"].as_object().unwrap();
+
+        assert!(projects.contains_key(&variant));
+        assert!(projects.contains_key(&project_key));
+        assert_eq!(projects[&variant]["hasTrustDialogAccepted"], false);
+        assert_eq!(projects[&project_key]["hasTrustDialogAccepted"], true);
+        assert_eq!(projects[&project_key]["keepVariant"], "copied");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn claude_workspace_trust_rejects_invalid_settings_and_config_shapes() {
+        let root = workspace_trust_test_dir("invalid");
+        let config_path = root.join("claude.json");
+        std::fs::write(&config_path, "{}").unwrap();
+
+        for (raw, expected) in [
+            (r#"[]"#, "must contain a JSON object"),
+            (r#"{"permissions":[]}"#, "permissions must be a JSON object"),
+            (
+                r#"{"permissions":{"allow":"Edit"}}"#,
+                "permissions.allow must be a JSON array",
+            ),
+            (
+                r#"{"permissions":{"allow":["Edit",42]}}"#,
+                "permissions.allow entries must be strings",
+            ),
+        ] {
+            std::fs::write(root.join(".claude/settings.json"), raw).unwrap();
+            let err = claude_workspace_trust_info_at(root.to_str().unwrap(), &config_path)
+                .expect_err("invalid settings should fail");
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+
+        std::fs::remove_file(root.join(".claude/settings.json")).unwrap();
+        std::fs::write(&config_path, "[]").unwrap();
+        let err = claude_workspace_trust_info_at(root.to_str().unwrap(), &config_path)
+            .expect_err("invalid root config should fail");
+        assert!(err.to_string().contains("must contain a JSON object"));
+
+        std::fs::write(&config_path, r#"{"projects":[]}"#).unwrap();
+        let err = claude_workspace_trust_info_at(root.to_str().unwrap(), &config_path)
+            .expect_err("invalid projects field should fail on read");
+        assert!(err.to_string().contains(".projects must be a JSON object"));
+        let err = trust_claude_workspace_at(root.to_str().unwrap(), &config_path)
+            .expect_err("invalid projects field should fail");
+        assert!(err
+            .to_string()
+            .contains("claude json projects field must be a JSON object"));
+
+        let project_key = claude_workspace_project_key(root.to_str().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            serde_json::to_string(&serde_json::json!({
+                "projects": {
+                    project_key: { "hasTrustDialogAccepted": "yes" }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let err = claude_workspace_trust_info_at(root.to_str().unwrap(), &config_path)
+            .expect_err("invalid trust flag should fail");
+        assert!(err
+            .to_string()
+            .contains("hasTrustDialogAccepted must be a boolean"));
+        std::fs::remove_dir_all(root).ok();
     }
 }
 
@@ -4362,6 +4619,26 @@ fn claude_json_path() -> Result<std::path::PathBuf> {
     Ok(home.join(".claude.json"))
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeWorkspaceTrustInfo {
+    pub project_key: String,
+    pub trusted: bool,
+    pub allow_count: usize,
+    pub settings_sources: Vec<String>,
+    pub config_path: String,
+}
+
+#[tauri::command]
+pub async fn claude_workspace_trust_info(cwd: String) -> Result<ClaudeWorkspaceTrustInfo> {
+    claude_workspace_trust_info_at(&cwd, &claude_json_path()?)
+}
+
+#[tauri::command]
+pub async fn trust_claude_workspace(cwd: String) -> Result<ClaudeWorkspaceTrustInfo> {
+    trust_claude_workspace_at(&cwd, &claude_json_path()?)
+}
+
 #[tauri::command]
 pub async fn claude_mcp_path_for(scope: String, cwd: Option<String>) -> Result<String> {
     let p = claude_mcp_path(&scope, cwd.as_deref())?;
@@ -4531,7 +4808,19 @@ fn push_unique_project_key(out: &mut Vec<String>, path: &str) {
 }
 
 fn normalize_claude_project_key(path: &str) -> String {
-    path.replace('\\', "/").trim_end_matches('/').to_string()
+    let mut normalized = path.trim().replace('\\', "/");
+    if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
+        normalized = format!("//{rest}");
+    } else if let Some(rest) = normalized.strip_prefix("//?/") {
+        normalized = rest.to_string();
+    }
+    while normalized.ends_with('/')
+        && normalized != "/"
+        && !(normalized.len() == 3 && normalized.as_bytes().get(1) == Some(&b':'))
+    {
+        normalized.pop();
+    }
+    normalized
 }
 
 fn claude_project_key_for_write(value: &Value, cwd: &str) -> String {
@@ -4550,6 +4839,205 @@ fn claude_project_key_for_write(value: &Value, cwd: &str) -> String {
         }
     }
     normalize_claude_project_key(cwd)
+}
+
+fn claude_workspace_root(cwd: &str) -> Result<std::path::PathBuf> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Err(Error::Other("cwd is empty".into()));
+    }
+    let cwd_path = std::path::PathBuf::from(cwd);
+    if !cwd_path.is_absolute() {
+        return Err(Error::Other(format!("cwd must be absolute: {cwd}")));
+    }
+    if !cwd_path.is_dir() {
+        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
+    }
+
+    let root = git_root(cwd)
+        .map(std::path::PathBuf::from)
+        .unwrap_or(cwd_path);
+    Ok(root)
+}
+
+fn claude_workspace_project_key(cwd: &str) -> Result<String> {
+    let root = claude_workspace_root(cwd)?;
+    let key = normalize_claude_project_key(&root.display().to_string());
+    if key.is_empty() {
+        return Err(Error::Other("Claude workspace project key is empty".into()));
+    }
+    Ok(key)
+}
+
+fn claude_permissions_allow_count(path: &std::path::Path) -> Result<usize> {
+    if !path.is_file() {
+        return Ok(0);
+    }
+    let raw = std::fs::read_to_string(path)?;
+    let value: Value = serde_json::from_str(&raw)?;
+    if !value.is_object() {
+        return Err(Error::Other(format!(
+            "{} must contain a JSON object",
+            path.display()
+        )));
+    }
+    let Some(permissions) = value.get("permissions") else {
+        return Ok(0);
+    };
+    let permissions = permissions.as_object().ok_or_else(|| {
+        Error::Other(format!(
+            "{}.permissions must be a JSON object",
+            path.display()
+        ))
+    })?;
+    let Some(allow) = permissions.get("allow") else {
+        return Ok(0);
+    };
+    let allow = allow.as_array().ok_or_else(|| {
+        Error::Other(format!(
+            "{}.permissions.allow must be a JSON array",
+            path.display()
+        ))
+    })?;
+    if allow.iter().any(|entry| !entry.is_string()) {
+        return Err(Error::Other(format!(
+            "{}.permissions.allow entries must be strings",
+            path.display()
+        )));
+    }
+    Ok(allow.len())
+}
+
+fn claude_workspace_trust_info_at(
+    cwd: &str,
+    config_path: &std::path::Path,
+) -> Result<ClaudeWorkspaceTrustInfo> {
+    let root = claude_workspace_root(cwd)?;
+    let project_key = normalize_claude_project_key(&root.display().to_string());
+    let mut allow_count = 0;
+    let mut settings_sources = Vec::new();
+    for name in ["settings.json", "settings.local.json"] {
+        let path = root.join(".claude").join(name);
+        let count = claude_permissions_allow_count(&path)?;
+        if count > 0 {
+            allow_count += count;
+            settings_sources.push(format!(".claude/{name}"));
+        }
+    }
+
+    let trusted = if config_path.is_file() {
+        let raw = std::fs::read_to_string(config_path)?;
+        let value: Value = serde_json::from_str(&raw)?;
+        if !value.is_object() {
+            return Err(Error::Other(format!(
+                "{} must contain a JSON object",
+                config_path.display()
+            )));
+        }
+        match value.get("projects") {
+            None => false,
+            Some(projects) => {
+                let projects = projects.as_object().ok_or_else(|| {
+                    Error::Other(format!(
+                        "{}.projects must be a JSON object",
+                        config_path.display()
+                    ))
+                })?;
+                match projects.get(&project_key) {
+                    None => false,
+                    Some(project) => {
+                        let project = project.as_object().ok_or_else(|| {
+                            Error::Other(format!(
+                                "{}.projects[{project_key}] must be a JSON object",
+                                config_path.display()
+                            ))
+                        })?;
+                        match project.get("hasTrustDialogAccepted") {
+                            None => false,
+                            Some(Value::Bool(trusted)) => *trusted,
+                            Some(_) => {
+                                return Err(Error::Other(format!(
+                                    "{}.projects[{project_key}].hasTrustDialogAccepted must be a boolean",
+                                    config_path.display()
+                                )))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        false
+    };
+
+    Ok(ClaudeWorkspaceTrustInfo {
+        project_key,
+        trusted,
+        allow_count,
+        settings_sources,
+        config_path: config_path.display().to_string(),
+    })
+}
+
+fn trust_claude_workspace_at(
+    cwd: &str,
+    config_path: &std::path::Path,
+) -> Result<ClaudeWorkspaceTrustInfo> {
+    let project_key = claude_workspace_project_key(cwd)?;
+    let mut value = if config_path.is_file() {
+        let raw = std::fs::read_to_string(config_path)?;
+        serde_json::from_str(&raw)?
+    } else {
+        Value::Object(Map::new())
+    };
+    if !value.is_object() {
+        return Err(Error::Other(format!(
+            "{} must contain a JSON object",
+            config_path.display()
+        )));
+    }
+
+    let equivalent_project =
+        value
+            .get("projects")
+            .and_then(Value::as_object)
+            .and_then(|projects| {
+                projects
+                    .iter()
+                    .find(|(key, project)| {
+                        key.as_str() != project_key
+                            && project.is_object()
+                            && normalize_claude_project_key(key).eq_ignore_ascii_case(&project_key)
+                    })
+                    .map(|(_, project)| project.clone())
+            });
+
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| Error::Other("claude json root must be an object".into()))?;
+    let projects = root
+        .entry("projects")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let projects = projects
+        .as_object_mut()
+        .ok_or_else(|| Error::Other("claude json projects field must be a JSON object".into()))?;
+    let project = projects
+        .entry(project_key)
+        .or_insert_with(|| equivalent_project.unwrap_or_else(|| Value::Object(Map::new())));
+    let project = project
+        .as_object_mut()
+        .ok_or_else(|| Error::Other("claude json project entry must be a JSON object".into()))?;
+    project.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+
+    let text = serde_json::to_string_pretty(&value)?;
+    atomic_write_str(config_path, &text)?;
+    let info = claude_workspace_trust_info_at(cwd, config_path)?;
+    if !info.trusted {
+        return Err(Error::Other(
+            "Claude workspace trust write did not persist".into(),
+        ));
+    }
+    Ok(info)
 }
 
 #[tauri::command]

@@ -120,6 +120,8 @@ pub fn run() {
             commands::install_claude_cli,
             commands::update_claude_cli,
             commands::run_claude_cli_package_manager_upgrade,
+            commands::claude_workspace_trust_info,
+            commands::trust_claude_workspace,
             commands::spawn_session,
             commands::resolve_permission_request,
             commands::send_user_message,

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import type { ClaudeEvent, ProxyStatusEvent } from "../types/events"
+import type { ClaudeWorkspaceTrustInfo } from "./claudeWorkspaceTrust"
 
 export interface AppRuntimeInfo {
   executable_path: string
@@ -239,6 +240,18 @@ export async function listenClaudeCliCommandProgress(
 
 export async function spawnSession(args: SpawnArgs): Promise<string> {
   return invoke<string>("spawn_session", args as Record<string, unknown>)
+}
+
+export async function claudeWorkspaceTrustInfo(
+  cwd: string
+): Promise<ClaudeWorkspaceTrustInfo> {
+  return invoke<ClaudeWorkspaceTrustInfo>("claude_workspace_trust_info", { cwd })
+}
+
+export async function trustClaudeWorkspace(
+  cwd: string
+): Promise<ClaudeWorkspaceTrustInfo> {
+  return invoke<ClaudeWorkspaceTrustInfo>("trust_claude_workspace", { cwd })
 }
 
 export interface PermissionRule {
