@@ -19,7 +19,9 @@
 
 ### Main Changes
 
-(Add details)
+- 在启动 headless Claude runtime 前完成 workspace trust 预检，兼容 Windows exact-path 与大小写变体。
+- 将 `acceptEdits` 与 workspace trust 解耦，并在用户取消信任确认时保留 Composer 草稿。
+- 将版本统一更新至 `0.5.3`，推送 `main` 与 annotated tag `v0.5.3` 触发 Release workflow。
 
 ### Git Commits
 
@@ -33,7 +35,11 @@
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `pnpm test`（333 项）
+- [OK] `pnpm build`
+- [OK] `cargo fmt --all --check`
+- [OK] `cargo test`（117 项）
+- [OK] `cargo check`
 
 ### Status
 
@@ -96,6 +102,40 @@
 | Hash | Message |
 |------|---------|
 | `f5a4295` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 4: 修复 Claude CLI 工作区信任并发布 0.5.3
+
+**Date**: 2026-08-06
+**Task**: 修复 Claude CLI 工作区信任并发布 0.5.3
+**Branch**: `main`
+
+### Summary
+
+修复 headless Claude runtime 的 workspace trust 预检，保留取消发送草稿，并发布 0.5.3。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `91c76ed` | (see git log) |
+| `dcd3f95` | (see git log) |
 
 ### Testing
 
