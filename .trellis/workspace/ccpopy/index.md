@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-08-06
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~144 | Active |
+| `journal-1.md` | ~183 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-08-06 | 侧栏等待状态沙漏图标 | `a6479aa` | `main` |
 | 4 | 2026-08-06 | 修复 Claude CLI 工作区信任并发布 0.5.3 | `91c76ed`, `dcd3f95` | `main` |
 | 3 | 2026-05-29 | effort 档位动态化与 ultracode 开关 | `f5a4295` | `main` |
 | 2 | 2026-05-15 | 保留 Composer 会话草稿 | `2b3d7d7` | `main` |

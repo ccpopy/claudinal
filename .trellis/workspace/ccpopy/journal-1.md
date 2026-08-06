@@ -62,7 +62,11 @@
 
 ### Main Changes
 
-(Add details)
+- Replaced the visible `等待中` badge in `SessionRow` with Lucide's compact
+  `Hourglass` icon.
+- Kept the streaming state on the rotating `Loader2` and preserved the existing
+  hover/focus action-slot replacement behavior.
+- Added an accessible waiting label and native hover title without visible text.
 
 ### Git Commits
 
@@ -72,7 +76,9 @@
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `pnpm test` (29 files, 335 tests)
+- [OK] `pnpm build`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -136,6 +142,39 @@
 |------|---------|
 | `91c76ed` | (see git log) |
 | `dcd3f95` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 5: 侧栏等待状态沙漏图标
+
+**Date**: 2026-08-06
+**Task**: 侧栏等待状态沙漏图标
+**Branch**: `main`
+
+### Summary
+
+将侧栏会话的等待中文字徽标替换为无文字沙漏图标，保留无障碍提示及 hover/focus 操作区切换；测试与生产构建通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a6479aa` | (see git log) |
 
 ### Testing
 
