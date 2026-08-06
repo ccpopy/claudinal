@@ -4,6 +4,7 @@ import {
   FolderOpen,
   FolderPlus,
   History as HistoryIcon,
+  Hourglass,
   Loader2,
   MessageSquarePlus,
   MoreHorizontal,
@@ -770,8 +771,13 @@ function SessionRow({
       <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
       <div className="relative flex h-5 w-10 shrink-0 items-center justify-end">
         {waiting ? (
-          <span className="rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">
-            等待中
+          <span
+            role="img"
+            aria-label="等待处理"
+            title="等待处理"
+            className="inline-flex size-3 items-center justify-center text-primary transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0"
+          >
+            <Hourglass aria-hidden="true" className="size-3 animate-pulse" />
           </span>
         ) : streaming ? (
           <Loader2
