@@ -105,10 +105,23 @@ describe("findFirstTurnFailedMessageId", () => {
 })
 
 describe("hasResumableUiConversationContext", () => {
-  it("ignores synthetic API error assistant messages", () => {
+  it("keeps a user turn resumable when the only assistant entry is a synthetic API error", () => {
     expect(
       hasResumableUiConversationContext([
         message("local-1", "user", "给我讲讲这个项目"),
+        message(
+          "synthetic-error",
+          "assistant",
+          "API Error: Request rejected (429)",
+          "<synthetic>"
+        )
+      ])
+    ).toBe(true)
+  })
+
+  it("does not treat a synthetic API error without a user turn as resumable", () => {
+    expect(
+      hasResumableUiConversationContext([
         message(
           "synthetic-error",
           "assistant",
@@ -126,5 +139,14 @@ describe("hasResumableUiConversationContext", () => {
         message("assistant-1", "assistant", "真实回复", "claude-sonnet")
       ])
     ).toBe(true)
+  })
+
+  it("rejects transcripts without visible conversation messages", () => {
+    expect(
+      hasResumableUiConversationContext([
+        { kind: "stderr", line: "API Error: 520", ts: 1 },
+        { kind: "result", isError: true, ts: 2 }
+      ])
+    ).toBe(false)
   })
 })

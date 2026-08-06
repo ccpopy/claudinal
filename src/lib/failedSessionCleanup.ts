@@ -37,14 +37,19 @@ export function findFirstTurnFailedMessageId(
   return sentMessageId
 }
 
+/**
+ * A selected transcript is resumable when it still contains visible user intent
+ * or a real assistant reply. Synthetic API-error assistants never qualify alone,
+ * but they also must not invalidate an existing user turn.
+ */
 export function hasResumableUiConversationContext(
   entries: readonly UIEntry[]
 ): boolean {
   return entries.some(
     (entry) =>
       entry.kind === "message" &&
-      entry.role === "assistant" &&
-      !isSyntheticAssistantMessage(entry)
+      (entry.role === "user" ||
+        (entry.role === "assistant" && !isSyntheticAssistantMessage(entry)))
   )
 }
 
