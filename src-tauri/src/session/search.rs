@@ -120,7 +120,7 @@ fn sync_fts_index(conn: &mut Connection) -> Result<()> {
     }
 
     let mut alive: HashSet<String> = HashSet::new();
-    let tx = conn.transaction()?;
+    let tx = store::begin_write(conn)?;
 
     for entry in std::fs::read_dir(&root)? {
         let entry = entry?;

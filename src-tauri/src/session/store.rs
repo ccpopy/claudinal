@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::app_paths::claudinal_dir;
 use crate::error::{Error, Result};
@@ -57,7 +57,7 @@ pub fn open() -> Result<LockedConn> {
 
     let conn = match try_open_and_migrate(&path) {
         Ok(c) => c,
-        Err(Error::Sqlite(e)) if matches!(e, rusqlite::Error::SqliteFailure(_, _)) => {
+        Err(Error::Sqlite(e)) if is_rebuildable_database_error(&e) => {
             tracing::warn!("session db corrupted, rebuilding: {e}");
             backup_and_recreate(&path)?
         }
@@ -74,6 +74,18 @@ pub fn open() -> Result<LockedConn> {
         .expect("CONN just set")
         .lock()
         .unwrap_or_else(|e| e.into_inner()))
+}
+
+fn is_rebuildable_database_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(code, _)
+            if matches!(
+                code.code,
+                rusqlite::ffi::ErrorCode::DatabaseCorrupt
+                    | rusqlite::ffi::ErrorCode::NotADatabase
+            )
+    )
 }
 
 fn try_open_and_migrate(path: &std::path::Path) -> Result<Connection> {
@@ -114,12 +126,26 @@ fn backup_and_recreate(path: &std::path::Path) -> Result<Connection> {
 }
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
-    conn.pragma_update(None, "journal_mode", "WAL")?;
+    // busy_timeout 必须先于任何可能抢锁的 PRAGMA / schema migration 设置。
+    // 多个 Claudinal 实例同时启动时，journal_mode 也可能遇到跨进程 writer。
+    conn.busy_timeout(std::time::Duration::from_secs(15))?;
+    let journal_mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+    }
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     let _ = conn.pragma_update(None, "mmap_size", 268_435_456_i64);
-    conn.busy_timeout(std::time::Duration::from_secs(15))?;
     Ok(())
+}
+
+/// 派生索引的写事务必须在开始时就取得 writer reservation。
+///
+/// `DEFERRED` 事务先读缓存、再写更新时，如果另一个 Claudinal 进程已提交写入，
+/// SQLite 会以 `SQLITE_BUSY_SNAPSHOT` 拒绝读事务升级，而且不会等待 busy timeout。
+/// `IMMEDIATE` 让竞争发生在事务入口，SQLite 因而可以按 busy timeout 等待。
+pub fn begin_write(conn: &mut Connection) -> Result<Transaction<'_>> {
+    Ok(conn.transaction_with_behavior(TransactionBehavior::Immediate)?)
 }
 
 fn create_or_migrate_schema(conn: &Connection, from_version: i64) -> Result<()> {
@@ -329,6 +355,101 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
+    #[test]
+    fn lock_contention_is_not_treated_as_database_corruption() {
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+            let error = rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some("database is locked".into()),
+            );
+            assert!(!is_rebuildable_database_error(&error));
+        }
+
+        for code in [rusqlite::ffi::SQLITE_CORRUPT, rusqlite::ffi::SQLITE_NOTADB] {
+            let error = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            assert!(is_rebuildable_database_error(&error));
+        }
+    }
+
+    #[test]
+    fn write_transaction_reserves_the_writer_before_reading() -> Result<()> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "claudinal-immediate-transaction-{}-{nonce}.sqlite3",
+            std::process::id()
+        ));
+
+        {
+            let setup = Connection::open(&path)?;
+            setup.pragma_update(None, "journal_mode", "WAL")?;
+            setup.execute("CREATE TABLE items (value INTEGER NOT NULL)", [])?;
+        }
+
+        let mut first = Connection::open(&path)?;
+        first.busy_timeout(Duration::from_secs(2))?;
+        let first_tx = begin_write(&mut first)?;
+        let _: i64 = first_tx.query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))?;
+
+        let writer_path = path.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let mut second = Connection::open(writer_path).expect("open competing connection");
+            second
+                .busy_timeout(Duration::from_secs(2))
+                .expect("set competing busy timeout");
+            started_tx.send(()).expect("signal competing writer start");
+            let second_tx = begin_write(&mut second).expect("wait for writer reservation");
+            second_tx
+                .execute("INSERT INTO items (value) VALUES (2)", [])
+                .expect("write from competing connection");
+            acquired_tx
+                .send(())
+                .expect("signal competing writer acquisition");
+            second_tx.commit().expect("commit competing connection");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("competing writer should start");
+        assert!(matches!(
+            acquired_rx.recv_timeout(Duration::from_millis(300)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        first_tx.execute("INSERT INTO items (value) VALUES (1)", [])?;
+        first_tx.commit()?;
+        acquired_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("competing writer should proceed after commit");
+        writer.join().expect("competing writer thread");
+        drop(first);
+
+        for candidate in [
+            path.clone(),
+            path.with_file_name(format!(
+                "{}-wal",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("")
+            )),
+            path.with_file_name(format!(
+                "{}-shm",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("")
+            )),
+        ] {
+            let _ = std::fs::remove_file(candidate);
+        }
+        Ok(())
+    }
 
     #[test]
     fn v2_migration_invalidates_visibility_dependent_caches() -> Result<()> {

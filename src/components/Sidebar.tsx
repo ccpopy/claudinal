@@ -52,6 +52,7 @@ import {
 } from "@/lib/projectPins"
 import { listArchived, type ArchivedRef } from "@/lib/archivedSessions"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
+import { isTransientSessionIndexLockError } from "@/lib/sessionIndexError"
 import {
   formatSessionCompactTime,
   formatSessionRelativeTime
@@ -261,10 +262,18 @@ export function Sidebar({
         [p.id]: { kind: "ok", items }
       }))
     } catch (e) {
-      setSessionsByProject((cur) => ({
-        ...cur,
-        [p.id]: { kind: "error", message: String(e) }
-      }))
+      const transientLock = isTransientSessionIndexLockError(e)
+      setSessionsByProject((cur) => {
+        if (transientLock) {
+          return cur[p.id]?.kind === "ok"
+            ? cur
+            : { ...cur, [p.id]: { kind: "loading" } }
+        }
+        return {
+          ...cur,
+          [p.id]: { kind: "error", message: String(e) }
+        }
+      })
     }
   }, [])
 

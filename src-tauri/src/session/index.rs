@@ -105,7 +105,7 @@ pub fn list_project_sessions(cwd: &str) -> Result<Vec<SessionMeta>> {
 
     let mut conn = store::open()?;
     let dir_label_lookup = derive_dir_label_lookup(&files);
-    let tx = conn.transaction()?;
+    let tx = store::begin_write(&mut conn)?;
     let mut out = Vec::with_capacity(files.len());
 
     for file in files.values() {
@@ -214,7 +214,7 @@ pub fn list_project_sessions(cwd: &str) -> Result<Vec<SessionMeta>> {
 /// 不再存在的行删除。以 file_path 作为「真实存在」的指针——同一个 session_id 的
 /// jsonl 永远只对应一个文件路径，比 (cwd, session_id) PK 更稳。
 fn sync_global_index(conn: &mut Connection, files: &[(String, SessionFileMeta)]) -> Result<()> {
-    let tx = conn.transaction()?;
+    let tx = store::begin_write(conn)?;
     let mut existing: HashMap<String, (String, String, i64, i64)> = HashMap::new();
     {
         let mut stmt = tx.prepare(

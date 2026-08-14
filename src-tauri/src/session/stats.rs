@@ -188,7 +188,7 @@ fn sync_usage_index(
     }
     agg.session_count = session_count;
 
-    let tx = conn.transaction()?;
+    let tx = store::begin_write(conn)?;
 
     let mut existing: HashMap<String, (i64, i64)> = HashMap::new();
     {
@@ -449,7 +449,7 @@ pub fn scan_activity_heatmap(days: u32) -> Result<Vec<ActivityCell>> {
 }
 
 fn sync_heatmap_index(conn: &mut Connection, root: &Path) -> Result<()> {
-    let tx = conn.transaction()?;
+    let tx = store::begin_write(conn)?;
 
     let mut progress: HashMap<String, (i64, i64, i64)> = HashMap::new();
     {
