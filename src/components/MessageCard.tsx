@@ -13,9 +13,10 @@ import {
   Webhook
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { cn } from "@/lib/utils"
+import { cn, formatRunDuration } from "@/lib/utils"
 import type { UIEntry, UIMessage } from "@/types/ui"
 import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
+import { CopyButton } from "./CopyButton"
 
 interface Props {
   entry: UIEntry
@@ -90,6 +91,7 @@ function MessageView({
     msg.role === "user" && onRetryMessage && retryableMessageIds?.has(msg.id)
       ? () => onRetryMessage?.(msg.id)
       : undefined
+  if (msg.apiError) return <ApiErrorMessageView msg={msg} />
   return (
     <div className="flex flex-col gap-2 items-stretch">
       {msg.blocks.map((b, i) => (
@@ -144,6 +146,33 @@ function GuideMessageView({
   )
 }
 
+/** API 错误消息卡：isApiErrorMessage 的 assistant 消息，按错误形态渲染而非普通 markdown。 */
+function ApiErrorMessageView({ msg }: { msg: UIMessage }) {
+  const rawText = msg.blocks
+    .filter((b) => b.type === "text" && b.text)
+    .map((b) => b.text)
+    .join("\n")
+    .trim()
+  const text = rawText || "上游未返回可显示的错误详情。"
+  return (
+    <div className="self-start w-full max-w-full overflow-hidden rounded-lg border border-destructive/30 bg-destructive/5">
+      <div className="flex items-center gap-1.5 border-b border-destructive/20 px-3 py-1.5 text-xs font-medium text-destructive">
+        <AlertTriangle className="size-3.5 shrink-0" />
+        <span>请求失败</span>
+        <CopyButton
+          text={text}
+          ariaLabel="复制错误信息"
+          label="错误信息已复制"
+          className="ml-auto -mr-1"
+        />
+      </div>
+      <div className="px-3 py-2 text-[13px] leading-relaxed text-foreground/90 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+        {text}
+      </div>
+    </div>
+  )
+}
+
 function SimpleRow({
   label,
   tone,
@@ -165,12 +194,6 @@ function SimpleRow({
       <CodeBlock>{content}</CodeBlock>
     </ExpandableRow>
   )
-}
-
-function fmtMs(ms?: number): string {
-  if (typeof ms !== "number") return ""
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(2)}s`
 }
 
 function SystemInitView({
@@ -242,20 +265,42 @@ interface PermissionDenial {
 
 function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
   const denials = (e.permissionDenials as PermissionDenial[] | undefined) ?? []
+  const failed = e.isError === true || e.terminalReason === "api_error"
+  // 失败时优先展示 error 字段详情；历史 sidecar 的 api_error 可能只有
+  // result 文本，此时回退展示它。实时路径已有 assistant 错误卡时通常不重复。
+  const fallbackErrorDetail =
+    e.terminalReason === "api_error" && !e.hasApiErrorMessage
+      ? (e.result ?? "").trim()
+      : ""
+  const errorDetail = failed ? (e.error ?? fallbackErrorDetail).trim() : ""
+  const truncated =
+    !failed &&
+    (e.stopReason === "max_tokens" || e.terminalReason === "max_tokens")
   return (
     <div className="flex flex-col gap-1.5 pt-1">
       <div
         className={cn(
           "flex flex-wrap items-center gap-3 text-xs",
-          e.isError ? "text-destructive" : "text-muted-foreground"
+          failed
+            ? "text-destructive"
+            : truncated
+              ? "text-warn"
+              : "text-muted-foreground"
         )}
       >
-        {e.isError ? (
+        {failed ? (
+          <AlertTriangle className="size-3.5" />
+        ) : truncated ? (
           <AlertTriangle className="size-3.5" />
         ) : (
           <CheckCircle2 className="size-3.5" />
         )}
-        <span>{e.isError ? "失败" : "完成"}</span>
+        <span>
+          {failed ? "失败" : truncated ? "已截断" : "完成"}
+          {failed && e.subtype && e.subtype !== "success"
+            ? ` · ${e.subtype}`
+            : ""}
+        </span>
         {typeof e.totalCostUsd === "number" && (
           <span className="inline-flex items-center gap-1">
             <DollarSign className="size-3" />
@@ -265,16 +310,27 @@ function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
         {typeof e.durationMs === "number" && (
           <span className="inline-flex items-center gap-1">
             <Timer className="size-3" />
-            {fmtMs(e.durationMs)}
+            {formatRunDuration(e.durationMs)}
           </span>
         )}
         {typeof e.numTurns === "number" && (
           <span className="inline-flex items-center gap-1">
             <Gauge className="size-3" />
-            {e.numTurns} turn{e.numTurns === 1 ? "" : "s"}
+            {e.numTurns} 轮
           </span>
         )}
       </div>
+      {errorDetail && (
+        <div className="max-w-full rounded-md border border-destructive/25 bg-destructive/5 px-2.5 py-1.5 text-xs leading-relaxed text-destructive/90 break-words [overflow-wrap:anywhere]">
+          {errorDetail}
+        </div>
+      )}
+      {truncated && (
+        <div className="inline-flex items-center gap-1.5 text-xs text-warn">
+          <AlertTriangle className="size-3.5" />
+          输出达到 max_tokens 上限，内容可能被截断；发送「继续」可让模型接着写。
+        </div>
+      )}
       {denials.length > 0 && <PermissionDenialList denials={denials} />}
     </div>
   )

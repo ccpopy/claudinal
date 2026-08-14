@@ -33,7 +33,7 @@ import {
   resolvePermissionRequest,
   readSessionTranscript,
   readSessionSidecar,
-  writeSessionSidecar,
+  patchSessionSidecar,
   deleteSessionJsonl,
   fetchOauthUsage,
   truncateSessionTranscript,
@@ -46,6 +46,7 @@ import {
   parseStoredReviewDiffs,
   shouldSyncRunReviewToConversation
 } from "@/lib/reviewDiffs"
+import { buildRetrySidecarPatch } from "@/lib/retrySidecar"
 import { findPermissionMemoryMatch } from "@/lib/permissionMemory"
 import {
   buildProxyEnv,
@@ -157,7 +158,6 @@ import {
 import { isAskUserQuestionRequest } from "@/lib/askUserQuestion"
 import { autoApprovePermissionRequest } from "@/lib/permissionPolicy"
 import {
-  mergeSidecarPermissionMode,
   pickPermissionModeFromSidecar,
   type SessionPermissionModeSource
 } from "@/lib/sessionPermissionMode"
@@ -1003,16 +1003,7 @@ export default function App() {
   const persistReviewDiffs = useCallback((run: RunningSession) => {
     const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
     if (!sid) return
-    readSessionSidecar(run.project.cwd, sid)
-      .then((existing) => {
-        const base = (existing && typeof existing === "object"
-          ? existing
-          : {}) as Record<string, unknown>
-        return writeSessionSidecar(run.project.cwd, sid, {
-          ...base,
-          reviewDiffs: run.reviewDiffs
-        })
-      })
+    patchSessionSidecar(run.project.cwd, sid, { reviewDiffs: run.reviewDiffs })
       .then(() => setSidebarRefreshKey((tick) => tick + 1))
       .catch((error) => {
         toast.error(`保存文件 diff 记录失败: ${String(error)}`)
@@ -1302,10 +1293,7 @@ export default function App() {
         findInitSessionId(stateRef.current)
       if (!cwd || !sid) return
 
-      readSessionSidecar(cwd, sid)
-        .then((existing) =>
-          writeSessionSidecar(cwd, sid, mergeSidecarPermissionMode(existing, mode))
-        )
+      patchSessionSidecar(cwd, sid, { permissionMode: mode })
         .catch((e) => console.warn("sidecar permission mode write failed:", e))
     },
     [project?.cwd, selectedSessionId]
@@ -1381,23 +1369,14 @@ export default function App() {
       const hasLaunchProfile =
         typeof base.apiLaunchProfileKey === "string" &&
         base.apiLaunchProfileKey.trim()
-      const next: Record<string, unknown> = { ...base }
-      let changed = false
-
-      if (!hasConnectionProfile) {
-        next.apiConnectionProfileKey = profileKey
-        changed = true
-      }
-      if (!hasLegacyProfile) {
-        next.apiProfileKey = profileKey
-        changed = true
-      }
+      const defaults: Record<string, unknown> = {}
+      if (!hasConnectionProfile) defaults.apiConnectionProfileKey = profileKey
+      if (!hasLegacyProfile) defaults.apiProfileKey = profileKey
       if (!hasLaunchProfile && !storedProfileKey) {
-        next.apiLaunchProfileKey = apiLaunchProfileKey
-        changed = true
+        defaults.apiLaunchProfileKey = apiLaunchProfileKey
       }
-      if (changed) {
-        await writeSessionSidecar(p.cwd, sid, next)
+      if (Object.keys(defaults).length > 0) {
+        await patchSessionSidecar(p.cwd, sid, {}, defaults)
       }
     },
     []
@@ -1945,16 +1924,7 @@ export default function App() {
           }
           const sid = run.jsonlSessionId ?? findInitSessionId(run.state)
           if (sid) {
-            readSessionSidecar(run.project.cwd, sid)
-              .then((existing) => {
-                const base = (existing && typeof existing === "object"
-                  ? existing
-                  : {}) as Record<string, unknown>
-                return writeSessionSidecar(run.project.cwd, sid, {
-                  ...base,
-                  composer: updated
-                })
-              })
+            patchSessionSidecar(run.project.cwd, sid, { composer: updated })
               .catch((e) => console.warn("sidecar composer command write failed:", e))
           }
         }
@@ -2010,7 +1980,7 @@ export default function App() {
         if (t === "result") {
           // 软中断在此收尾：result 到达即回合已终止，清掉 interrupting 态与强杀兜底定时器
           clearInterruptState(run)
-          // 把网络相关的失败 result 也走一遍 toast；主要看 result/error 文本
+          // 把网络相关的失败 result 也走一遍 toast；主要看 result/error 文本。
           const isError = (event as { is_error?: unknown }).is_error === true
           if (isError) {
             const text = [
@@ -2062,31 +2032,24 @@ export default function App() {
           )
           const sid = resultSessionId
           if (sid) {
-            // 保留 sidecar 已有字段，更新 result；如果用户在 session id 分配前就
-            // 改过 composer，这里把 sessionComposer 一并落地。
-            readSessionSidecar(run.project.cwd, sid)
-              .then((existing) => {
-                const base = (existing && typeof existing === "object"
-                  ? existing
-                  : {}) as Record<string, unknown>
-                const next: Record<string, unknown> = {
-                  ...base,
-                  result: event,
-                  apiProfileKey: run.apiProfileKey,
-                  apiConnectionProfileKey: run.apiProfileKey,
-                  apiLaunchProfileKey: run.apiLaunchProfileKey
-                }
-                if (run.sessionComposer && !base.composer) {
-                  next.composer = run.sessionComposer
-                }
-                if (run.reviewDiffs.length > 0) {
-                  next.reviewDiffs = run.reviewDiffs
-                }
-                if (run.permissionModeSource === "session") {
-                  next.permissionMode = run.permissionMode
-                }
-                return writeSessionSidecar(run.project.cwd, sid, next)
-              })
+            // Backend merges this patch under a per-session lock. Composer is a
+            // default only: a concurrent explicit picker update must win.
+            const patch: Record<string, unknown> = {
+              result: event,
+              apiProfileKey: run.apiProfileKey,
+              apiConnectionProfileKey: run.apiProfileKey,
+              apiLaunchProfileKey: run.apiLaunchProfileKey
+            }
+            if (run.reviewDiffs.length > 0) patch.reviewDiffs = run.reviewDiffs
+            if (run.permissionModeSource === "session") {
+              patch.permissionMode = run.permissionMode
+            }
+            patchSessionSidecar(
+              run.project.cwd,
+              sid,
+              patch,
+              run.sessionComposer ? { composer: run.sessionComposer } : undefined
+            )
               .then(() => setSidebarRefreshKey((k) => k + 1))
               .catch((e) => console.warn("sidecar write failed:", e))
           }
@@ -2428,20 +2391,12 @@ export default function App() {
       if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
         return []
       }
-      const next = { ...(existing as Record<string, unknown>) }
-      const resultTs = eventTimestampMillis(next.result)
-      if (next.result && (resultTs === null || resultTs >= cutoffTs)) {
-        delete next.result
-      }
-      const keptReviews = parseStoredReviewDiffs(existing).filter(
-        (review) => review.createdAt < cutoffTs
+      const { patch, keptReviews } = buildRetrySidecarPatch(
+        existing as Record<string, unknown>,
+        cutoffTs,
+        eventTimestampMillis
       )
-      if (keptReviews.length > 0) {
-        next.reviewDiffs = keptReviews
-      } else {
-        delete next.reviewDiffs
-      }
-      await writeSessionSidecar(p.cwd, sid, next)
+      await patchSessionSidecar(p.cwd, sid, patch)
       return keptReviews
     },
     []
@@ -3334,15 +3289,7 @@ export default function App() {
         }
         const sid = selectedSessionId ?? findInitSessionId(state)
         if (project && sid) {
-          // 读 sidecar → merge composer → 写回，保留其它字段（如 result）
-          readSessionSidecar(project.cwd, sid)
-            .then((existing) => {
-              const base = (existing && typeof existing === "object"
-                ? existing
-                : {}) as Record<string, unknown>
-              const merged = { ...base, composer: updated }
-              return writeSessionSidecar(project.cwd, sid, merged)
-            })
+          patchSessionSidecar(project.cwd, sid, { composer: updated })
             .catch((e) => console.warn("sidecar composer write failed:", e))
         }
         refreshActiveComposerRuntime("模型/思考强度已刷新，下一次发送会使用新配置")

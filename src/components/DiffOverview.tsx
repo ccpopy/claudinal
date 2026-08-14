@@ -30,6 +30,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { shortestUniquePathLabels } from "@/lib/pathLabels"
 import type { GitWorktreeStatus, WorktreeDiff } from "@/lib/ipc"
 import {
   collectChanges,
@@ -167,6 +168,12 @@ export function DiffOverview({
     [allChanges, filter]
   )
 
+  // 同名文件逐层补父目录，直到每个标签可区分；唯一 basename 仍保持紧凑。
+  const displayNames = useMemo(
+    () => shortestUniquePathLabels(changes.map((change) => change.path)),
+    [changes]
+  )
+
   const safeActiveIdx = Math.min(activeIdx, Math.max(changes.length - 1, 0))
   const active = changes[safeActiveIdx]
   const snapshotPatchError = snapshotDiffs?.find((diff) => diff.patchError)?.patchError
@@ -261,20 +268,27 @@ export function DiffOverview({
             />
           </div>
           <div className="flex items-center gap-1">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1 px-2 text-[11px]"
-              onClick={() =>
-                setViewMode((current) =>
-                  current === "unified" ? "split" : "unified"
-                )
-              }
-            >
-              <Columns2 className="size-3.5" />
-              {viewMode === "unified" ? "切换到拆分差异视图" : "切换到统一差异视图"}
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() =>
+                    setViewMode((current) =>
+                      current === "unified" ? "split" : "unified"
+                    )
+                  }
+                >
+                  <Columns2 className="size-3.5" />
+                  {viewMode === "unified" ? "拆分" : "统一"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {viewMode === "unified" ? "切换到拆分差异视图" : "切换到统一差异视图"}
+              </TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -370,49 +384,55 @@ export function DiffOverview({
           <div className="grid min-h-0 flex-1 grid-cols-[minmax(170px,230px)_minmax(0,1fr)]">
             <ScrollArea className="border-r min-h-0">
               <div className="flex flex-col gap-0.5 p-2">
-                {changes.map((c, i) => (
-                  <LocalFileContextMenu
-                    key={`${c.source}:${c.path}`}
-                    path={c.path}
-                    cwd={cwd}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setActiveIdx(i)}
-                      className={cn(
-                        "text-left px-2 py-1.5 rounded-md text-xs transition-colors",
-                        safeActiveIdx === i
-                          ? "bg-accent text-accent-foreground"
-                          : "hover:bg-accent/60 text-muted-foreground"
-                      )}
-                      title={c.path}
+                {changes.map((c, i) => {
+                  const sourceLabel =
+                    c.source === "git"
+                      ? SOURCE_LABEL.git
+                      : c.source === "session"
+                        ? SOURCE_LABEL.session
+                        : c.source === "snapshot"
+                          ? SOURCE_LABEL.snapshot
+                          : SOURCE_LABEL.status
+                  return (
+                    <LocalFileContextMenu
+                      key={`${c.source}:${c.path}`}
+                      path={c.path}
+                      cwd={cwd}
                     >
-                      <div className="flex items-center gap-1.5">
-                        {c.kind === "create" ? (
-                          <FilePlus className="size-3 text-connected shrink-0" />
-                        ) : c.kind === "delete" ? (
-                          <FileX className="size-3 text-destructive shrink-0" />
-                        ) : (
-                          <FileEdit className="size-3 shrink-0" />
+                      <button
+                        type="button"
+                        onClick={() => setActiveIdx(i)}
+                        className={cn(
+                          "text-left px-2 py-1.5 rounded-md text-xs transition-colors",
+                          safeActiveIdx === i
+                            ? "bg-accent text-accent-foreground"
+                            : "hover:bg-accent/60 text-muted-foreground"
                         )}
-                        <span className="truncate font-mono">{c.basename}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-[10px] mt-0.5 ml-4 tabular-nums">
-                        <span className="text-connected">+{c.adds}</span>
-                        <span className="text-destructive">-{c.dels}</span>
-                        <span className="text-muted-foreground">
-                          {c.source === "git"
-                            ? SOURCE_LABEL.git
-                            : c.source === "session"
-                              ? SOURCE_LABEL.session
-                              : c.source === "snapshot"
-                                ? SOURCE_LABEL.snapshot
-                                : SOURCE_LABEL.status}
-                        </span>
-                      </div>
-                    </button>
-                  </LocalFileContextMenu>
-                ))}
+                        title={c.path}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          {c.kind === "create" ? (
+                            <FilePlus className="size-3 text-connected shrink-0" />
+                          ) : c.kind === "delete" ? (
+                            <FileX className="size-3 text-destructive shrink-0" />
+                          ) : (
+                            <FileEdit className="size-3 shrink-0" />
+                          )}
+                          <span className="truncate font-mono">
+                            {displayNames[i]}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] mt-0.5 ml-4 tabular-nums">
+                          <span className="text-connected">+{c.adds}</span>
+                          <span className="text-destructive">-{c.dels}</span>
+                          <span className="text-muted-foreground">
+                            {sourceLabel}
+                          </span>
+                        </div>
+                      </button>
+                    </LocalFileContextMenu>
+                  )
+                })}
               </div>
             </ScrollArea>
             <ScrollArea

@@ -10,7 +10,7 @@ import type { ClaudeEvent, ContentBlock } from "@/types/events"
 //   勾选"同步为全局默认"）。
 // - **会话覆盖**（sidecar.composer）：每个会话单独存自己的 model/effort 选择，
 //   resume 同一会话时还原；新会话从全局默认起步。由 App.tsx 在 switchSession 时读、
-//   在用户切换 Picker 时写（写入路径见 ipc.ts writeSessionSidecar）。
+//   在用户切换 Picker 时写（写入路径见 ipc.ts patchSessionSidecar）。
 //
 // 旧实现遗留：`claudinal.composer.prefs` 是全局共享的 localStorage，会让所有会话误共享
 // max 等设置；本版仅做"一次性迁移读取"，读完即删，避免污染。

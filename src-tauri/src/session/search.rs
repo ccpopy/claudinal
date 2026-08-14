@@ -385,3 +385,66 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_message_text_ignores_synthetic_interruption_artifacts() {
+        let interrupted = serde_json::json!({
+            "type": "user",
+            "promptId": "prompt-interrupted",
+            "userType": "external",
+            "entrypoint": "sdk-cli",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "[Request interrupted by user]" }]
+            }
+        });
+        let no_response = serde_json::json!({
+            "type": "assistant",
+            "isApiErrorMessage": false,
+            "message": {
+                "role": "assistant",
+                "model": "<synthetic>",
+                "stop_reason": "stop_sequence",
+                "content": [{ "type": "text", "text": "No response requested." }]
+            }
+        });
+
+        assert_eq!(extract_message_text(&interrupted), None);
+        assert_eq!(extract_message_text(&no_response), None);
+    }
+
+    #[test]
+    fn extract_message_text_keeps_similar_genuine_content() {
+        let genuine = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "解释 [Request interrupted by user] 的含义"
+                }]
+            }
+        });
+
+        assert_eq!(
+            extract_message_text(&genuine),
+            Some("解释 [Request interrupted by user] 的含义".to_string())
+        );
+
+        let exact_without_sdk_metadata = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "[Request interrupted by user]" }]
+            }
+        });
+        assert_eq!(
+            extract_message_text(&exact_without_sdk_metadata),
+            Some("[Request interrupted by user]".to_string())
+        );
+    }
+}

@@ -1,3 +1,4 @@
+import { FileWarning } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AssistantMarkdown } from "@/components/AssistantMarkdown"
 import type { FileChange, StructuredHunk } from "@/lib/diff"
@@ -317,6 +318,42 @@ function MarkdownRichPreview({ change }: { change: FileChange }) {
   )
 }
 
+/** patch 不可用时的结构化空态：说明原因、统计与后续操作。 */
+function DiffFallbackNotice({
+  change,
+  canOpenFromList
+}: {
+  change: FileChange
+  canOpenFromList: boolean
+}) {
+  const failed = change.source === "status"
+  return (
+    <div className="rounded-md border border-dashed bg-muted/20 px-4 py-5">
+      <div className="flex items-start gap-3">
+        <FileWarning className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <div className="space-y-1 text-xs">
+          <div className="font-medium text-foreground">
+            {failed
+              ? "此文件的 patch 读取失败"
+              : "此文件没有可展示的结构化 patch"}
+          </div>
+          <div className="leading-relaxed text-muted-foreground">
+            {failed
+              ? "git 只返回了变更统计，没有 diff 内容（文件过大或非文本格式时常见）。"
+              : "变更记录只包含统计信息。"}
+            检测到{" "}
+            <span className="font-mono text-connected">+{change.adds}</span>{" "}
+            <span className="font-mono text-destructive">-{change.dels}</span>
+            {canOpenFromList
+              ? "，可在左侧文件列表右键「打开」查看原文件。"
+              : "，可通过文件行的上下文菜单打开原文件。"}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function FileDiffPreview({
   change,
   compact = false,
@@ -356,13 +393,7 @@ export function FileDiffPreview({
       <UnifiedDiff hunks={change.hunks} compact={compact} wrapLines={wrapLines} />
     )
   ) : (
-    <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-      {change.source === "status"
-        ? "此文件有工作树变更，patch 读取失败。检测到"
-        : "此文件无可展示的结构化 patch，变更记录为"}{" "}
-      <span className="font-mono text-connected">+{change.adds}</span>{" "}
-      <span className="font-mono text-destructive">-{change.dels}</span>。
-    </div>
+    <DiffFallbackNotice change={change} canOpenFromList={!bounded} />
   )
 
   if (!bounded) {

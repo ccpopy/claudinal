@@ -5,16 +5,18 @@ use tauri::{AppHandle, Emitter, State};
 use crate::api_proxy::{start as start_api_proxy, ProxyConfig, ProxyStatusReporter};
 use crate::child_process::{hide_std_window, hide_tokio_window};
 use crate::error::{Error, Result};
+use crate::fs_atomic::atomic_write_str;
 use crate::permission_mcp::{
     render_default_mcp_config, PermissionMcpBridge, DEFAULT_PERMISSION_MCP_TOOL,
 };
 use crate::proc::{Manager, SpawnOptions};
 use crate::session::{
     delete_session_jsonl as delete_jsonl_inner, list_project_sessions as list_sessions_inner,
-    list_recent_sessions_all as list_all_inner, read_session_sidecar as read_sidecar_inner,
-    read_session_transcript as read_transcript_inner, rebuild_session_index as rebuild_index_inner,
-    scan_activity_heatmap as scan_heatmap_inner, scan_all_usage_sidecars as scan_usage_inner,
-    search_sessions as search_sessions_inner, session_index_diagnostics as index_diagnostics_inner,
+    list_recent_sessions_all as list_all_inner, patch_session_sidecar as patch_sidecar_inner,
+    read_session_sidecar as read_sidecar_inner, read_session_transcript as read_transcript_inner,
+    rebuild_session_index as rebuild_index_inner, scan_activity_heatmap as scan_heatmap_inner,
+    scan_all_usage_sidecars as scan_usage_inner, search_sessions as search_sessions_inner,
+    session_index_diagnostics as index_diagnostics_inner,
     truncate_session_transcript as truncate_transcript_inner,
     write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalSessionMeta, GlobalUsage,
     SessionIndexDiagnostics, SessionMeta, SessionSearchHit, WatcherState,
@@ -43,68 +45,6 @@ const CLAUDE_CLI_REFERENCE_URL: &str =
     "https://docs.anthropic.com/en/docs/claude-code/cli-reference";
 const CLAUDE_CLI_SETUP_URL: &str = "https://code.claude.com/docs/en/setup";
 const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
-
-/// 把字符串内容原子写入磁盘：先写到 `<path>.tmp.<pid>`，再 rename 到目标路径。
-/// 这样即使写入过程中崩溃 / 断电，也不会留下半截文件。所有 GUI 直接管理的
-/// 用户配置（settings.json / mcp.json / CLAUDE.md / 导出 JSON）都应该走这条。
-fn atomic_write_str(path: &std::path::Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(Error::from)?;
-        }
-    }
-    let pid = std::process::id();
-    let nonce = uuid::Uuid::new_v4();
-    let mut tmp = path.to_path_buf();
-    let suffix = match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{ext}.tmp.{pid}.{nonce}"),
-        None => format!("tmp.{pid}.{nonce}"),
-    };
-    tmp.set_extension(suffix);
-    std::fs::write(&tmp, contents).map_err(Error::from)?;
-    if let Err(err) = atomic_replace_file(&tmp, path) {
-        // rename 失败时尽力清理临时文件，避免残留
-        let _ = std::fs::remove_file(&tmp);
-        return Err(Error::from(err));
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn atomic_replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    std::fs::rename(from, to)
-}
-
-#[cfg(target_os = "windows")]
-fn atomic_replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let from_wide = from
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let to_wide = to
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let replaced = unsafe {
-        MoveFileExW(
-            from_wide.as_ptr(),
-            to_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if replaced == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
 
 #[derive(Serialize)]
 pub struct ClaudeCliVersionInfo {
@@ -4459,6 +4399,16 @@ pub async fn read_session_sidecar(cwd: String, session_id: String) -> Result<Opt
 #[tauri::command]
 pub async fn write_session_sidecar(cwd: String, session_id: String, data: Value) -> Result<()> {
     write_sidecar_inner(&cwd, &session_id, data)
+}
+
+#[tauri::command]
+pub async fn patch_session_sidecar(
+    cwd: String,
+    session_id: String,
+    patch: Value,
+    set_if_missing: Option<Value>,
+) -> Result<()> {
+    patch_sidecar_inner(&cwd, &session_id, patch, set_if_missing)
 }
 
 #[derive(Serialize)]

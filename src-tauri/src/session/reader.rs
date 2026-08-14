@@ -1,10 +1,15 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::error::{Error, Result};
+use crate::fs_atomic::atomic_write_str;
 
 const SKILL_META_PROMPT_PREFIX: &str = "Base directory for this skill:";
+const INTERRUPTED_USER_SENTINEL: &str = "[Request interrupted by user]";
+const NO_RESPONSE_SENTINEL: &str = "No response requested.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionMeta {
@@ -289,7 +294,41 @@ fn title_candidate(s: &str, max_chars: usize) -> Option<String> {
     if trimmed.is_empty() || internal {
         return None;
     }
-    Some(truncate_chars(trimmed, max_chars))
+    // CLI 在 stream-json 会话里不写 ai-title，标题回落到首条用户消息；
+    // 以 slash 命令开头的消息（"/frontend-design 帮我…"）剥离命令 token，让标题说人话。
+    // 整条消息只有命令（"/effort"）时保留原文，避免标题变空。
+    let without_command = strip_leading_slash_command(trimmed);
+    let candidate = if without_command.is_empty() {
+        trimmed
+    } else {
+        without_command
+    };
+    Some(truncate_chars(candidate, max_chars))
+}
+
+/// 剥离前导 slash 命令 token（"/frontend-design 帮我…" → "帮我…"）。
+/// 命令名允许字母/数字/._- 和作用域冒号（plugin:skill 形式）；
+/// 命令名后必须跟空白或结束（"/path/to/x" 这类路径开头不误剥）；
+/// 整条消息只有命令时返回空串，由调用方回落原文。
+fn strip_leading_slash_command(s: &str) -> &str {
+    let rest = match s.strip_prefix('/') {
+        Some(rest) => rest,
+        None => return s,
+    };
+    let name_len = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':')))
+        .unwrap_or(rest.len());
+    if name_len == 0 {
+        return s;
+    }
+    let after = &rest[name_len..];
+    if after.is_empty() {
+        return "";
+    }
+    if !after.starts_with(char::is_whitespace) {
+        return s;
+    }
+    after.trim_start()
 }
 
 pub(crate) fn is_internal_generated_event(v: &serde_json::Value) -> bool {
@@ -298,6 +337,50 @@ pub(crate) fn is_internal_generated_event(v: &serde_json::Value) -> bool {
             .and_then(|x| x.as_bool())
             .unwrap_or(false)
         || is_skill_meta_prompt_event(v)
+        || is_synthetic_interruption_event(v)
+}
+
+fn sole_text_content(v: &serde_json::Value) -> Option<&str> {
+    let content = v.pointer("/message/content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.trim());
+    }
+    let items = content.as_array()?;
+    if items.len() != 1 || items[0].get("type").and_then(|x| x.as_str()) != Some("text") {
+        return None;
+    }
+    items[0].get("text").and_then(|x| x.as_str()).map(str::trim)
+}
+
+fn is_synthetic_interruption_event(v: &serde_json::Value) -> bool {
+    let event_type = v.get("type").and_then(|x| x.as_str());
+    let role = v.pointer("/message/role").and_then(|x| x.as_str());
+    let text = sole_text_content(v);
+    if event_type == Some("user") {
+        return role == Some("user")
+            && text == Some(INTERRUPTED_USER_SENTINEL)
+            && v.get("promptId").and_then(|x| x.as_str()).is_some()
+            && v.get("userType").and_then(|x| x.as_str()) == Some("external")
+            && v.get("entrypoint").and_then(|x| x.as_str()) == Some("sdk-cli");
+    }
+    if event_type != Some("assistant") || role != Some("assistant") {
+        return false;
+    }
+    let synthetic_model = v
+        .pointer("/message/model")
+        .and_then(|x| x.as_str())
+        .map(|model| {
+            model
+                .split_whitespace()
+                .collect::<String>()
+                .eq_ignore_ascii_case("<synthetic>")
+        })
+        .unwrap_or(false);
+    let stop_reason = v.pointer("/message/stop_reason").and_then(|x| x.as_str());
+    synthetic_model
+        && text == Some(NO_RESPONSE_SENTINEL)
+        && matches!(stop_reason, None | Some("stop_sequence"))
+        && v.get("isApiErrorMessage").and_then(|x| x.as_bool()) != Some(true)
 }
 
 pub(crate) fn is_synthetic_api_error_event(v: &serde_json::Value) -> bool {
@@ -406,21 +489,7 @@ pub(crate) fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>)
     (count, ai_title, first_user_text)
 }
 
-pub fn read_session_sidecar(cwd: &str, session_id: &str) -> Result<Option<serde_json::Value>> {
-    let path = match session_jsonl_path(cwd, session_id) {
-        Ok(path) => path.with_extension("claudinal.json"),
-        Err(_) => return Ok(None),
-    };
-    if path.is_file() {
-        let raw = std::fs::read_to_string(&path)?;
-        let v: serde_json::Value = serde_json::from_str(&raw)?;
-        Ok(Some(v))
-    } else {
-        Ok(None)
-    }
-}
-
-pub fn write_session_sidecar(cwd: &str, session_id: &str, data: serde_json::Value) -> Result<()> {
+fn session_sidecar_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     validate_session_id(session_id)?;
     let dir = session_jsonl_path(cwd, session_id)
         .and_then(|path| {
@@ -438,21 +507,113 @@ pub fn write_session_sidecar(cwd: &str, session_id: &str, data: serde_json::Valu
                 )))
             }
         })?;
-    let path = dir.join(format!("{}.claudinal.json", session_id));
-    if let Some(parent) = path.parent() {
-        if !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(Error::from)?;
+    Ok(dir.join(format!("{}.claudinal.json", session_id)))
+}
+
+fn sidecar_locks() -> &'static Mutex<HashMap<PathBuf, Weak<Mutex<()>>>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn sidecar_lock(path: &Path) -> Arc<Mutex<()>> {
+    let mut locks = sidecar_locks()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    // Keep locks only while an operation owns or waits on them. Session paths are
+    // unbounded over the lifetime of the app, so dead weak entries must not accumulate.
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
+fn read_sidecar_path(path: &Path) -> Result<Option<serde_json::Value>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)?;
+    Ok(Some(serde_json::from_str(&raw)?))
+}
+
+fn write_sidecar_path(path: &Path, data: &serde_json::Value) -> Result<()> {
+    let text = serde_json::to_string_pretty(&data)?;
+    atomic_write_str(path, &text)
+}
+
+fn replace_sidecar_path(path: &Path, data: &serde_json::Value) -> Result<()> {
+    let lock = sidecar_lock(path);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    write_sidecar_path(path, data)
+}
+
+fn patch_sidecar_path(
+    path: &Path,
+    patch: &serde_json::Map<String, serde_json::Value>,
+    set_if_missing: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Result<()> {
+    let lock = sidecar_lock(path);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    let mut current = match read_sidecar_path(path)? {
+        Some(serde_json::Value::Object(object)) => object,
+        Some(_) | None => serde_json::Map::new(),
+    };
+    if let Some(defaults) = set_if_missing {
+        for (key, value) in defaults {
+            if !value.is_null() && !current.contains_key(key) {
+                current.insert(key.clone(), value.clone());
+            }
         }
     }
-    let text = serde_json::to_string_pretty(&data)?;
-    // 原子写：先写临时文件再 rename，避免半截 sidecar 影响后续 composer 偏好恢复。
-    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, text).map_err(Error::from)?;
-    if let Err(err) = std::fs::rename(&tmp, &path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(Error::from(err));
+    for (key, value) in patch {
+        if value.is_null() {
+            current.remove(key);
+        } else {
+            current.insert(key.clone(), value.clone());
+        }
     }
-    Ok(())
+    write_sidecar_path(path, &serde_json::Value::Object(current))
+}
+
+pub fn read_session_sidecar(cwd: &str, session_id: &str) -> Result<Option<serde_json::Value>> {
+    let path = match session_jsonl_path(cwd, session_id) {
+        Ok(path) => path.with_extension("claudinal.json"),
+        Err(_) => return Ok(None),
+    };
+    let lock = sidecar_lock(&path);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    read_sidecar_path(&path)
+}
+
+pub fn write_session_sidecar(cwd: &str, session_id: &str, data: serde_json::Value) -> Result<()> {
+    let path = session_sidecar_path(cwd, session_id)?;
+    replace_sidecar_path(&path, &data)
+}
+
+/// Merge top-level sidecar fields against the latest on-disk object while holding
+/// the same per-session lock used by full writes. A null patch value deletes a key;
+/// `set_if_missing` supplies defaults without overwriting a concurrently persisted value.
+pub fn patch_session_sidecar(
+    cwd: &str,
+    session_id: &str,
+    patch: serde_json::Value,
+    set_if_missing: Option<serde_json::Value>,
+) -> Result<()> {
+    let patch = patch
+        .as_object()
+        .ok_or_else(|| Error::Other("sidecar patch must be a JSON object".into()))?;
+    let set_if_missing = set_if_missing
+        .as_ref()
+        .map(|value| {
+            value
+                .as_object()
+                .ok_or_else(|| Error::Other("sidecar defaults must be a JSON object".into()))
+        })
+        .transpose()?;
+    let path = session_sidecar_path(cwd, session_id)?;
+    patch_sidecar_path(&path, patch, set_if_missing)
 }
 
 pub fn delete_session_jsonl(cwd: &str, session_id: &str) -> Result<()> {
@@ -502,13 +663,7 @@ fn json_event_ts_millis(value: &serde_json::Value) -> Option<u64> {
 }
 
 fn atomic_write_session_text(path: &Path, contents: &str) -> Result<()> {
-    let tmp = path.with_extension(format!("jsonl.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, contents).map_err(Error::from)?;
-    if let Err(err) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(Error::from(err));
-    }
-    Ok(())
+    atomic_write_str(path, contents)
 }
 
 fn truncate_jsonl_at_timestamp(path: &Path, cutoff_ts_millis: u64) -> Result<()> {
@@ -765,6 +920,55 @@ mod tests {
     }
 
     #[test]
+    fn scan_jsonl_ignores_synthetic_interruption_pair() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-interruption-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("interrupted.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "user",
+                "promptId": "prompt-interrupted",
+                "userType": "external",
+                "entrypoint": "sdk-cli",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": INTERRUPTED_USER_SENTINEL }]
+                }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "isApiErrorMessage": false,
+                "message": {
+                    "role": "assistant",
+                    "model": "<synthetic>",
+                    "stop_reason": "stop_sequence",
+                    "content": [{ "type": "text", "text": NO_RESPONSE_SENTINEL }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": "继续" }
+            }),
+        ];
+        let body = lines
+            .into_iter()
+            .map(|line| serde_json::to_string(&line))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        std::fs::write(&path, body)?;
+
+        let (msg_count, _, first_user_text) = scan_jsonl(&path);
+        assert_eq!(msg_count, 1);
+        assert_eq!(first_user_text, Some("继续".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
     fn scan_jsonl_counts_real_assistant_reply() -> Result<()> {
         let dir = std::env::temp_dir().join(format!(
             "claudinal-reader-real-assistant-test-{}",
@@ -803,9 +1007,43 @@ mod tests {
     }
 
     #[test]
+    fn interruption_user_sentinel_requires_sdk_metadata() {
+        let genuine = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": INTERRUPTED_USER_SENTINEL }]
+            }
+        });
+
+        assert!(!is_synthetic_interruption_event(&genuine));
+    }
+
+    #[test]
     fn title_candidate_returns_none_for_blank_input() {
         assert_eq!(title_candidate("   ", 120), None);
         assert_eq!(title_candidate("", 120), None);
+    }
+
+    #[test]
+    fn title_candidate_strips_leading_slash_command() {
+        // "/frontend-design 帮我…" → "帮我…"
+        assert_eq!(
+            title_candidate("/frontend-design 帮我重新调整下样式", 120),
+            Some("帮我重新调整下样式".to_string())
+        );
+        // plugin 作用域形式
+        assert_eq!(
+            title_candidate("/frontend-design:frontend-design 优化面板", 120),
+            Some("优化面板".to_string())
+        );
+        // 整条只有命令：保留原文，避免标题变空
+        assert_eq!(title_candidate("/effort", 120), Some("/effort".to_string()));
+        // 路径开头不误剥
+        assert_eq!(
+            title_candidate("/usr/local/bin 这个目录看下", 120),
+            Some("/usr/local/bin 这个目录看下".to_string())
+        );
     }
 
     #[test]
@@ -1004,6 +1242,89 @@ mod tests {
         let err = truncate_jsonl_at_timestamp(&path, 200).unwrap_err();
         assert!(format!("{err}").contains("retry cutoff"));
         assert_eq!(std::fs::read_to_string(&path)?, body);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_sidecar_patches_preserve_independent_fields() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-sidecar-patch-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("session.claudinal.json");
+        replace_sidecar_path(&path, &serde_json::json!({ "base": true }))?;
+
+        let mut threads = Vec::new();
+        for index in 0..24 {
+            let path = path.clone();
+            threads.push(std::thread::spawn(move || {
+                let mut patch = serde_json::Map::new();
+                patch.insert(format!("field{index}"), serde_json::json!(index));
+                patch_sidecar_path(&path, &patch, None)
+            }));
+        }
+        for thread in threads {
+            thread.join().expect("sidecar patch thread panicked")?;
+        }
+
+        let sidecar = read_sidecar_path(&path)?.expect("sidecar should exist");
+        assert_eq!(sidecar.get("base"), Some(&serde_json::json!(true)));
+        for index in 0..24 {
+            assert_eq!(
+                sidecar.get(&format!("field{index}")),
+                Some(&serde_json::json!(index))
+            );
+        }
+        let leftovers = std::fs::read_dir(&dir)?
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn sidecar_patch_deletes_null_and_sets_defaults_only_when_missing() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-sidecar-defaults-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("session.claudinal.json");
+        replace_sidecar_path(
+            &path,
+            &serde_json::json!({ "composer": { "model": "existing" }, "removeMe": true }),
+        )?;
+        let patch = serde_json::json!({ "removeMe": null, "result": { "type": "result" } });
+        let defaults = serde_json::json!({
+            "composer": { "model": "default" },
+            "permissionMode": "plan"
+        });
+        patch_sidecar_path(
+            &path,
+            patch.as_object().expect("patch object"),
+            Some(defaults.as_object().expect("defaults object")),
+        )?;
+
+        let sidecar = read_sidecar_path(&path)?.expect("sidecar should exist");
+        assert_eq!(
+            sidecar.pointer("/composer/model"),
+            Some(&serde_json::json!("existing"))
+        );
+        assert_eq!(
+            sidecar.get("permissionMode"),
+            Some(&serde_json::json!("plan"))
+        );
+        assert!(sidecar.get("removeMe").is_none());
+        assert_eq!(
+            sidecar.pointer("/result/type"),
+            Some(&serde_json::json!("result"))
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())

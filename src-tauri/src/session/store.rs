@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use crate::app_paths::claudinal_dir;
 use crate::error::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub fn db_path() -> Result<PathBuf> {
     Ok(claudinal_dir()?.join("session-index-v1.sqlite3"))
@@ -208,6 +208,19 @@ fn create_or_migrate_schema(conn: &Connection, from_version: i64) -> Result<()> 
         "#,
     )?;
 
+    if from_version < 3 {
+        // Event visibility rules changed in v3 (Claude's synthetic interruption
+        // pair is now internal). Cached counts/titles and FTS rows must be
+        // rebuilt even when the source JSONL metadata itself has not changed.
+        conn.execute_batch(
+            r#"
+            DELETE FROM session_index;
+            DELETE FROM fts_progress;
+            DELETE FROM session_text;
+            "#,
+        )?;
+    }
+
     if from_version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -311,4 +324,52 @@ where
     value
         .try_into()
         .map_err(|_| Error::Other(format!("{field} out of sqlite range: {value}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v2_migration_invalidates_visibility_dependent_caches() -> Result<()> {
+        let conn = Connection::open_in_memory()?;
+        create_or_migrate_schema(&conn, 0)?;
+        conn.execute(
+            r#"
+            INSERT INTO session_index
+              (cwd, session_id, file_path, modified_ts, modified_millis, size_bytes,
+               msg_count, indexed_at)
+            VALUES ('cwd', 'session', 'session.jsonl', 1, 1, 1, 2, 1)
+            "#,
+            [],
+        )?;
+        conn.execute(
+            r#"
+            INSERT INTO fts_progress
+              (file_path, last_size, last_mtime_millis, byte_offset, last_scanned_at)
+            VALUES ('session.jsonl', 1, 1, 1, 1)
+            "#,
+            [],
+        )?;
+        conn.execute(
+            r#"
+            INSERT INTO session_text (session_id, cwd, role, ts, body)
+            VALUES ('session', 'cwd', 'user', NULL, '[Request interrupted by user]')
+            "#,
+            [],
+        )?;
+
+        create_or_migrate_schema(&conn, 2)?;
+
+        for table in ["session_index", "fts_progress", "session_text"] {
+            let rows: i64 =
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(rows, 0, "{table} should be invalidated");
+        }
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(version, SCHEMA_VERSION);
+        Ok(())
+    }
 }

@@ -435,11 +435,16 @@ export function MessageStream({
           type="button"
           size="sm"
           variant="outline"
-          className="absolute bottom-3 left-1/2 z-10 h-8 -translate-x-1/2 gap-1 rounded-full bg-background/95 px-3 text-xs shadow"
+          aria-label="跳到底部"
+          className="absolute bottom-3 left-1/2 z-10 h-8 -translate-x-1/2 gap-1.5 rounded-full border-border/70 bg-background/85 px-3.5 text-xs shadow-md backdrop-blur-sm transition-colors hover:bg-accent"
           onClick={scrollToBottom}
         >
-          <ArrowDown className="size-3.5" />
-          跳到底部
+          {streaming ? (
+            <span className="size-1.5 rounded-full bg-connected animate-pulse" />
+          ) : (
+            <ArrowDown className="size-3.5" />
+          )}
+          {streaming ? "新内容 · 跳到底部" : "跳到底部"}
         </Button>
       )}
     </ScrollArea>

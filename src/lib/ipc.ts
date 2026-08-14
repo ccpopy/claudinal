@@ -492,6 +492,24 @@ export async function writeSessionSidecar(
   return invoke("write_session_sidecar", { cwd, sessionId, data })
 }
 
+/**
+ * Merge top-level sidecar fields in the backend's per-session critical section.
+ * `null` deletes a field; `setIfMissing` supplies non-overwriting defaults.
+ */
+export async function patchSessionSidecar(
+  cwd: string,
+  sessionId: string,
+  patch: Record<string, unknown>,
+  setIfMissing?: Record<string, unknown>
+): Promise<void> {
+  return invoke("patch_session_sidecar", {
+    cwd,
+    sessionId,
+    patch,
+    setIfMissing: setIfMissing ?? null
+  })
+}
+
 export async function openPath(path: string): Promise<OpenPathResult> {
   return invoke<OpenPathResult>("open_path", { path })
 }

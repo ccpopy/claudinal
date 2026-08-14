@@ -6,9 +6,9 @@ export default mergeConfig(
   viteConfig,
   defineConfig({
     test: {
-      include: ["src/**/*.test.ts"],
+      include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
       environment: "node",
-      // 测试只跑纯函数：reducer / 工具函数；不需要 jsdom。
+      // 组件测试用 react-dom/server 静态渲染断言 markup；不需要 jsdom。
       globals: false
     }
   })

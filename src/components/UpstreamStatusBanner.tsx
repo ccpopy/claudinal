@@ -33,8 +33,8 @@ export function UpstreamStatusBanner({
 
   const headRow = (
     <>
-      <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-      <span className="shrink-0 text-muted-foreground">
+      <Loader2 className="size-3.5 shrink-0 animate-spin text-warn" />
+      <span className="shrink-0 text-foreground/85">
         {summaryHead === null ? (
           summary
         ) : (
@@ -55,7 +55,7 @@ export function UpstreamStatusBanner({
   )
 
   return (
-    <div className="mx-auto max-w-3xl rounded-xl border bg-card/95 text-xs shadow-xs backdrop-blur-sm animate-in fade-in slide-in-from-bottom-1 duration-200 xl:max-w-4xl 2xl:max-w-5xl">
+    <div className="mx-auto max-w-3xl rounded-xl border border-warn/40 bg-warn/10 text-xs shadow-xs backdrop-blur-sm animate-in fade-in slide-in-from-bottom-1 duration-200 xl:max-w-4xl 2xl:max-w-5xl">
       {hasMessage ? (
         <button
           type="button"

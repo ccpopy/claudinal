@@ -7,7 +7,7 @@ pub mod watcher;
 
 pub use index::{list_project_sessions, list_recent_sessions_all, GlobalSessionMeta};
 pub use reader::{
-    delete_session_jsonl, read_session_sidecar, read_session_transcript,
+    delete_session_jsonl, patch_session_sidecar, read_session_sidecar, read_session_transcript,
     truncate_session_transcript, write_session_sidecar, SessionMeta,
 };
 pub use search::{search_sessions, SessionSearchHit};

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { ChevronDown, Loader2 } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, formatRunDuration } from "@/lib/utils"
 import type { UIBlock } from "@/types/ui"
 import { BlockView } from "./MessageBlocks"
 
@@ -16,19 +16,6 @@ interface Props {
   durationMs?: number
   startTs?: number
   endTs?: number
-}
-
-function fmtDuration(ms: number, running: boolean): string {
-  if (!Number.isFinite(ms) || ms < 0) return "0s"
-  if (ms < 1000) return `${ms}ms`
-  const totalSec = Math.floor(ms / 1000)
-  const m = Math.floor(totalSec / 60)
-  const s = totalSec % 60
-  if (m > 0) return `${m}m${s}s`
-  // 流式：直接整数秒；完成：保留 1 位小数（除非正好整秒）
-  if (running) return `${totalSec}s`
-  const sec = ms / 1000
-  return Number.isInteger(sec) ? `${sec}s` : `${sec.toFixed(1)}s`
 }
 
 function computeRunMs(
@@ -80,10 +67,10 @@ export function RunGroup({
   const stepInfo = hasSteps ? ` · ${steps.length} 步` : ""
   const label = running
     ? hasTime
-      ? `处理中… ${fmtDuration(total, running)}${stepInfo}`
+      ? `处理中… ${formatRunDuration(total, running)}${stepInfo}`
       : "处理中…"
     : hasTime
-      ? `已处理 ${fmtDuration(total, running)}${stepInfo}`
+      ? `已处理 ${formatRunDuration(total, running)}${stepInfo}`
       : `已处理${stepInfo || ""}`
 
   return (

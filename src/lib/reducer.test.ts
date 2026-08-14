@@ -475,6 +475,455 @@ describe("reducer.assistant snapshot overlay", () => {
     expect(msg.id).toBe("m-fresh")
     expect(msg.streaming).toBe(false)
   })
+
+  it("does not let a stale same-id snapshot shorten streamed text", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "m-stale", role: "assistant" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "完整的流式内容" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "m-stale",
+          content: [{ type: "text", text: "完整的" }]
+        } as never
+      })
+    })
+
+    const msg = lastMessage(s)
+    expect(msg.blocks).toHaveLength(1)
+    expect(msg.blocks[0].text).toBe("完整的流式内容")
+    expect(msg.streaming).toBe(true)
+  })
+
+  it("keeps split same-id assistant blocks without duplicating cumulative snapshots", () => {
+    const assistant = (content: unknown[]) =>
+      event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "m-split",
+          content
+        } as never
+      })
+
+    let s = reduce(init(), {
+      kind: "event",
+      event: assistant([{ type: "thinking", thinking: "先分析" }])
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: assistant([
+        { type: "tool_use", id: "tool-1", name: "Read", input: { path: "a" } }
+      ])
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: assistant([
+        { type: "thinking", thinking: "先分析" },
+        { type: "tool_use", id: "tool-1", name: "Read", input: { path: "a" } }
+      ])
+    })
+
+    const msg = lastMessage(s)
+    expect(msg.blocks.map((block) => block.type)).toEqual(["thinking", "tool_use"])
+    expect(msg.blocks[0].text).toBe("先分析")
+    expect(msg.blocks[1].toolUseId).toBe("tool-1")
+  })
+
+  it("does not let a stale tool snapshot erase streamed input", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "m-tool-stale", role: "assistant" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "tool-stale", name: "Bash", input: {} }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: '{"cmd":"pnpm test"}' }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: { type: "content_block_stop", index: 0 }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "m-tool-stale",
+          content: [{ type: "tool_use", id: "tool-stale", name: "Bash", input: {} }]
+        } as never
+      })
+    })
+
+    const msg = lastMessage(s)
+    expect(msg.blocks).toHaveLength(1)
+    expect(msg.blocks[0].toolName).toBe("Bash")
+    expect(msg.blocks[0].toolInput).toEqual({ cmd: "pnpm test" })
+  })
+})
+
+describe("reducer.interruption artifacts", () => {
+  const interrupted = event({
+    type: "user",
+    promptId: "prompt-interrupted",
+    userType: "external",
+    entrypoint: "sdk-cli",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "[Request interrupted by user]" }]
+    }
+  } as never)
+  const noResponse = event({
+    type: "assistant",
+    userType: "external",
+    isApiErrorMessage: false,
+    message: {
+      role: "assistant",
+      model: "<synthetic>",
+      stop_reason: "stop_sequence",
+      content: [{ type: "text", text: "No response requested." }]
+    }
+  } as never)
+
+  it("hides Claude's synthetic interruption pair from live and replayed chat", () => {
+    let live = reduce(init(), { kind: "event", event: interrupted })
+    live = reduce(live, { kind: "event", event: noResponse })
+    expect(live.entries).toHaveLength(0)
+
+    const replay = reduce(init(), {
+      kind: "load_transcript",
+      events: [
+        event({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            id: "partial-before-stop",
+            model: "claude-opus",
+            content: [{ type: "text", text: "已完成的部分" }]
+          }
+        } as never),
+        interrupted,
+        noResponse
+      ]
+    })
+    expect(replay.entries).toHaveLength(1)
+    expect(replay.entries[0].kind).toBe("message")
+    expect((replay.entries[0] as UIMessage).blocks[0].text).toBe("已完成的部分")
+  })
+
+  it("ignores repeated interruption artifacts", () => {
+    let s = reduce(init(), { kind: "event", event: interrupted })
+    s = reduce(s, { kind: "event", event: interrupted })
+    expect(s.entries).toHaveLength(0)
+  })
+
+  it("preserves partial streaming content while hiding the interruption artifact", () => {
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "m-cancel", role: "assistant" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "写到一半" }
+        }
+      })
+    })
+    s = reduce(s, { kind: "event", event: interrupted })
+
+    expect(s.entries).toHaveLength(1)
+    const msg = s.entries[0] as UIMessage
+    expect(msg.streaming).toBe(true)
+    expect(msg.blocks[0].text).toBe("写到一半")
+  })
+
+  it("reconciles a late snapshot after the hidden interruption artifact", () => {
+    let s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "m-late",
+          model: "claude-opus",
+          content: [{ type: "text", text: "前半" }]
+        }
+      } as never)
+    })
+    s = reduce(s, { kind: "event", event: interrupted })
+    // 取消后迟到的同 id 快照：原位合并到标记之前的消息，不在标记后另起新消息
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "m-late",
+          model: "claude-opus",
+          content: [{ type: "text", text: "前半部分更全的内容" }]
+        }
+      } as never)
+    })
+
+    expect(s.entries).toHaveLength(1)
+    expect((s.entries[0] as UIMessage).blocks[0].text).toBe("前半部分更全的内容")
+  })
+
+  it("flags API error assistant messages for error rendering", () => {
+    const s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "m-api-error",
+          model: "glm-5",
+          content: [
+            { type: "text", text: "API Error: 520 status code (no body)." }
+          ]
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(1)
+    expect((s.entries[0] as UIMessage).apiError).toBe(true)
+  })
+
+  it("closes lingering streaming messages when result arrives without message_stop", () => {
+    // 兼容网关漏发 message_stop:result 到达必须收尾,否则"思考中…"永远残留
+    let s = init()
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "m-no-stop", role: "assistant" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "半截输出" }
+        }
+      })
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "result",
+        subtype: "success",
+        duration_ms: 800,
+        is_error: false
+      } as never)
+    })
+
+    const msg = s.entries[0] as UIMessage
+    expect(msg.streaming).toBe(false)
+    expect(msg.blocks[0].partial).toBe(false)
+    expect(msg.blocks[0].text).toBe("半截输出")
+    expect(s.entries[s.entries.length - 1].kind).toBe("result")
+  })
+
+  it("captures the error field some gateways use for failure details", () => {
+    const s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        error: "upstream 520: no body"
+      } as never)
+    })
+    const result = s.entries[s.entries.length - 1]
+    expect(result.kind).toBe("result")
+    expect((result as { error?: string }).error).toBe("upstream 520: no body")
+  })
+
+  it("captures terminal_reason from persisted gateway results", () => {
+    const s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "result",
+        is_error: true,
+        terminal_reason: "api_error"
+      } as never)
+    })
+    const result = s.entries[s.entries.length - 1]
+    expect(result.kind).toBe("result")
+    expect((result as { terminalReason?: string }).terminalReason).toBe("api_error")
+  })
+
+  it("carries an assistant max_tokens stop into a generic result", () => {
+    let s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "m-max",
+          stop_reason: "max_tokens",
+          content: [{ type: "text", text: "截断内容" }]
+        }
+      } as never)
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "result",
+        stop_reason: "stop_sequence",
+        is_error: false
+      } as never)
+    })
+    const result = s.entries[s.entries.length - 1]
+    expect(result.kind).toBe("result")
+    expect((result as { stopReason?: string }).stopReason).toBe("max_tokens")
+  })
+
+  it("marks a result when an API error card is already visible", () => {
+    let s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "m-api-visible",
+          content: [{ type: "text", text: "API Error: 520" }]
+        }
+      } as never)
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "result",
+        terminal_reason: "api_error",
+        is_error: true
+      } as never)
+    })
+    const result = s.entries[s.entries.length - 1]
+    expect(result.kind).toBe("result")
+    expect((result as { hasApiErrorMessage?: boolean }).hasApiErrorMessage).toBe(true)
+  })
+
+  it("retains genuine content that only resembles the interruption artifacts", () => {
+    let s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "解释 [Request interrupted by user] 的含义" }]
+        }
+      } as never)
+    })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          id: "real-no-response",
+          model: "claude-opus",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "No response requested." }]
+        }
+      } as never)
+    })
+
+    expect(s.entries).toHaveLength(2)
+
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        userType: "external",
+        entrypoint: "sdk-cli",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "[Request interrupted by user]" }]
+        }
+      } as never)
+    })
+    expect(s.entries).toHaveLength(3)
+  })
 })
 
 describe("reducer.tool_use_result attachment", () => {

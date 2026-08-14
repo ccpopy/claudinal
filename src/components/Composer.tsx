@@ -3,6 +3,7 @@ import {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
   type KeyboardEvent,
   type ChangeEvent,
   type ClipboardEvent,
@@ -51,6 +52,11 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import {
+  composerCommandLabel,
+  getComposerCommandBackspaceEdit,
+  matchComposerCommand
+} from "@/lib/composerCommand"
 import {
   cloneComposerDraft,
   emptyComposerDraft,
@@ -276,6 +282,12 @@ export function Composer({
   const fileReqRef = useRef(0)
   /** 上一次刷新候选时的触发签名；null 表示面板处于关闭态 */
   const lastTriggerSigRef = useRef<string | null>(null)
+  /** slash 命令高亮层：与 textarea 逐像素对齐，滚动同步 */
+  const commandHighlightRef = useRef<HTMLPreElement>(null)
+  const commandMatch = useMemo(
+    () => matchComposerCommand(text, slashCommands ?? []),
+    [text, slashCommands]
+  )
   /**
    * onKeyDown 已消费的菜单导航键（↑↓/Tab/Enter/Esc）。对应 keyup 到来时
    * 跳过 updateTrigger：否则 refreshSuggestions 会把高亮重置回第 0 项
@@ -519,8 +531,8 @@ export function Composer({
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // 快捷键优先级（高 → 低）：Alt 组合键（streaming 专用）→ 候选菜单
-    // → Enter 发送/排队 → Esc 软中断。
+    // 快捷键优先级（高 → 低）：Alt 组合键（streaming 专用）→ slash token
+    // 删除 → 候选菜单 → Enter 发送/排队 → Esc 软中断。
     //
     // Alt+↑ 故意排在菜单导航之前：菜单导航分支均要求 !e.altKey，按键空间
     // 与 Alt 组合键不重叠——菜单打开时 Alt+↑ 仍执行「撤回排队」，普通 ↑↓
@@ -545,6 +557,33 @@ export function Composer({
       e.preventDefault()
       send("followup")
       return
+    }
+    if (
+      e.key === "Backspace" &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.nativeEvent.isComposing
+    ) {
+      const el = e.currentTarget
+      const edit = getComposerCommandBackspaceEdit(
+        text,
+        el.selectionStart ?? text.length,
+        el.selectionEnd ?? text.length,
+        slashCommands ?? []
+      )
+      if (edit) {
+        e.preventDefault()
+        menuKeyHandledRef.current.add(e.key)
+        setText(edit.text)
+        closeSuggestions()
+        requestAnimationFrame(() => {
+          const textarea = ref.current
+          if (!textarea) return
+          textarea.setSelectionRange(edit.caret, edit.caret)
+        })
+        return
+      }
     }
     if (trigger) {
       // IME 组合期间 ↑↓/Tab/Enter 属于输入法候选操作，不得当作菜单导航
@@ -878,43 +917,70 @@ export function Composer({
             </div>
           )}
 
-          <Textarea
-            ref={ref}
-            value={text}
-            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
-              const v = e.target.value
-              setText(v)
-              const caret = e.target.selectionStart ?? v.length
-              updateTrigger(v, caret)
-            }}
-            onKeyUp={(e) => {
-              // onKeyUp 的职责：跟踪 ←→/Home/End 等纯光标移动进出触发词
-              //（这些键不触发 onChange）。onKeyDown 已消费的菜单键到达
-              // keyup 时直接吞掉，不重新评估触发词（见 menuKeyHandledRef）。
-              if (menuKeyHandledRef.current.delete(e.key)) return
-              const el = e.currentTarget
-              updateTrigger(el.value, el.selectionStart ?? 0)
-            }}
-            onClick={(e) => {
-              const el = e.currentTarget
-              updateTrigger(el.value, el.selectionStart ?? 0)
-            }}
-            onBlur={() => {
-              menuKeyHandledRef.current.clear()
-              // 延迟关闭：让点击 SuggestionPanel 项的 onClick 先触发
-              setTimeout(() => closeSuggestions(), 100)
-            }}
-            onKeyDown={onKey}
-            onPaste={onPaste}
-            placeholder={
-              streaming
-                ? "要求后续变更"
-                : "coffee time?"
-            }
-            disabled={disabled}
-            rows={1}
-            className="min-h-[56px] max-h-60 border-0 bg-transparent px-1 py-1 text-base shadow-none focus-visible:ring-0"
-          />
+          <div className="relative">
+            {commandMatch && (
+              <pre
+                aria-hidden
+                ref={commandHighlightRef}
+                className="pointer-events-none absolute inset-0 m-0 max-h-60 overflow-hidden whitespace-pre-wrap break-words border-0 bg-transparent px-1 py-1 font-sans text-base text-foreground [scrollbar-gutter:stable]"
+              >
+                <span className="relative inline-block text-transparent">
+                  {commandMatch.raw}
+                  <span className="absolute left-0 top-1/2 inline-flex -translate-y-1/2 items-center gap-0.5 whitespace-nowrap text-[13px] font-medium text-warn">
+                    <Package className="size-3 shrink-0" />
+                    {composerCommandLabel(commandMatch.raw)}
+                  </span>
+                </span>
+                {commandMatch.rest}
+              </pre>
+            )}
+            <Textarea
+              ref={ref}
+              value={text}
+              onScroll={(e) => {
+                const overlay = commandHighlightRef.current
+                if (overlay) overlay.scrollTop = e.currentTarget.scrollTop
+              }}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
+                const v = e.target.value
+                setText(v)
+                const caret = e.target.selectionStart ?? v.length
+                updateTrigger(v, caret)
+              }}
+              onKeyUp={(e) => {
+                // onKeyUp 的职责：跟踪 ←→/Home/End 等纯光标移动进出触发词
+                //（这些键不触发 onChange）。onKeyDown 已消费的菜单键到达
+                // keyup 时直接吞掉，不重新评估触发词（见 menuKeyHandledRef）。
+                if (menuKeyHandledRef.current.delete(e.key)) return
+                const el = e.currentTarget
+                updateTrigger(el.value, el.selectionStart ?? 0)
+              }}
+              onClick={(e) => {
+                const el = e.currentTarget
+                updateTrigger(el.value, el.selectionStart ?? 0)
+              }}
+              onBlur={() => {
+                menuKeyHandledRef.current.clear()
+                // 延迟关闭：让点击 SuggestionPanel 项的 onClick 先触发
+                setTimeout(() => closeSuggestions(), 100)
+              }}
+              onKeyDown={onKey}
+              onPaste={onPaste}
+              placeholder={
+                streaming
+                  ? "要求后续变更"
+                  : "coffee time?"
+              }
+              disabled={disabled}
+              rows={1}
+              className={cn(
+                "min-h-[56px] max-h-60 border-0 bg-transparent px-1 py-1 text-base shadow-none focus-visible:ring-0 [scrollbar-gutter:stable]",
+                // 命中已知 slash 命令时文本由背后高亮层渲染,textarea 只保留光标
+                commandMatch &&
+                  "text-transparent caret-foreground selection:bg-primary/25 selection:text-transparent"
+              )}
+            />
+          </div>
 
           <div className="mt-3 flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-1">

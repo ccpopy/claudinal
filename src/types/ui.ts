@@ -63,6 +63,8 @@ export interface UIMessage {
   stopReason?: string | null
   streaming: boolean
   delivery?: "guide"
+  /** CLI 标记的 API 错误消息（isApiErrorMessage）：按错误卡片渲染而非普通 markdown */
+  apiError?: boolean
   ts: number
   stopTs?: number
 }
@@ -95,12 +97,17 @@ export interface UIResult {
   kind: "result"
   subtype?: string
   result?: string
+  /** 部分网关把错误详情放在 error 字段而非 result */
+  error?: string
   totalCostUsd?: number
   durationMs?: number
   durationApiMs?: number
   numTurns?: number
   isError?: boolean
   stopReason?: string
+  terminalReason?: string
+  /** 同一回合已包含可见的 assistant API 错误卡，result 无需重复回显相同正文。 */
+  hasApiErrorMessage?: boolean
   modelUsage?: Record<string, unknown>
   permissionDenials?: unknown[]
   ts: number

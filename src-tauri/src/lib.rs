@@ -6,6 +6,7 @@ mod child_process;
 mod collab;
 mod commands;
 mod error;
+mod fs_atomic;
 mod keychain;
 mod network_proxy;
 mod permission_mcp;
@@ -152,6 +153,7 @@ pub fn run() {
             commands::truncate_session_transcript,
             commands::read_session_sidecar,
             commands::write_session_sidecar,
+            commands::patch_session_sidecar,
             commands::watch_sessions,
             commands::unwatch_sessions,
             commands::list_files,
