@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { init, reduce } from "./reducer"
+import { init, markInterruptedResult, reduce } from "./reducer"
 import type { ClaudeEvent } from "@/types/events"
 import type { UIMessage } from "@/types/ui"
 
@@ -678,6 +678,32 @@ describe("reducer.interruption artifacts", () => {
     expect(s.entries).toHaveLength(0)
   })
 
+  it("reconciles the persisted SDK sentinel with an older aborted sidecar result", () => {
+    const s = reduce(init(), {
+      kind: "load_transcript",
+      events: [
+        event({
+          type: "user",
+          message: { role: "user", content: "审查这些改动" }
+        } as never),
+        interrupted,
+        noResponse,
+        event({
+          type: "result",
+          subtype: "error_during_execution",
+          terminal_reason: "aborted_streaming",
+          is_error: true,
+          duration_ms: 2064
+        } as never)
+      ]
+    })
+
+    expect(s.entries).toHaveLength(2)
+    const result = s.entries[1]
+    expect(result.kind === "result" && result.terminalReason).toBe("interrupted")
+    expect(result.kind === "result" && result.durationMs).toBe(2064)
+  })
+
   it("preserves partial streaming content while hiding the interruption artifact", () => {
     let s = init()
     s = reduce(s, {
@@ -707,6 +733,105 @@ describe("reducer.interruption artifacts", () => {
     const msg = s.entries[0] as UIMessage
     expect(msg.streaming).toBe(true)
     expect(msg.blocks[0].text).toBe("写到一半")
+  })
+
+  it("hides a metadata-light sentinel in an unresolved turn and normalizes replayed result", () => {
+    const replay = reduce(init(), {
+      kind: "load_transcript",
+      events: [
+        event({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "检查未提交改动" }]
+          }
+        } as never),
+        event({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            id: "partial-before-cancel",
+            stop_reason: "tool_use",
+            content: [{ type: "text", text: "已经检查到一部分" }]
+          }
+        } as never),
+        event({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "[Request interrupted by user]" }]
+          }
+        } as never),
+        event({
+          type: "result",
+          subtype: "error_during_execution",
+          terminal_reason: "aborted_streaming",
+          is_error: true
+        } as never)
+      ]
+    })
+
+    const visibleText = replay.entries
+      .filter((entry): entry is UIMessage => entry.kind === "message")
+      .flatMap((entry) => entry.blocks.map((block) => block.text ?? ""))
+    expect(visibleText).toContain("已经检查到一部分")
+    expect(visibleText).not.toContain("[Request interrupted by user]")
+    const result = replay.entries[replay.entries.length - 1]
+    expect(result.kind).toBe("result")
+    expect(result.kind === "result" && result.terminalReason).toBe("interrupted")
+    expect(result.kind === "result" && result.isError).toBe(true)
+  })
+
+  it("preserves the literal sentinel when it is a genuine first prompt", () => {
+    const s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "[Request interrupted by user]" }]
+        }
+      } as never)
+    })
+
+    expect(s.entries).toHaveLength(1)
+    expect((s.entries[0] as UIMessage).blocks[0].text).toBe(
+      "[Request interrupted by user]"
+    )
+  })
+
+  it("marks a result before reduction when the live run is interrupting", () => {
+    let s = reduce(init(), {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: { role: "user", content: "停止这个任务" }
+      } as never)
+    })
+    const resultEvent = markInterruptedResult(
+      event({
+        type: "result",
+        subtype: "error_during_execution",
+        terminal_reason: "aborted_streaming",
+        is_error: true
+      } as never),
+      true
+    )
+    s = reduce(s, { kind: "event", event: resultEvent })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "[Request interrupted by user]" }]
+        }
+      } as never)
+    })
+
+    expect(s.entries).toHaveLength(2)
+    const result = s.entries[1]
+    expect(result.kind === "result" && result.terminalReason).toBe("interrupted")
   })
 
   it("reconciles a late snapshot after the hidden interruption artifact", () => {

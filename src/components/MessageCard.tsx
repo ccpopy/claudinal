@@ -2,6 +2,7 @@ import { useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
+  CircleStop,
   Cog,
   CornerDownRight,
   DollarSign,
@@ -265,7 +266,9 @@ interface PermissionDenial {
 
 function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
   const denials = (e.permissionDenials as PermissionDenial[] | undefined) ?? []
-  const failed = e.isError === true || e.terminalReason === "api_error"
+  const interrupted = e.terminalReason === "interrupted"
+  const failed =
+    !interrupted && (e.isError === true || e.terminalReason === "api_error")
   // 失败时优先展示 error 字段详情；历史 sidecar 的 api_error 可能只有
   // result 文本，此时回退展示它。实时路径已有 assistant 错误卡时通常不重复。
   const fallbackErrorDetail =
@@ -275,6 +278,7 @@ function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
   const errorDetail = failed ? (e.error ?? fallbackErrorDetail).trim() : ""
   const truncated =
     !failed &&
+    !interrupted &&
     (e.stopReason === "max_tokens" || e.terminalReason === "max_tokens")
   return (
     <div className="flex flex-col gap-1.5 pt-1">
@@ -292,11 +296,19 @@ function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
           <AlertTriangle className="size-3.5" />
         ) : truncated ? (
           <AlertTriangle className="size-3.5" />
+        ) : interrupted ? (
+          <CircleStop className="size-3.5" />
         ) : (
           <CheckCircle2 className="size-3.5" />
         )}
         <span>
-          {failed ? "失败" : truncated ? "已截断" : "完成"}
+          {failed
+            ? "失败"
+            : truncated
+              ? "已截断"
+              : interrupted
+                ? "已取消"
+                : "完成"}
           {failed && e.subtype && e.subtype !== "success"
             ? ` · ${e.subtype}`
             : ""}

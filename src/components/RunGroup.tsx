@@ -94,6 +94,7 @@ export function RunGroup({
                   key={s.key}
                   role="assistant"
                   block={s.block}
+                  variant="activity"
                   cwd={cwd}
                 />
               ))}

@@ -8,6 +8,7 @@ import {
   FilePlus,
   FileText,
   Loader2,
+  MessageSquareText,
   Search,
   Terminal,
   Wrench,
@@ -22,8 +23,11 @@ import { CopyButton } from "./CopyButton"
 import { ImageLightbox } from "./ImageLightbox"
 import { RetryButton } from "./RetryButton"
 
-/** 消息块渲染形态。"guide"：引导卡内嵌渲染，文本不再自带气泡容器（卡片即容器）。 */
-export type BlockViewVariant = "guide"
+/**
+ * 消息块渲染形态：guide 内嵌在引导卡；activity 属于可折叠运行过程，
+ * 不提供普通助手回复的复制操作。
+ */
+export type BlockViewVariant = "guide" | "activity"
 
 export function BlockView({
   role,
@@ -118,6 +122,27 @@ function TextBlock({
             label="消息已复制"
           />
         </div>
+      </div>
+    )
+  }
+  if (variant === "activity") {
+    return (
+      <div
+        className="grid w-full min-w-0 grid-cols-[0.75rem_0.875rem_minmax(0,1fr)] items-start gap-x-1.5"
+        data-run-activity="true"
+      >
+        <span className="size-3" aria-hidden="true" />
+        <MessageSquareText
+          className="mt-[3px] size-3.5 text-muted-foreground/70"
+          aria-hidden="true"
+          data-run-activity-icon="true"
+        />
+        <AssistantMarkdown
+          text={block.text ?? ""}
+          partial={!!block.partial}
+          cwd={cwd}
+          variant="activity"
+        />
       </div>
     )
   }

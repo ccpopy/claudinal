@@ -33,6 +33,27 @@ describe("MessageCard status rendering", () => {
     expect(html).toContain("1m35s")
   })
 
+  it("renders a deliberate interruption as a neutral cancellation", () => {
+    const html = renderToStaticMarkup(
+      <MessageCard
+        entry={{
+          kind: "result",
+          isError: true,
+          subtype: "error_during_execution",
+          terminalReason: "interrupted",
+          error: "[Request interrupted by user]",
+          durationMs: 2100,
+          ts: 1
+        }}
+      />
+    )
+    expect(html).toContain("已取消")
+    expect(html).toContain("2.1s")
+    expect(html).not.toContain("失败")
+    expect(html).not.toContain("error_during_execution")
+    expect(html).not.toContain("[Request interrupted by user]")
+  })
+
   it("renders API error assistant messages as an error card", () => {
     const msg: UIMessage = {
       kind: "message",

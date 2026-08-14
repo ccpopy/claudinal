@@ -5,6 +5,8 @@ import { splitUploadedFileText } from "./fileAttachments"
 export interface State {
   entries: UIEntry[]
   hiddenStream?: boolean
+  /** 已隐藏中断协议消息，等待对应 result 到达并归一成 interrupted。 */
+  pendingInterruption: boolean
 }
 
 export type Action =
@@ -22,7 +24,7 @@ export type Action =
   | { kind: "reset" }
 
 export function init(): State {
-  return { entries: [] }
+  return { entries: [], pendingInterruption: false }
 }
 
 export function reduce(state: State, action: Action): State {
@@ -33,7 +35,11 @@ export function reduce(state: State, action: Action): State {
       (entry) => entry.kind === "message" && entry.id === action.messageId
     )
     if (idx < 0) return state
-    return { entries: state.entries.slice(0, idx), hiddenStream: false }
+    return {
+      entries: state.entries.slice(0, idx),
+      hiddenStream: false,
+      pendingInterruption: false
+    }
   }
   if (action.kind === "user_local") {
     const ts = action.ts ?? Date.now()
@@ -46,7 +52,11 @@ export function reduce(state: State, action: Action): State {
       delivery: action.delivery,
       ts
     }
-    return { entries: [...state.entries, msg] }
+    return {
+      ...state,
+      entries: [...state.entries, msg],
+      pendingInterruption: false
+    }
   }
   if (action.kind === "load_transcript") {
     let s: State = init()
@@ -76,6 +86,7 @@ export function reduce(state: State, action: Action): State {
       s = reduceEvent(s, ev)
     }
     return {
+      ...s,
       entries: s.entries.map((e) =>
         e.kind === "message" ? ({ ...e, streaming: false } as UIMessage) : e
       )
@@ -102,6 +113,14 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   const ts = parseTs(ev)
   const t = (ev as { type?: string }).type
   if (isMetaSkillPromptEvent(ev)) return removeLeakedSkillMetaPrompt(state)
+  if (isInterruptionArtifactEvent(state, ev)) {
+    return {
+      ...state,
+      pendingInterruption: latestTurnResultIsInterrupted(state.entries)
+        ? state.pendingInterruption
+        : true
+    }
+  }
   if (isInternalGeneratedEvent(ev)) return state
   // GUI 软中断写入的 interrupt control_request 会让 CLI 在 stdout 回一条
   // control_response 回执：纯协议事件，显式忽略，避免落进 unknown 渲染脏行
@@ -121,11 +140,13 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
     return reduceHook(state, ev as Record<string, unknown>, ts)
   if (t === "raw") {
     return {
+      ...state,
       entries: [...state.entries, { kind: "raw", line: (ev as { line?: string }).line, ts }]
     }
   }
   if (t === "stderr") {
     return {
+      ...state,
       entries: [
         ...state.entries,
         { kind: "stderr", line: (ev as { line?: string }).line ?? "", ts }
@@ -145,6 +166,7 @@ function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): St
   const sub = ev.subtype as string | undefined
   if (sub === "init") {
     return {
+      ...state,
       entries: [
         ...state.entries,
         {
@@ -170,6 +192,7 @@ function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): St
   }
   if (sub === "status") {
     return {
+      ...state,
       entries: [
         ...state.entries,
         { kind: "system_status", status: (ev.status as string) ?? "", ts }
@@ -201,11 +224,11 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
       streaming: true,
       ts
     }
-    return { entries: [...state.entries, entry] }
+    return { ...state, entries: [...state.entries, entry], hiddenStream: false }
   }
 
   if (state.hiddenStream) {
-    if (t === "message_stop") return { entries: state.entries }
+    if (t === "message_stop") return { ...state, hiddenStream: false }
     return state
   }
 
@@ -241,7 +264,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
     while (blocks.length < i) blocks.push({ type: "unknown" } as UIBlock)
     blocks[i] = blk
     entries[idx] = { ...cur, blocks }
-    return { entries }
+    return { ...state, entries }
   }
 
   if (t === "content_block_delta") {
@@ -265,7 +288,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
     }
     blocks[i] = next
     entries[idx] = { ...cur, blocks }
-    return { entries }
+    return { ...state, entries }
   }
 
   if (t === "content_block_stop") {
@@ -284,7 +307,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
     if (next.type === "thinking") next.endedAt = ts
     blocks[i] = next
     entries[idx] = { ...cur, blocks }
-    return { entries }
+    return { ...state, entries }
   }
 
   if (t === "message_delta") {
@@ -296,12 +319,12 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
       stopReason: stopReason ?? cur.stopReason,
       usage: usage ?? cur.usage
     }
-    return { entries }
+    return { ...state, entries }
   }
 
   if (t === "message_stop") {
     entries[idx] = { ...cur, streaming: false, stopTs: ts }
-    return { entries }
+    return { ...state, entries }
   }
 
   return state
@@ -341,7 +364,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
     }
     const next = state.entries.slice()
     next[idx] = reconciled
-    return { entries: next }
+    return { ...state, entries: next }
   }
   const entry: UIMessage = {
     kind: "message",
@@ -355,7 +378,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
     streaming: false,
     ts
   }
-  return { entries: [...state.entries, entry] }
+  return { ...state, entries: [...state.entries, entry] }
 }
 
 // user 事件常携带顶级 tool_use_result（结构化 file/structuredPatch/originalFile/type 等）
@@ -399,7 +422,13 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
     streaming: false,
     ts
   }
-  return { entries: [...entries, entry] }
+  return {
+    ...state,
+    entries: [...entries, entry],
+    pendingInterruption: blocks.some((block) => block.type !== "tool_result")
+      ? false
+      : state.pendingInterruption
+  }
 }
 
 // 把 user 消息文本中的 [Image #N] 序号占位与同条消息的 image content block 按出现顺序
@@ -421,7 +450,7 @@ function isInternalGeneratedEvent(ev: ClaudeEvent): boolean {
   // 子代理 transcript 是 Claude 内部 Task 会话，不应作为主聊天内容展示。
   if (obj.isSidechain === true) return true
   if (obj.isMeta === true) return true
-  return isInterruptionUserEvent(obj) || isNoResponseAssistantEvent(obj)
+  return isNoResponseAssistantEvent(obj)
 }
 
 function soleTextOf(ev: Record<string, unknown>): string | undefined {
@@ -432,16 +461,69 @@ function soleTextOf(ev: Record<string, unknown>): string | undefined {
     : undefined
 }
 
-/** 取消回合时 CLI 合成的 user 事件（"[Request interrupted by user]"）。 */
-function isInterruptionUserEvent(obj: Record<string, unknown>): boolean {
+function isExactInterruptionUserEvent(obj: Record<string, unknown>): boolean {
   if (obj.type !== "user") return false
   const msg = (obj.message as Record<string, unknown> | undefined) ?? {}
+  return msg.role === "user" && soleTextOf(obj) === INTERRUPTED_USER_SENTINEL
+}
+
+/** 带完整 SDK 元数据的 CLI 中断协议 user 事件。 */
+function isSdkInterruptionUserEvent(obj: Record<string, unknown>): boolean {
   return (
-    msg.role === "user" &&
-    soleTextOf(obj) === INTERRUPTED_USER_SENTINEL &&
+    isExactInterruptionUserEvent(obj) &&
     typeof obj.promptId === "string" &&
     obj.userType === "external" &&
     obj.entrypoint === "sdk-cli"
+  )
+}
+
+function isAuthoredUserMessage(entry: UIEntry): entry is UIMessage {
+  return (
+    entry.kind === "message" &&
+    entry.role === "user" &&
+    entry.blocks.some((block) => block.type !== "tool_result")
+  )
+}
+
+/**
+ * 当前是否存在尚未出现终止 assistant/result 的真实用户回合。
+ * 这让 live 事件即使缺少 promptId 等可选 SDK 元数据，也能安全识别中断哨兵；
+ * 已完成回合之后用户真的输入同名字面量时则保留原文。
+ */
+function hasUnresolvedUserTurn(entries: UIEntry[]): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (entry.kind === "result") return false
+    if (
+      entry.kind === "message" &&
+      entry.role === "assistant" &&
+      entry.stopReason != null &&
+      entry.stopReason !== "tool_use"
+    ) {
+      return false
+    }
+    if (isAuthoredUserMessage(entry)) return true
+  }
+  return false
+}
+
+function latestTurnResultIsInterrupted(entries: UIEntry[]): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (isAuthoredUserMessage(entry)) return false
+    if (entry.kind === "result") return entry.terminalReason === "interrupted"
+  }
+  return false
+}
+
+function isInterruptionArtifactEvent(state: State, ev: ClaudeEvent): boolean {
+  if (!ev || typeof ev !== "object") return false
+  const obj = ev as Record<string, unknown>
+  if (!isExactInterruptionUserEvent(obj)) return false
+  return (
+    isSdkInterruptionUserEvent(obj) ||
+    hasUnresolvedUserTurn(state.entries) ||
+    latestTurnResultIsInterrupted(state.entries)
   )
 }
 
@@ -519,7 +601,7 @@ function removeStreamingMessageAndHide(state: State): State {
   if (idx < 0) return { ...state, hiddenStream: true }
   const entries = state.entries.slice()
   entries.splice(idx, 1)
-  return { entries, hiddenStream: true }
+  return { ...state, entries, hiddenStream: true }
 }
 
 function normalizeUserBlocks(blocks: UIBlock[]): UIBlock[] {
@@ -648,6 +730,18 @@ function stampToolEndedAt(entries: UIEntry[], toolUseId: string, ts: number): UI
   return entries
 }
 
+/**
+ * live result 可能先于 transcript 中断哨兵到达。停止请求仍在途时先写入统一终态，
+ * 让 reducer、sidecar 与重载后的展示使用同一语义，同时保留原始 is_error 字段。
+ */
+export function markInterruptedResult(
+  event: ClaudeEvent,
+  interrupting: boolean
+): ClaudeEvent {
+  if (!interrupting || (event as { type?: string }).type !== "result") return event
+  return { ...event, terminal_reason: "interrupted" }
+}
+
 function reduceResult(state: State, ev: Record<string, unknown>, ts: number): State {
   // 网关漏发 message_stop 时这里兜底收尾残留 streaming 消息
   const entries = closeStreamingEntries(state.entries, ts)
@@ -657,7 +751,11 @@ function reduceResult(state: State, ev: Record<string, unknown>, ts: number): St
     assistantStopReason === "max_tokens"
       ? assistantStopReason
       : (eventStopReason ?? assistantStopReason)
+  const terminalReason = state.pendingInterruption
+    ? "interrupted"
+    : (ev.terminal_reason as string | undefined)
   return {
+    ...state,
     entries: [
       ...entries,
       {
@@ -672,13 +770,15 @@ function reduceResult(state: State, ev: Record<string, unknown>, ts: number): St
         numTurns: ev.num_turns as number | undefined,
         isError: ev.is_error as boolean | undefined,
         stopReason,
-        terminalReason: ev.terminal_reason as string | undefined,
+        terminalReason,
         hasApiErrorMessage: hasApiErrorMessageSinceLastResult(entries) || undefined,
         modelUsage: ev.modelUsage as Record<string, unknown> | undefined,
         permissionDenials: ev.permission_denials as unknown[] | undefined,
         ts
       }
-    ]
+    ],
+    hiddenStream: false,
+    pendingInterruption: false
   }
 }
 
@@ -717,6 +817,7 @@ function reduceHook(state: State, ev: Record<string, unknown>, ts: number): Stat
     (ev.tool_name as string | undefined) ??
     (ev.toolName as string | undefined)
   return {
+    ...state,
     entries: [
       ...state.entries,
       { kind: "hook", hookEventName, toolName, raw: ev, ts }
@@ -727,6 +828,7 @@ function reduceHook(state: State, ev: Record<string, unknown>, ts: number): Stat
 function reduceRateLimit(state: State, ev: Record<string, unknown>, ts: number): State {
   const info = (ev.rate_limit_info as Record<string, unknown>) ?? {}
   return {
+    ...state,
     entries: [
       ...state.entries,
       {
@@ -928,5 +1030,8 @@ function convertContentBlocks(content: unknown): UIBlock[] {
 }
 
 function appendUnknown(state: State, ev: ClaudeEvent, ts: number): State {
-  return { entries: [...state.entries, { kind: "unknown", raw: ev, ts }] }
+  return {
+    ...state,
+    entries: [...state.entries, { kind: "unknown", raw: ev, ts }]
+  }
 }

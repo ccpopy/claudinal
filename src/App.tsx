@@ -116,6 +116,7 @@ import {
 } from "@/lib/thirdPartyApi"
 import { isOfficialApi } from "@/lib/oauthUsage"
 import {
+  markInterruptedResult,
   reduce,
   init as reducerInit,
   type Action as ReducerAction,
@@ -650,10 +651,23 @@ function collectFailedRetryableMessageIds(
       continue
     }
     if (entry.kind !== "result") continue
-    if (entry.isError && currentUserId) ids.add(currentUserId)
+    if (
+      entry.isError &&
+      entry.terminalReason !== "interrupted" &&
+      currentUserId
+    ) {
+      ids.add(currentUserId)
+    }
     currentUserId = null
   }
-  if (entries.some((entry) => entry.kind === "result" && entry.isError)) {
+  if (
+    entries.some(
+      (entry) =>
+        entry.kind === "result" &&
+        entry.isError &&
+        entry.terminalReason !== "interrupted"
+    )
+  ) {
     const firstTurnId = findFirstTurnFailedMessageId(entries, sentInputs)
     if (firstTurnId) ids.add(firstTurnId)
   }
@@ -1887,7 +1901,10 @@ export default function App() {
       setSessionId(id)
       setRunningTick((tick) => tick + 1)
       const u1 = await listenSessionEvents(id, (ev) => {
-        const event = eventWithLaunchModelIntent(run, ev)
+        const event = markInterruptedResult(
+          eventWithLaunchModelIntent(run, ev),
+          run.interrupting
+        )
         applyRunningAction(run, { kind: "event", event })
         const t = (event as { type?: string }).type
         const evSessionId = (event as { session_id?: string }).session_id
@@ -1982,7 +1999,9 @@ export default function App() {
           clearInterruptState(run)
           // 把网络相关的失败 result 也走一遍 toast；主要看 result/error 文本。
           const isError = (event as { is_error?: unknown }).is_error === true
-          if (isError) {
+          const interrupted =
+            (event as { terminal_reason?: unknown }).terminal_reason === "interrupted"
+          if (isError && !interrupted) {
             const text = [
               (event as { result?: unknown }).result,
               (event as { error?: unknown }).error,

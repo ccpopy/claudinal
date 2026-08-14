@@ -50,11 +50,39 @@ interface EntryGroup {
 }
 type Group = MsgGroup | RunPlaceholder | EntryGroup
 
-function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
+function isProgressAssistantMessage(message: UIMessage): boolean {
+  return (
+    message.stopReason === "tool_use" ||
+    message.blocks.some((block) => block.type === "tool_use") ||
+    (message.streaming && message.stopReason !== "end_turn")
+  )
+}
+
+function resultFinalText(
+  entry: Extract<UIEntry, { kind: "result" }>
+): string | null {
+  if (
+    entry.isError === true ||
+    entry.terminalReason === "api_error" ||
+    entry.terminalReason === "interrupted" ||
+    entry.subtype?.startsWith("error")
+  ) {
+    return null
+  }
+  const text = entry.result?.trim()
+  return text || null
+}
+
+export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
   const groups: Group[] = []
-  const state: { current: RunPlaceholder | null; counter: number } = {
+  const state: {
+    current: RunPlaceholder | null
+    counter: number
+    hasFinalAssistantText: boolean
+  } = {
     current: null,
-    counter: 0
+    counter: 0,
+    hasFinalAssistantText: false
   }
 
   const ensureRun = (startTs?: number): RunPlaceholder => {
@@ -81,6 +109,20 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
     }
   }
 
+  const appendStep = (run: RunPlaceholder, step: RunStep) => {
+    const text = step.block.type === "text" ? step.block.text?.trim() : null
+    if (
+      text &&
+      run.steps.some(
+        (existing) =>
+          existing.block.type === "text" && existing.block.text?.trim() === text
+      )
+    ) {
+      return
+    }
+    run.steps.push(step)
+  }
+
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]
     if (e.kind === "message") {
@@ -96,7 +138,7 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
         if (toolResults.length > 0) {
           const run = ensureRun()
           for (let k = 0; k < toolResults.length; k++) {
-            run.steps.push({
+            appendStep(run, {
               key: `${m.id}-tr-${k}`,
               block: toolResults[k]
             })
@@ -104,6 +146,7 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
           stamp(m.ts)
         }
         if (userVisible.length > 0) {
+          state.hasFinalAssistantText = false
           if (m.delivery === "guide") {
             groups.push({
               kind: "msg",
@@ -125,15 +168,21 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
       } else {
         const stepBlocks: UIBlock[] = []
         const visibleBlocks: UIBlock[] = []
+        const progressMessage = isProgressAssistantMessage(m)
         for (const b of m.blocks) {
           if (!b) continue
-          if (b.type === "thinking" || b.type === "tool_use") stepBlocks.push(b)
-          else visibleBlocks.push(b)
+          if (
+            b.type === "thinking" ||
+            b.type === "tool_use" ||
+            (b.type === "text" && progressMessage)
+          ) {
+            stepBlocks.push(b)
+          } else visibleBlocks.push(b)
         }
         if (stepBlocks.length > 0) {
           const run = ensureRun()
           for (let k = 0; k < stepBlocks.length; k++) {
-            run.steps.push({
+            appendStep(run, {
               key: `${m.id}-st-${k}`,
               block: stepBlocks[k]
             })
@@ -143,6 +192,13 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
         // 优先 stopTs（message_stop 时间），其次 ts（message_start 时间）
         stamp(m.stopTs ?? m.ts)
         if (visibleBlocks.length > 0) {
+          if (
+            visibleBlocks.some(
+              (block) => block.type === "text" && !!block.text?.trim()
+            )
+          ) {
+            state.hasFinalAssistantText = true
+          }
           groups.push({
             kind: "msg",
             key: `msg-${m.id}`,
@@ -157,8 +213,25 @@ function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
         cur.durationMs = e.durationMs
         if (e.ts && (!cur.endTs || e.ts > cur.endTs)) cur.endTs = e.ts
       }
+      const fallbackText = state.hasFinalAssistantText ? null : resultFinalText(e)
+      if (fallbackText) {
+        groups.push({
+          kind: "msg",
+          key: `result-final-${i}`,
+          msg: {
+            kind: "message",
+            id: `result-final-${i}`,
+            role: "assistant",
+            blocks: [{ type: "text", text: fallbackText }],
+            stopReason: "end_turn",
+            streaming: false,
+            ts: e.ts
+          }
+        })
+      }
       groups.push({ kind: "entry", key: `result-${i}`, entry: e })
       state.current = null
+      state.hasFinalAssistantText = false
     } else {
       // 其它 entry（system_init / stderr / raw / unknown）只渲染，不拉宽 endTs
       groups.push({ kind: "entry", key: `entry-${i}-${e.kind}`, entry: e })
