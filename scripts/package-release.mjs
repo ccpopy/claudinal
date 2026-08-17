@@ -30,7 +30,28 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, "..")
 const RELEASE = join(ROOT, "release")
 const STAGING = join(RELEASE, "_staging")
-const TARGET_DIR = join(ROOT, "src-tauri", "target", "release")
+const TAURI_ROOT = join(ROOT, "src-tauri")
+
+function cargoTargetRoot() {
+  try {
+    const metadata = JSON.parse(
+      execSync("cargo metadata --format-version 1 --no-deps", {
+        cwd: TAURI_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      })
+    )
+    if (typeof metadata.target_directory === "string") {
+      return resolve(metadata.target_directory)
+    }
+  } catch {
+    // Keep the repository-local default for environments that package an
+    // existing artifact without Cargo on PATH.
+  }
+  return join(TAURI_ROOT, "target")
+}
+
+const TARGET_DIR = join(cargoTargetRoot(), "release")
 const NSIS_DIR = join(TARGET_DIR, "bundle", "nsis")
 
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
