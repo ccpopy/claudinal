@@ -458,6 +458,31 @@ export async function readSessionTranscript(
   return invoke<ClaudeEvent[]>("read_session_transcript", { cwd, sessionId })
 }
 
+export interface SubagentTranscriptChunk {
+  events: ClaudeEvent[]
+  nextOffset: number
+  fileSize: number
+  truncated: boolean
+  reset: boolean
+  available: boolean
+}
+
+export async function readSubagentTranscriptChunk(args: {
+  cwd: string
+  sessionId: string
+  agentId: string
+  offset?: number
+  maxBytes?: number
+}): Promise<SubagentTranscriptChunk> {
+  return invoke<SubagentTranscriptChunk>("read_subagent_transcript_chunk", {
+    cwd: args.cwd,
+    sessionId: args.sessionId,
+    agentId: args.agentId,
+    offset: args.offset ?? 0,
+    maxBytes: args.maxBytes ?? 256 * 1024
+  })
+}
+
 export async function deleteSessionJsonl(
   cwd: string,
   sessionId: string

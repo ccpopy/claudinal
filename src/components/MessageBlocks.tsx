@@ -1,9 +1,11 @@
 import { useState } from "react"
 import {
   AlertTriangle,
+  Bot,
   Brain,
   CheckCircle2,
   ChevronRight,
+  CircleStop,
   FileEdit,
   FilePlus,
   FileText,
@@ -16,6 +18,7 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { formatAttachmentType, formatBytes } from "@/lib/fileAttachments"
+import type { SubagentTask } from "@/lib/subagents"
 import { cn } from "@/lib/utils"
 import type { UIBlock } from "@/types/ui"
 import { AssistantMarkdown } from "./AssistantMarkdown"
@@ -34,13 +37,17 @@ export function BlockView({
   block,
   variant,
   onRetry,
-  cwd
+  cwd,
+  subagent,
+  onOpenSubagent
 }: {
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
   onRetry?: () => void | Promise<void>
   cwd?: string | null
+  subagent?: SubagentTask
+  onOpenSubagent?: (agentId: string) => void
 }) {
   if (block.type === "text") {
     return (
@@ -56,7 +63,15 @@ export function BlockView({
   if (block.type === "thinking") return <ThinkingBlock block={block} />
   if (block.type === "image") return <ImageBlock role={role} block={block} />
   if (block.type === "attachment") return <AttachmentBlock role={role} block={block} />
-  if (block.type === "tool_use") return <ToolUseBlock block={block} />
+  if (block.type === "tool_use") {
+    return (
+      <ToolUseBlock
+        block={block}
+        subagent={subagent}
+        onOpenSubagent={onOpenSubagent}
+      />
+    )
+  }
   if (block.type === "tool_result") return <ToolResultBlock block={block} />
   return null
 }
@@ -301,15 +316,86 @@ function toolLabel(
     return `${verb("已编辑", "正在编辑")} ${basename(fp)}`
   if (n === "grep" || n === "glob")
     return `${verb("已搜索", "正在搜索")} ${trimText(pat ?? "", 60)}`
-  if (n === "task") return `${verb("已派任务", "正在派任务")}`
+  if (n === "agent" || n === "task") {
+    const description = input.description
+    return typeof description === "string" && description.trim()
+      ? trimText(description.trim(), 80)
+      : `${verb("已派任务", "正在派任务")}`
+  }
   return `${verb("已运行", "正在运行")} ${name ?? "工具"}`
 }
 
-function ToolUseBlock({ block }: { block: UIBlock }) {
+function SubagentToolUseBlock({
+  agent,
+  onOpen
+}: {
+  agent: SubagentTask
+  onOpen: () => void
+}) {
+  const status =
+    agent.status === "running"
+      ? { label: "处理中", Icon: Loader2, className: "text-primary" }
+      : agent.status === "completed"
+        ? { label: "已完成", Icon: CheckCircle2, className: "text-connected" }
+        : agent.status === "failed"
+          ? { label: "失败", Icon: AlertTriangle, className: "text-destructive" }
+          : {
+              label: "已取消",
+              Icon: CircleStop,
+              className: "text-muted-foreground"
+            }
+  const StatusIcon = status.Icon
+  return (
+    <button
+      type="button"
+      data-subagent-link="true"
+      onClick={onOpen}
+      aria-label={`查看子智能体 ${agent.description}`}
+      className="group/subagent inline-flex max-w-full items-center gap-1.5 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Bot className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
+        {agent.description}
+      </span>
+      <span className={cn("inline-flex shrink-0 items-center gap-1", status.className)}>
+        <StatusIcon
+          className={cn(
+            "size-3",
+            agent.status === "running" && "animate-spin"
+          )}
+          aria-hidden="true"
+        />
+        {status.label}
+      </span>
+      <ChevronRight
+        className="size-3 shrink-0 opacity-55 transition-transform group-hover/subagent:translate-x-0.5"
+        aria-hidden="true"
+      />
+    </button>
+  )
+}
+
+function ToolUseBlock({
+  block,
+  subagent,
+  onOpenSubagent
+}: {
+  block: UIBlock
+  subagent?: SubagentTask
+  onOpenSubagent?: (agentId: string) => void
+}) {
   const [open, setOpen] = useState(false)
   const input = (block.toolInput as Record<string, unknown>) ?? {}
   const Icon = toolIcon(block.toolName)
   const label = toolLabel(block.toolName, input, block.partial)
+  if (subagent && onOpenSubagent) {
+    return (
+      <SubagentToolUseBlock
+        agent={subagent}
+        onOpen={() => onOpenSubagent(subagent.id)}
+      />
+    )
+  }
   return (
     <ExpandableRow
       open={open}

@@ -123,6 +123,13 @@ import {
   type State as ReducerState
 } from "@/lib/reducer"
 import {
+  reduceSubagentRegistry,
+  runningSubagentCount,
+  settleSubagentRegistryForResume,
+  subagentRegistryBusy,
+  type SubagentRegistry
+} from "@/lib/subagents"
+import {
   listProjects,
   removeProject as removeProjectStore,
   type Project
@@ -224,6 +231,11 @@ const DiffOverview = lazy(() =>
 const CollaborationFlow = lazy(() =>
   import("@/components/CollaborationFlow").then((m) => ({
     default: m.CollaborationFlow
+  }))
+)
+const SubagentsPanel = lazy(() =>
+  import("@/components/SubagentsPanel").then((m) => ({
+    default: m.SubagentsPanel
   }))
 )
 const RunStatusStrip = lazy(() =>
@@ -342,6 +354,11 @@ type RunningSession = {
   apiLaunchProfileKey: string
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
+  /** 当前前台 turn 已发出、尚未收到该 turn 的 result。 */
+  turnActive: boolean
+  /** 主会话观察到的 Claude 异步 Agent 生命周期。 */
+  subagents: SubagentRegistry
+  /** 整体忙碌态：前台 turn 或异步 Agent 汇总周期仍在进行。 */
   streaming: boolean
   /** 软中断进行中：已写 interrupt control_request，等待 result 或兜底强杀 */
   interrupting: boolean
@@ -741,6 +758,8 @@ export default function App() {
   const [diffScope, setDiffScope] = useState<DiffPanelScope>({ kind: "all" })
   const [diffInitialPath, setDiffInitialPath] = useState<string | null>(null)
   const [showCollabFlow, setShowCollabFlow] = useState(false)
+  const [showSubagents, setShowSubagents] = useState(false)
+  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(null)
   const [collabSettingsTick, setCollabSettingsTick] = useState(0)
   const [installedSkillCommands, setInstalledSkillCommands] = useState<string[]>([])
   const [pendingDeleteSession, setPendingDeleteSession] =
@@ -954,16 +973,22 @@ export default function App() {
     []
   )
 
-  const setRunningSessionStreaming = useCallback(
+  const syncRunningSessionStreaming = useCallback((run: RunningSession) => {
+    const next = run.turnActive || subagentRegistryBusy(run.subagents)
+    if (run.streaming === next) return
+    run.streaming = next
+    if (activeRuntimeIdRef.current === run.runtimeId) {
+      setStreaming(next)
+    }
+    setRunningTick((tick) => tick + 1)
+  }, [])
+
+  const setRunningSessionTurnActive = useCallback(
     (run: RunningSession, next: boolean) => {
-      if (run.streaming === next) return
-      run.streaming = next
-      if (activeRuntimeIdRef.current === run.runtimeId) {
-        setStreaming(next)
-      }
-      setRunningTick((tick) => tick + 1)
+      run.turnActive = next
+      syncRunningSessionStreaming(run)
     },
-    []
+    [syncRunningSessionStreaming]
   )
 
   // 同一会话同一类网络错误在 NETWORK_TOAST_THROTTLE_MS 内只弹一次，
@@ -1753,7 +1778,7 @@ export default function App() {
           localId: item.localId,
           ts: sentAt
         })
-        setRunningSessionStreaming(run, true)
+        setRunningSessionTurnActive(run, true)
         setRunningTick((tick) => tick + 1)
         return true
       } catch (error) {
@@ -1768,7 +1793,7 @@ export default function App() {
       beginRunReview,
       discardRunReview,
       rememberSentInput,
-      setRunningSessionStreaming
+      setRunningSessionTurnActive
     ]
   )
 
@@ -1869,6 +1894,14 @@ export default function App() {
         collabEnabledProviders: enabledProviderList(collabCfg)
       })
       createdRuntimeId = id
+      const baseRunState = resumeSessionId ? stateRef.current : reducerInit()
+      const resumedSubagents = settleSubagentRegistryForResume(
+        baseRunState.subagents
+      )
+      const runState =
+        resumedSubagents === baseRunState.subagents
+          ? baseRunState
+          : { ...baseRunState, subagents: resumedSubagents }
       const run: RunningSession = {
         runtimeId: id,
         project,
@@ -1877,7 +1910,9 @@ export default function App() {
         apiProfileKey,
         apiLaunchProfileKey,
         selectedSessionMeta: resumeSessionId ? selectedSessionMeta : null,
-        state: resumeSessionId ? stateRef.current : reducerInit(),
+        state: runState,
+        turnActive: false,
+        subagents: resumedSubagents,
         streaming: false,
         interrupting: false,
         interruptTimer: null,
@@ -1899,12 +1934,21 @@ export default function App() {
       activeRuntimeIdRef.current = id
       sessionIdRef.current = id
       setSessionId(id)
+      if (runState !== baseRunState) {
+        dispatch({ kind: "replace_state", state: runState })
+        stateRef.current = runState
+      }
       setRunningTick((tick) => tick + 1)
       const u1 = await listenSessionEvents(id, (ev) => {
         const event = markInterruptedResult(
           eventWithLaunchModelIntent(run, ev),
           run.interrupting
         )
+        const subagentTransition = reduceSubagentRegistry(run.subagents, event)
+        if (subagentTransition.changed) {
+          run.subagents = subagentTransition.registry
+          syncRunningSessionStreaming(run)
+        }
         applyRunningAction(run, { kind: "event", event })
         const t = (event as { type?: string }).type
         const evSessionId = (event as { session_id?: string }).session_id
@@ -1949,7 +1993,7 @@ export default function App() {
           t === "stream_event" &&
           (event as { event?: { type?: string } }).event?.type === "message_start"
         ) {
-          setRunningSessionStreaming(run, true)
+          setRunningSessionTurnActive(run, true)
         }
         if (t === "system") {
           const apiKeySource = (event as { apiKeySource?: string }).apiKeySource
@@ -2028,7 +2072,19 @@ export default function App() {
           }
           // 回合结束：上游状态条不再有意义（成功则已 recovered，失败则 result 错误已落地）
           run.upstreamStatus = null
-          setRunningSessionStreaming(run, false)
+          setRunningSessionTurnActive(run, false)
+          recordResultUsage(
+            event as {
+              total_cost_usd?: number
+              modelUsage?: Record<string, never>
+            }
+          )
+          if (subagentTransition.resultDisposition === "intermediate") {
+            // 前台 turn 已结束，但异步 Agent 尚未全部完成并被主会话汇总。
+            // reducer 不插入“完成”卡；整体 streaming 由 subagent cycle 保持。
+            setSidebarRefreshKey((k) => k + 1)
+            return
+          }
           void finishRunReview(run).then(() => sendQueuedFollowup(run))
           setSidebarRefreshKey((k) => k + 1)
           if (activeRuntimeIdRef.current === run.runtimeId) {
@@ -2043,12 +2099,6 @@ export default function App() {
                 // OAuth 拉取失败保留旧值
               })
           }
-          recordResultUsage(
-            event as {
-              total_cost_usd?: number
-              modelUsage?: Record<string, never>
-            }
-          )
           const sid = resultSessionId
           if (sid) {
             // Backend merges this patch under a per-session lock. Composer is a
@@ -2120,7 +2170,8 @@ export default function App() {
     ensureClaudeWorkspaceTrust,
     sessionPermissionMode,
     applyRunningAction,
-    setRunningSessionStreaming,
+    setRunningSessionTurnActive,
+    syncRunningSessionStreaming,
     clearInterruptState,
     finishRunReview,
     sendQueuedFollowup,
@@ -2166,13 +2217,29 @@ export default function App() {
   const openAllDiff = useCallback((path?: string | null) => {
     setDiffScope({ kind: "all" })
     setDiffInitialPath(path ?? null)
+    setShowSubagents(false)
+    setShowCollabFlow(false)
     setShowDiff(true)
+  }, [])
+
+  const openSubagents = useCallback((agentId: string | null = null) => {
+    setShowDiff(false)
+    setShowCollabFlow(false)
+    setSelectedSubagentId(agentId)
+    setShowSubagents(true)
+  }, [])
+
+  const handleSubagentsOpenChange = useCallback((open: boolean) => {
+    setShowSubagents(open)
+    if (!open) setSelectedSubagentId(null)
   }, [])
 
   const openReviewDiff = useCallback(
     (review: ReviewRunDiff, path?: string | null) => {
       setDiffScope({ kind: "review", review })
       setDiffInitialPath(path ?? null)
+      setShowSubagents(false)
+      setShowCollabFlow(false)
       setShowDiff(true)
     },
     []
@@ -2358,7 +2425,7 @@ export default function App() {
           localId,
           ts: sentAt
         })
-        setRunningSessionStreaming(run, true)
+        setRunningSessionTurnActive(run, true)
       } else {
         rememberSentInput(sentInput)
         dispatch({ kind: "user_local", blocks: uiBlocks, localId, ts: sentAt })
@@ -2374,7 +2441,7 @@ export default function App() {
         toast.error(`发送失败: ${String(e)}`)
         if (run) {
           void discardRunReview(run)
-          setRunningSessionStreaming(run, false)
+          setRunningSessionTurnActive(run, false)
         } else {
           setStreaming(false)
         }
@@ -2385,7 +2452,7 @@ export default function App() {
       ensureSession,
       teardown,
       applyRunningAction,
-      setRunningSessionStreaming,
+      setRunningSessionTurnActive,
       beginRunReview,
       discardRunReview,
       collaborationMode,
@@ -3183,6 +3250,8 @@ export default function App() {
 
   const empty = state.entries.length === 0
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
+  const activeSubagents = state.subagents.agents
+  const activeRunningSubagentCount = runningSubagentCount(state.subagents)
   const activeComposerDraftKey = project
     ? composerDraftKey(project.id, jsonlSessionId)
     : undefined
@@ -3485,8 +3554,15 @@ export default function App() {
                   onDelete={deleteCurrentSession}
                   onShowDiff={() => openAllDiff()}
                   diffCount={visibleDiffCount}
-                  onShowCollabFlow={() => setShowCollabFlow(true)}
+                  onShowCollabFlow={() => {
+                    setShowDiff(false)
+                    setShowSubagents(false)
+                    setShowCollabFlow(true)
+                  }}
                   collabEnabled={collabEnabled}
+                  onShowSubagents={() => openSubagents()}
+                  subagentCount={activeSubagents.length}
+                  runningSubagentCount={activeRunningSubagentCount}
                 />
               </Suspense>
             )}
@@ -3593,6 +3669,9 @@ export default function App() {
                     onShowDiff={openReviewDiff}
                     retryableMessageIds={retryableMessageIds}
                     onRetryMessage={retryUserMessage}
+                    pendingSubagentCount={activeRunningSubagentCount}
+                    subagents={activeSubagents}
+                    onOpenSubagent={(agentId) => openSubagents(agentId)}
                   />
                 </Suspense>
                 {project && projectActions.length > 0 && (
@@ -3803,6 +3882,19 @@ export default function App() {
               onOpenChange={setShowCollabFlow}
               cwd={project?.cwd ?? null}
               currentSessionId={jsonlSessionId}
+            />
+          </Suspense>
+        )}
+        {showSubagents && (
+          <Suspense fallback={null}>
+            <SubagentsPanel
+              open={showSubagents}
+              onOpenChange={handleSubagentsOpenChange}
+              agents={activeSubagents}
+              cwd={project?.cwd ?? null}
+              sessionId={jsonlSessionId}
+              selectedAgentId={selectedSubagentId}
+              onSelectedAgentChange={setSelectedSubagentId}
             />
           </Suspense>
         )}

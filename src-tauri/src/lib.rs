@@ -149,6 +149,7 @@ pub fn run() {
             commands::normalize_proxy_url_for_http_client,
             commands::github_cli_status,
             commands::read_session_transcript,
+            commands::read_subagent_transcript_chunk,
             commands::delete_session_jsonl,
             commands::truncate_session_transcript,
             commands::read_session_sidecar,

@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import type { SubagentTask } from "@/lib/subagents"
 import type { UIEntry, UIMessage } from "@/types/ui"
 import { BlockView } from "./MessageBlocks"
 import { buildGroups } from "./MessageStream"
@@ -142,6 +143,81 @@ describe("MessageStream result hierarchy", () => {
     expect(html).toContain('data-markdown-variant="activity"')
     expect(html).toContain("grid-cols-[0.75rem_0.875rem_minmax(0,1fr)]")
     expect(html).not.toContain('aria-label="复制消息"')
+  })
+
+  it("keeps an interim end-turn message inside activity while Agents are pending", () => {
+    const groups = buildGroups(
+      [
+        message("user", "user", "继续检查"),
+        message("waiting", "assistant", "还在等待三个代理。", {
+          stopReason: "end_turn",
+          backgroundActivity: true
+        })
+      ],
+      true
+    )
+
+    const run = groups.find((group) => group.kind === "run")
+    expect(run?.kind).toBe("run")
+    expect(
+      run?.kind === "run"
+        ? run.steps.some(
+            (step) =>
+              step.block.type === "text" &&
+              step.block.text === "还在等待三个代理。"
+          )
+        : false
+    ).toBe(true)
+    expect(
+      groups.some(
+        (group) => group.kind === "msg" && group.msg.role === "assistant"
+      )
+    ).toBe(false)
+  })
+
+  it("renders a named Agent link and hides its internal launch result row", () => {
+    const subagent: SubagentTask = {
+      id: "agent-1",
+      toolUseId: "tool-agent-1",
+      description: "Delete atomic fox",
+      status: "running",
+      startedAt: 1,
+      updatedAt: 1
+    }
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <RunGroup
+          steps={[
+            {
+              key: "agent-use",
+              block: {
+                type: "tool_use",
+                toolName: "Agent",
+                toolUseId: "tool-agent-1",
+                toolInput: { description: "Delete atomic fox" }
+              }
+            },
+            {
+              key: "agent-result",
+              block: {
+                type: "tool_result",
+                toolUseId: "tool-agent-1",
+                toolResultContent: "internal async launch metadata"
+              }
+            }
+          ]}
+          running
+          subagents={[subagent]}
+          onOpenSubagent={() => undefined}
+        />
+      </TooltipProvider>
+    )
+
+    expect(html).toContain('data-subagent-link="true"')
+    expect(html).toContain("Delete atomic fox")
+    expect(html).toContain("处理中")
+    expect(html).not.toContain("工具完成")
+    expect(html).not.toContain("internal async launch metadata")
   })
 
   it("keeps the copy affordance on an ordinary final reply", () => {

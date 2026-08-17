@@ -1461,3 +1461,155 @@ describe("reducer.load_transcript filters internal events", () => {
     expect(msg.blocks[0].text).toBe("/frontend-design 优化前端")
   })
 })
+
+describe("reducer async Agent lifecycle", () => {
+  const agentLaunch = () =>
+    event({
+      type: "user",
+      timestamp: "2026-08-17T01:00:00.000Z",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool-1", content: [] }]
+      },
+      toolUseResult: {
+        isAsync: true,
+        status: "async_launched",
+        agentId: "agent-1",
+        description: "Delete atomic fox"
+      }
+    } as never)
+
+  const taskNotification = (type: "queue-operation" | "user") =>
+    event({
+      type,
+      operation: type === "queue-operation" ? "enqueue" : undefined,
+      origin: type === "user" ? { kind: "task-notification" } : undefined,
+      content:
+        type === "queue-operation"
+          ? "<task-notification><task-id>agent-1</task-id><status>completed</status><summary>Agent finished</summary></task-notification>"
+          : undefined,
+      message:
+        type === "user"
+          ? {
+              role: "user",
+              content:
+                "<task-notification><task-id>agent-1</task-id><status>completed</status><summary>Agent finished</summary></task-notification>"
+            }
+          : undefined
+    } as never)
+
+  it("hides foreground result boundaries until Agent notifications are summarized", () => {
+    let s = reduce(init(), {
+      kind: "event",
+      event: agentLaunch()
+    })
+
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        timestamp: "2026-08-17T01:00:30.000Z",
+        message: {
+          id: "waiting-message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "还在等待一个代理。" }]
+        }
+      } as never)
+    })
+    const waitingMessage = s.entries.find(
+      (entry) => entry.kind === "message" && entry.id === "waiting-message"
+    )
+    expect(waitingMessage).toMatchObject({ backgroundActivity: true })
+
+    s = reduce(s, {
+      kind: "event",
+      event: event({ type: "result", subtype: "success", num_turns: 19 })
+    })
+    expect(s.entries.some((entry) => entry.kind === "result")).toBe(false)
+    expect(s.subagents.cycleActive).toBe(true)
+
+    s = reduce(s, { kind: "event", event: taskNotification("queue-operation") })
+    s = reduce(s, { kind: "event", event: taskNotification("user") })
+    s = reduce(s, {
+      kind: "event",
+      event: event({
+        type: "assistant",
+        timestamp: "2026-08-17T01:02:30.000Z",
+        message: {
+          id: "final-message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "最终总结" }]
+        }
+      } as never)
+    })
+    const finalMessage = s.entries.find(
+      (entry) => entry.kind === "message" && entry.id === "final-message"
+    )
+    expect(finalMessage).toMatchObject({ backgroundActivity: undefined })
+    s = reduce(s, {
+      kind: "event",
+      event: event({ type: "result", subtype: "success", result: "最终总结" })
+    })
+    const results = s.entries.filter((entry) => entry.kind === "result")
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({ result: "最终总结" })
+    expect(s.subagents.cycleActive).toBe(false)
+    expect(s.subagents.agents[0]).toMatchObject({
+      description: "Delete atomic fox",
+      status: "completed"
+    })
+  })
+
+  it("reconstructs the same Agent lifecycle from transcript replay", () => {
+    const state = reduce(init(), {
+      kind: "load_transcript",
+      events: [
+        agentLaunch(),
+        event({
+          type: "assistant",
+          timestamp: "2026-08-17T01:00:30.000Z",
+          message: {
+            id: "historical-waiting",
+            role: "assistant",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: "等待子智能体完成。" }]
+          }
+        } as never),
+        taskNotification("queue-operation"),
+        taskNotification("user"),
+        event({
+          type: "assistant",
+          timestamp: "2026-08-17T01:03:30.000Z",
+          message: {
+            id: "historical-final",
+            role: "assistant",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: "最终答复" }]
+          }
+        } as never)
+      ]
+    })
+
+    expect(state.entries.some((entry) => entry.kind === "unknown")).toBe(false)
+    expect(state.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "message",
+          id: "historical-waiting",
+          backgroundActivity: true
+        }),
+        expect.objectContaining({
+          kind: "message",
+          id: "historical-final",
+          backgroundActivity: undefined
+        })
+      ])
+    )
+    expect(state.subagents.agents[0]).toMatchObject({
+      id: "agent-1",
+      status: "completed"
+    })
+  })
+})

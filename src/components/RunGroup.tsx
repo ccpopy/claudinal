@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { ChevronDown, Loader2 } from "lucide-react"
+import type { SubagentTask } from "@/lib/subagents"
 import { cn, formatRunDuration } from "@/lib/utils"
 import type { UIBlock } from "@/types/ui"
 import { BlockView } from "./MessageBlocks"
@@ -16,6 +17,9 @@ interface Props {
   durationMs?: number
   startTs?: number
   endTs?: number
+  pendingSubagentCount?: number
+  subagents?: SubagentTask[]
+  onOpenSubagent?: (agentId: string) => void
 }
 
 function computeRunMs(
@@ -35,7 +39,10 @@ export function RunGroup({
   cwd,
   durationMs,
   startTs,
-  endTs
+  endTs,
+  pendingSubagentCount = 0,
+  subagents = [],
+  onOpenSubagent
 }: Props) {
   const [open, setOpen] = useState<boolean>(running)
   const wasRunning = useRef<boolean>(running)
@@ -53,7 +60,24 @@ export function RunGroup({
     return () => window.clearInterval(id)
   }, [running])
 
-  const hasSteps = steps.length > 0
+  const subagentByToolUseId = new Map(
+    subagents.flatMap((agent) =>
+      agent.toolUseId ? ([[agent.toolUseId, agent]] as const) : []
+    )
+  )
+  // Agent launch metadata is emitted as a tool_result immediately after the
+  // Agent tool_use. Once the lifecycle is known, the named Agent link is the
+  // useful representation; showing the internal metadata as another generic
+  // "工具完成" row only adds noise.
+  const visibleSteps = steps.filter(
+    (step) =>
+      !(
+        step.block.type === "tool_result" &&
+        step.block.toolUseId &&
+        subagentByToolUseId.has(step.block.toolUseId)
+      )
+  )
+  const hasSteps = visibleSteps.length > 0
   if (!hasSteps && !running) return null
 
   // 时长口径：优先 result.duration_ms（CLI 全程墙钟，含 TTFT 与末尾 text）；
@@ -64,11 +88,15 @@ export function RunGroup({
       : computeRunMs(startTs, endTs, running, Date.now())
 
   const hasTime = total > 0
-  const stepInfo = hasSteps ? ` · ${steps.length} 步` : ""
+  const stepInfo = hasSteps ? ` · ${visibleSteps.length} 步` : ""
+  const subagentInfo =
+    running && pendingSubagentCount > 0
+      ? ` · ${pendingSubagentCount} 个子智能体`
+      : ""
   const label = running
     ? hasTime
-      ? `处理中… ${formatRunDuration(total, running)}${stepInfo}`
-      : "处理中…"
+      ? `处理中… ${formatRunDuration(total, running)}${stepInfo}${subagentInfo}`
+      : `处理中…${subagentInfo}`
     : hasTime
       ? `已处理 ${formatRunDuration(total, running)}${stepInfo}`
       : `已处理${stepInfo || ""}`
@@ -89,15 +117,22 @@ export function RunGroup({
                 open && "py-1.5"
               )}
             >
-              {steps.map((s) => (
-                <BlockView
-                  key={s.key}
-                  role="assistant"
-                  block={s.block}
-                  variant="activity"
-                  cwd={cwd}
-                />
-              ))}
+              {visibleSteps.map((s) => {
+                const subagent = s.block.toolUseId
+                  ? subagentByToolUseId.get(s.block.toolUseId)
+                  : undefined
+                return (
+                  <BlockView
+                    key={s.key}
+                    role="assistant"
+                    block={s.block}
+                    variant="activity"
+                    cwd={cwd}
+                    subagent={subagent}
+                    onOpenSubagent={onOpenSubagent}
+                  />
+                )
+              })}
             </div>
           </div>
         </div>

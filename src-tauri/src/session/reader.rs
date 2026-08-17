@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -20,6 +20,35 @@ pub struct SessionMeta {
     pub msg_count: usize,
     pub ai_title: Option<String>,
     pub first_user_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentTranscriptChunk {
+    pub events: Vec<serde_json::Value>,
+    pub next_offset: u64,
+    pub file_size: u64,
+    pub truncated: bool,
+    pub reset: bool,
+    pub available: bool,
+}
+
+const MAX_SUBAGENT_CHUNK_BYTES: u64 = 512 * 1024;
+const MAX_SUBAGENT_JSONL_LINE_BYTES: usize = 4 * 1024 * 1024;
+
+fn discard_until_newline<R: BufRead>(reader: &mut R) -> std::io::Result<()> {
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        if let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
+            reader.consume(index + 1);
+            return Ok(());
+        }
+        let length = buffer.len();
+        reader.consume(length);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +161,18 @@ fn validate_session_id(session_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_agent_id(agent_id: &str) -> Result<()> {
+    if agent_id.is_empty()
+        || agent_id.len() > 128
+        || !agent_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(Error::Other(format!("invalid agent id: {agent_id}")));
+    }
+    Ok(())
+}
+
 fn session_jsonl_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     validate_session_id(session_id)?;
     let mut best: Option<(u64, PathBuf)> = None;
@@ -160,6 +201,18 @@ fn session_jsonl_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     Err(Error::Other(format!(
         "transcript not found for session: {session_id}"
     )))
+}
+
+fn subagent_jsonl_path(cwd: &str, session_id: &str, agent_id: &str) -> Result<PathBuf> {
+    validate_agent_id(agent_id)?;
+    let session_path = session_jsonl_path(cwd, session_id)?;
+    let parent = session_path
+        .parent()
+        .ok_or_else(|| Error::Other("session transcript has no parent directory".into()))?;
+    Ok(parent
+        .join(session_id)
+        .join("subagents")
+        .join(format!("agent-{agent_id}.jsonl")))
 }
 
 pub(crate) fn session_file_meta(path: &Path) -> Result<Option<SessionFileMeta>> {
@@ -728,9 +781,210 @@ pub fn read_session_transcript(cwd: &str, session_id: &str) -> Result<Vec<serde_
     Ok(out)
 }
 
+fn read_subagent_jsonl_chunk_at_path(
+    path: &Path,
+    requested_offset: u64,
+    requested_max_bytes: u64,
+) -> Result<SubagentTranscriptChunk> {
+    if !path.is_file() {
+        return Ok(SubagentTranscriptChunk {
+            events: Vec::new(),
+            next_offset: 0,
+            file_size: 0,
+            truncated: false,
+            reset: requested_offset > 0,
+            available: false,
+        });
+    }
+
+    let initial_size = std::fs::metadata(path)?.len();
+    let reset = requested_offset > initial_size;
+    let mut offset = if reset { 0 } else { requested_offset };
+    let limit = requested_max_bytes.clamp(16 * 1024, MAX_SUBAGENT_CHUNK_BYTES);
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+
+    // Returned offsets always point to a JSONL boundary. Align arbitrary or
+    // stale callers to the next complete line instead of parsing a fragment.
+    if offset > 0 {
+        reader.seek(SeekFrom::Start(offset - 1))?;
+        let mut previous = [0_u8; 1];
+        reader.read_exact(&mut previous)?;
+        if previous[0] != b'\n' {
+            let mut discarded = Vec::new();
+            reader.read_until(b'\n', &mut discarded)?;
+            offset = reader.stream_position()?;
+        } else {
+            reader.seek(SeekFrom::Start(offset))?;
+        }
+    }
+
+    let chunk_start = offset;
+    let mut next_offset = offset;
+    let mut events = Vec::new();
+    let mut waiting_for_complete_line = false;
+    loop {
+        let line_start = reader.stream_position()?;
+        if line_start > chunk_start && line_start.saturating_sub(chunk_start) >= limit {
+            break;
+        }
+        let mut line = Vec::new();
+        let read = reader
+            .by_ref()
+            .take((MAX_SUBAGENT_JSONL_LINE_BYTES + 1) as u64)
+            .read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        if read > MAX_SUBAGENT_JSONL_LINE_BYTES {
+            if !line.ends_with(b"\n") {
+                discard_until_newline(&mut reader)?;
+            }
+            next_offset = reader.stream_position()?;
+            continue;
+        }
+        let line_end = reader.stream_position()?;
+        let complete_line = line.ends_with(b"\n");
+        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+            next_offset = line_end;
+            continue;
+        }
+        match serde_json::from_slice::<serde_json::Value>(&line) {
+            Ok(value) => {
+                events.push(value);
+                next_offset = line_end;
+            }
+            Err(_) if !complete_line => {
+                reader.seek(SeekFrom::Start(line_start))?;
+                next_offset = line_start;
+                waiting_for_complete_line = true;
+                break;
+            }
+            Err(_) => {
+                // Match the main reader: one malformed complete record should
+                // not hide later valid transcript events.
+                next_offset = line_end;
+            }
+        }
+    }
+
+    let file_size = std::fs::metadata(path)?.len();
+    Ok(SubagentTranscriptChunk {
+        events,
+        next_offset,
+        file_size,
+        truncated: !waiting_for_complete_line && next_offset < file_size,
+        reset,
+        available: true,
+    })
+}
+
+pub fn read_subagent_transcript_chunk(
+    cwd: &str,
+    session_id: &str,
+    agent_id: &str,
+    offset: u64,
+    max_bytes: u64,
+) -> Result<SubagentTranscriptChunk> {
+    let path = subagent_jsonl_path(cwd, session_id, agent_id)?;
+    read_subagent_jsonl_chunk_at_path(&path, offset, max_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subagent_chunk_reader_is_incremental_and_waits_for_complete_jsonl() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-subagent-chunk-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("agent-test.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n{\"type\":",
+        )?;
+
+        let first = read_subagent_jsonl_chunk_at_path(&path, 0, 16 * 1024)?;
+        assert_eq!(first.events.len(), 2);
+        assert!(!first.truncated);
+        let incomplete_offset = first.next_offset;
+
+        std::fs::write(
+            &path,
+            "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n{\"type\":\"result\"}\n",
+        )?;
+        let second = read_subagent_jsonl_chunk_at_path(&path, incomplete_offset, 16 * 1024)?;
+        assert_eq!(second.events.len(), 1);
+        assert_eq!(second.events[0]["type"], "result");
+        assert!(!second.truncated);
+
+        let reset = read_subagent_jsonl_chunk_at_path(&path, u64::MAX, 16 * 1024)?;
+        assert!(reset.reset);
+        assert_eq!(reset.events.len(), 3);
+        std::fs::remove_dir_all(dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn subagent_chunk_reader_tolerates_partial_utf8_and_bounds_malformed_input() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-subagent-chunk-utf8-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("agent-test.jsonl");
+        let mut partial = b"{\"type\":\"user\"}\n{\"type\":\"assistant\",\"text\":\"".to_vec();
+        partial.push(0xe4);
+        std::fs::write(&path, partial)?;
+
+        let first = read_subagent_jsonl_chunk_at_path(&path, 0, 16 * 1024)?;
+        assert_eq!(first.events.len(), 1);
+        assert!(!first.truncated);
+
+        std::fs::write(
+            &path,
+            "{\"type\":\"user\"}\n{\"type\":\"assistant\",\"text\":\"中文\"}\n",
+        )?;
+        let completed = read_subagent_jsonl_chunk_at_path(&path, first.next_offset, 16 * 1024)?;
+        assert_eq!(completed.events.len(), 1);
+        assert_eq!(completed.events[0]["text"], "中文");
+
+        let malformed = (0..20)
+            .map(|_| format!("{{not-json:{}}}\n", "x".repeat(2048)))
+            .collect::<String>();
+        std::fs::write(&path, malformed.as_bytes())?;
+        let bounded = read_subagent_jsonl_chunk_at_path(&path, 0, 16 * 1024)?;
+        assert!(bounded.events.is_empty());
+        assert!(bounded.truncated);
+        assert!(bounded.next_offset < bounded.file_size);
+
+        let oversized = format!(
+            "{{\"text\":\"{}\"}}\n{{\"type\":\"result\"}}\n",
+            "x".repeat(MAX_SUBAGENT_JSONL_LINE_BYTES)
+        );
+        std::fs::write(&path, oversized.as_bytes())?;
+        let skipped = read_subagent_jsonl_chunk_at_path(&path, 0, 16 * 1024)?;
+        assert!(skipped.events.is_empty());
+        assert!(skipped.truncated);
+        let after_oversized =
+            read_subagent_jsonl_chunk_at_path(&path, skipped.next_offset, 16 * 1024)?;
+        assert_eq!(after_oversized.events.len(), 1);
+        assert_eq!(after_oversized.events[0]["type"], "result");
+
+        std::fs::remove_dir_all(dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn subagent_id_validation_rejects_path_escape() {
+        assert!(validate_agent_id("agent_123-abc").is_ok());
+        assert!(validate_agent_id("../escape").is_err());
+        assert!(validate_agent_id("nested\\escape").is_err());
+        assert!(validate_agent_id("").is_err());
+    }
 
     #[test]
     fn title_candidate_rejects_internal_command_payload() {

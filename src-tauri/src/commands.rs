@@ -14,12 +14,13 @@ use crate::session::{
     delete_session_jsonl as delete_jsonl_inner, list_project_sessions as list_sessions_inner,
     list_recent_sessions_all as list_all_inner, patch_session_sidecar as patch_sidecar_inner,
     read_session_sidecar as read_sidecar_inner, read_session_transcript as read_transcript_inner,
+    read_subagent_transcript_chunk as read_subagent_transcript_chunk_inner,
     rebuild_session_index as rebuild_index_inner, scan_activity_heatmap as scan_heatmap_inner,
     scan_all_usage_sidecars as scan_usage_inner, search_sessions as search_sessions_inner,
     session_index_diagnostics as index_diagnostics_inner,
     truncate_session_transcript as truncate_transcript_inner,
     write_session_sidecar as write_sidecar_inner, ActivityCell, GlobalSessionMeta, GlobalUsage,
-    SessionIndexDiagnostics, SessionMeta, SessionSearchHit, WatcherState,
+    SessionIndexDiagnostics, SessionMeta, SessionSearchHit, SubagentTranscriptChunk, WatcherState,
 };
 
 const MIN_SUPPORTED_CLAUDE_CLI_VERSION: &str = "2.1.123";
@@ -4373,6 +4374,23 @@ prunable gitdir file points to non-existent location
 #[tauri::command]
 pub async fn read_session_transcript(cwd: String, session_id: String) -> Result<Vec<Value>> {
     read_transcript_inner(&cwd, &session_id)
+}
+
+#[tauri::command]
+pub async fn read_subagent_transcript_chunk(
+    cwd: String,
+    session_id: String,
+    agent_id: String,
+    offset: Option<u64>,
+    max_bytes: Option<u64>,
+) -> Result<SubagentTranscriptChunk> {
+    read_subagent_transcript_chunk_inner(
+        &cwd,
+        &session_id,
+        &agent_id,
+        offset.unwrap_or(0),
+        max_bytes.unwrap_or(256 * 1024),
+    )
 }
 
 #[tauri::command]

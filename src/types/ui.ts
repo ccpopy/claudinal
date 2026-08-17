@@ -61,6 +61,8 @@ export interface UIMessage {
   model?: string
   usage?: Record<string, unknown>
   stopReason?: string | null
+  /** 异步 Agent 尚未齐备时的 end_turn 文本属于运行进度，不是最终回复。 */
+  backgroundActivity?: boolean
   streaming: boolean
   delivery?: "guide"
   /** CLI 标记的 API 错误消息（isApiErrorMessage）：按错误卡片渲染而非普通 markdown */

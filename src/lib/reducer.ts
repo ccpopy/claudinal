@@ -1,12 +1,21 @@
 import type { ClaudeEvent, ContentBlock } from "../types/events"
 import type { UIBlock, UIEntry, UIMessage } from "../types/ui"
 import { splitUploadedFileText } from "./fileAttachments"
+import {
+  initSubagentRegistry,
+  reduceSubagentRegistry,
+  subagentCycleReadyForFinal,
+  truncateSubagentRegistry,
+  type SubagentRegistry,
+  type SubagentResultDisposition
+} from "./subagents"
 
 export interface State {
   entries: UIEntry[]
   hiddenStream?: boolean
   /** 已隐藏中断协议消息，等待对应 result 到达并归一成 interrupted。 */
   pendingInterruption: boolean
+  subagents: SubagentRegistry
 }
 
 export type Action =
@@ -24,7 +33,11 @@ export type Action =
   | { kind: "reset" }
 
 export function init(): State {
-  return { entries: [], pendingInterruption: false }
+  return {
+    entries: [],
+    pendingInterruption: false,
+    subagents: initSubagentRegistry()
+  }
 }
 
 export function reduce(state: State, action: Action): State {
@@ -35,10 +48,12 @@ export function reduce(state: State, action: Action): State {
       (entry) => entry.kind === "message" && entry.id === action.messageId
     )
     if (idx < 0) return state
+    const cutoffTs = state.entries[idx]?.ts ?? Date.now()
     return {
       entries: state.entries.slice(0, idx),
       hiddenStream: false,
-      pendingInterruption: false
+      pendingInterruption: false,
+      subagents: truncateSubagentRegistry(state.subagents, cutoffTs)
     }
   }
   if (action.kind === "user_local") {
@@ -62,9 +77,14 @@ export function reduce(state: State, action: Action): State {
     let s: State = init()
     for (const ev of action.events) {
       const t = (ev as { type?: string }).type
+      // queue-operation 本身不进入消息流，但其中的 task-notification
+      // 是异步 Agent 生命周期的权威完成信号，必须先归一后再隐藏。
+      if (t === "queue-operation") {
+        s = reduceEvent(s, ev)
+        continue
+      }
       // 过滤 jsonl 内部事件：queue-operation / attachment / ai-title
       if (
-        t === "queue-operation" ||
         t === "attachment" ||
         t === "ai-title" ||
         t === "deferred_tools_delta" ||
@@ -112,6 +132,11 @@ function parseTs(ev: unknown): number {
 function reduceEvent(state: State, ev: ClaudeEvent): State {
   const ts = parseTs(ev)
   const t = (ev as { type?: string }).type
+  const subagentTransition = reduceSubagentRegistry(state.subagents, ev)
+  if (subagentTransition.changed) {
+    state = { ...state, subagents: subagentTransition.registry }
+  }
+  if (t === "queue-operation") return state
   if (isMetaSkillPromptEvent(ev)) return removeLeakedSkillMetaPrompt(state)
   if (isInterruptionArtifactEvent(state, ev)) {
     return {
@@ -133,7 +158,13 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   if (t === "user") return reduceUser(state, ev as Record<string, unknown>, ts)
   if (t === "attachment")
     return reduceAttachment(state, ev as Record<string, unknown>, ts)
-  if (t === "result") return reduceResult(state, ev as Record<string, unknown>, ts)
+  if (t === "result")
+    return reduceResult(
+      state,
+      ev as Record<string, unknown>,
+      ts,
+      subagentTransition.resultDisposition
+    )
   if (t === "rate_limit_event")
     return reduceRateLimit(state, ev as Record<string, unknown>, ts)
   if (t === "hook_event" || t === "hook")
@@ -337,6 +368,8 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const id = msg.id as string | undefined
   const apiError = ev.isApiErrorMessage === true
+  const backgroundActivity =
+    state.subagents.cycleActive && !subagentCycleReadyForFinal(state.subagents)
   const blocks = convertContentBlocks(msg.content)
   // jsonl 历史路径：用消息 ts 给 thinking/tool_use 块当 startedAt
   for (const b of blocks) {
@@ -360,6 +393,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
       stopReason:
         (msg.stop_reason as string | null | undefined) ?? cur.stopReason ?? null,
       apiError: apiError || cur.apiError,
+      backgroundActivity,
       streaming: cur.streaming
     }
     const next = state.entries.slice()
@@ -375,6 +409,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
     usage: msg.usage as Record<string, unknown> | undefined,
     stopReason: (msg.stop_reason as string | null | undefined) ?? null,
     apiError: apiError || undefined,
+    backgroundActivity: backgroundActivity || undefined,
     streaming: false,
     ts
   }
@@ -742,9 +777,25 @@ export function markInterruptedResult(
   return { ...event, terminal_reason: "interrupted" }
 }
 
-function reduceResult(state: State, ev: Record<string, unknown>, ts: number): State {
+function reduceResult(
+  state: State,
+  ev: Record<string, unknown>,
+  ts: number,
+  disposition: SubagentResultDisposition
+): State {
   // 网关漏发 message_stop 时这里兜底收尾残留 streaming 消息
   const entries = closeStreamingEntries(state.entries, ts)
+  // Claude CLI 的异步 Agent 会让前台 assistant turn 暂时结束并发出 result，
+  // 随后再由 task-notification 唤醒主会话。此时 result 只是等待边界：
+  // 收掉块级流式光标，但不插入“完成”卡，也不切断同一 RunGroup。
+  if (disposition === "intermediate") {
+    return {
+      ...state,
+      entries,
+      hiddenStream: false,
+      pendingInterruption: false
+    }
+  }
   const assistantStopReason = latestAssistantStopReason(entries)
   const eventStopReason = ev.stop_reason as string | undefined
   const stopReason =

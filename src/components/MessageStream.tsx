@@ -10,6 +10,7 @@ import {
 } from "@/lib/chatTimeline"
 import type { ReviewRunDiff } from "@/lib/diff"
 import { matchReviewsToResults } from "@/lib/diff"
+import type { SubagentTask } from "@/lib/subagents"
 import type { UIBlock, UIEntry, UIMessage } from "@/types/ui"
 import { ChatTimelineNav, type ChatTimelineItem } from "./ChatTimelineNav"
 import { MessageCard } from "./MessageCard"
@@ -27,6 +28,9 @@ interface Props {
   onShowDiff?: (review: ReviewRunDiff, path?: string) => void
   retryableMessageIds?: ReadonlySet<string>
   onRetryMessage?: (messageId: string) => void | Promise<void>
+  pendingSubagentCount?: number
+  subagents?: SubagentTask[]
+  onOpenSubagent?: (agentId: string) => void
 }
 
 interface MsgGroup {
@@ -52,6 +56,7 @@ type Group = MsgGroup | RunPlaceholder | EntryGroup
 
 function isProgressAssistantMessage(message: UIMessage): boolean {
   return (
+    message.backgroundActivity === true ||
     message.stopReason === "tool_use" ||
     message.blocks.some((block) => block.type === "tool_use") ||
     (message.streaming && message.stopReason !== "end_turn")
@@ -254,7 +259,10 @@ export function MessageStream({
   reviews = [],
   onShowDiff,
   retryableMessageIds,
-  onRetryMessage
+  onRetryMessage,
+  pendingSubagentCount = 0,
+  subagents = [],
+  onOpenSubagent
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -463,6 +471,9 @@ export function MessageStream({
                 durationMs={g.durationMs}
                 startTs={g.startTs}
                 endTs={g.endTs}
+                pendingSubagentCount={g.running ? pendingSubagentCount : 0}
+                subagents={subagents}
+                onOpenSubagent={onOpenSubagent}
               />
             )
           }

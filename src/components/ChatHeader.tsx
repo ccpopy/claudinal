@@ -10,7 +10,8 @@ import {
   Pencil,
   Pin,
   PinOff,
-  Trash2
+  Trash2,
+  Waypoints
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -44,6 +45,9 @@ interface Props {
   diffCount?: number
   onShowCollabFlow?: () => void
   collabEnabled?: boolean
+  onShowSubagents?: () => void
+  subagentCount?: number
+  runningSubagentCount?: number
 }
 
 export function ChatHeader({
@@ -59,7 +63,10 @@ export function ChatHeader({
   onShowDiff,
   diffCount = 0,
   onShowCollabFlow,
-  collabEnabled = false
+  collabEnabled = false,
+  onShowSubagents,
+  subagentCount = 0,
+  runningSubagentCount = 0
 }: Props) {
   const pinTarget = resumeSessionId ?? jsonlSessionId
   const pinned = pinTarget ? isPinned(project.id, pinTarget) : false
@@ -182,6 +189,37 @@ export function ChatHeader({
         </DropdownMenu>
 
         <div className="ml-auto flex items-center gap-1">
+          {onShowSubagents && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground hover:text-foreground relative"
+                  aria-label="子智能体"
+                  onClick={() => onShowSubagents()}
+                  disabled={subagentCount === 0}
+                >
+                  <Waypoints className="size-4" />
+                  {subagentCount > 0 && (
+                    <span className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full bg-primary text-[9px] font-medium text-primary-foreground">
+                      {subagentCount > 9 ? "9+" : subagentCount}
+                    </span>
+                  )}
+                  {runningSubagentCount > 0 && (
+                    <span className="absolute bottom-0 right-0 size-1.5 rounded-full bg-connected ring-1 ring-background animate-pulse" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {subagentCount === 0
+                  ? "暂无子智能体"
+                  : runningSubagentCount > 0
+                    ? `子智能体（${runningSubagentCount} 个运行中）`
+                    : `子智能体（${subagentCount}）`}
+              </TooltipContent>
+            </Tooltip>
+          )}
           {onShowCollabFlow && (
             <Tooltip>
               <TooltipTrigger asChild>
