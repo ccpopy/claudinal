@@ -160,7 +160,7 @@ export function Statistics() {
             "为不同厂商和模型配置价格参数，统计页将按规则重算成本。规则按组内顺序匹配，命中即停。"
           ) : (
             <>
-              统计桌面端 GUI 中运行的会话。终端直接使用 CLI 的会话不计入。成本按「定价设置」中的规则计算，活跃度按本地时区统计最近 {HEATMAP_DAYS} 天。
+              统计桌面端 GUI 中运行的会话。终端直接使用 CLI 的会话不计入。成本按当前「定价设置」估算，未定价模型不计入；实际费用以供应商账单为准。活跃度按本地时区统计最近 {HEATMAP_DAYS} 天。
             </>
           )
         }
@@ -244,12 +244,12 @@ export function Statistics() {
                 }
               />
               <Stat
-                label="总成本"
-                value={`$${totalCost.toFixed(4)}`}
+                label={unmatchedModels > 0 ? "估算成本（已定价部分）" : "估算成本"}
+                value={unmatchedModels > 0 && unmatchedModels === modelCosts.size ? "—" : `$${totalCost.toFixed(4)}`}
                 hint={
                   unmatchedModels > 0
-                    ? `${unmatchedModels} 个模型未匹配定价规则`
-                    : "按定价设置重算"
+                    ? `${unmatchedModels} 个未定价模型未计入`
+                    : "按当前定价设置重算"
                 }
               />
               <Stat
@@ -314,7 +314,7 @@ export function Statistics() {
                     <thead className="bg-muted/50">
                       <tr>
                         <th className="text-left px-3 py-1.5 font-medium">模型</th>
-                        <th className="text-right px-3 py-1.5 font-medium">成本</th>
+                        <th className="text-right px-3 py-1.5 font-medium">估算成本</th>
                         <th className="text-right px-3 py-1.5 font-medium">输入</th>
                         <th className="text-right px-3 py-1.5 font-medium">输出</th>
                         <th className="text-right px-3 py-1.5 font-medium">缓存命中</th>

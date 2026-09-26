@@ -2,15 +2,15 @@ import { emitSettingsBus } from "@/lib/settingsBus"
 
 // 用户可配置的厂商/模型定价表，用于在 Statistics 重算 cost。
 //
-// 数据来源（2026-05-06 抓取的官方价，单位 USD per 1M tokens）：
-// - Anthropic: https://platform.claude.com/docs/en/docs/about-claude/pricing
+// 数据来源（2026-09-26 核对的官方标准价，单位 USD per 1M tokens）：
+// - Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
 // - OpenAI:    https://developers.openai.com/api/docs/pricing
 // - DeepSeek:  https://api-docs.deepseek.com/quick_start/pricing
 //
 // 匹配语义：组内规则按定义顺序自上而下匹配 model id，命中即停。pattern 使用 glob：
 // `*` 匹配任意字符序列、`?` 匹配单字符，大小写不敏感，需全字匹配（隐式 ^...$）。
-// 这样 `*claude-opus-4.7*` 既能命中 `claude-opus-4.7-20260101`，也能命中
-// `azure/claude-opus-4.7`、`openrouter/anthropic/claude-opus-4.7-thinking`。
+// 预设精确匹配模型版本，同时识别厂商前缀、日期、thinking 和 [1m] 后缀。
+// 自定义规则仍支持 glob；宽泛规则可能同时命中不同子版本。
 
 const KEY = "claudinal.pricing"
 
@@ -23,7 +23,7 @@ export interface PricingRule {
   cacheRead: number
   cacheWrite: number
   // 折扣/加成倍率，最终计费 = 标价 × multiplier。默认 1。
-  // 例：DeepSeek v4-pro 当前 75% 折扣 → 0.25；某厂商加价 10% → 1.1。
+  // 例：DeepSeek 非高峰时段 → 0.5；某厂商加价 10% → 1.1。
   multiplier: number
 }
 
@@ -35,119 +35,120 @@ export interface PricingGroup {
 
 export interface PricingConfig {
   version: 1
+  presetRevision?: string
   groups: PricingGroup[]
+}
+
+export const PRICING_CHECKED_AT = "2026-09-26"
+
+function preset(model: string, input: number, output: number, cacheRead: number, cacheWrite = 0): PricingRule {
+  return { id: `preset-${model.replaceAll(".", "-")}`, pattern: model, input, output, cacheRead, cacheWrite, multiplier: 1 }
 }
 
 export const DEFAULT_PRICING: PricingConfig = {
   version: 1,
+  presetRevision: PRICING_CHECKED_AT,
   groups: [
     {
-      id: "preset-anthropic",
-      name: "Anthropic",
+      id: "preset-anthropic", name: "Anthropic",
+      // Standard global pricing. Cache writes use the 5-minute rate.
+      // Claude 4.6+ uses the same rate across the full 1M context window.
       rules: [
-        // 官方 API id 用连字符版本号（claude-opus-4-7），不是点号；snapshot 形式
-        // 例：claude-opus-4-5-20251101 也能被 *claude-opus-4-5* 命中
-        {
-          id: "preset-claude-opus-4-7",
-          pattern: "*claude-opus-4-7*",
-          input: 5,
-          output: 25,
-          cacheRead: 0.5,
-          cacheWrite: 6.25,
-          multiplier: 1
-        },
-        {
-          id: "preset-claude-opus-4-6",
-          pattern: "*claude-opus-4-6*",
-          input: 5,
-          output: 25,
-          cacheRead: 0.5,
-          cacheWrite: 6.25,
-          multiplier: 1
-        },
-        {
-          id: "preset-claude-sonnet-4-6",
-          pattern: "*claude-sonnet-4-6*",
-          input: 3,
-          output: 15,
-          cacheRead: 0.3,
-          cacheWrite: 3.75,
-          multiplier: 1
-        },
-        {
-          id: "preset-claude-haiku-4-5",
-          pattern: "*claude-haiku-4-5*",
-          input: 1,
-          output: 5,
-          cacheRead: 0.1,
-          cacheWrite: 1.25,
-          multiplier: 1
-        }
-      ]
+        preset("claude-fable-5-1", 10, 50, 0.25, 12.5),
+        preset("claude-fable-5", 10, 50, 1, 12.5),
+        preset("claude-opus-5-5", 4, 20, 0.2, 5),
+        preset("claude-opus-5", 5, 25, 0.5, 6.25),
+        preset("claude-opus-4-8", 5, 25, 0.5, 6.25),
+        preset("claude-opus-4-7", 5, 25, 0.5, 6.25),
+        preset("claude-opus-4-6", 5, 25, 0.5, 6.25),
+        preset("claude-opus-4-5", 5, 25, 0.5, 6.25),
+        preset("claude-sonnet-5", 2, 10, 0.2, 2.5),
+        preset("claude-sonnet-4-6", 3, 15, 0.3, 3.75),
+        preset("claude-sonnet-4-5", 3, 15, 0.3, 3.75),
+        preset("claude-haiku-4-5", 1, 5, 0.1, 1.25),
+        preset("claude-mythos-5-1", 10, 50, 0.25, 12.5),
+        preset("claude-mythos-5", 10, 50, 1, 12.5),
+      ],
     },
     {
-      id: "preset-openai",
-      name: "OpenAI",
-      // OpenAI 官方仅列 input / cached input / output 三档，没有「cache creation」单独计费。
-      // 缓存创建价留 0（不按 input 推断），尊重官方数据。
+      id: "preset-openai", name: "OpenAI",
+      // Standard short-context rates. GPT-5.6 / GPT-6 have explicit cache writes.
+      // Older models without a separate cache-write rate retain zero here.
       rules: [
-        {
-          id: "preset-gpt-5-5",
-          pattern: "*gpt-5.5*",
-          input: 5,
-          output: 30,
-          cacheRead: 0.5,
-          cacheWrite: 0,
-          multiplier: 1
-        },
-        // mini 必须排在 *gpt-5.4* 之前，否则会被 *gpt-5.4* 先命中按错价计算
-        {
-          id: "preset-gpt-5-4-mini",
-          pattern: "*gpt-5.4-mini*",
-          input: 0.75,
-          output: 4.5,
-          cacheRead: 0.075,
-          cacheWrite: 0,
-          multiplier: 1
-        },
-        {
-          id: "preset-gpt-5-4",
-          pattern: "*gpt-5.4*",
-          input: 2.5,
-          output: 15,
-          cacheRead: 0.25,
-          cacheWrite: 0,
-          multiplier: 1
-        }
-      ]
+        preset("gpt-6-astra", 10, 50, 1, 12.5),
+        preset("gpt-6-sol", 2, 10, 0.2, 2.5),
+        preset("gpt-6-luna", 0.1, 0.5, 0.01, 0.125),
+        preset("gpt-5.6-sol", 4, 20, 0.4, 5),
+        preset("gpt-5.6-terra", 2, 12, 0.2, 2.5),
+        preset("gpt-5.6-luna", 0.2, 1.2, 0.02, 0.25),
+        preset("gpt-5.5-pro", 30, 180, 0),
+        preset("gpt-5.5", 5, 30, 0.5),
+        preset("gpt-5.4-pro", 30, 180, 0),
+        preset("gpt-5.4-mini", 0.75, 4.5, 0.075),
+        preset("gpt-5.4-nano", 0.2, 1.25, 0.02),
+        preset("gpt-5.4", 2.5, 15, 0.25),
+        preset("gpt-5.3-codex", 1.75, 14, 0.175),
+      ],
     },
     {
-      id: "preset-deepseek",
-      name: "DeepSeek",
-      // DeepSeek 官方仅列 input(cache miss) / input(cache hit) / output 三档，
-      // 没有「cache creation」单独计费；标价填 cache miss，cacheWrite 留 0。
+      id: "preset-deepseek", name: "DeepSeek",
+      // Peak rates. Off-peak is 0.5x; aggregate usage cannot determine the split.
+      // Both legacy Flash aliases now route to V4.1-Flash at the Flash price.
       rules: [
-        {
-          id: "preset-deepseek-v4-flash",
-          pattern: "*deepseek-v4-flash*",
-          input: 0.14,
-          output: 0.28,
-          cacheRead: 0.0028,
-          cacheWrite: 0,
-          multiplier: 1
-        },
-        {
-          id: "preset-deepseek-v4-pro",
-          pattern: "*deepseek-v4-pro*",
-          input: 1.74,
-          output: 3.48,
-          cacheRead: 0.0145,
-          cacheWrite: 0,
-          multiplier: 1
-        }
-      ]
+        preset("deepseek-flash", 0.3, 1.2, 0.006),
+        preset("deepseek-v4-flash-vision-exp", 0.3, 1.2, 0.006),
+        preset("deepseek-v4-flash", 0.3, 1.2, 0.006),
+        preset("deepseek-v4-pro", 1.32, 3.96, 0.044),
+      ],
+    },
+  ],
+}
+
+// Exact old values identify untouched defaults; user prices/patterns/order win.
+const LEGACY_PRESETS = [
+  preset("claude-opus-4-7", 5, 25, 0.5, 6.25),
+  preset("claude-opus-4-6", 5, 25, 0.5, 6.25),
+  preset("claude-sonnet-4-6", 3, 15, 0.3, 3.75),
+  preset("claude-haiku-4-5", 1, 5, 0.1, 1.25),
+  preset("gpt-5.5", 5, 30, 0.5),
+  preset("gpt-5.4-mini", 0.75, 4.5, 0.075),
+  preset("gpt-5.4", 2.5, 15, 0.25),
+  preset("deepseek-v4-flash", 0.14, 0.28, 0.0028),
+  preset("deepseek-v4-pro", 1.74, 3.48, 0.0145),
+].map((rule) => ({ ...rule, pattern: `*${rule.pattern}*` }))
+
+function samePriceRule(a: PricingRule, b: PricingRule): boolean {
+  return a.id === b.id && a.pattern === b.pattern && a.input === b.input
+    && a.output === b.output && a.cacheRead === b.cacheRead
+    && a.cacheWrite === b.cacheWrite && a.multiplier === b.multiplier
+}
+
+/** Migrate only shipped defaults. Deliberately deleted groups/rules stay deleted. */
+export function migratePricing(config: PricingConfig): PricingConfig {
+  if (config.presetRevision === PRICING_CHECKED_AT) return config
+  const latestRules = DEFAULT_PRICING.groups.flatMap((group) => group.rules)
+  const next: PricingConfig = {
+    ...config, presetRevision: PRICING_CHECKED_AT,
+    groups: config.groups.map((group) => ({
+      ...group,
+      rules: group.rules.map((rule) => {
+        const old = LEGACY_PRESETS.find((preset) => samePriceRule(rule, preset))
+        return old ? { ...latestRules.find((preset) => preset.id === old.id)! } : { ...rule }
+      }),
+    })),
+  }
+  for (const group of next.groups) {
+    const presetGroup = DEFAULT_PRICING.groups.find((preset) => preset.id === group.id)
+    if (!presetGroup) continue
+    for (const rule of presetGroup.rules) {
+      if (LEGACY_PRESETS.some((old) => old.id === rule.id)) continue
+      if (next.groups.some((existing) => existing.rules.some((existingRule) => existingRule.id === rule.id))) continue
+      // Respect existing custom rules, including a catch-all in another group.
+      if (findRule(rule.pattern, next)) continue
+      group.rules.push({ ...rule })
     }
-  ]
+  }
+  return next
 }
 
 export function makePricingId(): string {
@@ -203,13 +204,20 @@ export function loadPricing(): PricingConfig {
       Array.isArray((obj as PricingConfig).groups) &&
       (obj as PricingConfig).groups.every(isPricingGroup)
     ) {
-      return {
+      const normalized: PricingConfig = {
         version: 1,
+        presetRevision: (obj as PricingConfig).presetRevision,
         groups: (obj as PricingConfig).groups.map((g) => ({
           ...g,
           rules: g.rules.map(normalizeRule)
         }))
       }
+      const migrated = migratePricing(normalized)
+      if (migrated !== normalized) {
+        try { localStorage.setItem(KEY, JSON.stringify(migrated)) }
+        catch (error) { console.warn("默认定价迁移暂未保存，当前配置仍可使用", error) }
+      }
+      return migrated
     }
     console.error("定价配置格式无效，已使用默认定价")
   } catch (error) {
@@ -250,13 +258,19 @@ export interface RuleMatch {
   groupName: string
 }
 
+/** Context capacity is not a billable tier. Keep version variants distinct. */
+export function pricingModelId(modelId: string): string {
+  return modelId.trim().split("/").at(-1)!.replace(/\[1m\]$/i, "")
+    .replace(/-thinking$/i, "").replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "")
+}
+
 export function findRule(modelId: string, cfg: PricingConfig): RuleMatch | null {
   if (!modelId) return null
   for (const group of cfg.groups) {
     for (const rule of group.rules) {
       const re = compileGlob(rule.pattern)
       if (!re) continue
-      if (re.test(modelId)) {
+      if (re.test(modelId) || re.test(pricingModelId(modelId))) {
         return { rule, groupId: group.id, groupName: group.name }
       }
     }

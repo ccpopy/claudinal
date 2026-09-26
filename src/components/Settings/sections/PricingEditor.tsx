@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { openExternal } from "@/lib/ipc"
 import {
   loadPricing,
+  PRICING_CHECKED_AT,
   makePricingId,
   resetPricingToDefault,
   savePricing,
@@ -58,7 +59,7 @@ const PRICE_FIELDS: Array<{
 const SOURCE_LINKS: Array<{ name: string; url: string }> = [
   {
     name: "Anthropic",
-    url: "https://platform.claude.com/docs/en/docs/about-claude/pricing"
+    url: "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   {
     name: "OpenAI",
@@ -245,7 +246,7 @@ export function PricingEditor() {
         <section className="rounded-lg border bg-muted/30 p-4 text-xs text-muted-foreground space-y-2">
           <div className="font-medium text-foreground">价格来源</div>
           <div>
-            预设价格于 2026-05-06 从下列官方源校对：
+            预设价格于 {PRICING_CHECKED_AT} 从下列官方源校对，单位为 USD / 1M tokens：
           </div>
           <div className="flex flex-wrap items-center gap-3">
             {SOURCE_LINKS.map((src) => (
@@ -263,10 +264,13 @@ export function PricingEditor() {
             ))}
           </div>
           <div>
-            OpenAI / DeepSeek 官方价格表均无「缓存创建」单独计费维度，预设留 0；如代理厂商对该维度另收费，可手动填入。
+            Anthropic 使用标准全球价格，缓存创建按 5 分钟计费；Claude 4.6 及更新模型的 [1m] 标记不会额外加价。OpenAI 使用 Standard 短上下文价格，GPT-5.6 / GPT-6 已包含官方缓存创建价格。
           </div>
           <div>
-            DeepSeek 价格按官方标价（cache miss）填充；如遇限时优惠或代理加价，可自行调整「倍率」。倍率默认 1，最终计费 = 标价 × 倍率。
+            DeepSeek 使用高峰价格，非高峰价格为其一半；若用量均来自非高峰时段，可将倍率设为 0.5。无单独缓存创建价格的模型预设为 0；代理另收费时可手动调整。
+          </div>
+          <div>
+            统计按当前规则估算历史用量，无法从汇总数据区分长上下文、快速模式、区域加价或 1 小时缓存，也不会还原历史价格。GPT-5.6 Sol 当前为官方优惠价，至少持续至 2026-11-21；实际费用以供应商账单为准。
           </div>
         </section>
       </div>
@@ -382,9 +386,9 @@ function GroupCard({
             />
           ))}
           <div className="text-[11px] text-muted-foreground/70">
-            示例：<code className="font-mono">*claude-opus-4-7*</code> 可命中{" "}
+            示例：<code className="font-mono">claude-opus-4-7</code> 可命中{" "}
             <code className="font-mono">claude-opus-4-7</code>、
-            <code className="font-mono">azure/claude-opus-4-7-20260101</code>。
+            <code className="font-mono">azure/claude-opus-4-7-20260101</code> 及 [1m] 变体。通配符 * 会同时匹配不同子版本，请将特殊规则放在前面。
           </div>
         </div>
       )}
