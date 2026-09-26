@@ -4,14 +4,21 @@ release/
 .vite/
 tsconfig.tsbuildinfo
 *.log
+*.log.*
+claudinal-diagnostics*.json
 logs/
 doc/
 # Test sources and generated verification artifacts stay local.
 *.test.*
 *.spec.*
 tests/
+test/
 __tests__/
 __fixtures__/
+__snapshots__/
+*.snap
+test_*.py
+*_test.rs
 test-results/
 playwright-report/
 coverage/

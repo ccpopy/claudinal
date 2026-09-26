@@ -1,3 +1,4 @@
+import { CliDiagnostics } from "@/components/CliDiagnostics"
 import { useEffect, useRef, useState } from "react"
 import {
   ChevronDown,
@@ -584,6 +585,7 @@ export function General() {
               </Button>
             </div>
             <Separator />
+            <CliDiagnostics />
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-4">
                 <div>

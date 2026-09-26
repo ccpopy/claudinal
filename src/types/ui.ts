@@ -1,3 +1,4 @@
+import type { DeliveryState } from "@/lib/submission"
 export type UIBlockType =
   | "text"
   | "thinking"
@@ -31,11 +32,13 @@ export interface UIBlock {
 }
 
 export interface ImagePayload {
+  order?: number
   data: string
   mime: string
 }
 
 export interface DocumentPayload {
+  order?: number
   data: string
   mime: string
   name: string
@@ -65,6 +68,9 @@ export interface UIMessage {
   backgroundActivity?: boolean
   streaming: boolean
   delivery?: "guide"
+  deliveryState?: DeliveryState
+  transcriptUuid?: string
+  rawText?: string
   /** CLI 标记的 API 错误消息（isApiErrorMessage）：按错误卡片渲染而非普通 markdown */
   apiError?: boolean
   ts: number
@@ -75,6 +81,7 @@ export interface UISystemInit {
   kind: "system_init"
   sessionId?: string
   model?: string
+  requestedModel?: string
   cwd?: string
   permissionMode?: string
   mcpServers: Array<{ name: string; status: string }>

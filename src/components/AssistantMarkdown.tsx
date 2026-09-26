@@ -291,7 +291,7 @@ export function AssistantMarkdown({
   return (
     <div
       className={cn(
-        "max-w-none min-w-0 text-left text-sm font-normal leading-normal text-foreground [line-break:auto] [overflow-wrap:break-word] [text-align:start] [text-wrap:pretty] [word-break:normal]",
+        "[font-family:var(--font-reading)] max-w-none min-w-0 text-left text-sm font-normal leading-normal text-foreground [line-break:auto] [overflow-wrap:break-word] [text-align:start] [text-wrap:pretty] [word-break:normal]",
         variant === "activity" &&
           "text-[13px] leading-relaxed text-muted-foreground [&_h1]:my-0 [&_h1]:text-sm [&_h1]:leading-relaxed [&_h1]:text-muted-foreground [&_h2]:my-0 [&_h2]:text-[13px] [&_h2]:leading-relaxed [&_h2]:text-muted-foreground [&_h3]:my-0 [&_h3]:text-[13px] [&_h3]:leading-relaxed [&_h3]:text-muted-foreground [&_li]:text-[13px] [&_li]:leading-relaxed [&_li]:text-muted-foreground [&_ol]:my-1 [&_ol]:text-[13px] [&_p]:my-0 [&_p]:text-[13px] [&_p]:leading-relaxed [&_p]:text-muted-foreground [&_strong]:text-foreground/80 [&_ul]:my-1 [&_ul]:text-[13px]"
       )}

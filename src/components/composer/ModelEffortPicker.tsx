@@ -60,27 +60,20 @@ export function ModelEffortPicker({
   // 档位来源按 provider 分场景（PR3）：
   // - OpenAI 兼容（openai-chat-completions）：OpenAI reasoning_effort 固定清单（auto + 6 档，
   //   含 none/minimal，无 max、无 ultracode）。OpenAI 无 --help 枚举源，走本地常量。
-  // - 否则（官方直连 / 第三方 anthropic）：claude --help 动态档位 + auto + ultracode sentinel。
+  // - 否则（官方直连 / 第三方 anthropic）：CLI 能力检测返回的原生档位 + auto。
   const baseOrder = buildEffortOrder(availableEffortLevels ?? [])
   const effortPool: EffortLevel[] = openaiCompatibleProvider
     ? ["", ...OPENAI_EFFORT_LEVELS]
     : baseOrder
   const cap = effortLevelsForModel(model, effortPool)
   const supportsEffort = !!cap
-  // ultracode 是 GUI 手动追加的 sentinel（来自 Claude Code "ultracode": true 设置，
-  // 非 claude --help 的 --effort 档位）：仅在官方 / 第三方 anthropic 路径展示；
-  // OpenAI 兼容隐藏（其清单本就不含它）。不进入 buildEffortOrder / effortLevelsForModel(cap)。
-  const visibleEfforts: EffortLevel[] = openaiCompatibleProvider
-    ? effortPool
-    : [...effortPool, "ultracode"]
+  const visibleEfforts = effortPool
   const isUltracode = !openaiCompatibleProvider && effort === "ultracode"
   // 旧会话 sidecar 里可能残留 Claude 的 max；OpenAI 清单不展示 max 项，
   // 但把残留值映射为 xhigh 以正确选中/发送（与 api_proxy.rs::openai_reasoning_effort 的兜底一致）。
   const normalizedEffort =
     openaiCompatibleProvider && effort === "max" ? "xhigh" : effort
-  const safeEffort: EffortLevel = isUltracode
-    ? "ultracode"
-    : cap && cap.available.includes(normalizedEffort as EffortLevel)
+  const safeEffort: EffortLevel = cap && cap.available.includes(normalizedEffort as EffortLevel)
       ? (normalizedEffort as EffortLevel)
       : ""
 
@@ -208,10 +201,7 @@ export function ModelEffortPicker({
         ) : (
           visibleEfforts.map((lvl) => {
             const isUltra = lvl === "ultracode"
-            // ultracode 不在 cap.available 里（它不是 --effort 档位），只要可见即可选
-            const ok = isUltra
-              ? true
-              : cap!.available.includes(lvl) && visibleEfforts.includes(lvl)
+            const ok = cap!.available.includes(lvl)
             // max 与 ultracode 都是会话级、不写 settings.json 的选项
             const sessionOnly = lvl === "max" || isUltra
             return (
@@ -223,7 +213,7 @@ export function ModelEffortPicker({
                   !ok && "opacity-50"
                 )}
                 onSelect={() => {
-                  // 单选互斥：选中 ultracode 即写入 effort sentinel "ultracode"
+                  // Pass through the selected native effort value.
                   if (ok) onChange({ effort: lvl })
                 }}
               >
@@ -274,11 +264,8 @@ export function ModelEffortPicker({
           <div className="mt-1 flex items-start gap-1.5 rounded-lg border border-warn/40 bg-warn/5 px-2.5 py-1.5 text-[11px] leading-snug text-warn">
             <AlertTriangle className="mt-0.5 size-3 shrink-0" />
             <span>
-              ultracode = xhigh + 自动 workflows，仅本次会话生效（resume 时还原）。
-              需 Opus 4.7+ 等支持 xhigh 的模型；第三方需模型支持 xhigh + workflows，
-              否则 CLI 会忽略 / 回退。
-              {/* 注意：第三方若开启「最大思考强度」(CLAUDE_CODE_EFFORT_LEVEL=max)，
-                  该 env 优先级最高，会覆盖此处的 ultracode 选择（见 PR4 的 UI 互斥 TODO）。 */}
+              Ultracode 使用当前 CLI 的原生思考强度，仅对当前会话生效。
+              具体可用性由当前 CLI、模型及提供商配置共同决定。
             </span>
           </div>
         )}

@@ -20,7 +20,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::app_paths::claudinal_dir;
 use crate::error::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub fn db_path() -> Result<PathBuf> {
     Ok(claudinal_dir()?.join("session-index-v1.sqlite3"))
@@ -234,10 +234,8 @@ fn create_or_migrate_schema(conn: &Connection, from_version: i64) -> Result<()> 
         "#,
     )?;
 
-    if from_version < 3 {
-        // Event visibility rules changed in v3 (Claude's synthetic interruption
-        // pair is now internal). Cached counts/titles and FTS rows must be
-        // rebuilt even when the source JSONL metadata itself has not changed.
+    if from_version < 4 {
+        // v4 preserves literal user tags; rebuild derived search/title caches.
         conn.execute_batch(
             r#"
             DELETE FROM session_index;

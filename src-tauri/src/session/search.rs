@@ -13,9 +13,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::reader::{
-    is_internal_command_text, is_internal_generated_event, strip_internal_text_sections,
-};
+use super::reader::is_internal_generated_event;
 
 use crate::error::{Error, Result};
 
@@ -327,9 +325,9 @@ fn extract_message_text(v: &Value) -> Option<String> {
     }
     let content = v.pointer("/message/content")?;
     if let Some(s) = content.as_str() {
-        let cleaned = strip_internal_text_sections(s);
+        let cleaned = s;
         let trimmed = cleaned.trim();
-        if trimmed.is_empty() || is_internal_command_text(trimmed) {
+        if trimmed.is_empty() {
             return None;
         }
         return Some(trimmed.to_string());
@@ -341,9 +339,9 @@ fn extract_message_text(v: &Value) -> Option<String> {
         match kind {
             "text" => {
                 if let Some(s) = c.get("text").and_then(|x| x.as_str()) {
-                    let cleaned = strip_internal_text_sections(s);
+                    let cleaned = s;
                     let trimmed = cleaned.trim();
-                    if trimmed.is_empty() || is_internal_command_text(trimmed) {
+                    if trimmed.is_empty() {
                         continue;
                     }
                     if !buf.is_empty() {
@@ -368,7 +366,7 @@ fn extract_message_text(v: &Value) -> Option<String> {
         }
     }
     let trimmed = buf.trim();
-    if trimmed.is_empty() || is_internal_command_text(trimmed) {
+    if trimmed.is_empty() {
         None
     } else {
         Some(trimmed.to_string())

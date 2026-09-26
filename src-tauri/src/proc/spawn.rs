@@ -1,10 +1,20 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::child_process::hide_std_window;
 use crate::error::{Error, Result};
 
 pub fn find_claude() -> Result<PathBuf> {
+    if let Some(path) = configured_claude_path()? {
+        return if path.is_file() {
+            Ok(path)
+        } else {
+            Err(Error::Other(
+                "固定的 CLI 路径不存在，请检查运行环境设置".into(),
+            ))
+        };
+    }
     for candidate in claude_lookup_candidates() {
         if candidate.is_file() {
             return Ok(candidate);
@@ -12,6 +22,23 @@ pub fn find_claude() -> Result<PathBuf> {
     }
 
     which::which("claude").map_err(Error::from)
+}
+
+pub(crate) fn configured_claude_path() -> Result<Option<PathBuf>> {
+    if let Some(path) = std::env::var_os("CLAUDE_CLI_PATH") {
+        return Ok(Some(PathBuf::from(path)));
+    }
+    let path = crate::app_paths::claudinal_dir()?.join("cli-installation.json");
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(serde_json::from_str::<Option<PathBuf>>(&contents)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn save_claude_path(path: Option<&Path>) -> Result<()> {
+    let target = crate::app_paths::claudinal_dir()?.join("cli-installation.json");
+    crate::fs_atomic::atomic_write_str(&target, &serde_json::to_string(&path)?)
 }
 
 /// 所有用于查找 claude 的候选路径，按优先级排序：
@@ -155,22 +182,38 @@ fn claude_executables_in_dir(dir: &Path) -> Vec<PathBuf> {
 
 /// 探测 `npm config get prefix`，结果用 OnceLock 缓存避免重复 spawn。
 fn npm_global_prefix() -> Option<PathBuf> {
-    static CACHED: OnceLock<Option<PathBuf>> = OnceLock::new();
-    CACHED
-        .get_or_init(|| match resolve_npm_prefix() {
-            Some(prefix) if !prefix.as_os_str().is_empty() => Some(prefix),
-            _ => None,
-        })
-        .clone()
+    static CACHED: OnceLock<Mutex<Option<(Instant, Option<PathBuf>)>>> = OnceLock::new();
+    let mut cached = CACHED.get_or_init(|| Mutex::new(None)).lock().ok()?;
+    if let Some((at, prefix)) = cached.as_ref() {
+        if at.elapsed() < Duration::from_secs(60) {
+            return prefix.clone();
+        }
+    }
+    let prefix = resolve_npm_prefix();
+    *cached = Some((Instant::now(), prefix.clone()));
+    prefix
 }
 
 fn resolve_npm_prefix() -> Option<PathBuf> {
     let mut cmd = npm_prefix_command()?;
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
     hide_std_window(&mut cmd);
-    let output = cmd.output().ok()?;
+    let mut child = cmd.spawn().ok()?;
+    let started = Instant::now();
+    loop {
+        if child.try_wait().ok()?.is_some() {
+            break;
+        }
+        if started.elapsed() >= Duration::from_secs(3) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let output = child.wait_with_output().ok()?;
     if !output.status.success() {
         return None;
     }

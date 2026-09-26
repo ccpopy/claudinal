@@ -1,22 +1,34 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, UNIX_EPOCH};
 
+use super::capabilities::{self, Support};
+use super::diagnostics::{Diagnostics, RuntimeDiagnostics};
+use super::supervisor::{supervise, ProcessTree};
+use super::transport::{read_line, write_frame, WriteFailure, MAX_EVENT_BYTES, MAX_INPUT_BYTES};
 use dashmap::DashMap;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::Mutex;
+use tokio::io::BufReader;
+use tokio::process::{ChildStdin, Command};
+use tokio::sync::{watch, Mutex};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::child_process::{hide_std_window, hide_tokio_window};
-use crate::error::{Error, Result};
-use crate::proc::spawn::find_claude;
+use crate::child_process::hide_tokio_window;
+use crate::error::{DeliveryError, Error, Result};
+use crate::proc::spawn::{
+    claude_lookup_candidates, configured_claude_path, find_claude, save_claude_path,
+};
 
 pub struct SpawnOptions {
+    pub runtime_id: Option<String>,
+    pub fork_session: bool,
+    pub resume_session_at: Option<String>,
     pub cwd: PathBuf,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -31,14 +43,30 @@ pub struct SpawnOptions {
 
 struct Session {
     stdin: Mutex<ChildStdin>,
-    child: Mutex<Child>,
-    runtime_settings_file: Option<PathBuf>,
+    available: AtomicBool,
+    stop: watch::Sender<bool>,
+    done: watch::Receiver<bool>,
+    stop_reason: std::sync::Mutex<Option<String>>,
+    submissions: Mutex<std::collections::HashMap<String, std::result::Result<(), DeliveryError>>>,
+}
+
+impl Session {
+    fn close(&self, reason: &str) {
+        self.available.store(false, Ordering::Release);
+        if let Ok(mut stored) = self.stop_reason.lock() {
+            if stored.is_none() {
+                *stored = Some(reason.into());
+            }
+        }
+        let _ = self.stop.send(true);
+    }
 }
 
 #[derive(Default)]
 pub struct Manager {
-    sessions: DashMap<String, Arc<Session>>,
+    sessions: Arc<DashMap<String, Arc<Session>>>,
     claude_help_cache: DashMap<ClaudeHelpCacheKey, String>,
+    diagnostics: Arc<Diagnostics>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -46,6 +74,7 @@ struct ClaudeHelpCacheKey {
     path: PathBuf,
     size: Option<u64>,
     modified_ms: Option<u128>,
+    version: String,
 }
 
 impl Manager {
@@ -53,24 +82,180 @@ impl Manager {
         Self::default()
     }
 
+    pub fn diagnostics(&self) -> RuntimeDiagnostics {
+        self.diagnostics.snapshot()
+    }
+
+    pub async fn installations(&self) -> Result<capabilities::CliInstallations> {
+        let selected = configured_claude_path()?;
+        let mut candidates = tokio::task::spawn_blocking(claude_lookup_candidates)
+            .await
+            .map_err(|error| Error::Other(error.to_string()))?;
+        if let Some(path) = &selected {
+            if !candidates.contains(path) {
+                candidates.insert(0, path.clone());
+            }
+        }
+        let mut probes = tokio::task::JoinSet::new();
+        for (index, path) in candidates
+            .into_iter()
+            .filter(|path| path.is_file() || Some(path) == selected.as_ref())
+            .take(32)
+            .enumerate()
+        {
+            probes.spawn(async move {
+                let version = claude_version(&path).await.ok().filter(|version| {
+                    capabilities::version_at_least(version, (0, 0, 0)) == Support::Supported
+                });
+                (
+                    index,
+                    capabilities::CliInstallation {
+                        path: path.display().to_string(),
+                        runnable: version.is_some(),
+                        version,
+                    },
+                )
+            });
+        }
+        let mut installations = Vec::new();
+        while let Some(result) = probes.join_next().await {
+            installations.push(result.map_err(|error| Error::Other(error.to_string()))?);
+        }
+        installations.sort_by_key(|(index, _)| *index);
+        Ok(capabilities::CliInstallations {
+            selected_path: selected.map(|path| path.display().to_string()),
+            environment_locked: std::env::var_os("CLAUDE_CLI_PATH").is_some(),
+            installations: installations
+                .into_iter()
+                .map(|(_, installation)| installation)
+                .collect(),
+        })
+    }
+
+    pub async fn select_installation(&self, path: Option<String>) -> Result<()> {
+        if std::env::var_os("CLAUDE_CLI_PATH").is_some() {
+            return Err(Error::Other(
+                "CLI 已由 CLAUDE_CLI_PATH 固定，请先修改该环境变量".into(),
+            ));
+        }
+        if let Some(path) = &path {
+            let installations = self.installations().await?;
+            if !installations
+                .installations
+                .iter()
+                .any(|entry| entry.path == *path && entry.runnable)
+            {
+                return Err(Error::Other("所选 CLI 不可运行，请重新检测安装项".into()));
+            }
+        }
+        save_claude_path(path.as_deref().map(Path::new))?;
+        self.claude_help_cache.clear();
+        Ok(())
+    }
+
     /// 解析当前 Claude CLI `--effort` 支持的档位（复用 `--help` 缓存）。
     /// 失败或解析不到时返回空 Vec，由调用方回退内置清单。
     pub async fn effort_levels(&self) -> Result<Vec<String>> {
-        let claude = find_claude()?;
-        let help = claude_help_cached(&claude, &self.claude_help_cache).await?;
-        Ok(parse_effort_levels(&help))
+        let (claude, version) = resolve_claude().await?;
+        let help = claude_help_cached(&claude, &version, &self.claude_help_cache).await?;
+        let mut levels = parse_effort_levels(&help);
+        if capabilities::version_at_least(&version, (2, 1, 203)) == Support::Supported
+            && !levels.iter().any(|level| level == "ultracode")
+        {
+            levels.push("ultracode".into());
+        }
+        Ok(levels)
     }
 
-    pub async fn spawn(&self, app: AppHandle, opts: SpawnOptions) -> Result<String> {
-        let claude = find_claude()?;
-        ensure_required_claude_flags(&claude, &opts, &self.claude_help_cache).await?;
-        let session_id = Uuid::new_v4().to_string();
+    pub async fn capabilities(&self) -> Result<capabilities::CliCapabilities> {
+        let (claude, version) = resolve_claude().await?;
+        let help = claude_help_cached(&claude, &version, &self.claude_help_cache)
+            .await
+            .unwrap_or_default();
+        Ok(capabilities::detect(&claude, version, &help))
+    }
+
+    pub async fn spawn(&self, app: AppHandle, mut opts: SpawnOptions) -> Result<String> {
+        let runtime = opts
+            .runtime_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        Uuid::parse_str(&runtime).map_err(|_| Error::Other("invalid runtime id".into()))?;
+        opts.runtime_id = Some(runtime.clone());
+        self.diagnostics
+            .record(&runtime, "launch_requested", None, None);
+        let result = self.spawn_inner(app, opts).await;
+        if let Err(error) = &result {
+            let code = match error {
+                Error::Io(error) => error.raw_os_error(),
+                _ => None,
+            };
+            self.diagnostics
+                .record(&runtime, "launch_failed", None, code);
+        }
+        result
+    }
+
+    async fn spawn_inner(&self, app: AppHandle, opts: SpawnOptions) -> Result<String> {
+        let (claude, version) = resolve_claude().await?;
+        self.diagnostics.installation(
+            opts.runtime_id.as_deref().unwrap_or_default(),
+            &claude,
+            &version,
+        );
+        // Missing help entries are unknown, not evidence that core streaming is unsupported.
+        let help = claude_help_cached(&claude, &version, &self.claude_help_cache)
+            .await
+            .unwrap_or_default();
+        if opts.effort.as_deref() == Some("ultracode")
+            && capabilities::version_at_least(&version, (2, 1, 203)) != Support::Supported
+        {
+            return Err(Error::Other(
+                "当前 CLI 尚未确认支持原生 ultracode，请选择其他思考强度".into(),
+            ));
+        }
+        if opts.fork_session
+            && capabilities::detect(&claude, version.clone(), &help).fork_session
+                != Support::Supported
+        {
+            return Err(Error::Other(
+                "当前 CLI 的历史分支能力尚未确认，原会话已保留".into(),
+            ));
+        }
+        let session_id = opts
+            .runtime_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        Uuid::parse_str(&session_id).map_err(|_| Error::Other("invalid runtime id".into()))?;
+        if self.sessions.contains_key(&session_id) {
+            return Err(Error::Other("runtime already exists".into()));
+        }
         let runtime_settings_file = opts
             .settings_json
             .as_deref()
             .map(str::trim)
             .filter(|settings| !settings.is_empty())
-            .map(|settings| write_runtime_claude_settings_file(&session_id, settings))
+            .map(|settings| {
+                write_runtime_claude_settings_file(&session_id, settings).map(|path| {
+                    RuntimeSettings {
+                        path,
+                        session_id: session_id.clone(),
+                    }
+                })
+            })
+            .transpose()?;
+        // JSON goes through a protected file so Windows npm shims never reparse quotes.
+        let runtime_mcp_file = opts
+            .mcp_config
+            .as_deref()
+            .map(|config| {
+                write_runtime_claude_settings_file(&format!("mcp-{session_id}"), config).map(
+                    |path| RuntimeSettings {
+                        path,
+                        session_id: session_id.clone(),
+                    },
+                )
+            })
             .transpose()?;
         let collab_enabled = opts
             .env
@@ -86,8 +271,13 @@ impl Manager {
             .arg("--output-format")
             .arg("stream-json")
             .arg("--include-partial-messages")
-            .arg("--include-hook-events")
             .arg("--verbose");
+        if capabilities::from_help("--include-hook-events", &help) == Support::Supported {
+            cmd.arg("--include-hook-events");
+        }
+        if capabilities::from_help("--replay-user-messages", &help) == Support::Supported {
+            cmd.arg("--replay-user-messages");
+        }
 
         if let Some(model) = &opts.model {
             cmd.arg("--model").arg(model);
@@ -101,11 +291,17 @@ impl Manager {
         if let Some(rid) = &opts.resume_session_id {
             cmd.arg("--resume").arg(rid);
         }
-        if let Some(config) = &opts.mcp_config {
-            cmd.arg("--mcp-config").arg(config);
+        if opts.fork_session {
+            cmd.arg("--fork-session");
+        }
+        if let Some(uuid) = &opts.resume_session_at {
+            cmd.arg("--resume-session-at").arg(uuid);
+        }
+        if let Some(config) = &runtime_mcp_file {
+            cmd.arg("--mcp-config").arg(&config.path);
         }
         if let Some(settings_file) = &runtime_settings_file {
-            cmd.arg("--settings").arg(settings_file);
+            cmd.arg("--settings").arg(&settings_file.path);
         }
         let permission_prompt_tool = opts
             .permission_prompt_tool
@@ -116,6 +312,16 @@ impl Manager {
         cmd.arg("--permission-prompt-tool")
             .arg(permission_prompt_tool);
 
+        let arguments = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let mut cmd = crate::commands::claude_runtime_command(&claude, &arguments)?;
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
         if let Some(env) = &opts.env {
             for (k, v) in env {
                 cmd.env(k, v);
@@ -135,12 +341,11 @@ impl Manager {
 
         hide_tokio_window(&mut cmd);
 
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
+        let mut child = cmd.spawn()?;
+        let tree = match ProcessTree::attach(&child) {
+            Ok(tree) => tree,
             Err(error) => {
-                if let Some(path) = &runtime_settings_file {
-                    cleanup_runtime_settings_file(&session_id, path);
-                }
+                let _ = child.kill().await;
                 return Err(Error::from(error));
             }
         };
@@ -160,17 +365,32 @@ impl Manager {
         let event_topic = format!("claude://session/{}/event", session_id);
         let error_topic = format!("claude://session/{}/error", session_id);
 
-        // stdout reader
-        {
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (done_tx, done_rx) = watch::channel(false);
+        let session = Arc::new(Session {
+            stdin: Mutex::new(stdin),
+            available: AtomicBool::new(true),
+            stop: stop_tx,
+            done: done_rx,
+            stop_reason: std::sync::Mutex::new(None),
+            submissions: Mutex::new(std::collections::HashMap::new()),
+        });
+        self.sessions.insert(session_id.clone(), session.clone());
+        self.diagnostics.record(&session_id, "spawned", None, None);
+
+        // Readers run independently. The supervisor owns Child, so stop never waits for its mutex.
+        let stdout_task = {
             let app = app.clone();
             let topic = event_topic.clone();
             let sid = session_id.clone();
             let cwd = opts.cwd.display().to_string();
-            let runtime_settings_file = runtime_settings_file.clone();
+            let session = session.clone();
+            let diagnostics = self.diagnostics.clone();
             tokio::spawn(async move {
-                let mut reader = BufReader::new(stdout).lines();
+                let mut reader = BufReader::new(stdout);
+                let mut malformed = 0;
                 loop {
-                    match reader.next_line().await {
+                    match read_line(&mut reader, MAX_EVENT_BYTES).await {
                         Ok(Some(line)) => {
                             let trimmed = line.trim();
                             if trimmed.is_empty() {
@@ -186,6 +406,16 @@ impl Manager {
                                         value.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
                                     let uuid =
                                         value.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
+                                    let stage = match (event_type, subtype) {
+                                        ("system", "init") => Some("initialized"),
+                                        ("user", _) => Some("user_acknowledged"),
+                                        ("result", _) => Some("result_received"),
+                                        ("control_request", _) => Some("control_requested"),
+                                        _ => None,
+                                    };
+                                    if let Some(stage) = stage {
+                                        diagnostics.record(&sid, stage, None, None);
+                                    }
                                     debug!(
                                         session = %sid,
                                         event_type,
@@ -217,6 +447,19 @@ impl Manager {
                                         .and_then(Value::as_str)
                                         .is_some_and(|t| t == "control_request")
                                     {
+                                        if value.pointer("/request/subtype").and_then(Value::as_str)
+                                            != Some("can_use_tool")
+                                        {
+                                            diagnostics.record(
+                                                &sid,
+                                                "unknown_control_request",
+                                                None,
+                                                None,
+                                            );
+                                            let _ = app.emit(&topic, json!({"type":"stderr", "line":"CLI 发出了未识别的控制请求，会话已停止；未授予权限。"}));
+                                            session.close("unknown_control_request");
+                                            break;
+                                        }
                                         let mut payload = value.clone();
                                         if let Some(obj) = payload.as_object_mut() {
                                             obj.insert("session_id".into(), json!(sid.clone()));
@@ -237,60 +480,178 @@ impl Manager {
                                     }
                                 }
                                 Err(e) => {
-                                    warn!(session = %sid, "non-json line: {e}, raw: {trimmed}");
-                                    let _ =
-                                        app.emit(&topic, json!({ "type": "raw", "line": trimmed }));
+                                    diagnostics.record(
+                                        &sid,
+                                        "invalid_json",
+                                        Some(trimmed.len()),
+                                        None,
+                                    );
+                                    warn!(session = %sid, bytes = trimmed.len(), "non-json line: {e}");
+                                    malformed += 1;
+                                    if malformed <= 3 {
+                                        let _ = app.emit(&topic, json!({ "type": "stderr", "line": "CLI 输出了无效的 JSON 行，内容未写入日志。" }));
+                                    }
+                                    if malformed >= 10 {
+                                        session.close("invalid_json_output");
+                                        break;
+                                    }
                                 }
                             }
                         }
                         Ok(None) => {
+                            diagnostics.record(&sid, "stdout_closed", None, None);
                             info!(session = %sid, "stdout closed");
                             break;
                         }
                         Err(e) => {
+                            diagnostics.record(&sid, "stdout_read_failed", None, e.raw_os_error());
                             error!(session = %sid, "stdout read error: {e}");
+                            let _ =
+                                app.emit(&topic, json!({"type":"stderr", "line":e.to_string()}));
                             break;
                         }
                     }
                 }
-                if let Some(path) = &runtime_settings_file {
-                    cleanup_runtime_settings_file(&sid, path);
-                }
-            });
-        }
+                // EOF makes the transport unusable even if a child forgot to exit.
+                session.close("stdout_closed");
+            })
+        };
 
-        // stderr reader
-        {
+        let stderr_task = {
             let app = app.clone();
             let topic = error_topic.clone();
             let sid = session_id.clone();
+            let session = session.clone();
+            let diagnostics = self.diagnostics.clone();
             tokio::spawn(async move {
-                let mut reader = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    warn!(session = %sid, "stderr: {line}");
-                    let _ = app.emit(&topic, line);
+                let mut reader = BufReader::new(stderr);
+                let mut emitted_bytes = 0;
+                loop {
+                    match read_line(&mut reader, 64 * 1024).await {
+                        Ok(Some(line)) => {
+                            diagnostics.record(&sid, "stderr_received", Some(line.len()), None);
+                            warn!(session = %sid, bytes = line.len(), "stderr received");
+                            if emitted_bytes < 256 * 1024 {
+                                emitted_bytes += line.len();
+                                let _ = app.emit(&topic, line);
+                                if emitted_bytes >= 256 * 1024 {
+                                    let _ = app.emit(
+                                        &topic,
+                                        "诊断输出已达到显示上限，后续 stderr 继续排空。",
+                                    );
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            diagnostics.record(
+                                &sid,
+                                "stderr_read_failed",
+                                None,
+                                error.raw_os_error(),
+                            );
+                            let _ = app.emit(&topic, format!("CLI stderr 读取失败：{error}"));
+                            session.close("stderr_read_failed");
+                            break;
+                        }
+                    }
                 }
-            });
-        }
-
-        let session = Arc::new(Session {
-            stdin: Mutex::new(stdin),
-            child: Mutex::new(child),
-            runtime_settings_file,
+            })
+        };
+        let sessions = self.sessions.clone();
+        let sid = session_id.clone();
+        let diagnostics = self.diagnostics.clone();
+        tokio::spawn(async move {
+            let status = supervise(child, stop_rx, tree).await;
+            diagnostics.record(
+                &sid,
+                "process_exited",
+                None,
+                status.as_ref().ok().and_then(|status| status.code()),
+            );
+            session.available.store(false, Ordering::Release);
+            sessions.remove(&sid);
+            // Drain final output before publishing exit, preserving result-before-exit ordering.
+            let mut stdout_task = stdout_task;
+            let mut stderr_task = stderr_task;
+            if tokio::time::timeout(Duration::from_secs(2), async {
+                let _ = (&mut stdout_task).await;
+                let _ = (&mut stderr_task).await;
+            })
+            .await
+            .is_err()
+            {
+                stdout_task.abort();
+                stderr_task.abort();
+            }
+            drop(runtime_settings_file);
+            drop(runtime_mcp_file);
+            let _ = app.emit(
+                &format!("claude://session/{sid}/lifecycle"),
+                json!({
+                    "runtimeId": sid, "state":"exited",
+                    "exitCode":status.as_ref().ok().and_then(|s| s.code()),
+                    "reason":status.err().map(|e| e.to_string()).or_else(|| session.stop_reason.lock().ok().and_then(|reason| reason.clone())).unwrap_or_else(|| "process_exit".into())
+                }),
+            );
+            let _ = done_tx.send(true);
         });
-        self.sessions.insert(session_id.clone(), session);
         Ok(session_id)
     }
 
-    pub async fn send(&self, session_id: &str, content_blocks: Value) -> Result<()> {
+    pub async fn send(
+        &self,
+        session_id: &str,
+        content_blocks: Value,
+        client_message_id: Option<String>,
+    ) -> Result<()> {
+        let id = client_message_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        Uuid::parse_str(&id).map_err(|_| Error::Other("invalid client message id".into()))?;
+        let session = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.clone())
+            .ok_or_else(|| {
+                Error::Delivery(DeliveryError {
+                    code: "runtime_closed".into(),
+                    phase: "write".into(),
+                    runtime_id: session_id.into(),
+                    delivery_certainty: "not_sent".into(),
+                    os_error_code: None,
+                    message: "会话已结束，尚未发送".into(),
+                })
+            })?;
+        let mut submissions =
+            tokio::time::timeout(Duration::from_secs(10), session.submissions.lock())
+                .await
+                .map_err(|_| Error::Other("提交队列繁忙，当前输入尚未发送".into()))?;
+        if let Some(result) = submissions.get(&id) {
+            return result.clone().map_err(Error::Delivery);
+        }
+        if submissions.len() >= 10000 {
+            return Err(Error::Other(
+                "runtime submission limit reached; start a new runtime".into(),
+            ));
+        }
         let payload = json!({
             "type": "user",
+            "uuid": id,
             "message": {
                 "role": "user",
                 "content": content_blocks
             }
         });
-        self.write_json_lines(session_id, vec![payload]).await
+        let result = self.write_json_lines(session_id, vec![payload]).await;
+        match &result {
+            Ok(()) => {
+                submissions.insert(id, Ok(()));
+            }
+            Err(Error::Delivery(error)) => {
+                submissions.insert(id, Err(error.clone()));
+            }
+            _ => {}
+        }
+        result
     }
 
     pub async fn send_skill_invocation(
@@ -343,38 +704,110 @@ impl Manager {
     }
 
     async fn write_json_lines(&self, session_id: &str, payloads: Vec<Value>) -> Result<()> {
+        let fail = |certainty: &str, code: &str, message: String, os_error_code| {
+            self.diagnostics
+                .record(session_id, "submission_failed", None, os_error_code);
+            Error::Delivery(DeliveryError {
+                code: code.into(),
+                phase: "write".into(),
+                runtime_id: session_id.into(),
+                delivery_certainty: certainty.into(),
+                os_error_code,
+                message,
+            })
+        };
         let session = self
             .sessions
             .get(session_id)
-            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?
-            .clone();
+            .map(|entry| entry.clone())
+            .ok_or_else(|| {
+                fail(
+                    "not_sent",
+                    "runtime_closed",
+                    "会话进程已结束，输入尚未发送".into(),
+                    None,
+                )
+            })?;
         let mut body = String::new();
         for payload in payloads {
-            let line = serde_json::to_string(&payload)?;
-            debug!(session = %session_id, "stdin <- {} bytes", line.len());
-            body.push_str(&line);
+            body.push_str(&serde_json::to_string(&payload)?);
             body.push('\n');
+            if body.len() > MAX_INPUT_BYTES {
+                return Err(fail(
+                    "not_sent",
+                    "payload_limit",
+                    "输入总量超过 32 MB，请减少附件".into(),
+                    None,
+                ));
+            }
         }
-        let mut stdin = session.stdin.lock().await;
-        stdin.write_all(body.as_bytes()).await?;
-        stdin.flush().await?;
-        Ok(())
+        let mut stdin = tokio::time::timeout(Duration::from_secs(10), session.stdin.lock())
+            .await
+            .map_err(|_| {
+                fail(
+                    "not_sent",
+                    "write_busy",
+                    "发送队列繁忙，输入尚未发送".into(),
+                    None,
+                )
+            })?;
+        if !session.available.load(Ordering::Acquire) {
+            return Err(fail(
+                "not_sent",
+                "runtime_closed",
+                "会话连接已结束，输入尚未发送".into(),
+                None,
+            ));
+        }
+        self.diagnostics
+            .record(session_id, "write_started", Some(body.len()), None);
+        let result = write_frame(&mut *stdin, body.as_bytes(), Duration::from_secs(15)).await;
+        match result {
+            Ok(()) => {
+                self.diagnostics
+                    .record(session_id, "write_completed", Some(body.len()), None);
+                Ok(())
+            }
+            Err(error) => {
+                session.close("write_failed");
+                let (stage, os_error) = match error {
+                    WriteFailure::Io(error) => ("write_failed", error.raw_os_error()),
+                    WriteFailure::TimedOut => ("write_timeout", None),
+                };
+                self.diagnostics.record(session_id, stage, None, os_error);
+                Err(fail(
+                    "unknown",
+                    "write_failed",
+                    "连接在提交期间中断，无法确认是否接收；请先检查会话记录".into(),
+                    os_error,
+                ))
+            }
+        }
     }
 
     pub async fn stop(&self, session_id: &str) -> Result<()> {
-        if let Some((_, session)) = self.sessions.remove(session_id) {
-            let mut child = session.child.lock().await;
-            if let Some(pid) = child.id() {
-                kill_process_tree(pid);
-            }
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            if let Some(path) = &session.runtime_settings_file {
-                cleanup_runtime_settings_file(session_id, path);
-            }
-            info!(session = %session_id, "stopped");
+        self.diagnostics
+            .record(session_id, "stop_requested", None, None);
+        let session = self.sessions.get(session_id).map(|entry| entry.clone());
+        if let Some(session) = session {
+            session.close("stop_requested");
+            let mut done = session.done.clone();
+            tokio::time::timeout(Duration::from_secs(5), done.wait_for(|done| *done))
+                .await
+                .map_err(|_| Error::Other("等待 CLI 退出超时".into()))?
+                .map_err(|_| Error::Other("CLI 监管任务异常结束".into()))?;
         }
         Ok(())
+    }
+}
+
+struct RuntimeSettings {
+    path: PathBuf,
+    session_id: String,
+}
+impl Drop for RuntimeSettings {
+    fn drop(&mut self) {
+        cleanup_runtime_settings_file(&self.session_id, &self.path);
     }
 }
 
@@ -395,7 +828,11 @@ fn write_runtime_claude_settings_file(session_id: &str, settings_json: &str) -> 
     }
 
     let mut file = options.open(&path).map_err(Error::from)?;
-    std::io::Write::write_all(&mut file, settings_json.as_bytes()).map_err(Error::from)?;
+    if let Err(error) = std::io::Write::write_all(&mut file, settings_json.as_bytes()) {
+        drop(file);
+        cleanup_runtime_settings_file(session_id, &path);
+        return Err(Error::from(error));
+    }
     Ok(path)
 }
 
@@ -416,11 +853,37 @@ fn cleanup_runtime_settings_file(session_id: &str, path: &Path) {
 }
 
 /// 复用 `--help` 缓存读取 Claude CLI 帮助文本（按二进制指纹缓存）。
+async fn resolve_claude() -> Result<(PathBuf, String)> {
+    // An explicitly pinned installation must never silently fall back to another binary.
+    if configured_claude_path()?.is_some() {
+        let path = find_claude()?;
+        let version = claude_version(&path).await?;
+        return Ok((path, version));
+    }
+    let candidates = tokio::task::spawn_blocking(claude_lookup_candidates)
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    let mut last_error = None;
+    for path in candidates.into_iter().filter(|path| path.is_file()) {
+        match claude_version(&path).await {
+            Ok(version)
+                if capabilities::version_at_least(&version, (0, 0, 0)) == Support::Supported =>
+            {
+                return Ok((path, version))
+            }
+            Ok(_) => last_error = Some(Error::Other("无法解析 Claude CLI 版本".into())),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or(Error::CliNotFound))
+}
+
 async fn claude_help_cached(
     claude: &Path,
+    version: &str,
     help_cache: &DashMap<ClaudeHelpCacheKey, String>,
 ) -> Result<String> {
-    let cache_key = claude_help_cache_key(claude);
+    let cache_key = claude_help_cache_key(claude, version);
     if let Some(cached) = help_cache.get(&cache_key) {
         return Ok(cached.clone());
     }
@@ -459,69 +922,7 @@ fn parse_effort_levels(help: &str) -> Vec<String> {
         .collect()
 }
 
-async fn ensure_required_claude_flags(
-    claude: &Path,
-    opts: &SpawnOptions,
-    help_cache: &DashMap<ClaudeHelpCacheKey, String>,
-) -> Result<()> {
-    let help = claude_help_cached(claude, help_cache).await?;
-    // --permission-prompt-tool 在 Claude CLI 2.1.x 起从 --help 输出里移除，
-    // 但参数本身仍在用（已实测 2.1.126 直传可正常工作），所以不再做 help 文本检查。
-    let mut required = vec![
-        "--input-format",
-        "--output-format",
-        "--include-partial-messages",
-        "--include-hook-events",
-        "--permission-mode",
-    ];
-    if opts.model.as_deref().is_some_and(|v| !v.trim().is_empty()) {
-        required.push("--model");
-    }
-    if opts.effort.as_deref().is_some_and(|v| !v.trim().is_empty()) {
-        required.push("--effort");
-    }
-    if opts
-        .resume_session_id
-        .as_deref()
-        .is_some_and(|v| !v.trim().is_empty())
-    {
-        required.push("--resume");
-    }
-    if opts
-        .mcp_config
-        .as_deref()
-        .is_some_and(|v| !v.trim().is_empty())
-    {
-        required.push("--mcp-config");
-    }
-    if opts
-        .settings_json
-        .as_deref()
-        .is_some_and(|v| !v.trim().is_empty())
-    {
-        required.push("--settings");
-    }
-
-    let missing: Vec<&str> = required
-        .into_iter()
-        .filter(|flag| !help.contains(flag))
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-
-    let version = claude_version(claude)
-        .await
-        .unwrap_or_else(|err| format!("unknown ({err})"));
-    Err(Error::Other(format!(
-        "当前 Claude CLI 不支持桌面端所需参数：{}。检测到的 Claude CLI：{}，版本：{}。请升级 Claude CLI 后重试（可运行 `claude update` 或重新安装 Claude Code）。",
-        missing.join(", "),
-        claude.display(),
-        version.trim()
-    )))
-}
-
-fn claude_help_cache_key(claude: &Path) -> ClaudeHelpCacheKey {
+fn claude_help_cache_key(claude: &Path, version: &str) -> ClaudeHelpCacheKey {
     let meta = std::fs::metadata(claude).ok();
     let size = meta.as_ref().map(std::fs::Metadata::len);
     let modified_ms = meta
@@ -533,13 +934,13 @@ fn claude_help_cache_key(claude: &Path) -> ClaudeHelpCacheKey {
         path: claude.to_path_buf(),
         size,
         modified_ms,
+        version: version.to_owned(),
     }
 }
 
 async fn claude_help(claude: &Path) -> Result<String> {
-    let mut cmd = Command::new(claude);
-    cmd.arg("--help")
-        .stdin(Stdio::null())
+    let mut cmd = crate::commands::claude_runtime_command(claude, &["--help".into()])?;
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -568,9 +969,8 @@ async fn claude_help(claude: &Path) -> Result<String> {
 }
 
 async fn claude_version(claude: &Path) -> Result<String> {
-    let mut cmd = Command::new(claude);
-    cmd.arg("--version")
-        .stdin(Stdio::null())
+    let mut cmd = crate::commands::claude_runtime_command(claude, &["--version".into()])?;
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -590,20 +990,6 @@ async fn claude_version(claude: &Path) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-
-#[cfg(windows)]
-fn kill_process_tree(pid: u32) {
-    let mut cmd = std::process::Command::new("taskkill");
-    cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    hide_std_window(&mut cmd);
-    let _ = cmd.status();
-}
-
-#[cfg(not(windows))]
-fn kill_process_tree(_pid: u32) {}
 
 #[cfg(test)]
 mod tests {

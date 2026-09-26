@@ -368,6 +368,12 @@ function ModeSection({
           onChange={(v) => onUpdate({ fontUI: v })}
         />
         <FontRow
+          label="助手阅读字体"
+          value={cfg.fontReading}
+          placeholder="跟随 UI 字体"
+          onChange={(v) => onUpdate({ fontReading: v })}
+        />
+        <FontRow
           label="代码字体"
           value={cfg.fontMono}
           placeholder={CLAUDE_FONT_MONO}

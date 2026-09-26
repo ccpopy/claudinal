@@ -5,6 +5,7 @@ export interface AppearanceConfig {
   background?: string
   foreground?: string
   fontUI?: string
+  fontReading?: string
   fontMono?: string
   translucentSidebar?: boolean
   palette?: Partial<Record<PaletteVar, string>>
@@ -17,15 +18,14 @@ export interface Appearance {
 
 const KEY = "claudecli.appearance"
 
-export const CLAUDE_FONT_UI =
+export const CLAUDE_FONT_READING =
   '"Anthropic Serif", ui-serif, Georgia, Cambria, "Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif'
 export const CLAUDE_FONT_MONO =
   '"Anthropic Mono", ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace'
 
-const SANS_CLAUDE_FONT_UI =
+export const CLAUDE_FONT_UI =
   '"Anthropic Sans", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
-const UI_FALLBACK =
-  'ui-serif, Georgia, Cambria, "Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif'
+const UI_FALLBACK = CLAUDE_FONT_UI
 const MONO_FALLBACK =
   'ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace'
 
@@ -135,6 +135,7 @@ const CLAUDE_DEFAULT: Appearance = {
     foreground: "#2d2d2b",
     translucentSidebar: true,
     fontUI: CLAUDE_FONT_UI,
+    fontReading: CLAUDE_FONT_READING,
     fontMono: CLAUDE_FONT_MONO,
     palette: {
       "--card": "oklch(1 0 0)",
@@ -170,6 +171,7 @@ const CLAUDE_DEFAULT: Appearance = {
     foreground: "#f9f9f7",
     translucentSidebar: true,
     fontUI: CLAUDE_FONT_UI,
+    fontReading: CLAUDE_FONT_READING,
     fontMono: CLAUDE_FONT_MONO,
     palette: {
       "--card": "oklch(0.21 0.005 80)",
@@ -365,6 +367,7 @@ function sameConfig(a: AppearanceConfig, b: AppearanceConfig): boolean {
     trimOptional(a.background) === trimOptional(b.background) &&
     trimOptional(a.foreground) === trimOptional(b.foreground) &&
     trimOptional(a.fontUI) === trimOptional(b.fontUI) &&
+    trimOptional(a.fontReading) === trimOptional(b.fontReading) &&
     trimOptional(a.fontMono) === trimOptional(b.fontMono) &&
     !!a.translucentSidebar === !!b.translucentSidebar &&
     samePalette(a.palette, b.palette)
@@ -462,19 +465,15 @@ export function loadAppearance(): Appearance {
         }
       }
     }
-    // 迁移仅针对 Claude 预设：旧版本可能保存了 Sans 版字体栈或留空，
-    // 这里把它们规范成 Serif 默认。其他预设/自定义状态保持原样。
+    // Only migrate the shipped serif UI default. Explicit custom stacks stay unchanged.
     if (colorPresetId === "claude") {
       for (const mode of ["light", "dark"] as const) {
-        const fontUI = merged[mode].fontUI
-        if (!fontUI || fontUI === SANS_CLAUDE_FONT_UI) {
+        if (!merged[mode].fontUI || merged[mode].fontUI === CLAUDE_FONT_READING) {
           merged[mode].fontUI = CLAUDE_FONT_UI
           migrated = true
         }
-        if (!merged[mode].fontMono) {
-          merged[mode].fontMono = CLAUDE_FONT_MONO
-          migrated = true
-        }
+        if (!merged[mode].fontReading) { merged[mode].fontReading = CLAUDE_FONT_READING; migrated = true }
+        if (!merged[mode].fontMono) { merged[mode].fontMono = CLAUDE_FONT_MONO; migrated = true }
       }
     }
     if (migrated) saveAppearance(merged)
@@ -501,6 +500,7 @@ const DYNAMIC_VARS = [
   "--foreground",
   "--font-sans",
   "--font-mono",
+  "--font-reading",
   "--sidebar",
   ...PALETTE_VARS
 ] as const
@@ -525,10 +525,7 @@ function withFallback(stack: string, fallback: string): string {
 export function applyAppearance(theme: "light" | "dark", a: Appearance) {
   const cfg = theme === "dark" ? a.dark : a.light
   const presetId = matchPreset(a)
-  // index.css 根级 --font-sans 写死了 Anthropic Serif，所以即使 cfg.fontUI 为空，
-  // 不主动覆盖就会"看起来还是 Claude"。这里按预设算一组兜底字体，确保切到
-  // Codex / GitHub / 自定义且未填字体时也能回到系统 sans / mono。
-  const fallbackUI = presetId === "claude" ? CLAUDE_FONT_UI : SANS_CLAUDE_FONT_UI
+  const fallbackUI = CLAUDE_FONT_UI
   const fallbackMono = presetId === "claude" ? CLAUDE_FONT_MONO : MONO_FALLBACK
   const root = document.documentElement
   clearDynamic(root)
@@ -549,6 +546,7 @@ export function applyAppearance(theme: "light" | "dark", a: Appearance) {
   }
   const userFontUI = cfg.fontUI?.trim()
   const fontUI = userFontUI ? withFallback(userFontUI, UI_FALLBACK) : fallbackUI
+  root.style.setProperty("--font-reading", cfg.fontReading?.trim() ? withFallback(cfg.fontReading, UI_FALLBACK) : fontUI)
   root.style.setProperty("--font-sans", fontUI)
   root.style.setProperty("font-family", fontUI)
   const userFontMono = cfg.fontMono?.trim()

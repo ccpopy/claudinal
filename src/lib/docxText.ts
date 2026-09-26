@@ -1,4 +1,5 @@
 const WORD_DOCUMENT_PATH = "word/document.xml"
+const MAX_XML_BYTES = 8 * 1024 * 1024
 
 function u16(view: DataView, offset: number): number {
   return view.getUint16(offset, true)
@@ -69,7 +70,22 @@ async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
       const stream = new Blob([input.buffer]).stream().pipeThrough(
         new DecompressionStream(format)
       )
-      return new Uint8Array(await new Response(stream).arrayBuffer())
+      const reader = stream.getReader()
+      const chunks: Uint8Array[] = []
+      let size = 0
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          size += value.byteLength
+          if (size > MAX_XML_BYTES) throw new Error("DOCX 解压后文本超过 8 MB")
+          chunks.push(value)
+        }
+      } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
+      const output = new Uint8Array(size)
+      let offset = 0
+      for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.byteLength }
+      return output
     } catch (error) {
       lastError = error
     }
@@ -103,14 +119,19 @@ async function readZipEntry(
     const name = decoder.decode(bytes.subarray(nameStart, nameStart + fileNameLength))
 
     if (name === targetPath) {
+      if (u32(view, offset + 24) > MAX_XML_BYTES) throw new Error("DOCX 解压后文本超过 8 MB")
       if (u32(view, localHeaderOffset) !== 0x04034b50) {
         throw new Error("DOCX zip local file header is malformed")
       }
       const localNameLength = u16(view, localHeaderOffset + 26)
       const localExtraLength = u16(view, localHeaderOffset + 28)
       const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength
+      if (dataStart + compressedSize > bytes.byteLength) throw new Error("DOCX 内容不完整")
       const compressed = bytes.subarray(dataStart, dataStart + compressedSize)
-      if (method === 0) return compressed
+      if (method === 0) {
+        if (compressed.byteLength > MAX_XML_BYTES) throw new Error("DOCX 文本超过 8 MB")
+        return compressed
+      }
       if (method === 8) return inflateRaw(compressed)
       throw new Error(`Unsupported DOCX zip compression method: ${method}`)
     }

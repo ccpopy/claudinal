@@ -69,22 +69,23 @@ export function matchComposerCommand(
   const m = text.match(/^\/([\w.:-]+)(?=\s|$)/)
   if (!m) return null
   const name = m[1]
-  let hit: string | null = null
-  for (const c of commands) {
-    if (!c) continue
-    if (c === name) {
-      hit = c
-      break
-    }
-    // 作用域命令的末段匹配:"plugin:skill" 允许输入 "/skill"
-    const scopeIdx = c.lastIndexOf(":")
-    if (scopeIdx >= 0 && c.slice(scopeIdx + 1) === name) {
-      hit = c
-      break
-    }
-  }
+  const hit = commands.find((command) => command === name)
   if (!hit) return null
   return { raw: m[0], rest: text.slice(m[0].length), command: hit }
+}
+
+/**
+ * 输入框里要折叠成 chip 的命令前缀：已知命令 + 紧随的一个空白字符。
+ * 只有命令后已出现空白才折叠，避免输入 "/cmd" 时把更长命令名
+ * （如 "/cmd-v2"）的前缀提前吞掉。未命中时返回 ""。
+ */
+export function composerCommandPrefix(
+  text: string,
+  commands: readonly string[]
+): string {
+  const match = matchComposerCommand(text, commands)
+  if (!match || !/^\s/.test(match.rest)) return ""
+  return match.raw + match.rest[0]
 }
 
 /**

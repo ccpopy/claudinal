@@ -1,11 +1,13 @@
-import { useEffect, useState, type WheelEvent } from "react"
-import { Maximize2, Minus, Plus, RefreshCw, X } from "lucide-react"
+import * as Dialog from "@radix-ui/react-dialog"
+import { useEffect, useRef, useState, type WheelEvent } from "react"
+import { ChevronLeft, ChevronRight, Maximize2, Minus, Plus, RefreshCw, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 interface Props {
   open: boolean
   src: string | null
   alt?: string
+  images?: Array<{ src: string; alt?: string }>
   onClose: () => void
 }
 
@@ -18,8 +20,15 @@ function clampZoom(v: number): number {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, v))
 }
 
-export function ImageLightbox({ open, src, alt, onClose }: Props) {
+export function ImageLightbox({ open, src, alt, images, onClose }: Props) {
   const [zoom, setZoom] = useState(1)
+  const [index, setIndex] = useState(0)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
+  const callbacks = useRef({ onClose, count: images?.length ?? 1 })
+  callbacks.current = { onClose, count: images?.length ?? 1 }
+  useEffect(() => { if (open) { setIndex(Math.max(0, images?.findIndex((image) => image.src === src) ?? 0)); setZoom(1) } }, [open, src, images])
+  useEffect(() => { setZoom(1) }, [index])
+  const shown = images?.[index] ?? { src, alt }
 
   useEffect(() => {
     if (!open) return
@@ -28,12 +37,16 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
       if (e.key === "Escape") {
         e.preventDefault()
         e.stopPropagation()
-        onClose()
+        callbacks.current.onClose()
         return
       }
       // 缩放键不抢修饰组合键（Ctrl+0 等留给系统/应用快捷键）
       if (e.ctrlKey || e.metaKey || e.altKey) return
-      if (e.key === "+" || e.key === "=") {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault()
+        e.stopPropagation()
+        setIndex((index) => (index + (e.key === "ArrowRight" ? 1 : -1) + callbacks.current.count) % callbacks.current.count)
+      } else if (e.key === "+" || e.key === "=") {
         e.preventDefault()
         e.stopPropagation()
         setZoom((z) => clampZoom(z + ZOOM_STEP))
@@ -47,14 +60,10 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
         setZoom(1)
       }
     }
-    // capture 阶段注册：灯箱是最顶层模态层但没有焦点陷阱，焦点可能仍留在
-    // 下层（如 Composer textarea，其 React onKeyDown 先于 window 冒泡监听
-    // 执行）。在 capture 阶段抢先消费并阻断传播，保证灯箱打开时按 Esc 只
-    // 关灯箱、不触发 streaming 软中断（Esc 双触发审计结论 #1，详见任务
-    // research/keymap.md）；缩放键同理不再漏进底下的输入框。
+    // Consume modal shortcuts before the composer receives them.
     window.addEventListener("keydown", onKey, true)
     return () => window.removeEventListener("keydown", onKey, true)
-  }, [open, onClose])
+  }, [open])
 
   if (!open || !src) return null
 
@@ -65,14 +74,18 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={alt ?? "图片预览"}
+    <Dialog.Root open={open} onOpenChange={(value) => { if (!value) onClose() }}>
+    <Dialog.Portal>
+    <Dialog.Overlay className="fixed inset-0 z-50 bg-background/85" />
+    <Dialog.Content
+      aria-describedby={undefined}
+      onOpenAutoFocus={() => { returnFocusRef.current = document.activeElement as HTMLElement | null }}
+      onCloseAutoFocus={(event) => { event.preventDefault(); returnFocusRef.current?.focus() }}
       className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/85 backdrop-blur-sm p-6"
       onClick={onClose}
       onWheel={onWheel}
     >
+      <Dialog.Title className="sr-only">{shown.alt || "图片预览"}</Dialog.Title>
       <Button
         variant="ghost"
         size="icon"
@@ -91,9 +104,9 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <img
-          src={src}
-          alt={alt ?? ""}
-          title={alt}
+          src={shown.src ?? ""}
+          alt={shown.alt ?? ""}
+          title={shown.alt}
           draggable={false}
           style={{
             transform: `scale(${zoom})`,
@@ -109,6 +122,11 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
         className="mt-4 flex items-center gap-3 rounded-full border bg-card/95 backdrop-blur px-4 py-2 shadow-md z-10"
         onClick={(e) => e.stopPropagation()}
       >
+        {(images?.length ?? 0) > 1 && <>
+          <Button variant="ghost" size="icon" aria-label="上一张" onClick={() => setIndex((i) => (i - 1 + images!.length) % images!.length)}><ChevronLeft /></Button>
+          <span className="text-xs">{index + 1}/{images!.length}</span>
+          <Button variant="ghost" size="icon" aria-label="下一张" onClick={() => setIndex((i) => (i + 1) % images!.length)}><ChevronRight /></Button>
+        </>}
         <Button
           variant="ghost"
           size="icon"
@@ -125,7 +143,7 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
           step={0.05}
           value={zoom}
           onChange={(e) => setZoom(clampZoom(Number(e.target.value)))}
-          className="w-56 accent-primary"
+          className="w-24 sm:w-56 accent-primary"
           aria-label="缩放"
         />
         <Button
@@ -161,6 +179,8 @@ export function ImageLightbox({ open, src, alt, onClose }: Props) {
           <Maximize2 className="size-3.5" />
         </Button>
       </div>
-    </div>
+    </Dialog.Content>
+    </Dialog.Portal>
+    </Dialog.Root>
   )
 }

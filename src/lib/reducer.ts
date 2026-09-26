@@ -3,6 +3,7 @@ import type { UIBlock, UIEntry, UIMessage } from "../types/ui"
 import { splitUploadedFileText } from "./fileAttachments"
 import {
   initSubagentRegistry,
+  settleSubagentRegistryForResume,
   reduceSubagentRegistry,
   subagentCycleReadyForFinal,
   truncateSubagentRegistry,
@@ -24,9 +25,12 @@ export type Action =
       kind: "user_local"
       blocks: UIBlock[]
       delivery?: UIMessage["delivery"]
+      rawText?: string
       localId?: string
       ts?: number
     }
+  | { kind: "delivery_changed"; messageId: string; state: UIMessage["deliveryState"] }
+  | { kind: "runtime_exited" }
   | { kind: "truncate_after_message"; messageId: string }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
   | { kind: "replace_state"; state: State }
@@ -41,6 +45,14 @@ export function init(): State {
 }
 
 export function reduce(state: State, action: Action): State {
+  if (action.kind === "delivery_changed") {
+    return { ...state, entries: state.entries.map((entry) => entry.kind === "message" && entry.id === action.messageId
+      ? { ...entry, deliveryState: action.state !== "responded" && (entry.deliveryState === "acknowledged" || entry.deliveryState === "responded") ? entry.deliveryState : action.state } : entry) }
+  }
+  if (action.kind === "runtime_exited") {
+    return { ...state, hiddenStream: false, pendingInterruption: false, subagents: settleSubagentRegistryForResume(state.subagents), entries: closeStreamingEntries(state.entries, Date.now()).map((entry) => entry.kind === "message"
+      ? { ...entry, streaming: false, deliveryState: entry.deliveryState === "writing" || entry.deliveryState === "awaiting_ack" ? "delivery_unknown" : entry.deliveryState } : entry) }
+  }
   if (action.kind === "reset") return init()
   if (action.kind === "replace_state") return action.state
   if (action.kind === "truncate_after_message") {
@@ -63,10 +75,13 @@ export function reduce(state: State, action: Action): State {
       id: action.localId ?? `local-${state.entries.length}-${ts}`,
       role: "user",
       blocks: action.blocks,
+      rawText: action.rawText,
       streaming: false,
       delivery: action.delivery,
+      deliveryState: "writing",
       ts
     }
+    if (state.entries.some((entry) => entry.kind === "message" && entry.id === msg.id)) return state
     return {
       ...state,
       entries: [...state.entries, msg],
@@ -130,12 +145,14 @@ function parseTs(ev: unknown): number {
 }
 
 function reduceEvent(state: State, ev: ClaudeEvent): State {
+  if (!ev || typeof ev !== "object") return state
   const ts = parseTs(ev)
   const t = (ev as { type?: string }).type
   const subagentTransition = reduceSubagentRegistry(state.subagents, ev)
   if (subagentTransition.changed) {
     state = { ...state, subagents: subagentTransition.registry }
   }
+  if ((ev as Record<string, unknown>).parent_tool_use_id) return state
   if (t === "queue-operation") return state
   if (isMetaSkillPromptEvent(ev)) return removeLeakedSkillMetaPrompt(state)
   if (isInterruptionArtifactEvent(state, ev)) {
@@ -193,6 +210,13 @@ function reduceAttachment(state: State, ev: Record<string, unknown>, ts: number)
   return appendUnknown(state, ev as ClaudeEvent, ts)
 }
 
+function eventStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
+}
+function hasDiagnostics(value: unknown): boolean {
+  return Array.isArray(value) ? value.length > 0 : !!value && (typeof value !== "object" || Object.keys(value).length > 0)
+}
+
 function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): State {
   const sub = ev.subtype as string | undefined
   if (sub === "init") {
@@ -204,29 +228,31 @@ function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): St
           kind: "system_init",
           sessionId: ev.session_id as string | undefined,
           model: ev.model as string | undefined,
+          requestedModel: ev.requested_model as string | undefined,
           cwd: ev.cwd as string | undefined,
           permissionMode: ev.permissionMode as string | undefined,
           mcpServers:
-            (ev.mcp_servers as Array<{ name: string; status: string }>) ?? [],
-          tools: (ev.tools as string[]) ?? [],
-          skills: (ev.skills as string[]) ?? [],
-          slashCommands: (ev.slash_commands as string[]) ?? [],
-          agents: (ev.agents as string[]) ?? [],
+            Array.isArray(ev.mcp_servers) ? ev.mcp_servers.filter((server): server is { name: string; status: string } => !!server && typeof server.name === "string" && typeof server.status === "string") : [],
+          tools: eventStrings(ev.tools),
+          skills: eventStrings(ev.skills),
+          slashCommands: eventStrings(ev.slash_commands),
+          agents: eventStrings(ev.agents),
           version: ev.claude_code_version as string | undefined,
           outputStyle: ev.output_style as string | undefined,
           apiKeySource: ev.apiKeySource as string | undefined,
           fastModeState: ev.fast_mode_state as string | undefined,
           ts
-        }
+        },
+        ...((hasDiagnostics(ev.mcp_server_errors) || hasDiagnostics(ev.plugin_errors)) ? [{ kind: "stderr" as const, line: `部分扩展未加载：${JSON.stringify({ mcp: ev.mcp_server_errors, plugins: ev.plugin_errors })}`, ts }] : [])
       ]
     }
   }
-  if (sub === "status") {
+  if (sub === "status" || sub === "api_retry") {
     return {
       ...state,
       entries: [
         ...state.entries,
-        { kind: "system_status", status: (ev.status as string) ?? "", ts }
+        { kind: "system_status", status: sub === "api_retry" ? `CLI 正在恢复连接${typeof ev.attempt === "number" ? `（第 ${ev.attempt} 次）` : ""}` : (ev.status as string) ?? "", ts }
       ]
     }
   }
@@ -384,6 +410,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
     const cur = state.entries[idx] as UIMessage
     const reconciled: UIMessage = {
       ...cur,
+      transcriptUuid: (ev.uuid as string | undefined) ?? cur.transcriptUuid,
       // Claude CLI may persist one assistant message id across several records,
       // while compatibility gateways can emit a stale snapshot after newer deltas.
       // Reconcile monotonically so a snapshot cannot erase visible content.
@@ -402,6 +429,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
   }
   const entry: UIMessage = {
     kind: "message",
+    transcriptUuid: ev.uuid as string | undefined,
     id: id ?? `asst-${state.entries.length}`,
     role: "assistant",
     blocks,
@@ -422,19 +450,13 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
 function reduceUser(state: State, ev: Record<string, unknown>, ts: number): State {
   // jsonl 中 CLI 注入的 system-reminder 标记为 isMeta:true，不展示给用户
   if (ev.isMeta === true) return state
+  const uuid = typeof ev.uuid === "string" ? ev.uuid : undefined
+  if (uuid && state.entries.some((entry) => entry.kind === "message" && entry.role === "user" && entry.id === uuid)) {
+    return { ...state, entries: state.entries.map((entry) => entry.kind === "message" && entry.id === uuid ? { ...entry, deliveryState: entry.deliveryState === "responded" ? "responded" : "acknowledged" } : entry) }
+  }
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const blocks = normalizeUserBlocks(convertContentBlocks(msg.content))
-  if (isInternalCommandBlocks(blocks)) return state
   if (blocks.length === 0) return state
-  // CLI 在 stream-json 模式会把发出的 user message 原样 echo 回来。协同模式发出的
-  // 内容带有一段固定 prefix（见 src/App.tsx:buildCollaborationPrompt），UI 上只展示
-  // 用户原文，不展示协同规则样板。
-  for (const b of blocks) {
-    if (b.type === "text" && typeof b.text === "string") {
-      const stripped = stripCollabPrefix(b.text)
-      if (stripped !== null) b.text = stripped
-    }
-  }
   bindImagePlaceholders(blocks)
   const tur = ev.tool_use_result
   if (tur != null) {
@@ -451,8 +473,9 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
   }
   const entry: UIMessage = {
     kind: "message",
-    id: (msg.id as string) ?? `user-${state.entries.length}`,
+    id: (ev.uuid as string) ?? (msg.id as string) ?? `user-${state.entries.length}`,
     role: "user",
+    rawText: typeof msg.content === "string" ? msg.content : undefined,
     blocks,
     streaming: false,
     ts
@@ -470,11 +493,6 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
 // 一一配对（角标 / lightbox alt 用 #N，与文中字样所见即所得）。
 // `[Image: source: <path>]` 这种含本地路径形态只做剥离，不计入配对（CLI 常和 #N 并列出现，
 // 同一张图配 2 个占位会错位）。fallback 用 basename。
-// 与 src/App.tsx 的 COLLAB_PREFIX_TAG 与 COLLAB_PROMPT_SEPARATOR 保持一致。
-const COLLAB_PREFIX_TAG = "[Claudinal 协同模式]"
-const COLLAB_PROMPT_SEPARATOR = "\n\n用户需求：\n"
-const LOCAL_COMMAND_CAVEAT_PREFIX =
-  "Caveat: The messages below were generated by the user while running local commands.".toLowerCase()
 const SKILL_META_PROMPT_PREFIX = "Base directory for this skill:"
 const INTERRUPTED_USER_SENTINEL = "[Request interrupted by user]"
 const NO_RESPONSE_SENTINEL = "No response requested."
@@ -609,7 +627,7 @@ function isSkillMetaPromptText(text: string | undefined): boolean {
 function isMetaSkillPromptEvent(ev: ClaudeEvent): boolean {
   if (!ev || typeof ev !== "object") return false
   const obj = ev as Record<string, unknown>
-  if (obj.type !== "user") return false
+  if (obj.type !== "user" || (obj.isMeta !== true && typeof obj.sourceToolUseID !== "string")) return false
   const msg = (obj.message as Record<string, unknown> | undefined) ?? {}
   return convertContentBlocks(msg.content).some(
     (block) => block.type === "text" && isSkillMetaPromptText(block.text)
@@ -619,7 +637,7 @@ function isMetaSkillPromptEvent(ev: ClaudeEvent): boolean {
 function removeLeakedSkillMetaPrompt(state: State): State {
   for (let i = state.entries.length - 1; i >= 0; i--) {
     const entry = state.entries[i]
-    if (entry.kind !== "message") continue
+    if (entry.kind !== "message" || entry.role === "user") continue
     const hasSkillMeta = entry.blocks.some(
       (block) => block.type === "text" && isSkillMetaPromptText(block.text)
     )
@@ -646,74 +664,13 @@ function normalizeUserBlocks(blocks: UIBlock[]): UIBlock[] {
       out.push(block)
       continue
     }
-    const commandText = commandXmlToSlashText(block.text)
-    const text = commandText ?? stripInternalTextSections(block.text)
+    const text = block.text ?? ""
     if (!text.trim()) continue
     out.push(...splitUploadedFileText(text))
   }
   return out
 }
 
-function decodeXmlText(value: string): string {
-  return value
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&")
-}
-
-function commandXmlToSlashText(text: string | undefined): string | null {
-  if (!text) return null
-  const commandName = text.match(/<command-name>\s*\/([\s\S]*?)<\/command-name>/i)
-  if (!commandName) return null
-  const rawNameWithScope = decodeXmlText(commandName[1]).trim()
-  if (!rawNameWithScope.includes(':')) return null
-  const rawName = rawNameWithScope.split(':')[0].trim()
-  if (!rawName) return null
-  const commandArgs = text.match(/<command-args>([\s\S]*?)<\/command-args>/i)
-  const args = commandArgs ? decodeXmlText(commandArgs[1]).trim() : ""
-  return args ? `/${rawName} ${args}` : `/${rawName}`
-}
-
-function stripInternalTextSections(text: string | undefined): string {
-  if (!text) return ""
-  let cleaned = text
-  cleaned = cleaned.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
-  cleaned = cleaned.replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "")
-  cleaned = cleaned.replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, "")
-  return cleaned.replace(/\n{3,}/g, "\n\n").trim()
-}
-
-function isInternalCommandText(text: string): boolean {
-  const trimmed = text.trimStart()
-  const lower = trimmed.toLowerCase()
-  if (lower.startsWith(LOCAL_COMMAND_CAVEAT_PREFIX)) return true
-  const opening = trimmed.match(
-    /^<(command-name|command-message|command-args|local-command-[a-z0-9-]+|bash-(?:input|stdout|stderr)|system-reminder|task-notification|local-command-caveat)>/i
-  )
-  if (!opening) return false
-  return lower.includes(`</${opening[1].toLowerCase()}>`)
-}
-
-function isInternalCommandBlocks(blocks: UIBlock[]): boolean {
-  if (blocks.length === 0) return false
-  let sawInternal = false
-  for (const block of blocks) {
-    if (block.type !== "text" || typeof block.text !== "string") return false
-    if (!block.text.trim()) continue
-    if (!isInternalCommandText(block.text)) return false
-    sawInternal = true
-  }
-  return sawInternal
-}
-
-function stripCollabPrefix(text: string): string | null {
-  if (!text.startsWith(COLLAB_PREFIX_TAG)) return null
-  const idx = text.indexOf(COLLAB_PROMPT_SEPARATOR)
-  if (idx < 0) return null
-  return text.slice(idx + COLLAB_PROMPT_SEPARATOR.length).trim()
-}
 
 function bindImagePlaceholders(blocks: UIBlock[]) {
   const numbered: string[] = []
@@ -732,7 +689,7 @@ function bindImagePlaceholders(blocks: UIBlock[]) {
     }
     sourceRe.lastIndex = 0
     // 剥离含本地路径的形态（保留 [Image #N] 让用户能与角标对照）
-    b.text = b.text.replace(sourceRe, "").trim()
+    // Preserve authored text; image labels are presentation metadata only.
   }
   let ni = 0
   let si = 0
@@ -784,7 +741,7 @@ function reduceResult(
   disposition: SubagentResultDisposition
 ): State {
   // 网关漏发 message_stop 时这里兜底收尾残留 streaming 消息
-  const entries = closeStreamingEntries(state.entries, ts)
+  const entries = closeStreamingEntries(state.entries, ts).filter((entry) => entry.kind !== "system_status" || !entry.status.startsWith("CLI 正在恢复"))
   // Claude CLI 的异步 Agent 会让前台 assistant turn 暂时结束并发出 result，
   // 随后再由 task-notification 唤醒主会话。此时 result 只是等待边界：
   // 收掉块级流式光标，但不插入“完成”卡，也不切断同一 RunGroup。
@@ -1048,6 +1005,7 @@ function convertContentBlocks(content: unknown): UIBlock[] {
     return []
   }
   return (content as ContentBlock[]).map((c) => {
+    if (!c || typeof c !== "object") return { type: "unknown", raw: c }
     const obj = c as unknown as Record<string, unknown>
     const t = obj.type as string | undefined
     if (t === "text") return { type: "text", text: obj.text as string }
@@ -1059,6 +1017,13 @@ function convertContentBlocks(content: unknown): UIBlock[] {
         imageMediaType: src.media_type as string | undefined,
         imageData: src.data as string | undefined
       }
+    }
+    if (t === "document") {
+      const source = (obj.source as Record<string, unknown>) ?? {}
+      return { type: "attachment", attachmentName: typeof obj.title === "string" ? obj.title : "document.pdf",
+        attachmentMime: typeof source.media_type === "string" ? source.media_type : "application/pdf",
+        attachmentSize: typeof source.data === "string" ? Math.floor(source.data.length * 3 / 4) : undefined,
+        attachmentContentMode: "document" }
     }
     if (t === "tool_use") {
       return {
@@ -1081,8 +1046,10 @@ function convertContentBlocks(content: unknown): UIBlock[] {
 }
 
 function appendUnknown(state: State, ev: ClaudeEvent, ts: number): State {
+  if (state.entries.filter((entry) => entry.kind === "unknown").length >= 100) return state
+  const raw = JSON.stringify(ev)
   return {
     ...state,
-    entries: [...state.entries, { kind: "unknown", raw: ev, ts }]
+    entries: [...state.entries, { kind: "unknown", raw: raw.length > 8192 ? raw.slice(0, 8192) : ev, ts }]
   }
 }

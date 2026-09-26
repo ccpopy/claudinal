@@ -156,7 +156,8 @@
   --radius-xl: calc(var(--radius) + 4px);
 
   --font-mono: "Anthropic Mono", ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
-  --font-sans: "Anthropic Serif", ui-serif, Georgia, Cambria, "Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  --font-sans: "Anthropic Sans", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-reading: var(--font-sans);
 }
 
 @layer base {

@@ -4,6 +4,7 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useLayoutEffect,
   type KeyboardEvent,
   type ChangeEvent,
   type ClipboardEvent,
@@ -17,6 +18,7 @@ import {
   Check,
   ChevronDown,
   CornerDownRight,
+  ListPlus,
   FileText,
   GitBranch,
   Image as ImageIcon,
@@ -32,6 +34,7 @@ import {
   X
 } from "lucide-react"
 import { toast } from "sonner"
+import { canClearSubmittedDraft, type SubmitOutcome } from "@/lib/submission"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -52,11 +55,8 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import {
-  composerCommandLabel,
-  getComposerCommandBackspaceEdit,
-  matchComposerCommand
-} from "@/lib/composerCommand"
+import { composerCommandPrefix } from "@/lib/composerCommand"
+import { CommandChip } from "./CommandChip"
 import {
   cloneComposerDraft,
   emptyComposerDraft,
@@ -117,7 +117,7 @@ interface Props {
     images: ImagePayload[],
     documents: DocumentPayload[],
     options?: { mode?: "guide" | "followup" }
-  ) => void | Promise<void>
+  ) => SubmitOutcome | Promise<SubmitOutcome>
   onStop: () => void | Promise<void>
   onRecallQueued?: () => void
   streaming: boolean
@@ -134,6 +134,8 @@ interface Props {
   onExternalTextConsumed?: () => void
   cwd?: string | null
   slashCommands?: string[]
+  commandDescriptions?: Record<string, string>
+  commandAvailability?: "runtime" | "preview" | "stale"
   planMode?: boolean
   onPlanModeChange?: (enabled: boolean) => void
   permissionMode?: AppSettings["defaultPermissionMode"]
@@ -244,6 +246,8 @@ export function Composer({
   onExternalTextConsumed,
   cwd,
   slashCommands,
+  commandDescriptions,
+  commandAvailability = "preview",
   planMode = false,
   onPlanModeChange,
   permissionMode = "default",
@@ -264,10 +268,32 @@ export function Composer({
   globalDefault,
   sessionPrefs
 }: Props) {
-  const [text, setText] = useState("")
-  const [images, setImages] = useState<Thumb[]>([])
-  const [documents, setDocuments] = useState<DocumentThumb[]>([])
-  const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([])
+  const revisionRef = useRef(0)
+  const currentDraftKeyRef = useRef(draftKey)
+  currentDraftKeyRef.current = draftKey
+  const attachmentGenerationRef = useRef(0)
+  const pendingAttachmentsRef = useRef(0)
+  const [pendingAttachments, setPendingAttachments] = useState(0)
+  const [text, updateText] = useState("")
+  const setText = useCallback((value: React.SetStateAction<string>) => {
+    revisionRef.current += 1
+    updateText(value)
+  }, [])
+  const [images, updateImages] = useState<Thumb[]>([])
+  const setImages = useCallback((value: React.SetStateAction<Thumb[]>) => {
+    revisionRef.current += 1
+    updateImages(value)
+  }, [])
+  const [documents, updateDocuments] = useState<DocumentThumb[]>([])
+  const setDocuments = useCallback((value: React.SetStateAction<DocumentThumb[]>) => {
+    revisionRef.current += 1
+    updateDocuments(value)
+  }, [])
+  const [fileAttachments, updateFileAttachments] = useState<FileAttachment[]>([])
+  const setFileAttachments = useCallback((value: React.SetStateAction<FileAttachment[]>) => {
+    revisionRef.current += 1
+    updateFileAttachments(value)
+  }, [])
   const [dragOver, setDragOver] = useState(false)
   const [plusOpen, setPlusOpen] = useState(false)
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([])
@@ -282,12 +308,30 @@ export function Composer({
   const fileReqRef = useRef(0)
   /** 上一次刷新候选时的触发签名；null 表示面板处于关闭态 */
   const lastTriggerSigRef = useRef<string | null>(null)
-  /** slash 命令高亮层：与 textarea 逐像素对齐，滚动同步 */
-  const commandHighlightRef = useRef<HTMLPreElement>(null)
-  const commandMatch = useMemo(
-    () => matchComposerCommand(text, slashCommands ?? []),
+  /**
+   * 命中已知命令时，命令 token（连同其后一个空白）折叠成行内 chip，
+   * textarea 只编辑其后的正文；text 仍是完整原文，草稿与发送不受影响。
+   */
+  const commandPrefix = useMemo(
+    () => composerCommandPrefix(text, slashCommands ?? []),
     [text, slashCommands]
   )
+  const commandToken = commandPrefix.trimEnd()
+  const visibleText = text.slice(commandPrefix.length)
+  const commandChipRef = useRef<HTMLSpanElement>(null)
+  const [commandChipWidth, setCommandChipWidth] = useState(0)
+  useLayoutEffect(() => {
+    const el = commandChipRef.current
+    if (!el) {
+      setCommandChipWidth(0)
+      return
+    }
+    const update = () => setCommandChipWidth(el.offsetWidth)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [commandToken])
   /**
    * onKeyDown 已消费的菜单导航键（↑↓/Tab/Enter/Esc）。对应 keyup 到来时
    * 跳过 updateTrigger：否则 refreshSuggestions 会把高亮重置回第 0 项
@@ -335,6 +379,7 @@ export function Composer({
             pinnedList.push({
               key: `pin:${c}`,
               primary: `/${c}`,
+              secondary: commandDescriptions?.[c] ?? (["clear", "reset", "permissions"].includes(c) ? "应用内操作" : commandAvailability === "runtime" ? "当前 CLI 会话" : commandAvailability === "stale" ? "缓存预览 · 读取失败" : "本地预览 · 等待 CLI 确认"),
               pinned: true,
               group: "置顶"
             })
@@ -342,6 +387,7 @@ export function Composer({
             restList.push({
               key: c,
               primary: `/${c}`,
+              secondary: commandDescriptions?.[c] ?? (["clear", "reset", "permissions"].includes(c) ? "应用内操作" : commandAvailability === "runtime" ? "当前 CLI 会话" : commandAvailability === "stale" ? "缓存预览 · 读取失败" : "本地预览 · 等待 CLI 确认"),
               group: pinnedList.length > 0 ? "全部命令" : undefined
             })
           }
@@ -371,7 +417,7 @@ export function Composer({
         if (seq === fileReqRef.current) setItems([])
       }
     },
-    [cwd, slashCommands]
+    [cwd, slashCommands, commandDescriptions, commandAvailability]
   )
 
   const updateTrigger = useCallback(
@@ -393,21 +439,25 @@ export function Composer({
       const it = items[idx]
       if (!it) return
       const insert = trigger.kind === "/" ? it.primary : `@${it.primary}`
-      const before = text.slice(0, trigger.start)
+      // trigger 与 caret 都是 textarea（去掉命令前缀后）的坐标
+      const before = visibleText.slice(0, trigger.start)
       const caret = ref.current?.selectionStart ?? trigger.start + 1 + trigger.query.length
-      const after = text.slice(caret)
-      const next = `${before}${insert} ${after}`
+      const after = visibleText.slice(caret)
+      const next = `${commandPrefix}${before}${insert} ${after}`
       setText(next)
       closeSuggestions()
+      // 选中命令后前缀可能新折叠成 chip，光标需换算回新的 textarea 坐标
+      const pos =
+        commandPrefix.length + before.length + insert.length + 1 -
+        composerCommandPrefix(next, slashCommands ?? []).length
       requestAnimationFrame(() => {
         const el = ref.current
         if (!el) return
-        const pos = before.length + insert.length + 1
         el.setSelectionRange(pos, pos)
         el.focus()
       })
     },
-    [trigger, items, text, closeSuggestions]
+    [trigger, items, visibleText, commandPrefix, slashCommands, closeSuggestions]
   )
 
   useEffect(() => {
@@ -426,6 +476,10 @@ export function Composer({
     closeSuggestions()
     setActiveIdx(0)
     setPreviewIdx(null)
+    attachmentGenerationRef.current += 1
+    pendingAttachmentsRef.current = 0
+    setPendingAttachments(0)
+    return () => { attachmentGenerationRef.current += 1 }
   }, [draftKey, closeSuggestions])
 
   useEffect(() => {
@@ -492,42 +546,34 @@ export function Composer({
   const [preparingSend, setPreparingSend] = useState(false)
 
   const send = async (mode?: "guide" | "followup") => {
-    if (preparingSendRef.current) return
-    const t = text.trim()
-    const outgoingText = buildOutgoingText(t, fileAttachments)
-    if (!outgoingText && images.length === 0 && documents.length === 0) return
-    const outgoingImages = images.map((i) => ({ data: i.data, mime: i.mime }))
-    const outgoingDocuments = documents.map((document) => ({
-      data: document.data,
-      mime: document.mime,
-      name: document.name,
-      size: document.size
-    }))
+    if (preparingSendRef.current || disabled) return
+    if (pendingAttachmentsRef.current > 0) {
+      toast.info("附件仍在读取，请稍后发送")
+      return
+    }
+    const submitted = { key: draftKey, revision: revisionRef.current }
+    const outgoingText = buildOutgoingText(text, fileAttachments)
+    if (!outgoingText.trim() && images.length === 0 && documents.length === 0) return
+    const outgoingImages = images.map((i) => ({ data: i.data, mime: i.mime, order: i.order }))
+    const outgoingDocuments = documents.map(({ data, mime, name, size, order }) => ({ data, mime, name, size, order }))
     preparingSendRef.current = true
     setPreparingSend(true)
     try {
-      const canContinue =
-        (await onBeforeSend?.(
-          outgoingText,
-          outgoingImages,
-          outgoingDocuments
-        )) ?? true
-      if (!canContinue) return
+      const canContinue = (await onBeforeSend?.(outgoingText, outgoingImages, outgoingDocuments)) ?? true
+      if (!canContinue || currentDraftKeyRef.current !== submitted.key) return
+      const outcome = await onSend(outgoingText, outgoingImages, outgoingDocuments, mode ? { mode } : undefined)
+      if (!canClearSubmittedDraft(submitted, { key: currentDraftKeyRef.current, revision: revisionRef.current }, outcome)) return
+      setText("")
+      setImages([])
+      setDocuments([])
+      setFileAttachments([])
+      if (collaborationMode) onCollaborationModeChange?.(false)
+    } catch (error) {
+      toast.error(`未完成发送，内容已保留：${String(error)}`)
     } finally {
       preparingSendRef.current = false
       setPreparingSend(false)
     }
-    onSend(
-      outgoingText,
-      outgoingImages,
-      outgoingDocuments,
-      mode ? { mode } : undefined
-    )
-    setText("")
-    setImages([])
-    setDocuments([])
-    setFileAttachments([])
-    if (collaborationMode) onCollaborationModeChange?.(false)
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -558,6 +604,20 @@ export function Composer({
       send("followup")
       return
     }
+    // Ctrl/⌘+Enter：运行中立即引导（即时送达当前回合）
+    if (
+      e.key === "Enter" &&
+      (e.ctrlKey || e.metaKey) &&
+      !e.altKey &&
+      !e.shiftKey &&
+      streaming &&
+      !interrupting &&
+      !e.nativeEvent.isComposing
+    ) {
+      e.preventDefault()
+      send("guide")
+      return
+    }
     if (
       e.key === "Backspace" &&
       !e.altKey &&
@@ -565,23 +625,14 @@ export function Composer({
       !e.metaKey &&
       !e.nativeEvent.isComposing
     ) {
+      // 光标在正文最前（紧贴 chip）时 Backspace 整体删除命令
       const el = e.currentTarget
-      const edit = getComposerCommandBackspaceEdit(
-        text,
-        el.selectionStart ?? text.length,
-        el.selectionEnd ?? text.length,
-        slashCommands ?? []
-      )
-      if (edit) {
+      if (commandPrefix && el.selectionStart === 0 && el.selectionEnd === 0) {
         e.preventDefault()
         menuKeyHandledRef.current.add(e.key)
-        setText(edit.text)
+        setText(visibleText)
         closeSuggestions()
-        requestAnimationFrame(() => {
-          const textarea = ref.current
-          if (!textarea) return
-          textarea.setSelectionRange(edit.caret, edit.caret)
-        })
+        requestAnimationFrame(() => ref.current?.setSelectionRange(0, 0))
         return
       }
     }
@@ -646,14 +697,23 @@ export function Composer({
   }
 
   const handleFiles = async (files: FileList | File[]) => {
+    const generation = attachmentGenerationRef.current
+    const ownerKey = draftKey
+    pendingAttachmentsRef.current += 1
+    setPendingAttachments(pendingAttachmentsRef.current)
     const nextImages: Thumb[] = []
     const nextDocuments: DocumentThumb[] = []
     const nextFileAttachments: FileAttachment[] = []
     let skipped = 0
     const skippedDetails: string[] = []
 
+    const batchOrder = Date.now()
+    let batchIndex = 0
     for (const file of Array.from(files)) {
+      const order = batchOrder + batchIndex++ / 1000
       try {
+        if (generation !== attachmentGenerationRef.current || ownerKey !== currentDraftKeyRef.current) break
+        if (file.size > 20 * 1024 * 1024) throw new Error("单个附件不能超过 20 MB")
         if (isLegacyWordDocFile(file)) {
           skipped += 1
           skippedDetails.push(
@@ -674,6 +734,7 @@ export function Composer({
         if (imageMime) {
           const data = await readAsDataUrlPayload(file)
           nextImages.push({
+            order,
             id: makeId(),
             data,
             mime: imageMime,
@@ -689,6 +750,7 @@ export function Composer({
           const name = file.name || "document.pdf"
           const mime = "application/pdf"
           nextDocuments.push({
+            order,
             id,
             data,
             mime,
@@ -747,6 +809,9 @@ export function Composer({
       }
     }
 
+    if (generation !== attachmentGenerationRef.current || ownerKey !== currentDraftKeyRef.current) return
+    pendingAttachmentsRef.current -= 1
+    setPendingAttachments(pendingAttachmentsRef.current)
     if (nextImages.length) setImages((cur) => [...cur, ...nextImages])
     if (nextDocuments.length) {
       setDocuments((cur) => [...cur, ...nextDocuments])
@@ -818,6 +883,8 @@ export function Composer({
 
   const canSend =
     !!text.trim() || images.length > 0 || fileAttachments.length > 0
+  const sendBlocked =
+    disabled || preparingSend || pendingAttachments > 0 || !canSend
 
   return (
     <div
@@ -917,33 +984,34 @@ export function Composer({
             </div>
           )}
 
-          <div className="relative">
-            {commandMatch && (
-              <pre
-                aria-hidden
-                ref={commandHighlightRef}
-                className="pointer-events-none absolute inset-0 m-0 max-h-60 overflow-hidden whitespace-pre-wrap break-words border-0 bg-transparent px-1 py-1 font-sans text-base text-foreground [scrollbar-gutter:stable]"
-              >
-                <span className="relative inline-block text-transparent">
-                  {commandMatch.raw}
-                  <span className="absolute left-0 top-1/2 inline-flex -translate-y-1/2 items-center gap-0.5 whitespace-nowrap text-[13px] font-medium text-warn">
-                    <Package className="size-3 shrink-0" />
-                    {composerCommandLabel(commandMatch.raw)}
-                  </span>
-                </span>
-                {commandMatch.rest}
-              </pre>
+          <div className="relative overflow-hidden">
+            {commandToken && (
+              // 与 textarea 首行对齐：py-1(4px) + (行高 26px - chip 22px) / 2
+              <CommandChip
+                ref={commandChipRef}
+                command={commandToken}
+                className={cn(
+                  "pointer-events-none absolute left-1 top-[6px] z-10 max-w-[60%]",
+                  disabled && "opacity-50"
+                )}
+              />
             )}
             <Textarea
               ref={ref}
-              value={text}
+              value={visibleText}
+              aria-label={commandToken ? `${commandToken} 的补充说明` : undefined}
+              style={
+                commandToken && commandChipWidth
+                  ? { textIndent: commandChipWidth + 6 }
+                  : undefined
+              }
               onScroll={(e) => {
-                const overlay = commandHighlightRef.current
-                if (overlay) overlay.scrollTop = e.currentTarget.scrollTop
+                const chip = commandChipRef.current
+                if (chip) chip.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`
               }}
               onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
                 const v = e.target.value
-                setText(v)
+                setText(commandPrefix + v)
                 const caret = e.target.selectionStart ?? v.length
                 updateTrigger(v, caret)
               }}
@@ -967,17 +1035,17 @@ export function Composer({
               onKeyDown={onKey}
               onPaste={onPaste}
               placeholder={
-                streaming
-                  ? "要求后续变更"
-                  : "coffee time?"
+                commandToken
+                  ? "补充说明，或直接发送"
+                  : streaming
+                    ? "补充要求，完成后发送"
+                    : "输入消息，或用 / 选择命令"
               }
               disabled={disabled}
               rows={1}
               className={cn(
                 "min-h-[56px] max-h-60 border-0 bg-transparent px-1 py-1 text-base shadow-none focus-visible:ring-0 [scrollbar-gutter:stable]",
-                // 命中已知 slash 命令时文本由背后高亮层渲染,textarea 只保留光标
-                commandMatch &&
-                  "text-transparent caret-foreground selection:bg-primary/25 selection:text-transparent"
+                "font-sans font-normal leading-relaxed text-foreground"
               )}
             />
           </div>
@@ -1133,6 +1201,61 @@ export function Composer({
                 />
               )}
               <PlanUsageIndicator usage={oauthUsage ?? null} />
+              {streaming ? (
+                // 运行中两种投递方式并排成一组：引导即时送达，排队等本轮结束
+                <div
+                  role="group"
+                  aria-label="运行中发送方式"
+                  className="flex h-8 items-center rounded-lg border bg-background shadow-sm"
+                >
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={sendBlocked || interrupting}
+                    onClick={() => void send("guide")}
+                    aria-label="立即引导"
+                    title="立即引导：马上送达，模型在当前回合内参考 (Ctrl+Enter)"
+                    className="h-full gap-1 rounded-r-none px-2.5 text-xs"
+                  >
+                    <CornerDownRight className="size-3.5" />
+                    引导
+                  </Button>
+                  <span className="h-4 w-px bg-border" aria-hidden />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={sendBlocked}
+                    onClick={() => void send("followup")}
+                    aria-label="排入后续消息"
+                    title="排队：当前回合全部完成后送达 (Enter)"
+                    className="h-full gap-1 rounded-l-none px-2.5 text-xs"
+                  >
+                    {preparingSend ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <ListPlus className="size-3.5" />
+                    )}
+                    排队
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  onClick={() => void send()}
+                  disabled={sendBlocked}
+                  size="icon"
+                  aria-label="发送"
+                  title="发送 (Enter)"
+                  className="size-8 rounded-lg shadow-sm"
+                >
+                  {preparingSend ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <ArrowUp className="size-4" />
+                  )}
+                </Button>
+              )}
               {streaming && (
                 <Button
                   onClick={() => onStop()}
@@ -1150,33 +1273,6 @@ export function Composer({
                   )}
                 </Button>
               )}
-              <Button
-                onClick={() => void send(streaming ? "followup" : undefined)}
-                disabled={disabled || preparingSend || !canSend}
-                variant={streaming ? "outline" : "default"}
-                size={streaming ? "sm" : "icon"}
-                aria-label={streaming ? "排入后续消息" : "发送"}
-                title={
-                  streaming
-                    ? "排入后续消息，当前工作全部完成后送达 (Enter)"
-                    : "发送"
-                }
-                className={cn(
-                  "h-8 rounded-lg shadow-sm",
-                  streaming ? "px-2.5 text-xs" : "w-8"
-                )}
-              >
-                {preparingSend ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : streaming ? (
-                  <>
-                    <CornerDownRight className="size-3.5" />
-                    排队
-                  </>
-                ) : (
-                  <ArrowUp className="size-4" />
-                )}
-              </Button>
             </div>
           </div>
         </div>

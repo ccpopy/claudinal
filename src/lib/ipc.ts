@@ -13,6 +13,9 @@ export async function appRuntimeInfo(): Promise<AppRuntimeInfo> {
 }
 
 export type SpawnArgs = {
+  runtimeId?: string
+  forkSession?: boolean
+  resumeSessionAt?: string | null
   cwd: string
   model: string | null
   effort: string | null
@@ -317,9 +320,10 @@ export async function resolvePermissionRequest(args: {
 
 export async function sendUserMessage(
   sessionId: string,
-  contentBlocks: Array<Record<string, unknown>>
+  contentBlocks: Array<Record<string, unknown>>,
+  clientMessageId?: string
 ): Promise<void> {
-  return invoke("send_user_message", { sessionId, contentBlocks })
+  return invoke("send_user_message", { sessionId, contentBlocks, clientMessageId })
 }
 
 export async function sendSkillInvocation(
@@ -1137,3 +1141,55 @@ export async function listenSessionProxyStatus(
     (e) => handler(e.payload)
   )
 }
+
+export interface RuntimeLifecycleEvent {
+  runtimeId: string
+  state: "exited"
+  exitCode: number | null
+  reason?: string | null
+}
+export function listenSessionLifecycle(sessionId: string, handler: (event: RuntimeLifecycleEvent) => void): Promise<UnlistenFn> {
+  return listen<RuntimeLifecycleEvent>(`claude://session/${sessionId}/lifecycle`, (event) => handler(event.payload))
+}
+
+export interface CliCapabilities {
+  executablePath: string
+  resolvedVersion: string
+  installKind: string
+  coreStream: "supported" | "unsupported" | "unknown"
+  userMessageReplay: "supported" | "unsupported" | "unknown"
+  hookEvents: "supported" | "unsupported" | "unknown"
+  headlessModelCommand: "supported" | "unsupported" | "unknown"
+  nativeUltracodeEffort: "supported" | "unsupported" | "unknown"
+  forkSession: "supported" | "unsupported" | "unknown"
+  checkedAt: string
+  certification: string
+  fingerprint: string
+  evidence: Record<string, string>
+  interrupt: "supported" | "unsupported" | "unknown"
+  subagentTextForwarding: "supported" | "unsupported" | "unknown"
+}
+export function claudeCapabilities(): Promise<CliCapabilities> { return invoke("claude_capabilities") }
+
+export interface CliInstallations {
+  selectedPath: string | null
+  environmentLocked: boolean
+  installations: { path: string; version: string | null; runnable: boolean }[]
+}
+export interface RuntimeDiagnostics {
+  schemaVersion: number
+  appVersion: string
+  capturedAt: string
+  droppedEvents: number
+  events: {
+    at: string
+    runtimeId: string
+    stage: string
+    bytes: number | null
+    code: number | null
+    installation: [string, string] | null
+  }[]
+}
+export function claudeInstallations(): Promise<CliInstallations> { return invoke("claude_installations") }
+export function selectClaudeInstallation(path: string | null): Promise<void> { return invoke("select_claude_installation", { path }) }
+export function claudeRuntimeDiagnostics(): Promise<RuntimeDiagnostics> { return invoke("claude_runtime_diagnostics") }

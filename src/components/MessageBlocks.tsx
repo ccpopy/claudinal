@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import {
   AlertTriangle,
   Bot,
@@ -30,7 +30,7 @@ import { RetryButton } from "./RetryButton"
  * 消息块渲染形态：guide 内嵌在引导卡；activity 属于可折叠运行过程，
  * 不提供普通助手回复的复制操作。
  */
-export type BlockViewVariant = "guide" | "activity"
+export type BlockViewVariant = "guide" | "activity" | "user"
 
 export function BlockView({
   role,
@@ -39,8 +39,10 @@ export function BlockView({
   onRetry,
   cwd,
   subagent,
-  onOpenSubagent
+  onOpenSubagent,
+  imageGallery
 }: {
+  imageGallery?: UIBlock[]
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
@@ -61,7 +63,7 @@ export function BlockView({
     )
   }
   if (block.type === "thinking") return <ThinkingBlock block={block} />
-  if (block.type === "image") return <ImageBlock role={role} block={block} />
+  if (block.type === "image") return <ImageBlock role={role} block={block} gallery={imageGallery} />
   if (block.type === "attachment") return <AttachmentBlock role={role} block={block} />
   if (block.type === "tool_use") {
     return (
@@ -73,20 +75,10 @@ export function BlockView({
     )
   }
   if (block.type === "tool_result") return <ToolResultBlock block={block} />
-  return null
-}
-
-function stripImageMetaLines(s: string | undefined): string {
-  if (!s) return ""
-  // 1) CLI 注入的 <system-reminder>...</system-reminder> → 屏蔽
-  // 2) CLI 内部本地命令 / 后台任务通知 → 屏蔽（reducer 已剥，兜底）
-  // 3) `[Image: source: <path>]` 含本地路径 → 屏蔽（reducer 已剥，兜底）
-  // 4) `[Image #N]` 保留：与下方缩略图右下角 #N 角标互相参照
-  let cleaned = s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
-  cleaned = cleaned.replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "")
-  cleaned = cleaned.replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, "")
-  cleaned = cleaned.replace(/\[Image\s*:\s*source\s*:\s*[^\]]+\]/gi, "")
-  return cleaned.replace(/\n{3,}/g, "\n\n").trim()
+  return <details className="rounded-md border p-2 text-xs text-muted-foreground">
+    <summary className="cursor-pointer">当前版本尚未识别的内容</summary>
+    <pre className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(block.raw ?? block, null, 2)?.slice(0, 8000)}</pre>
+  </details>
 }
 
 function TextBlock({
@@ -104,7 +96,8 @@ function TextBlock({
 }) {
   if (!block.text && !block.partial) return null
   if (role === "user") {
-    const cleaned = stripImageMetaLines(block.text)
+    const cleaned = block.text ?? ""
+    if (variant === "user") return <div className="min-w-0 whitespace-pre-wrap break-words text-sm font-normal leading-relaxed [overflow-wrap:anywhere]">{cleaned}</div>
     if (!cleaned) return null
     if (variant === "guide") {
       // 引导卡内：卡片本身就是容器，文本不再套灰色气泡；内容处理与复制按钮不变
@@ -113,7 +106,7 @@ function TextBlock({
           <div className="w-full min-w-0 text-foreground text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
             {cleaned}
           </div>
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
             {onRetry && <RetryButton onRetry={onRetry} />}
             <CopyButton
               text={cleaned}
@@ -129,7 +122,7 @@ function TextBlock({
         <div className="max-w-full min-w-0 bg-muted text-foreground rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
           {cleaned}
         </div>
-        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
           {onRetry && <RetryButton onRetry={onRetry} />}
           <CopyButton
             text={cleaned}
@@ -162,18 +155,19 @@ function TextBlock({
     )
   }
   return (
-    <div className="self-start w-full flex flex-col gap-0.5">
+    <div className="group/reply self-start w-full flex flex-col gap-0.5">
       <AssistantMarkdown
         text={block.text ?? ""}
         partial={!!block.partial}
         cwd={cwd}
       />
       {!block.partial && block.text && (
+        // 与用户消息一致：悬停或键盘聚焦时才出现，平时不占视觉
         <CopyButton
           text={block.text}
           ariaLabel="复制消息"
           label="消息已复制"
-          className="-ml-1.5 self-start"
+          className="-ml-1.5 self-start opacity-0 transition-opacity group-hover/reply:opacity-100 focus-visible:opacity-100"
         />
       )}
     </div>
@@ -200,12 +194,15 @@ function ThinkingBlock({ block }: { block: UIBlock }) {
 
 function ImageBlock({
   role,
-  block
+  block,
+  gallery
 }: {
+  gallery?: UIBlock[]
   role: "user" | "assistant"
   block: UIBlock
 }) {
   const [open, setOpen] = useState(false)
+  const images = useMemo(() => gallery?.filter((image) => image.type === "image" && image.imageData && image.imageMediaType).map((image) => ({ src: `data:${image.imageMediaType};base64,${image.imageData}`, alt: image.imageAlt })), [gallery])
   if (!block.imageData || !block.imageMediaType) return null
   const src = `data:${block.imageMediaType};base64,${block.imageData}`
   const alt = block.imageAlt ?? ""
@@ -215,20 +212,20 @@ function ImageBlock({
         type="button"
         onClick={() => setOpen(true)}
         className={cn(
-          "group/img relative rounded-lg border overflow-hidden cursor-zoom-in transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-ring",
+          "group/img relative max-w-full rounded-lg border overflow-hidden cursor-zoom-in transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-ring",
           role === "user" && "self-end"
         )}
         aria-label={alt ? `放大图片 ${alt}` : "放大图片"}
         title={alt || "点击放大"}
       >
-        <img src={src} alt={alt} className="block max-h-60" />
+        <img src={src} alt={alt} className="block max-h-72 max-w-full object-contain" loading="lazy" />
         {block.imageAlt && (
           <span className="absolute right-1 bottom-1 rounded-md bg-background/85 text-foreground/90 text-[10px] font-mono px-1.5 py-0.5 border">
             {block.imageAlt}
           </span>
         )}
       </button>
-      <ImageLightbox open={open} src={src} alt={alt} onClose={() => setOpen(false)} />
+      <ImageLightbox open={open} src={src} alt={alt} images={images} onClose={() => setOpen(false)} />
     </>
   )
 }
@@ -244,31 +241,29 @@ function AttachmentBlock({
   const fileType = formatAttachmentType(name, block.attachmentMime)
   const size =
     typeof block.attachmentSize === "number" ? formatBytes(block.attachmentSize) : null
-  const mode =
-    block.attachmentContentMode === "metadata-only"
-      ? "仅展示信息"
-      : block.attachmentContentMode === "document"
-        ? "PDF 已附加"
-        : "文本已附加"
+  // 类型与大小已说明「附了什么」，只有仅传元信息时才需要额外提示
+  const meta = [
+    fileType,
+    size,
+    block.attachmentContentMode === "metadata-only" ? "仅文件信息" : null
+  ].filter(Boolean).join(" · ")
   return (
     <div
       className={cn(
-        "group/file max-w-[80%] min-w-0 rounded-xl border bg-muted text-foreground px-3 py-2 shadow-xs",
-        role === "user" ? "self-end" : "self-start bg-card"
+        "group/file min-w-0 rounded-xl border px-2.5 py-2 text-foreground",
+        role === "user" ? "w-60 max-w-full self-end bg-card" : "max-w-[80%] self-start bg-card"
       )}
     >
-      <div className="flex min-w-0 items-start gap-2.5">
-        <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-background/80 text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
           <FileText className="size-4" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium" title={name}>
+          <span className="block truncate text-sm font-medium leading-5" title={name}>
             {name}
           </span>
-          <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-            <span>{fileType}</span>
-            {size && <span className="font-mono">{size}</span>}
-            <span>{mode}</span>
+          <span className="block truncate text-[11px] leading-4 text-muted-foreground">
+            {meta}
           </span>
         </span>
       </div>

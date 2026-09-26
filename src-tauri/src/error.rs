@@ -1,8 +1,21 @@
 use serde::Serialize;
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryError {
+    pub code: String,
+    pub phase: String,
+    pub runtime_id: String,
+    pub delivery_certainty: String,
+    pub os_error_code: Option<i32>,
+    pub message: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 #[allow(dead_code)]
 pub enum Error {
+    #[error("{}", .0.message)]
+    Delivery(DeliveryError),
     #[error("claude CLI not found in PATH")]
     CliNotFound,
     #[error("session not found: {0}")]
@@ -26,7 +39,11 @@ impl Serialize for Error {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        if let Self::Delivery(detail) = self {
+            detail.serialize(serializer)
+        } else {
+            serializer.serialize_str(&self.to_string())
+        }
     }
 }
 

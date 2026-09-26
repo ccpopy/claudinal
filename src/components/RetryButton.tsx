@@ -39,7 +39,7 @@ export function RetryButton({
           <RotateCcw className="size-3" />
         </Button>
       </TooltipTrigger>
-      <TooltipContent side="left">重试</TooltipContent>
+      <TooltipContent side="left">{ariaLabel}</TooltipContent>
     </Tooltip>
   )
 }

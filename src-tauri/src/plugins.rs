@@ -66,6 +66,7 @@ pub struct Skill {
     pub path: String,
     pub disable_model_invocation: bool,
     pub user_invocable: bool,
+    pub frontmatter: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,9 +159,10 @@ pub async fn list_installed_plugins() -> Result<Vec<InstalledPlugin>> {
     let Some(value) = read_json_file(&installed_path)? else {
         return Ok(Vec::new());
     };
-    let Some(plugins) = value.get("plugins").and_then(Value::as_object) else {
-        return Ok(Vec::new());
-    };
+    let plugins = value
+        .get("plugins")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::Other("无法识别插件安装清单格式".into()))?;
 
     // 缓存每个 marketplace 的描述，避免重复 IO。
     let mut market_cache: std::collections::HashMap<String, Vec<MarketplacePlugin>> =
@@ -284,45 +286,31 @@ fn parse_skill_md(path: &Path, source: String) -> Option<Skill> {
             path: path.display().to_string(),
             disable_model_invocation: false,
             user_invocable: true,
+            frontmatter: Value::Null,
         });
     }
     let after = &trimmed[3..];
     let end = after.find("\n---").or_else(|| after.find("\r\n---"))?;
     let body = &after[..end];
 
-    let mut name: Option<String> = None;
-    let mut description: Option<String> = None;
-    let mut disable_invoke = false;
-    let mut user_invocable = true;
-
-    let mut current_key: Option<String> = None;
-    for raw_line in body.lines() {
-        let line = raw_line.trim_end();
-        if line.is_empty() {
-            continue;
-        }
-        // 简单 YAML：只处理 `key: value` 单行，多行字符串用首行截断。
-        if let Some((k, v)) = line.split_once(':') {
-            let key = k.trim().to_lowercase();
-            let value = v.trim().trim_matches('"').trim_matches('\'').to_string();
-            current_key = Some(key.clone());
-            match key.as_str() {
-                "name" => name = Some(value),
-                "description" => description = Some(value),
-                "disable-model-invocation" => disable_invoke = value == "true",
-                "user-invocable" => user_invocable = value != "false",
-                _ => {}
-            }
-        } else if let Some(k) = current_key.as_deref() {
-            // 续行（折叠成空格），仅 description 用得上
-            if k == "description" {
-                if let Some(prev) = description.as_mut() {
-                    prev.push(' ');
-                    prev.push_str(line.trim());
-                }
-            }
-        }
-    }
+    let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(body).ok()?;
+    let frontmatter = serde_json::to_value(&yaml).ok()?;
+    let name = frontmatter
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let description = frontmatter
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let disable_invoke = frontmatter
+        .get("disable-model-invocation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let user_invocable = frontmatter
+        .get("user-invocable")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
     let resolved_name = name.unwrap_or_else(|| {
         path.parent()
@@ -338,6 +326,7 @@ fn parse_skill_md(path: &Path, source: String) -> Option<Skill> {
         path: path.display().to_string(),
         disable_model_invocation: disable_invoke,
         user_invocable,
+        frontmatter,
     })
 }
 
@@ -363,6 +352,36 @@ fn scan_skill_dir(root: &Path, source: String, out: &mut Vec<Skill>) {
     }
 }
 
+fn scan_legacy_commands(root: &Path, source: &str, prefix: &str, out: &mut Vec<Skill>) {
+    if prefix.matches(':').count() >= 16 || out.len() >= 10000 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            scan_legacy_commands(&path, source, &format!("{prefix}{name}:"), out);
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            out.push(Skill {
+                name: format!("{prefix}{stem}"),
+                description: None,
+                source: source.into(),
+                path: path.display().to_string(),
+                disable_model_invocation: false,
+                user_invocable: true,
+                frontmatter: Value::Null,
+            });
+        }
+    }
+}
+
 fn collect_skills(cwd: Option<&str>) -> Result<Vec<Skill>> {
     let mut out = Vec::new();
     // 用户级
@@ -373,38 +392,92 @@ fn collect_skills(cwd: Option<&str>) -> Result<Vec<Skill>> {
         let proj_dir = Path::new(cwd).join(".claude").join("skills");
         scan_skill_dir(&proj_dir, "project".to_string(), &mut out);
     }
-    // 已安装插件携带的技能（扫 cache 下每个插件的 skills/）
-    let plugins_cache = home()?.join(".claude").join("plugins").join("cache");
-    if plugins_cache.is_dir() {
-        // cache/<marketplace>/<plugin>/<version>/skills/...
-        if let Ok(market_iter) = std::fs::read_dir(&plugins_cache) {
-            for market in market_iter.flatten() {
-                if !market.path().is_dir() {
+    scan_legacy_commands(&home()?.join(".claude/commands"), "user", "", &mut out);
+    if let Some(cwd) = cwd {
+        scan_legacy_commands(
+            &Path::new(cwd).join(".claude/commands"),
+            "project",
+            "",
+            &mut out,
+        );
+    }
+    let mut enabled = serde_json::Map::new();
+    let mut settings_paths = vec![home()?.join(".claude/settings.json")];
+    if let Some(cwd) = cwd {
+        settings_paths.extend([
+            Path::new(cwd).join(".claude/settings.json"),
+            Path::new(cwd).join(".claude/settings.local.json"),
+        ]);
+    }
+    for path in settings_paths {
+        if let Some(value) = read_json_file(&path)? {
+            if let Some(plugins) = value.get("enabledPlugins").and_then(Value::as_object) {
+                enabled.extend(plugins.clone());
+            }
+        }
+    }
+    let installed = home()?.join(".claude/plugins/installed_plugins.json");
+    if let Some(value) = read_json_file(&installed)? {
+        let plugins = value
+            .get("plugins")
+            .and_then(Value::as_object)
+            .ok_or_else(|| Error::Other("无法识别插件安装清单格式，不能视为未安装".into()))?;
+        for (id, entries) in plugins {
+            if enabled.get(id).and_then(Value::as_bool) == Some(false) {
+                continue;
+            }
+            let name = id.split('@').next().unwrap_or(id);
+            for entry in entries.as_array().into_iter().flatten() {
+                let scope = entry.get("scope").and_then(Value::as_str).unwrap_or("user");
+                if scope != "user" && entry.get("projectPath").and_then(Value::as_str) != cwd {
                     continue;
                 }
-                let market_name = market.file_name().to_string_lossy().to_string();
-                if let Ok(plugin_iter) = std::fs::read_dir(market.path()) {
-                    for plugin in plugin_iter.flatten() {
-                        if !plugin.path().is_dir() {
+                let Some(path) = entry.get("installPath").and_then(Value::as_str) else {
+                    continue;
+                };
+                let source = format!("plugin:{id}");
+                let start = out.len();
+                scan_skill_dir(&Path::new(path).join("skills"), source.clone(), &mut out);
+                if let Some(manifest) =
+                    read_json_file(&Path::new(path).join(".claude-plugin/plugin.json")).unwrap_or_else(|_| { tracing::warn!(plugin = %id, "invalid plugin manifest; default preview entries retained"); None })
+                {
+                    let roots = match manifest.get("skills") {
+                        Some(Value::String(root)) => vec![root.as_str()],
+                        Some(Value::Array(roots)) => {
+                            roots.iter().filter_map(Value::as_str).collect()
+                        }
+                        _ => vec![],
+                    };
+                    for relative in roots {
+                        let Ok(root) = Path::new(path).join(relative).canonicalize() else {
+                            continue;
+                        };
+                        let Ok(base) = Path::new(path).canonicalize() else {
+                            continue;
+                        };
+                        if !root.starts_with(base) {
                             continue;
                         }
-                        let plugin_name = plugin.file_name().to_string_lossy().to_string();
-                        // 进一步进入版本目录
-                        if let Ok(ver_iter) = std::fs::read_dir(plugin.path()) {
-                            for ver in ver_iter.flatten() {
-                                let skills_dir = ver.path().join("skills");
-                                if skills_dir.is_dir() {
-                                    let src = format!("plugin:{plugin_name}@{market_name}");
-                                    scan_skill_dir(&skills_dir, src, &mut out);
-                                }
+                        if root.join("SKILL.md").is_file() {
+                            if let Some(skill) =
+                                parse_skill_md(&root.join("SKILL.md"), source.clone())
+                            {
+                                out.push(skill);
                             }
+                        } else {
+                            scan_skill_dir(&root, source.clone(), &mut out);
                         }
                     }
+                }
+                scan_legacy_commands(&Path::new(path).join("commands"), &source, "", &mut out);
+                for skill in &mut out[start..] {
+                    skill.name = format!("{name}:{}", skill.name);
                 }
             }
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
+    out.dedup_by(|a, b| a.name == b.name && a.path == b.path);
     Ok(out)
 }
 
@@ -412,7 +485,7 @@ fn parse_skill_command(text: &str) -> Option<(String, String)> {
     let rest = text.trim_start().strip_prefix('/')?;
     let split_at = rest.find(char::is_whitespace).unwrap_or(rest.len());
     let raw_command = rest[..split_at].trim();
-    let command = raw_command.split(':').next().unwrap_or(raw_command).trim();
+    let command = raw_command;
     if command.is_empty() {
         return None;
     }
@@ -420,6 +493,7 @@ fn parse_skill_command(text: &str) -> Option<(String, String)> {
     Some((command.to_string(), arguments))
 }
 
+#[cfg(test)]
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -427,15 +501,6 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
-}
-
-fn skill_source_priority(source: &str) -> u8 {
-    match source {
-        "project" => 0,
-        "user" => 1,
-        source if source.starts_with("plugin:") => 2,
-        _ => 3,
-    }
 }
 
 fn is_valid_skill_dir_name(name: &str) -> bool {
@@ -530,29 +595,15 @@ pub async fn expand_skill_command(
     let Some((requested_name, arguments)) = parse_skill_command(&text) else {
         return Ok(None);
     };
-    let mut matches = collect_skills(cwd.as_deref())?
-        .into_iter()
-        .filter(|skill| {
-            skill.user_invocable && skill.name.eq_ignore_ascii_case(requested_name.as_str())
-        })
-        .collect::<Vec<_>>();
-    if matches.is_empty() {
+    let known = collect_skills(cwd.as_deref())?
+        .iter()
+        .any(|skill| skill.user_invocable && skill.name == requested_name);
+    if !known {
         return Ok(None);
     }
-    matches.sort_by(|a, b| {
-        skill_source_priority(&a.source)
-            .cmp(&skill_source_priority(&b.source))
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    let skill = matches.remove(0);
-    let escaped_name = xml_escape(&skill.name);
-    let escaped_arguments = xml_escape(&arguments);
-    let command_text = format!(
-        "<command-message>{0}:{0}</command-message>\n<command-name>/{0}:{0}</command-name>\n<command-args>{1}</command-args>",
-        escaped_name, escaped_arguments
-    );
+    let command_text = text.clone();
     Ok(Some(SkillInvocation {
-        name: skill.name,
+        name: requested_name,
         arguments,
         command_text,
     }))
@@ -789,7 +840,7 @@ mod tests {
         let parsed = parse_skill_command("/frontend-design:frontend-design 优化界面")
             .expect("skill command");
 
-        assert_eq!(parsed.0, "frontend-design");
+        assert_eq!(parsed.0, "frontend-design:frontend-design");
         assert_eq!(parsed.1, "优化界面");
     }
 

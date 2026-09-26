@@ -18,6 +18,7 @@ import { RunGroup, type RunStep } from "./RunGroup"
 import { RunReviewCard } from "./RunReviewCard"
 
 interface Props {
+  onOpenPermissions?: () => void
   entries: UIEntry[]
   streaming: boolean
   cwd?: string | null
@@ -31,6 +32,8 @@ interface Props {
   pendingSubagentCount?: number
   subagents?: SubagentTask[]
   onOpenSubagent?: (agentId: string) => void
+  /** 当前会话可用的 slash 命令，用于把用户消息开头的命令渲染成 chip */
+  slashCommands?: readonly string[]
 }
 
 interface MsgGroup {
@@ -252,6 +255,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
 }
 
 export function MessageStream({
+  onOpenPermissions,
   entries,
   streaming,
   cwd,
@@ -262,7 +266,8 @@ export function MessageStream({
   onRetryMessage,
   pendingSubagentCount = 0,
   subagents = [],
-  onOpenSubagent
+  onOpenSubagent,
+  slashCommands
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -456,7 +461,9 @@ export function MessageStream({
                   entry={g.msg}
                   cwd={cwd}
                   retryableMessageIds={retryableMessageIds}
+                  slashCommands={slashCommands}
                   onRetryMessage={onRetryMessage}
+                  onOpenPermissions={onOpenPermissions}
                 />
               </div>
             )
@@ -485,7 +492,9 @@ export function MessageStream({
                   entry={g.entry}
                   cwd={cwd}
                   retryableMessageIds={retryableMessageIds}
+                  slashCommands={slashCommands}
                   onRetryMessage={onRetryMessage}
+                  onOpenPermissions={onOpenPermissions}
                 />
                 {review && (
                   <RunReviewCard
@@ -503,7 +512,9 @@ export function MessageStream({
               entry={g.entry}
               cwd={cwd}
               retryableMessageIds={retryableMessageIds}
+              slashCommands={slashCommands}
               onRetryMessage={onRetryMessage}
+                  onOpenPermissions={onOpenPermissions}
             />
           )
         })}

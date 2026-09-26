@@ -294,6 +294,7 @@ export const BUILTIN_MODELS: ModelOption[] = [
   { value: "sonnet", label: "Sonnet", group: "Aliases" },
   { value: "opus", label: "Opus", group: "Aliases" },
   { value: "haiku", label: "Haiku", group: "Aliases" },
+  { value: "fable", label: "Fable", group: "Aliases" },
   { value: "sonnet[1m]", label: "Sonnet 1M", group: "Aliases" },
   { value: "opus[1m]", label: "Opus 1M", group: "Aliases" },
   { value: "opusplan", label: "Opus Plan", group: "Aliases" }
@@ -318,7 +319,7 @@ export function isComposerModelAllowed(
   if (!trimmed) return true
   return restrictToAllowedValues
     ? allowedModelValues.has(trimmed)
-    : isClaudeModelEntry(trimmed)
+    : sanitizeComposerModel(trimmed) === trimmed && !/[\r\n\0]/.test(trimmed)
 }
 
 // ===== 思考强度 =====
@@ -397,14 +398,13 @@ export function effortLabel(level: string): string {
  * 由动态档位（claude --help）构建带 auto 的有序档位清单。
  * 空输入回退内置清单；已知档位按固定顺序，未知新档位追加在已知之后（保持出现顺序）。
  *
- * ultracode 是 GUI 手动追加的 sentinel（由 ModelEffortPicker 末尾单独追加），不属于
- * claude --help 档位；这里显式剔除，避免 help 误带 ultracode 时与 picker 的追加项重复。
+ * 原生 ultracode 仅在能力探测确认后纳入动态清单。
  * 空字符串是 auto sentinel（本函数固定前置），同样从动态源剔除以防重复。
  */
 export function buildEffortOrder(dynamicLevels: string[]): EffortLevel[] {
   const src = (dynamicLevels.length ? dynamicLevels : BUILTIN_EFFORT_LEVELS)
     .map((l) => (l || "").trim().toLowerCase())
-    .filter((l) => l && l !== "ultracode")
+    .filter(Boolean)
   const unique = Array.from(new Set(src))
   const known = unique
     .filter((l) => l in KNOWN_EFFORT_RANK)

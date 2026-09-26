@@ -1,8 +1,17 @@
+import { deliveryLabel, type DeliveryState } from "@/lib/submission"
+import { parseCommand } from "@/lib/commandRegistry"
+import { RetryButton } from "./RetryButton"
+import { CommandChip } from "./CommandChip"
+import { splitInjectedContext, type InjectedContext } from "@/lib/userMessageText"
 import { useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  Info,
+  CircleAlert,
   CircleStop,
+  Clock,
   Cog,
   CornerDownRight,
   DollarSign,
@@ -11,7 +20,8 @@ import {
   Loader2,
   ShieldAlert,
   Timer,
-  Webhook
+  Webhook,
+  type LucideIcon
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { cn, formatRunDuration } from "@/lib/utils"
@@ -20,31 +30,37 @@ import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
 import { CopyButton } from "./CopyButton"
 
 interface Props {
+  onOpenPermissions?: () => void
   entry: UIEntry
   cwd?: string | null
   onRetryMessage?: (messageId: string) => void | Promise<void>
   retryableMessageIds?: ReadonlySet<string>
+  /** 当前会话可用的 slash 命令；用户消息仅对其中的命令显示命令 chip */
+  slashCommands?: readonly string[]
 }
 
 export function MessageCard({
   entry,
+  onOpenPermissions,
   cwd,
   onRetryMessage,
-  retryableMessageIds
+  retryableMessageIds,
+  slashCommands
 }: Props) {
   if (entry.kind === "message") {
     return (
       <MessageView
         msg={entry}
         cwd={cwd}
+        slashCommands={slashCommands}
         onRetryMessage={onRetryMessage}
         retryableMessageIds={retryableMessageIds}
       />
     )
   }
   if (entry.kind === "system_init") return <SystemInitView e={entry} />
-  if (entry.kind === "system_status") return null
-  if (entry.kind === "result") return <ResultView e={entry} />
+  if (entry.kind === "system_status") return entry.status.startsWith("CLI 正在恢复") ? <SimpleRow label="连接恢复中" content={entry.status} /> : null
+  if (entry.kind === "result") return <ResultView e={entry} onOpenPermissions={onOpenPermissions} />
   if (entry.kind === "rate_limit") return null
   if (entry.kind === "hook") return <HookEventView e={entry} />
   if (entry.kind === "stderr") {
@@ -59,11 +75,13 @@ export function MessageCard({
 function MessageView({
   msg,
   cwd,
+  slashCommands,
   onRetryMessage,
   retryableMessageIds
 }: {
   msg: UIMessage
   cwd?: string | null
+  slashCommands?: readonly string[]
   onRetryMessage?: (messageId: string) => void | Promise<void>
   retryableMessageIds?: ReadonlySet<string>
 }) {
@@ -75,11 +93,12 @@ function MessageView({
       </div>
     )
   }
-  if (msg.role === "user" && msg.delivery === "guide") {
+  if (msg.role === "user") {
     return (
-      <GuideMessageView
+      <UserMessageView
         msg={msg}
         cwd={cwd}
+        slashCommands={slashCommands}
         onRetry={
           onRetryMessage && retryableMessageIds?.has(msg.id)
             ? () => onRetryMessage?.(msg.id)
@@ -88,10 +107,6 @@ function MessageView({
       />
     )
   }
-  const onRetry =
-    msg.role === "user" && onRetryMessage && retryableMessageIds?.has(msg.id)
-      ? () => onRetryMessage?.(msg.id)
-      : undefined
   if (msg.apiError) return <ApiErrorMessageView msg={msg} />
   return (
     <div className="flex flex-col gap-2 items-stretch">
@@ -100,7 +115,7 @@ function MessageView({
           key={i}
           role={msg.role}
           block={b}
-          onRetry={onRetry}
+          imageGallery={msg.blocks}
           cwd={cwd}
         />
       ))}
@@ -109,42 +124,92 @@ function MessageView({
 }
 
 /**
- * 引导消息卡：streaming 中即时送达的用户输入（delivery === "guide"）。
- * 与普通用户气泡同侧但形态不同——首行「引导 · 已送达」状态行直接回答
- * "发出去了吗"；正文沿用用户消息的块渲染，仅换容器与头部。
- * 已知局限：历史转录 jsonl 不带 delivery 元数据，重载后回落普通气泡。
+ * 用户消息：附件与图片在上、文字气泡在下，全部右对齐；
+ * 开头的 slash 命令渲染成与输入框一致的行内 chip；
+ * 投递状态只在「未完成 / 异常」时以气泡下方小字出现，正常送达不打扰。
  */
-function GuideMessageView({
-  msg,
-  cwd,
-  onRetry
-}: {
+function UserMessageView({ msg, cwd, slashCommands, onRetry }: {
   msg: UIMessage
   cwd?: string | null
+  slashCommands?: readonly string[]
   onRetry?: () => void | Promise<void>
 }) {
-  return (
-    <div className="flex flex-col items-end">
-      <div className="max-w-[80%] min-w-0 rounded-xl border border-primary/25 bg-primary/5 px-3 py-2">
-        <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
-          <CornerDownRight className="size-3.5 shrink-0" />
-          <span>引导 · 已送达</span>
-        </div>
-        <div className="mt-1.5 flex flex-col items-stretch gap-2">
-          {msg.blocks.map((b, i) => (
-            <BlockView
-              key={i}
-              role="user"
-              block={b}
-              variant="guide"
-              onRetry={onRetry}
-              cwd={cwd}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
+  const textBlocks = msg.blocks.filter((b) => b.type === "text" && b.text)
+  const images = msg.blocks.filter((b) => b.type === "image")
+  const others = msg.blocks.filter((b) => b.type !== "text" && b.type !== "image")
+  const original = msg.rawText ?? textBlocks.map((b) => b.text ?? "").join("\n")
+  const { body: text, injected } = splitInjectedContext(
+    textBlocks.map((b) => b.text ?? "").join("\n").trim()
   )
+  // 只有当前会话确认存在的命令才显示成 chip，"/tmp 看下日志" 之类保持原文
+  const parsed = parseCommand(text)
+  const command = parsed && slashCommands?.includes(parsed.name) ? parsed : null
+  const body = command ? command.arguments : text
+  const guide = msg.delivery === "guide"
+  const delivery = msg.deliveryState
+  const status = delivery ? DELIVERY_STATUS[delivery] : null
+  return <div className="group/msg flex min-w-0 flex-col items-end gap-1.5">
+    {others.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-2 [&>*]:max-w-full">
+      {others.map((block, index) => <BlockView key={index} role="user" block={block} variant="user" cwd={cwd} />)}
+    </div>}
+    {images.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-2 [&_img]:max-h-48">
+      {images.map((block, index) => <BlockView key={index} role="user" block={block} imageGallery={images} variant="user" cwd={cwd} />)}
+    </div>}
+    {(text || (guide && !images.length && !others.length)) && <div className={cn(
+      "min-w-0 max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed text-foreground",
+      guide ? "border border-primary/25 bg-primary/5" : "bg-muted"
+    )}>
+      {guide && <div className="mb-1 flex items-center gap-1 text-xs font-medium text-primary">
+        <CornerDownRight className="size-3.5" aria-hidden />引导
+      </div>}
+      <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+        {command && <CommandChip command={command.rawToken} className={cn("-my-0.5", body && "mr-1.5")} />}
+        {body}
+      </div>
+    </div>}
+    {injected.length > 0 && <InjectedContextView items={injected} />}
+    {status &&<p role="status" className={cn("flex items-center gap-1 px-1 text-[11px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
+      <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
+      {deliveryLabel[delivery!]}
+    </p>}
+    <div className="flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
+      {onRetry && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}
+      {original && <CopyButton text={original} ariaLabel="复制原始输入" label="原始输入已复制" />}
+    </div>
+  </div>
+}
+
+/** CLI 随用户消息注入的上下文：默认折叠成一行小字，按需展开查看原文。 */
+function InjectedContextView({ items }: { items: InjectedContext[] }) {
+  const [open, setOpen] = useState(false)
+  const labels = [...new Set(items.map((item) => item.label))].join("、")
+  return <div className="flex max-w-[85%] flex-col items-end gap-1">
+    <button
+      type="button"
+      onClick={() => setOpen((value) => !value)}
+      aria-expanded={open}
+      className="flex items-center gap-1 rounded px-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Info className="size-3 shrink-0" aria-hidden />
+      附带{labels}{items.length > 1 ? ` · ${items.length}` : ""}
+      <ChevronDown className={cn("size-3 shrink-0 transition-transform", open && "rotate-180")} aria-hidden />
+    </button>
+    {open && <div className="flex max-h-60 w-full flex-col gap-2 overflow-auto rounded-lg border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+      {items.map((item, index) => <div key={index} className="min-w-0">
+        {items.length > 1 && <div className="mb-0.5 font-medium text-foreground/80">{item.label}</div>}
+        <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.content || "（空）"}</div>
+      </div>)}
+    </div>}
+  </div>
+}
+
+/** 已确认 / 已响应属于正常态，不展示；其余状态给出图标与语气。 */
+const DELIVERY_STATUS: Partial<Record<DeliveryState, { icon: LucideIcon; tone: "muted" | "error"; spin?: boolean }>> = {
+  queued: { icon: Clock, tone: "muted" },
+  writing: { icon: Loader2, tone: "muted", spin: true },
+  awaiting_ack: { icon: Loader2, tone: "muted", spin: true },
+  failed: { icon: CircleAlert, tone: "error" },
+  delivery_unknown: { icon: CircleAlert, tone: "error" }
 }
 
 /** API 错误消息卡：isApiErrorMessage 的 assistant 消息，按错误形态渲染而非普通 markdown。 */
@@ -211,6 +276,7 @@ function SystemInitView({
       label={`会话开始${e.model ? ` · ${e.model}` : ""}`}
     >
       <div className="flex flex-col gap-1.5 text-muted-foreground">
+        {e.requestedModel && e.requestedModel !== e.model && <div className="text-xs">请求模型：{e.requestedModel} · CLI 报告：{e.model ?? "待确认"}</div>}
         {e.cwd && <div className="font-mono break-all text-[11px]">{e.cwd}</div>}
         <div className="flex flex-wrap gap-1">
           {e.permissionMode && (
@@ -264,7 +330,7 @@ interface PermissionDenial {
   tool_use_id?: string
 }
 
-function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
+function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; e: Extract<UIEntry, { kind: "result" }> }) {
   const denials = (e.permissionDenials as PermissionDenial[] | undefined) ?? []
   const interrupted = e.terminalReason === "interrupted"
   const failed =
@@ -343,12 +409,12 @@ function ResultView({ e }: { e: Extract<UIEntry, { kind: "result" }> }) {
           输出达到 max_tokens 上限，内容可能被截断；发送「继续」可让模型接着写。
         </div>
       )}
-      {denials.length > 0 && <PermissionDenialList denials={denials} />}
+      {denials.length > 0 && <PermissionDenialList denials={denials} onOpenPermissions={onOpenPermissions} />}
     </div>
   )
 }
 
-function PermissionDenialList({ denials }: { denials: PermissionDenial[] }) {
+function PermissionDenialList({ denials, onOpenPermissions }: { denials: PermissionDenial[]; onOpenPermissions?: () => void }) {
   const [open, setOpen] = useState(true)
   return (
     <ExpandableRow
@@ -363,7 +429,8 @@ function PermissionDenialList({ denials }: { denials: PermissionDenial[] }) {
           <DenialRow key={d.tool_use_id ?? i} d={d} />
         ))}
         <div className="text-[11px] text-muted-foreground">
-          运行 <code className="font-mono px-1 bg-muted rounded">/permissions</code> 把上述工具加白名单后重试。
+          检查当前权限配置及拒绝原因，确认后再重试。
+          {onOpenPermissions && <button type="button" className="ml-2 text-primary underline" onClick={onOpenPermissions}>打开权限设置</button>}
         </div>
       </div>
     </ExpandableRow>
