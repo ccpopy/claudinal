@@ -4,6 +4,17 @@ release/
 .vite/
 tsconfig.tsbuildinfo
 *.log
+logs/
+doc/
+# Test sources and generated verification artifacts stay local.
+*.test.*
+*.spec.*
+tests/
+__tests__/
+__fixtures__/
+test-results/
+playwright-report/
+coverage/
 .DS_Store
 
 # local Claude settings
