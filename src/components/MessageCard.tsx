@@ -213,7 +213,7 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }
       ? <SubmissionFooter message={msg} actions={submissionActions} onEdit={() => setEditing(true)} />
       : status && (delivery !== "preparing" || showPendingLabel) && <p role="status" className={cn("flex items-center gap-1 px-1 text-[11px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
         <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
-        {deliveryLabel[delivery!]}
+        {guide && delivery === "awaiting_ack" ? "引导已提交，等待 CLI 读取" : deliveryLabel[delivery!]}
       </p>}
     <div className="flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
       {onRetry && (!submissionActions?.payload(msg.id) || msg.deliveryState === "responded" || msg.deliveryState === "acknowledged") && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}

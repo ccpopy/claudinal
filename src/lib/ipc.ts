@@ -321,9 +321,10 @@ export async function resolvePermissionRequest(args: {
 export async function sendUserMessage(
   sessionId: string,
   contentBlocks: Array<Record<string, unknown>>,
-  clientMessageId?: string
+  clientMessageId?: string,
+  midTurn?: boolean
 ): Promise<void> {
-  return invoke("send_user_message", { sessionId, contentBlocks, clientMessageId })
+  return invoke("send_user_message", { sessionId, contentBlocks, clientMessageId, midTurn })
 }
 
 export async function sendSkillInvocation(
@@ -1158,6 +1159,7 @@ export interface CliCapabilities {
   installKind: string
   coreStream: "supported" | "unsupported" | "unknown"
   userMessageReplay: "supported" | "unsupported" | "unknown"
+  midTurnInput: "supported" | "unsupported" | "unknown"
   hookEvents: "supported" | "unsupported" | "unknown"
   headlessModelCommand: "supported" | "unsupported" | "unknown"
   nativeUltracodeEffort: "supported" | "unsupported" | "unknown"
@@ -1169,7 +1171,7 @@ export interface CliCapabilities {
   interrupt: "supported" | "unsupported" | "unknown"
   subagentTextForwarding: "supported" | "unsupported" | "unknown"
 }
-export function claudeCapabilities(): Promise<CliCapabilities> { return invoke("claude_capabilities") }
+export function claudeCapabilities(sessionId?: string): Promise<CliCapabilities> { return invoke("claude_capabilities", { sessionId }) }
 
 export interface CliInstallations {
   selectedPath: string | null

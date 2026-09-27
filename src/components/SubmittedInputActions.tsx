@@ -3,6 +3,7 @@ import {
   CircleAlert,
   CircleStop,
   Clock,
+  CornerDownRight,
   Download,
   FileText,
   Image as ImageIcon,
@@ -43,6 +44,8 @@ export interface SubmissionActions {
   edit(id: string, payload: InputPayload): void
   cancel(id: string): void
   resume(id: string): void
+  canGuide?(id: string): boolean
+  guide?(id: string): void
 }
 
 type Tone = "error" | "muted"
@@ -66,7 +69,7 @@ function submissionStatus(message: UIMessage): SubmissionStatus | null {
   if (state === "delivery_unknown") return { icon: CircleAlert, tone: "error", text: "连接中断，无法确认是否已接收" }
   if (state === "failed") return { icon: CircleAlert, tone: "error", text: "未能发送" }
   if (state === "cancelled") return { icon: CircleStop, tone: "muted", text: "已取消，尚未发送" }
-  if (state === "queued") return { icon: Clock, tone: "muted", text: "排队中，本轮结束后发送" }
+  if (state === "queued") return { icon: Clock, tone: "muted", text: message.delivery === "guide" ? "引导准备中，即将提交" : "排队中，本轮结束后发送" }
   if (state === "paused") return { icon: Clock, tone: "muted", text: "等待处理上一条" }
   if (message.submissionError) return { icon: CircleAlert, tone: "error", text: "未能发送" }
   return null
@@ -135,6 +138,10 @@ export function SubmissionFooter({
       {queued && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={() => actions.cancel(message.id)}>
         <X className="size-3.5" />
         取消排队
+      </Button>}
+      {state === "queued" && actions.canGuide?.(message.id) && <Button type="button" variant="outline" size="sm" className={actionClass}
+        title="改为引导，不打断正在执行的动作" onClick={() => actions.guide?.(message.id)}>
+        <CornerDownRight className="size-3.5" />立即引导
       </Button>}
       {state === "paused" && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={() => actions.resume(message.id)}>
         <SkipForward className="size-3.5" />

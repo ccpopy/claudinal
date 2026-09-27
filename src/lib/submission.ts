@@ -7,6 +7,14 @@ export type SubmitOutcome =
 
 export type LocalState = "saving" | "saved" | "save_failed"
 export type RunState = "idle" | "running" | "cancelling" | "cancelled" | "done" | "failed"
+
+/** Newer CLI results identify every input consumed by that turn, including guides. */
+export function eventInputIds(event: unknown): string[] | undefined {
+  if (!event || typeof event !== "object") return undefined
+  const value = event as { user_message_uuids?: unknown; user_message_uuid?: unknown }
+  if (Array.isArray(value.user_message_uuids)) return value.user_message_uuids.filter((id): id is string => typeof id === "string")
+  return typeof value.user_message_uuid === "string" ? [value.user_message_uuid] : undefined
+}
 export type DeliveryState = "preparing" | "needs_confirmation" | "paused" | "cancelled" | "queued" | "writing" | "awaiting_ack" | "acknowledged" | "responded" | "failed" | "delivery_unknown"
 
 export const deliveryLabel: Record<DeliveryState, string> = {

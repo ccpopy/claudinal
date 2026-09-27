@@ -42,6 +42,7 @@ pub struct SpawnOptions {
 }
 
 struct Session {
+    capabilities: capabilities::CliCapabilities,
     stdin: Mutex<ChildStdin>,
     available: AtomicBool,
     stop: watch::Sender<bool>,
@@ -167,7 +168,17 @@ impl Manager {
         Ok(levels)
     }
 
-    pub async fn capabilities(&self) -> Result<capabilities::CliCapabilities> {
+    pub async fn capabilities(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<capabilities::CliCapabilities> {
+        if let Some(id) = session_id {
+            return self
+                .sessions
+                .get(id)
+                .map(|session| session.capabilities.clone())
+                .ok_or_else(|| Error::Other("会话已结束".into()));
+        }
         let (claude, version) = resolve_claude().await?;
         let help = claude_help_cached(&claude, &version, &self.claude_help_cache)
             .await
@@ -368,6 +379,7 @@ impl Manager {
         let (stop_tx, stop_rx) = watch::channel(false);
         let (done_tx, done_rx) = watch::channel(false);
         let session = Arc::new(Session {
+            capabilities: capabilities::detect(&claude, version.clone(), &help),
             stdin: Mutex::new(stdin),
             available: AtomicBool::new(true),
             stop: stop_tx,

@@ -8,7 +8,7 @@ import { inputMetadataPatch, restoreInputMetadata } from "@/lib/inputMetadata"
 import { routeCommand } from "@/lib/commandRegistry"
 import { saveOutbox, removeOutbox, updateOutboxState } from "@/lib/outbox"
 import { InputRecovery } from "@/components/InputRecovery"
-import { type SubmitOutcome } from "@/lib/submission"
+import { eventInputIds, type SubmitOutcome } from "@/lib/submission"
 import {
   useEffect,
   lazy,
@@ -359,6 +359,7 @@ type ConversationOwner = {
 type InputContext = { approvedCommand?: string; authorizationRevision: string; composerPrefs: ComposerPrefs; sessionComposer: ComposerPrefs | null; permissionMode: AppSettings["defaultPermissionMode"]; owner: ConversationOwner; options: SendOptions; collaborationMode: boolean; cliBlocks?: Array<Record<string, unknown>> }
 
 type RunningSession = {
+  midTurnInput: boolean
   owner: ConversationOwner
   runtimeId: string
   project: Project
@@ -432,10 +433,11 @@ async function sendCliInput(
   sessionId: string,
   blocks: Array<Record<string, unknown>>,
   _skillInvocation?: SkillInvocation | null,
-  clientMessageId?: string
+  clientMessageId?: string,
+  midTurn?: boolean
 ): Promise<void> {
   // Preserve raw command and every attachment in one native user input payload.
-  await sendUserMessage(sessionId, blocks, clientMessageId)
+  await sendUserMessage(sessionId, blocks, clientMessageId, midTurn)
 }
 
 // The original input is restored by UUID sidecar metadata; literal markers are never stripped.
@@ -1837,6 +1839,7 @@ export default function App() {
         selectedSessionMeta: resumeSessionId ? owner.selectedSessionMeta : null,
         state: runState,
         activeInputId: null,
+        midTurnInput: false,
         sendingQueued: false,
         turnActive: false,
         subagents: resumedSubagents,
@@ -1883,7 +1886,7 @@ export default function App() {
         if (!localEcho) applyRunningAction(run, { kind: "event", event })
         if ((event as { parent_tool_use_id?: string }).parent_tool_use_id) return
         const t = (event as { type?: string }).type
-        if (t === "assistant" || t === "stream_event") coordinatorRef.current.response(owner.key)
+        if (t === "assistant" || t === "stream_event") coordinatorRef.current.response(owner.key, eventInputIds(event))
         const evSessionId = (event as { parent_tool_use_id?: string }).parent_tool_use_id ? undefined : (event as { session_id?: string }).session_id
         const knownSessionId = evSessionId ?? run.jsonlSessionId
         if (knownSessionId && run.jsonlSessionId !== knownSessionId) {
@@ -2007,7 +2010,10 @@ export default function App() {
             setSidebarRefreshKey((k) => k + 1)
             return
           }
-          void finishRunReview(run).then(() => coordinatorRef.current.complete(owner.key, isError || interrupted))
+          coordinatorRef.current.complete(owner.key, isError || interrupted, eventInputIds(event), () => finishRunReview(run))
+          // A guide sent at the boundary may already be waiting in the CLI for
+          // the next turn. Keep it active; this result must not settle that input.
+          setRunningSessionTurnActive(run, coordinatorRef.current.hasRunning(owner.key))
           setSidebarRefreshKey((k) => k + 1)
           if (activeRuntimeIdRef.current === run.runtimeId) {
             gitWorktreeStatus(run.project.cwd)
@@ -2107,6 +2113,8 @@ export default function App() {
         collabEnabledProviders: enabledProviderList(collabCfg)
       })
       owner.fork = null
+      run.midTurnInput = (await claudeCapabilities(id).catch(() => null))?.midTurnInput === "supported"
+      setRunningTick((tick) => tick + 1)
       if (foreground()) pendingForkRef.current = null
       if (task.controller.signal.aborted) {
         await closeRunningSession(id, { preserveConversationState: true })
@@ -2267,6 +2275,7 @@ export default function App() {
       kind: "message" as const, role: "user" as const, id: task.messageId, streaming: false,
       blocks: payload.pendingNames?.length ? [...uiBlocks, ...payload.pendingNames.map((name) => ({ type: "attachment" as const, attachmentName: name, attachmentContentMode: "metadata-only" as const }))] : uiBlocks,
       rawText: payload.text, ts: task.createdAt, localState: task.localState, deliveryState: task.deliveryState,
+      delivery: task.mode === "guide" ? "guide" as const : undefined,
       runState: task.runState, attemptId: task.attemptId, attemptIds: task.attempts.map((a) => a.id), attemptDetails: task.attempts.map((a) => ({ ...a })), inputRevision: task.inputRevision,
       transcriptUuid: task.deliveryState === "acknowledged" || task.deliveryState === "responded" ? task.attemptId : undefined,
       submissionTimings: { registered: task.timings.registered, saved: task.timings.saved, writeStarted: task.timings.writeStarted, written: task.timings.written, firstResponse: task.timings.firstResponse },
@@ -2281,7 +2290,7 @@ export default function App() {
   }
   const persistSubmittedInput = (task: SubmittedInput<InputContext>) => saveOutbox({
     schemaVersion: 1, id: task.messageId, cwd: task.context.owner.project.cwd, conversationId: task.context.owner.sessionId,
-    runtimeId: task.context.owner.runtimeId ?? undefined, text: task.payloadRef.text, images: task.payloadRef.images, documents: task.payloadRef.documents, attempts: task.attempts.map((a) => ({ ...a })), mode: "normal", state: task.deliveryState,
+    runtimeId: task.context.owner.runtimeId ?? undefined, text: task.payloadRef.text, images: task.payloadRef.images, documents: task.payloadRef.documents, attempts: task.attempts.map((a) => ({ ...a })), mode: task.mode, state: task.deliveryState,
     createdAt: task.createdAt, conversationKey: task.conversationKey, attemptId: task.attemptId,
     inputRevision: task.inputRevision, profileRevision: task.profileRevision
   })
@@ -2337,8 +2346,10 @@ export default function App() {
       const run = id ? runningSessionsRef.current.get(id) : undefined
       if (!run) throw new Error("会话连接失败，尚未发送")
       if (task.context.collaborationMode && !run.collabMcpEnabled) throw new Error("此会话未加载协同 MCP，请新建会话")
-      // A runtime resumed from elsewhere may still be working; never claim mid-turn support.
-      if (run.streaming) throw new Error("上一轮仍在执行，请完成后重试")
+      if (run.interrupting) throw new Error("正在停止，请结束后重试")
+      if (run.streaming && (task.mode !== "guide" || !run.midTurnInput)) throw new Error("当前会话尚未确认支持引导，请本轮结束后发送")
+      await coordinatorRef.current.waitForSettlement(owner.key)
+      checkInputTarget(task)
       await measureSendStep("beginRunReview", () => beginRunReview(run))
       if (task.controller.signal.aborted) { await discardRunReview(run); coordinatorRef.current.assertCurrent(task) }
       checkInputTarget(task)
@@ -2350,13 +2361,24 @@ export default function App() {
       const owner = task.context.owner
       const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
       if (!run) throw Object.assign(new Error("会话已结束"), { deliveryCertainty: "not_sent" })
+      // A result can arrive while prepare/persist is awaiting. Re-establish a
+      // baseline after that result's review settles before writing the next turn.
+      try {
+        await coordinatorRef.current.waitForSettlement(owner.key)
+        await beginRunReview(run)
+        checkInputTarget(task)
+        if (run.interrupting) throw new Error("正在停止，尚未发送")
+      } catch (error) { throw Object.assign(new Error(String(error)), { deliveryCertainty: "not_sent" }) }
+      const guiding = task.mode === "guide" && run.streaming
+      if (guiding && !run.midTurnInput) throw Object.assign(new Error("当前会话不支持引导"), { deliveryCertainty: "not_sent" })
       const blocks = task.context.cliBlocks!
       rememberSentInput({ localId: task.messageId, ...task.payloadRef, cliBlocks: blocks, ts: task.createdAt })
-      run.activeInputId = task.messageId
+      if (!guiding) run.activeInputId = task.messageId
       setRunningSessionTurnActive(run, true)
-      try { await sendCliInput(run.runtimeId, blocks, undefined, task.attemptId) }
+      try { await sendCliInput(run.runtimeId, blocks, undefined, task.attemptId, guiding) }
       catch (error) {
         if (task.deliveryState !== "acknowledged" && task.deliveryState !== "responded") {
+          if (guiding) throw error // Preserve the current run and its shared file baseline.
           run.activeInputId = null; setRunningSessionTurnActive(run, false)
           // Uncertain writes may have side effects; preserve and settle their baseline.
           if ((error as { deliveryCertainty?: string })?.deliveryCertainty === "not_sent") await discardRunReview(run)
@@ -2402,7 +2424,11 @@ export default function App() {
     owner.composerPrefs = { ...composerPrefs }; owner.sessionComposer = sessionComposer; owner.permissionMode = planMode ? "plan" : sessionPermissionMode
     // Capture intent for each submission; queued requests do not silently adopt later settings.
     owner.state = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId)?.state ?? owner.state : stateRef.current
-    return coordinatorRef.current.submit({ conversationKey: key, context: { owner, options, collaborationMode, authorizationRevision: currentAuthorizationRevision(), composerPrefs: { ...composerPrefs }, sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
+    if (options.mode === "guide") {
+      const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+      if (run?.streaming && (!run.midTurnInput || run.interrupting)) { toast.info("当前会话暂不能引导，请使用排队发送"); return { kind: "rejected", reason: "引导不可用" } }
+    }
+    return coordinatorRef.current.submit({ conversationKey: key, mode: options.mode, context: { owner, options, collaborationMode, authorizationRevision: currentAuthorizationRevision(), composerPrefs: { ...composerPrefs }, sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
       profileRevision: currentApiLaunchProfileKey(), sourceDraftRevision: options.sourceDraftRevision ?? 0, draftKey: options.draftKey })
   }, [project, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer, planMode, sessionPermissionMode, collaborationMode, applyDefaultPermissionModeState, closeRunningSession])
 
@@ -2509,6 +2535,9 @@ export default function App() {
   }, [project, streaming, send, closeRunningSession, confirmInputAction])
 
   const stop = useCallback(async () => {
+    const pendingGuidance = [...coordinatorRef.current.tasks.values()].some((task) =>
+      task.conversationKey === viewOwnerRef.current.key && task.mode === "guide" && task.runState === "running"
+      && task.deliveryState !== "acknowledged" && task.deliveryState !== "responded")
     coordinatorRef.current.stop(viewOwnerRef.current.key)
     settleInputAction(false)
     settleClaudeWorkspaceTrust(false)
@@ -2517,6 +2546,12 @@ export default function App() {
     if (!run || !run.streaming) {
       // 非 streaming（或 run 不存在）：维持原有强杀语义
       await teardown()
+      return
+    }
+    if (pendingGuidance) {
+      // An unconsumed guide already in CLI stdin cannot be recalled. Closing
+      // this runtime prevents it from starting another turn after interrupt.
+      await closeRunningSession(run.runtimeId, { preserveConversationState: true })
       return
     }
     // 软中断已在途：等待 result 或兜底定时器收尾，避免重复发 interrupt
@@ -3465,6 +3500,16 @@ export default function App() {
                       retry: retryUserMessage,
                       edit: (id, payload) => { void editSubmittedMessage(id, payload) },
                       cancel: (id) => coordinatorRef.current.cancel(id),
+                      canGuide: (id) => {
+                        const task = coordinatorRef.current.tasks.get(id)
+                        const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
+                        return task?.deliveryState === "queued" && task.mode !== "guide" && !!run?.midTurnInput && run.streaming && !run.interrupting
+                      },
+                      guide: (id) => {
+                        const task = coordinatorRef.current.tasks.get(id)
+                        const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
+                        if (run?.midTurnInput && run.streaming && !run.interrupting) coordinatorRef.current.promote(id)
+                      },
                       resume: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resume(task.conversationKey) }
                     }}
                     slashCommands={slashCommands}
@@ -3519,6 +3564,7 @@ export default function App() {
                     onStop={stop}
                     streaming={streaming || [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === activeConversationKey && isActiveInput(task))}
                     interrupting={activeInterrupting}
+                    midTurnSupported={!!activeRun?.midTurnInput && !!activeRun.streaming}
                     disabled={!cliPath || !project}
                     draftKey={activeComposerDraftKey}
                     initialDraft={activeComposerDraft}

@@ -15,6 +15,7 @@ import {
 } from "react"
 import {
   ArrowUp,
+  CornerDownRight,
   Blocks,
   Bot,
   Check,
@@ -110,6 +111,7 @@ interface Props {
   onStop: () => void | Promise<void>
   onRecallQueued?: () => void
   streaming: boolean
+  midTurnSupported?: boolean
   /** 软中断进行中：停止按钮转为 spinner 并禁用（由 App 从 activeRun 派生） */
   interrupting?: boolean
   disabled?: boolean
@@ -159,6 +161,7 @@ export function Composer({
   onStop,
   onRecallQueued,
   streaming,
+  midTurnSupported = false,
   interrupting = false,
   disabled,
   centered,
@@ -534,7 +537,7 @@ export function Composer({
       send("followup")
       return
     }
-    // Ctrl/⌘+Enter：运行中立即引导（即时送达当前回合）
+    // Submit to the running CLI without interrupting; consumption is at its next safe point.
     if (
       e.key === "Enter" &&
       (e.ctrlKey || e.metaKey) &&
@@ -545,7 +548,8 @@ export function Composer({
       !e.nativeEvent.isComposing
     ) {
       e.preventDefault()
-      send("followup")
+      if (midTurnSupported) send("guide")
+      else toast.info("当前会话尚未确认支持引导，请使用排队发送")
       return
     }
     if (
@@ -1023,6 +1027,13 @@ export function Composer({
                 />
               )}
               <PlanUsageIndicator usage={oauthUsage ?? null} />
+              {streaming && canSend && <Button
+                key="guide-action"
+                onClick={() => send("guide")} disabled={sendBlocked || interrupting || !midTurnSupported}
+                variant="outline" size="sm" aria-label="引导"
+                title={midTurnSupported ? "现在提交，在当前动作完成后读取，不打断执行 (Ctrl/⌘+Enter)" : "当前会话尚未确认支持引导，可使用排队发送"}
+                className="h-8 gap-1 rounded-lg"
+              ><CornerDownRight className="size-3.5" />引导</Button>}
               {(!streaming || canSend) && <Button
                 key="primary-action"
                 onClick={() => send(streaming ? "followup" : undefined)} disabled={sendBlocked}

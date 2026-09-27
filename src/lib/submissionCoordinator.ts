@@ -12,6 +12,7 @@ export interface InputPayload {
 }
 export interface InputAttempt { id: string; revision: number; state: DeliveryState; error?: string }
 export interface SubmittedInput<C> {
+  mode: "guide" | "followup"
   messageId: string
   conversationKey: string
   inputRevision: number
@@ -46,19 +47,20 @@ export class SubmissionCoordinator<C> {
   private busy = new Map<string, string>()
   private paused = new Set<string>()
   private drafts = new Map<string, string>()
+  private settling = new Map<string, Promise<void>>()
   constructor(private adapter: SubmissionAdapter<C>, private defer: (fn: () => void) => void = (fn) => {
     // Yield a paint opportunity before persistence, compilation and other expensive work.
     if (typeof requestAnimationFrame === "function" && document.visibilityState === "visible") requestAnimationFrame(() => setTimeout(fn, 0))
     else setTimeout(fn, 0)
   }) {}
 
-  submit(input: { conversationKey: string; sourceDraftRevision: number; payload: InputPayload; profileRevision: string; context: C; draftKey?: string }): SubmitOutcome {
+  submit(input: { conversationKey: string; sourceDraftRevision: number; payload: InputPayload; profileRevision: string; context: C; draftKey?: string; mode?: "guide" | "followup" }): SubmitOutcome {
     if (![...this.tasks.values()].some((task) => task.conversationKey === input.conversationKey && (isPendingInput(task) || task.deliveryState === "failed" || task.deliveryState === "delivery_unknown"))) this.paused.delete(input.conversationKey)
     const draftId = input.draftKey ? `${input.draftKey}:${input.sourceDraftRevision}` : undefined
     if (draftId && this.drafts.has(draftId)) return { kind: "registered_in_ui", messageId: this.drafts.get(draftId)! }
     const messageId = crypto.randomUUID(), attemptId = crypto.randomUUID()
     const task: SubmittedInput<C> = {
-      ...input, messageId, inputRevision: 1, payloadRef: input.payload, localState: "saving",
+      ...input, mode: input.mode ?? "followup", messageId, inputRevision: 1, payloadRef: input.payload, localState: "saving",
       deliveryState: this.paused.has(input.conversationKey) ? "paused" : "preparing", runState: "idle", attemptId,
       attempts: [{ id: attemptId, revision: 1, state: "preparing" }], createdAt: Date.now(), controller: new AbortController(),
       timings: { registered: performance.now() }
@@ -102,10 +104,12 @@ export class SubmissionCoordinator<C> {
     }
   }
   private async pump(key: string) {
-    if (this.busy.has(key) || this.paused.has(key)) return
+    if (this.busy.has(key) || this.paused.has(key) || this.settling.has(key)) return
     const tasks = [...this.tasks.values()].filter((t) => t.conversationKey === key)
-    if (tasks.some((t) => t.runState === "running" || t.runState === "cancelling")) return
-    const task = tasks.find(isPendingInput)
+    const running = this.hasRunning(key)
+    // Guides may overtake local follow-ups, but share the same serialized writer.
+    const task = tasks.find((t) => isPendingInput(t) && t.mode === "guide")
+      ?? (!running ? tasks.find(isPendingInput) : undefined)
     if (!task || task.localState !== "saved") return
     this.busy.set(key, task.messageId)
     const attempt = task.attemptId
@@ -113,6 +117,7 @@ export class SubmissionCoordinator<C> {
     try {
       this.status(task, "preparing")
       await this.adapter.prepare(task)
+      await this.waitForSettlement(key)
       this.assertCurrent(task, attempt)
       // Crash recovery must be conservative even in the short pre-write window.
       this.status(task, "writing")
@@ -130,7 +135,7 @@ export class SubmissionCoordinator<C> {
     } finally {
       if (task.attemptId === attempt && task.controller.signal.aborted) this.adapter.settled(task)
       this.busy.delete(key)
-      if (task.runState !== "running") void this.pump(key)
+      void this.pump(key)
     }
   }
   private fail(task: SubmittedInput<C>, error: unknown, writing: boolean) {
@@ -152,19 +157,36 @@ export class SubmissionCoordinator<C> {
     }
     return false
   }
-  complete(key: string, failed: boolean) {
-    const task = [...this.tasks.values()].find((t) => t.conversationKey === key && (t.runState === "running" || t.runState === "cancelling"))
-    if (task) {
+  hasRunning(key: string) {
+    return [...this.tasks.values()].some((t) => t.conversationKey === key && (t.runState === "running" || t.runState === "cancelling"))
+  }
+  async waitForSettlement(key: string) {
+    await this.settling.get(key)
+  }
+  complete(key: string, failed: boolean, attemptIds?: readonly string[], beforeNext?: () => Promise<void>) {
+    const active = [...this.tasks.values()].filter((t) => t.conversationKey === key && (t.runState === "running" || t.runState === "cancelling"))
+    // A late guide can belong to the NEXT CLI turn. Settle only the IDs named by
+    // this result, never every input that happens to have been written already.
+    const completed = attemptIds ? active.filter((t) => attemptIds.includes(t.attemptId)) : active.slice(0, 1)
+    for (const task of completed) {
       task.deliveryState = "responded"; task.runState = failed ? "failed" : "done"
       task.timings.firstResponse ??= performance.now()
       this.emit(task); this.adapter.settled(task)
     }
     if (failed) this.pause(key)
-    else void this.pump(key)
+    if (!this.hasRunning(key) && beforeNext && !this.settling.has(key)) {
+      const settlement = Promise.resolve().then(beforeNext)
+      this.settling.set(key, settlement)
+      void settlement.then(
+        () => { this.settling.delete(key); void this.pump(key) },
+        () => { this.settling.delete(key); this.pause(key) }
+      )
+    } else if (!failed) void this.pump(key)
   }
-  response(key: string) {
-    const task = [...this.tasks.values()].find((task) => task.conversationKey === key && task.runState === "running")
-    if (task && task.timings.firstResponse === undefined) { task.timings.firstResponse = performance.now(); this.emit(task) }
+  response(key: string, attemptIds?: readonly string[]) {
+    const active = [...this.tasks.values()].filter((t) => t.conversationKey === key && t.runState === "running")
+    const responding = attemptIds ? active.filter((t) => attemptIds.includes(t.attemptId)) : active.slice(0, 1)
+    for (const task of responding) if (task.timings.firstResponse === undefined) { task.timings.firstResponse = performance.now(); this.emit(task) }
   }
   connectionLost(key: string) {
     this.pause(key)
@@ -197,9 +219,20 @@ export class SubmissionCoordinator<C> {
   }
   stop(key: string) {
     this.pause(key)
-    const task = [...this.tasks.values()].find((t) => t.conversationKey === key && (t.runState === "running" || this.busy.get(key) === t.messageId))
-      ?? [...this.tasks.values()].find((t) => t.conversationKey === key && isPendingInput(t))
-    if (task) this.cancel(task.messageId)
+    const active = [...this.tasks.values()].filter((t) => t.conversationKey === key && (t.runState === "running" || this.busy.get(key) === t.messageId))
+    if (!active.length) {
+      const pending = [...this.tasks.values()].find((t) => t.conversationKey === key && isPendingInput(t))
+      if (pending) active.push(pending)
+    }
+    for (const task of active) this.cancel(task.messageId)
+  }
+  promote(id: string): boolean {
+    const task = this.tasks.get(id)
+    if (!task || task.deliveryState !== "queued" || this.paused.has(task.conversationKey) || this.busy.get(task.conversationKey) === id) return false
+    task.mode = "guide"
+    this.emit(task)
+    void this.pump(task.conversationKey)
+    return true
   }
   retry(id: string, payload?: InputPayload) {
     const task = this.tasks.get(id)

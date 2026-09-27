@@ -1242,7 +1242,24 @@ pub async fn send_user_message(
     session_id: String,
     content_blocks: Value,
     client_message_id: Option<String>,
+    mid_turn: Option<bool>,
 ) -> Result<()> {
+    if mid_turn == Some(true)
+        && manager
+            .capabilities(Some(&session_id))
+            .await?
+            .mid_turn_input
+            != crate::proc::capabilities::Support::Supported
+    {
+        return Err(Error::Delivery(crate::error::DeliveryError {
+            code: "mid_turn_unverified".into(),
+            phase: "prepare".into(),
+            runtime_id: session_id.clone(),
+            delivery_certainty: "not_sent".into(),
+            os_error_code: None,
+            message: "当前会话尚未确认支持引导，尚未发送".into(),
+        }));
+    }
     manager
         .send(&session_id, content_blocks, client_message_id)
         .await
@@ -6519,8 +6536,9 @@ pub async fn collab_run_verification(
 #[tauri::command]
 pub async fn claude_capabilities(
     manager: State<'_, Manager>,
+    session_id: Option<String>,
 ) -> Result<crate::proc::capabilities::CliCapabilities> {
-    manager.capabilities().await
+    manager.capabilities(session_id.as_deref()).await
 }
 
 #[tauri::command]

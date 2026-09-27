@@ -24,7 +24,7 @@ pub enum Support {
     Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliCapabilities {
     pub executable_path: String,
@@ -36,6 +36,7 @@ pub struct CliCapabilities {
     pub subagent_text_forwarding: Support,
     pub core_stream: Support,
     pub user_message_replay: Support,
+    pub mid_turn_input: Support,
     pub hook_events: Support,
     pub headless_model_command: Support,
     pub native_ultracode_effort: Support,
@@ -73,6 +74,21 @@ pub fn from_help(flag: &str, help: &str) -> Support {
     }
 }
 
+pub fn mid_turn_input(version: &str, help: &str) -> Support {
+    // Official desktop/interactive docs describe safe-point ingestion. A local
+    // stream-json fixture on 2.1.283 verified tool-result -> injected input ->
+    // next model request, plus result.user_message_uuids for turn attribution.
+    // Keep other versions unknown until their wire contract is checked too.
+    if version.split_whitespace().next() == Some("2.1.283")
+        && from_help("--input-format", help) == Support::Supported
+        && from_help("--replay-user-messages", help) == Support::Supported
+    {
+        Support::Supported
+    } else {
+        Support::Unknown
+    }
+}
+
 pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabilities {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -87,6 +103,10 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
         evidence: std::collections::BTreeMap::from([
             ("coreStream", "help; missing entries remain unknown"),
             ("userMessageReplay", "help"),
+            (
+                "midTurnInput",
+                "official Code docs; local stream-json fixture: 2.1.283, 2026-09-27",
+            ),
             ("hookEvents", "help"),
             (
                 "forkSession",
@@ -114,6 +134,7 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
         .into(),
         core_stream: from_help("--input-format", help),
         user_message_replay: from_help("--replay-user-messages", help),
+        mid_turn_input: mid_turn_input(&version, help),
         hook_events: from_help("--include-hook-events", help),
         headless_model_command: version_at_least(&version, (2, 1, 205)),
         native_ultracode_effort: version_at_least(&version, (2, 1, 203)),
@@ -133,6 +154,26 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mid_turn_requires_verified_protocol_and_replay() {
+        let help = "--input-format --replay-user-messages";
+        assert_eq!(
+            mid_turn_input("2.1.283 (Claude Code)", help),
+            Support::Supported
+        );
+        assert_eq!(
+            mid_turn_input("2.1.282 (Claude Code)", help),
+            Support::Unknown
+        );
+        assert_eq!(
+            mid_turn_input("2.1.284 (Claude Code)", help),
+            Support::Unknown
+        );
+        assert_eq!(
+            mid_turn_input("2.1.283", "--input-format"),
+            Support::Unknown
+        );
+    }
     #[test]
     fn missing_help_is_unknown_and_versions_are_exact() {
         assert_eq!(
