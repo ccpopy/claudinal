@@ -1,4 +1,5 @@
 import type { ClaudeEvent } from "@/types/events"
+import { isTaskNotificationEvent } from "./messageOrigin"
 
 export type SubagentStatus = "running" | "completed" | "failed" | "cancelled"
 
@@ -169,13 +170,6 @@ function launchFromEvent(event: ClaudeEvent): SubagentTask | null {
   }
 }
 
-function isDeliveredTaskNotification(event: ClaudeEvent): boolean {
-  const obj = event as Record<string, unknown>
-  if (obj.type !== "user") return false
-  const origin = recordOf(obj.origin)
-  return origin?.kind === "task-notification" || /<task-notification>/i.test(eventText(event))
-}
-
 function isFailedResult(event: ClaudeEvent): boolean {
   const obj = event as Record<string, unknown>
   if (obj.type !== "result") return false
@@ -220,6 +214,7 @@ export function reduceSubagentRegistry(
 ): SubagentTransition {
   const obj = event as Record<string, unknown>
   const type = stringValue(obj.type)
+  if (obj.claudinalAuthored === true) return { registry: current, changed: false, resultDisposition: "none" }
   const ts = eventTimestamp(event)
   const launch = launchFromEvent(event)
 
@@ -250,12 +245,14 @@ export function reduceSubagentRegistry(
     }
   }
 
-  const notification = parseTaskNotification(event)
+  const notification = isTaskNotificationEvent(obj, current.agents.map((agent) => agent.id),
+    current.agents.flatMap((agent) => agent.toolUseId ? [agent.toolUseId] : []))
+    ? parseTaskNotification(event) : null
   if (notification) {
     const index = current.agents.findIndex((agent) => agent.id === notification.taskId)
     if (index >= 0) {
       const previous = current.agents[index]
-      const delivered = isDeliveredTaskNotification(event)
+      const delivered = type === "user"
       const queued = type === "queue-operation" && obj.operation === "enqueue"
       const status = notification.status ?? previous.status
       const endedAt = status === "running" ? undefined : (previous.endedAt ?? ts)

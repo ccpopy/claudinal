@@ -1,4 +1,5 @@
 import type { UIEntry } from "@/types/ui"
+import { isAuthoredUserMessage } from "./messageOrigin"
 
 type MessageIdLookup = {
   get(messageId: string): { text: string } | undefined
@@ -17,6 +18,7 @@ export function findFirstTurnFailedMessageId(
       if (isSyntheticAssistantMessage(entry)) continue
       return null
     }
+    if (!isAuthoredUserMessage(entry)) continue
     const input = sentInputs.get(entry.id)
     if (!input) {
       echoedUserTexts.push(uiMessageText(entry))
@@ -48,7 +50,7 @@ export function hasResumableUiConversationContext(
   return entries.some(
     (entry) =>
       entry.kind === "message" &&
-      (entry.role === "user" ||
+      (isAuthoredUserMessage(entry) ||
         (entry.role === "assistant" && !isSyntheticAssistantMessage(entry)))
   )
 }

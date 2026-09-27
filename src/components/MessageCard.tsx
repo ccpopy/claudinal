@@ -3,13 +3,10 @@ import { deliveryLabel, type DeliveryState } from "@/lib/submission"
 import { parseCommand } from "@/lib/commandRegistry"
 import { RetryButton } from "./RetryButton"
 import { CommandChip } from "./CommandChip"
-import { isInjectedOnlyUserMessage, parseTaskNotification, splitInjectedContext, type InjectedContext, type TaskNotification } from "@/lib/userMessageText"
 import { useEffect, useState } from "react"
 import {
   AlertTriangle,
-  Bot,
   CheckCircle2,
-  ChevronDown,
   Info,
   CircleAlert,
   CircleStop,
@@ -19,10 +16,8 @@ import {
   DollarSign,
   FileWarning,
   Gauge,
-  ListChecks,
   Loader2,
   ShieldAlert,
-  Terminal,
   Timer,
   Webhook,
   type LucideIcon
@@ -66,6 +61,8 @@ export function MessageCard({
     )
   }
   if (entry.kind === "system_init") return <SystemInitView e={entry} />
+  if (entry.kind === "activity") return <BlockView role="assistant" block={{ type: "activity", activity: entry }} cwd={cwd} />
+  if (entry.kind === "skill_load") return <BlockView role="assistant" block={{ type: "skill_load", skill: entry }} cwd={cwd} />
   if (entry.kind === "system_status") return entry.status.startsWith("CLI 正在恢复") ? <SimpleRow label="连接恢复中" content={entry.status} /> : null
   if (entry.kind === "result") return <ResultView e={entry} onOpenPermissions={onOpenPermissions} />
   if (entry.kind === "rate_limit") return null
@@ -151,9 +148,7 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }
   const images = msg.blocks.filter((b) => b.type === "image")
   const others = msg.blocks.filter((b) => b.type !== "text" && b.type !== "image")
   const original = msg.rawText ?? textBlocks.map((b) => b.text ?? "").join("\n")
-  const { body: text, injected } = splitInjectedContext(
-    textBlocks.map((b) => b.text ?? "").join("\n").trim()
-  )
+  const text = textBlocks.map((b) => b.text ?? "").join("\n")
   // 只有当前会话确认存在的命令才显示成 chip，"/tmp 看下日志" 之类保持原文
   const parsed = parseCommand(text)
   const command = parsed && slashCommands?.includes(parsed.name) ? parsed : null
@@ -175,18 +170,8 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }
       />
     </div>
   }
-  // 后台任务通知是 CLI 发给模型的系统事件，按左侧事件行展示，不混进用户气泡
-  const taskNotes = injected.filter((item) => item.tag === "task-notification").map((item) => parseTaskNotification(item.content))
-  const contextNotes = injected.filter((item) => item.tag !== "task-notification")
-  if (isInjectedOnlyUserMessage(msg)) {
-    return <div className="flex min-w-0 flex-col items-start gap-1.5">
-      {taskNotes.map((note, index) => <TaskNotificationRow key={note.taskId ?? index} note={note} />)}
-      {contextNotes.length > 0 && <InjectedContextView items={contextNotes} align="start" />}
-    </div>
-  }
   const footer = hasSubmissionFooter(msg, submissionActions)
   return <div className="group/msg flex min-w-0 flex-col items-end gap-1.5">
-    {taskNotes.map((note, index) => <div key={note.taskId ?? index} className="self-start"><TaskNotificationRow note={note} /></div>)}
     {others.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-2 [&>*]:max-w-full">
       {others.map((block, index) => <BlockView key={index} role="user" block={block} variant="user" cwd={cwd} />)}
     </div>}
@@ -208,7 +193,6 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }
     {msg.submissionPendingNames?.length && !footer ? <p className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
       <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />附件准备中：{msg.submissionPendingNames.join("、")}
     </p> : null}
-    {contextNotes.length > 0 && <InjectedContextView items={contextNotes} />}
     {footer && submissionActions
       ? <SubmissionFooter message={msg} actions={submissionActions} onEdit={() => setEditing(true)} />
       : status && (delivery !== "preparing" || showPendingLabel) && <p role="status" className={cn("flex items-center gap-1 px-1 text-[11px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
@@ -219,76 +203,6 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }
       {onRetry && (!submissionActions?.payload(msg.id) || msg.deliveryState === "responded" || msg.deliveryState === "acknowledged") && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}
       {original && <CopyButton text={original} ariaLabel="复制原始输入" label="原始输入已复制" />}
     </div>
-  </div>
-}
-
-const TASK_OUTCOME_LABEL: Record<TaskNotification["outcome"], string> = {
-  completed: "已完成",
-  failed: "失败",
-  killed: "已停止",
-  unknown: "已结束"
-}
-const TASK_KIND_LABEL: Record<TaskNotification["kind"], string> = {
-  command: "后台命令",
-  agent: "子智能体",
-  task: "后台任务"
-}
-
-/** 后台命令 / 异步 Agent 的结束通知：与「会话开始」同款的可展开事件行。 */
-function TaskNotificationRow({ note }: { note: TaskNotification }) {
-  const [open, setOpen] = useState(false)
-  const failed = note.outcome === "failed"
-  const subject = note.name ?? (note.kind === "task" ? note.summary : undefined)
-  const details: Array<[string, string]> = [
-    ...(!note.name && note.summary && subject !== note.summary ? [["摘要", note.summary] as [string, string]] : []),
-    ...(note.taskId ? [["任务 ID", note.taskId] as [string, string]] : []),
-    ...(note.toolUseId ? [["工具调用", note.toolUseId] as [string, string]] : []),
-    ...(note.status ? [["状态", note.status] as [string, string]] : [])
-  ]
-  return <ExpandableRow
-    open={open}
-    onToggle={() => setOpen(!open)}
-    icon={note.kind === "agent" ? Bot : note.kind === "command" ? Terminal : ListChecks}
-    tone={failed ? "error" : undefined}
-    label={`${TASK_KIND_LABEL[note.kind]}${TASK_OUTCOME_LABEL[note.outcome]}${subject ? ` · ${subject}` : ""}`}
-    meta={note.exitCode !== undefined && note.exitCode !== 0 ? `退出码 ${note.exitCode}` : undefined}
-  >
-    <div className="flex flex-col gap-1 rounded-lg border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
-      {details.map(([key, value]) => <div key={key} className="flex gap-2">
-        <span className="w-14 shrink-0">{key}</span>
-        <span className="min-w-0 break-all font-mono text-foreground/80">{value}</span>
-      </div>)}
-      {note.outputFile && <div className="flex items-start gap-2">
-        <span className="w-14 shrink-0">输出文件</span>
-        <span className="min-w-0 flex-1 break-all font-mono text-foreground/80">{note.outputFile}</span>
-        <CopyButton text={note.outputFile} ariaLabel="复制输出文件路径" label="路径已复制" className="-my-1 shrink-0" />
-      </div>}
-      {!details.length && !note.outputFile && <div>CLI 未提供更多信息</div>}
-    </div>
-  </ExpandableRow>
-}
-
-/** CLI 随用户消息注入的上下文：默认折叠成一行小字，按需展开查看原文。 */
-function InjectedContextView({ items, align = "end" }: { items: InjectedContext[]; align?: "start" | "end" }) {
-  const [open, setOpen] = useState(false)
-  const labels = [...new Set(items.map((item) => item.label))].join("、")
-  return <div className={cn("flex max-w-[85%] flex-col gap-1", align === "start" ? "items-start" : "items-end")}>
-    <button
-      type="button"
-      onClick={() => setOpen((value) => !value)}
-      aria-expanded={open}
-      className="flex items-center gap-1 rounded px-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <Info className="size-3 shrink-0" aria-hidden />
-      附带{labels}{items.length > 1 ? ` · ${items.length}` : ""}
-      <ChevronDown className={cn("size-3 shrink-0 transition-transform", open && "rotate-180")} aria-hidden />
-    </button>
-    {open && <div className="flex max-h-60 w-full flex-col gap-2 overflow-auto rounded-lg border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-      {items.map((item, index) => <div key={index} className="min-w-0">
-        {items.length > 1 && <div className="mb-0.5 font-medium text-foreground/80">{item.label}</div>}
-        <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.content || "（空）"}</div>
-      </div>)}
-    </div>}
   </div>
 }
 

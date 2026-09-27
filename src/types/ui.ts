@@ -6,10 +6,14 @@ export type UIBlockType =
   | "tool_result"
   | "image"
   | "attachment"
+  | "skill_load"
+  | "activity"
   | "unknown"
 
 export interface UIBlock {
   type: UIBlockType
+  skill?: UISkillContent
+  activity?: UIActivityContent
   text?: string
   toolName?: string
   toolInput?: unknown
@@ -165,8 +169,37 @@ export interface UIUnknown {
   ts: number
 }
 
+export interface UISkillContent {
+  name: string
+  directory: string
+  content: string
+}
+
+/** CLI-injected skill instructions are run activity, not authored input. */
+export interface UISkillLoad extends UISkillContent {
+  kind: "skill_load"
+  id: string
+  toolUseId?: string
+  ts: number
+}
+
+export type UIActivityCategory = "context" | "task" | "command" | "hook" | "compact" | "teammate"
+export interface UIActivityContent {
+  category: UIActivityCategory
+  label: string
+  blocks: UIBlock[]
+}
+export interface UIActivity extends UIActivityContent {
+  kind: "activity"
+  id: string
+  eventId?: string
+  ts: number
+}
+
 export type UIEntry =
   | UIMessage
+  | UISkillLoad
+  | UIActivity
   | UISystemInit
   | UISystemStatus
   | UIResult

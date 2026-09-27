@@ -20,7 +20,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::app_paths::claudinal_dir;
 use crate::error::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub fn db_path() -> Result<PathBuf> {
     Ok(claudinal_dir()?.join("session-index-v1.sqlite3"))
@@ -234,8 +234,9 @@ fn create_or_migrate_schema(conn: &Connection, from_version: i64) -> Result<()> 
         "#,
     )?;
 
-    if from_version < 4 {
-        // v4 preserves literal user tags; rebuild derived search/title caches.
+    if from_version < 5 {
+        // v5 excludes CLI-generated context by provenance; rebuild derived
+        // search/title caches so unchanged transcripts also get reclassified.
         conn.execute_batch(
             r#"
             DELETE FROM session_index;
@@ -450,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_migration_invalidates_visibility_dependent_caches() -> Result<()> {
+    fn v4_migration_invalidates_visibility_dependent_caches() -> Result<()> {
         let conn = Connection::open_in_memory()?;
         create_or_migrate_schema(&conn, 0)?;
         conn.execute(
@@ -478,7 +479,14 @@ mod tests {
             [],
         )?;
 
-        create_or_migrate_schema(&conn, 2)?;
+        conn.execute("INSERT INTO session_usage (session_id, sidecar_path, sidecar_mtime_millis, sidecar_size, cost_usd) VALUES ('session', 'sidecar', 1, 1, 2.5)", [])?;
+        // Opening a current database must keep its caches intact.
+        create_or_migrate_schema(&conn, SCHEMA_VERSION)?;
+        let cached: i64 =
+            conn.query_row("SELECT COUNT(*) FROM session_text", [], |row| row.get(0))?;
+        assert_eq!(cached, 1);
+
+        create_or_migrate_schema(&conn, 4)?;
 
         for table in ["session_index", "fts_progress", "session_text"] {
             let rows: i64 =
@@ -489,6 +497,12 @@ mod tests {
         }
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         assert_eq!(version, SCHEMA_VERSION);
+        let cost: f64 = conn.query_row(
+            "SELECT cost_usd FROM session_usage WHERE session_id = 'session'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(cost, 2.5);
         Ok(())
     }
 }

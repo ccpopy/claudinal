@@ -7,6 +7,7 @@ import { readSessionSidecar, readSessionTranscript } from "@/lib/ipc"
 import { unarchive } from "@/lib/archivedSessions"
 import { reduce, init as initReducer, type State } from "@/lib/reducer"
 import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
+import { restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
 import { getSessionTitle } from "@/lib/sessionTitles"
 import type { ClaudeEvent } from "@/types/events"
 import type { Project } from "@/lib/projects"
@@ -65,7 +66,10 @@ export function ArchivedSessionPreview({
         const merged: ClaudeEvent[] = sidecar?.result
           ? [...events, sidecar.result]
           : events
-        dispatch({ kind: "load_transcript", events: merged })
+        const restored = restoreInputMetadata(reduce(initReducer(), {
+          kind: "load_transcript", events: restoreTranscriptInputOrigins(merged, sidecar)
+        }), sidecar)
+        dispatch({ kind: "replace_state", state: restored })
       } catch (e) {
         if (cancelled) return
         setError(String(e))

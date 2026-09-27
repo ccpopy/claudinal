@@ -1,6 +1,8 @@
 import type { ClaudeEvent, ContentBlock } from "../types/events"
 import type { UIBlock, UIEntry, UIMessage } from "../types/ui"
 import { splitUploadedFileText } from "./fileAttachments"
+import { parseSkillContent, skillLoadFromEvent, SKILL_META_PROMPT_PREFIX } from "./skillContent"
+import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, userActivityCategory } from "./messageOrigin"
 import {
   initSubagentRegistry,
   settleSubagentRegistryForResume,
@@ -154,6 +156,7 @@ function parseTs(ev: unknown): number {
 
 function reduceEvent(state: State, ev: ClaudeEvent): State {
   if (!ev || typeof ev !== "object") return state
+  ev = markAuthoredEvent(ev, state.entries)
   const ts = parseTs(ev)
   const t = (ev as { type?: string }).type
   const subagentTransition = reduceSubagentRegistry(state.subagents, ev)
@@ -162,8 +165,19 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   }
   if ((ev as Record<string, unknown>).parent_tool_use_id) return state
   if (t === "queue-operation") return state
-  if (isMetaSkillPromptEvent(ev)) return removeLeakedSkillMetaPrompt(state)
-  if (isInterruptionArtifactEvent(state, ev)) {
+  if ((ev as Record<string, unknown>).isSidechain === true) return state
+  const skill = skillLoadFromEvent(ev as Record<string, unknown>, state.entries, ts)
+  if (skill) {
+    const clean = removeLeakedSkillMetaPrompt(state, skill.directory)
+    const existing = clean.entries.findIndex((entry) => entry.kind === "skill_load"
+      && (entry.id === skill.id || (!!skill.toolUseId && entry.toolUseId === skill.toolUseId
+        && entry.directory === skill.directory)))
+    if (existing < 0) return { ...clean, entries: [...clean.entries, skill] }
+    const entries = clean.entries.slice()
+    entries[existing] = { ...skill, id: (entries[existing] as typeof skill).id, ts: entries[existing].ts }
+    return { ...clean, entries }
+  }
+  if ((ev as Record<string, unknown>).claudinalAuthored !== true && isInterruptionArtifactEvent(state, ev)) {
     return {
       ...state,
       pendingInterruption: latestTurnResultIsInterrupted(state.entries)
@@ -171,6 +185,7 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
         : true
     }
   }
+  if (t === "user") return reduceUser(state, ev as Record<string, unknown>, ts)
   if (isInternalGeneratedEvent(ev)) return state
   // GUI 软中断写入的 interrupt control_request 会让 CLI 在 stdout 回一条
   // control_response 回执：纯协议事件，显式忽略，避免落进 unknown 渲染脏行
@@ -180,7 +195,6 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   if (t === "stream_event")
     return reduceStreamEvent(state, (ev as Record<string, unknown>).event, ts)
   if (t === "assistant") return reduceAssistant(state, ev as Record<string, unknown>, ts)
-  if (t === "user") return reduceUser(state, ev as Record<string, unknown>, ts)
   if (t === "attachment")
     return reduceAttachment(state, ev as Record<string, unknown>, ts)
   if (t === "result")
@@ -456,8 +470,6 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
 // 把它附着到对应 tool_result block 上，供 UI 做 diff 渲染。
 // 同时把结束时间写回上游 assistant 消息中对应 toolUseId 的 tool_use 块（用于显示耗时）。
 function reduceUser(state: State, ev: Record<string, unknown>, ts: number): State {
-  // jsonl 中 CLI 注入的 system-reminder 标记为 isMeta:true，不展示给用户
-  if (ev.isMeta === true) return state
   const uuid = typeof ev.uuid === "string" ? ev.uuid : undefined
   if (uuid) {
     const local = state.entries.find((entry) => entry.kind === "message" && entry.role === "user" && entry.attemptIds?.includes(uuid))
@@ -466,14 +478,16 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
       return { ...state, entries: state.entries.map((entry) => entry === local ? { ...local, transcriptUuid: uuid, deliveryState: local.deliveryState === "responded" ? "responded" : "acknowledged" } : entry) }
     }
   }
-  if (uuid && state.entries.some((entry) => entry.kind === "message" && entry.role === "user" && entry.id === uuid)) {
+  if (uuid && state.entries.some((entry) => isAuthoredUserMessage(entry) && entry.id === uuid)) {
     return { ...state, entries: state.entries.map((entry) => entry.kind === "message" && entry.id === uuid ? { ...entry, deliveryState: entry.deliveryState === "responded" ? "responded" : "acknowledged" } : entry) }
   }
   const msg = (ev.message as Record<string, unknown>) ?? {}
-  const blocks = normalizeUserBlocks(convertContentBlocks(msg.content))
+  const category = userActivityCategory(ev, state.entries, state.subagents.agents.map((agent) => agent.id))
+  const rawBlocks = convertContentBlocks(msg.content)
+  const blocks = category ? rawBlocks : normalizeUserBlocks(rawBlocks)
   if (blocks.length === 0) return state
   bindImagePlaceholders(blocks)
-  const tur = ev.tool_use_result
+  const tur = ev.tool_use_result ?? ev.toolUseResult
   if (tur != null) {
     const target = blocks.find((b) => b.type === "tool_result")
     if (target) {
@@ -486,19 +500,39 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
       entries = stampToolEndedAt(entries, b.toolUseId, ts)
     }
   }
+  const id = uuid ?? (msg.id as string) ?? `user-${state.entries.length}`
+  const messageBlocks = category ? blocks.filter((block) => block.type === "tool_result") : blocks
+  if (category) {
+    const activityBlocks = blocks.filter((block) => block.type !== "tool_result")
+    if (activityBlocks.length) {
+      const activity = { kind: "activity" as const, id: `activity-${id}`, eventId: uuid, category,
+        label: activityLabel(category, eventUserText(ev)), blocks: activityBlocks, ts }
+      const existing = entries.findIndex((entry) => entry.kind === "activity" && entry.id === activity.id)
+      entries = entries.slice()
+      if (existing >= 0) entries[existing] = { ...activity, ts: entries[existing].ts }
+      else entries.push(activity)
+    }
+    if (!messageBlocks.length) return { ...state, entries }
+  }
   const entry: UIMessage = {
     kind: "message",
-    id: (ev.uuid as string) ?? (msg.id as string) ?? `user-${state.entries.length}`,
+    id,
     role: "user",
-    rawText: typeof msg.content === "string" ? msg.content : undefined,
-    blocks,
+    rawText: typeof ev.claudinalAuthoredText === "string" ? ev.claudinalAuthoredText
+      : typeof msg.content === "string" ? msg.content : undefined,
+    blocks: messageBlocks,
     streaming: false,
     ts
   }
+  const existing = entries.findIndex((item) => item.kind === "message" && item.id === id)
+  if (existing >= 0) {
+    entries = entries.slice()
+    entries[existing] = { ...entry, ts: entries[existing].ts }
+  } else entries = [...entries, entry]
   return {
     ...state,
-    entries: [...entries, entry],
-    pendingInterruption: blocks.some((block) => block.type !== "tool_result")
+    entries,
+    pendingInterruption: isAuthoredUserMessage(entry)
       ? false
       : state.pendingInterruption
   }
@@ -508,7 +542,6 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
 // 一一配对（角标 / lightbox alt 用 #N，与文中字样所见即所得）。
 // `[Image: source: <path>]` 这种含本地路径形态只做剥离，不计入配对（CLI 常和 #N 并列出现，
 // 同一张图配 2 个占位会错位）。fallback 用 basename。
-const SKILL_META_PROMPT_PREFIX = "Base directory for this skill:"
 const INTERRUPTED_USER_SENTINEL = "[Request interrupted by user]"
 const NO_RESPONSE_SENTINEL = "No response requested."
 
@@ -542,14 +575,6 @@ function isSdkInterruptionUserEvent(obj: Record<string, unknown>): boolean {
     typeof obj.promptId === "string" &&
     obj.userType === "external" &&
     obj.entrypoint === "sdk-cli"
-  )
-}
-
-function isAuthoredUserMessage(entry: UIEntry): entry is UIMessage {
-  return (
-    entry.kind === "message" &&
-    entry.role === "user" &&
-    entry.blocks.some((block) => block.type !== "tool_result")
   )
 }
 
@@ -639,22 +664,12 @@ function isSkillMetaPromptText(text: string | undefined): boolean {
   return text?.trimStart().startsWith(SKILL_META_PROMPT_PREFIX) === true
 }
 
-function isMetaSkillPromptEvent(ev: ClaudeEvent): boolean {
-  if (!ev || typeof ev !== "object") return false
-  const obj = ev as Record<string, unknown>
-  if (obj.type !== "user" || (obj.isMeta !== true && typeof obj.sourceToolUseID !== "string")) return false
-  const msg = (obj.message as Record<string, unknown> | undefined) ?? {}
-  return convertContentBlocks(msg.content).some(
-    (block) => block.type === "text" && isSkillMetaPromptText(block.text)
-  )
-}
-
-function removeLeakedSkillMetaPrompt(state: State): State {
+function removeLeakedSkillMetaPrompt(state: State, directory: string): State {
   for (let i = state.entries.length - 1; i >= 0; i--) {
     const entry = state.entries[i]
     if (entry.kind !== "message" || entry.role === "user") continue
     const hasSkillMeta = entry.blocks.some(
-      (block) => block.type === "text" && isSkillMetaPromptText(block.text)
+      (block) => block.type === "text" && parseSkillContent(block.text ?? "")?.directory === directory
     )
     if (!hasSkillMeta) continue
     const entries = state.entries.slice()
@@ -884,7 +899,8 @@ function findMergeableAssistantIdx(entries: UIEntry[], id: string): number {
     if (e.kind === "result") return -1
     if (e.kind !== "message") continue
     const message = e as UIMessage
-    if (message.role === "user") return -1
+    if (isAuthoredUserMessage(message)) return -1
+    if (message.role === "user") continue
     return message.id === id ? i : -1
   }
   return -1

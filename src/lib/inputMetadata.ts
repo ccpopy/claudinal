@@ -2,6 +2,36 @@ import { splitUploadedFileText } from "./fileAttachments"
 import type { UIMessage } from "@/types/ui"
 import type { State } from "./reducer"
 import { deliveryLabel } from "./submission"
+import type { ClaudeEvent } from "@/types/events"
+import { markAuthoredEvent } from "./messageOrigin"
+
+/** Known local input IDs take precedence over CLI envelope heuristics. */
+export function authoredInputIds(sidecar: unknown): string[] {
+  if (!sidecar || typeof sidecar !== "object") return []
+  const stored = sidecar as Record<string, unknown>
+  if (stored.inputMetadataVersion !== 1) return []
+  const ids = new Set<string>()
+  for (const [key, value] of Object.entries(stored)) {
+    if (!key.startsWith("input:") || !value || typeof value !== "object" || Array.isArray(value)) continue
+    const meta = value as Record<string, unknown>
+    for (const id of [key.slice(6), meta.visualId, meta.attemptId, ...(Array.isArray(meta.attemptIds) ? meta.attemptIds : [])]) {
+      if (typeof id === "string" && id) ids.add(id)
+    }
+  }
+  return [...ids]
+}
+
+export function restoreTranscriptInputOrigins(events: ClaudeEvent[], sidecar: unknown): ClaudeEvent[] {
+  const ids = new Set(authoredInputIds(sidecar))
+  if (!ids.size) return events
+  const stored = sidecar as Record<string, unknown>
+  return events.map((raw) => {
+    const event = markAuthoredEvent(raw, [], ids)
+    if (event.type !== "user" || event.claudinalAuthored !== true) return event
+    const meta = stored[`input:${event.uuid}`] as { rawText?: unknown } | undefined
+    return typeof meta?.rawText === "string" ? { ...event, claudinalAuthoredText: meta.rawText } : event
+  })
+}
 
 export function inputMetadataPatch(state: State): Record<string, unknown> {
   const patch: Record<string, unknown> = { inputMetadataVersion: 1 }

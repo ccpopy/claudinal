@@ -1,6 +1,7 @@
 import { readClaudeSettings, writeClaudeSettings } from "@/lib/ipc"
 import { emitSettingsBus } from "@/lib/settingsBus"
 import type { ClaudeEvent, ContentBlock } from "@/types/events"
+import { hasInjectedProvenance } from "./messageOrigin"
 
 // Composer 数据层（重新设计 2026-04-30）：
 //
@@ -188,11 +189,18 @@ function messageTextBlocks(ev: ClaudeEvent): string[] {
 export function composerPrefsPatchFromCommandEvent(
   ev: ClaudeEvent
 ): Partial<ComposerPrefs> | null {
-  for (const text of messageTextBlocks(ev)) {
-    const commandName = readSimpleTag(text, "command-name")
+  if (ev.type !== "user") return null
+  // Only a known local slash input or a CLI-origin envelope may change preferences.
+  const authored = ev.claudinalAuthored === true && typeof ev.claudinalAuthoredText === "string"
+    ? /^\s*\/(model|effort)(?:\s+([^\r\n]*))?\s*$/.exec(ev.claudinalAuthoredText) : null
+  if (!authored && !hasInjectedProvenance(ev)) return null
+  const texts = authored ? [""] : messageTextBlocks(ev)
+  for (const text of texts) {
+    if (!authored && !/^\s*<command-(?:name|message)>/.test(text)) continue
+    const commandName = authored?.[1] ?? readSimpleTag(text, "command-name")
     if (!commandName) continue
     const command = commandName.trim().replace(/^\//, "").toLowerCase()
-    const args = readSimpleTag(text, "command-args") ?? ""
+    const args = authored?.[2] ?? (authored ? "" : readSimpleTag(text, "command-args")) ?? ""
     if (command === "effort") {
       return { effort: normalizeEffort(args) }
     }

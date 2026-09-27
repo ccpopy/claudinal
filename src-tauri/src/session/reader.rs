@@ -310,10 +310,51 @@ fn strip_leading_slash_command(s: &str) -> &str {
 }
 
 pub(crate) fn is_internal_generated_event(v: &serde_json::Value) -> bool {
-    v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false)
+    [
+        "isMeta",
+        "is_meta",
+        "isSynthetic",
+        "is_synthetic",
+        "isCompactSummary",
+        "is_compact_summary",
+    ]
+    .iter()
+    .any(|key| v.get(key).and_then(|x| x.as_bool()) == Some(true))
         || v.get("isSidechain")
             .and_then(|x| x.as_bool())
             .unwrap_or(false)
+        || (v.get("type").and_then(|x| x.as_str()) == Some("user")
+            && (["sourceToolUseID", "source_tool_use_id"].iter().any(|key| {
+                v.get(key)
+                    .and_then(|x| x.as_str())
+                    .is_some_and(|id| !id.is_empty())
+            }) || matches!(
+                v.pointer("/origin/kind").and_then(|x| x.as_str()),
+                Some(
+                    "task-notification"
+                        | "task_notification"
+                        | "hook"
+                        | "hook-context"
+                        | "hook_response"
+                        | "compact-summary"
+                        | "compact_summary"
+                        | "local-command"
+                        | "local_command"
+                        | "teammate-message"
+                        | "teammate_message"
+                        | "system"
+                        | "system-reminder"
+                        | "plugin"
+                )
+            ) || v
+                .pointer("/message/content")
+                .and_then(|x| x.as_array())
+                .is_some_and(|blocks| {
+                    !blocks.is_empty()
+                        && blocks.iter().any(|block| {
+                            block.get("type").and_then(|x| x.as_str()) == Some("tool_result")
+                        })
+                })))
         || is_skill_meta_prompt_event(v)
         || is_synthetic_interruption_event(v)
 }
@@ -823,6 +864,82 @@ pub fn read_subagent_transcript_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_context_requires_provenance_and_tool_results_are_not_authored() {
+        let examples = [
+            "<system-reminder>example</system-reminder>",
+            "<local-command-stdout>output</local-command-stdout>",
+            "<task-notification><status>failed</status></task-notification>\nRead output",
+            "<command-name>/model</command-name><command-args>opus</command-args>",
+            "Base directory for this skill: /skills/example\n\nExample",
+        ];
+        for text in examples {
+            let user =
+                serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
+            assert!(!is_internal_generated_event(&user), "authored text: {text}");
+            for flag in [
+                "isMeta",
+                "is_meta",
+                "isSynthetic",
+                "is_synthetic",
+                "isCompactSummary",
+                "is_compact_summary",
+            ] {
+                let mut injected = user.clone();
+                injected[flag] = serde_json::json!(true);
+                assert!(is_internal_generated_event(&injected), "source: {flag}");
+            }
+            for origin in [
+                "task-notification",
+                "hook",
+                "plugin",
+                "system",
+                "compact-summary",
+                "local-command",
+                "teammate-message",
+            ] {
+                let mut injected = user.clone();
+                injected["origin"] = serde_json::json!({"kind": origin});
+                assert!(is_internal_generated_event(&injected), "origin: {origin}");
+            }
+        }
+        let tool_result = serde_json::json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tool", "content": "output"}
+        ]}});
+        assert!(is_internal_generated_event(&tool_result));
+        let unknown_origin = serde_json::json!({"type": "user", "origin": {"kind": "external-user"}, "message": {"content": "Request"}});
+        assert!(!is_internal_generated_event(&unknown_origin));
+    }
+
+    #[test]
+    fn scan_ignores_generated_context_for_titles_and_counts() -> Result<()> {
+        let mut lines = Vec::new();
+        for origin in [
+            "hook",
+            "task-notification",
+            "local-command",
+            "compact-summary",
+            "plugin",
+        ] {
+            lines.push(serde_json::json!({"type": "user", "origin": {"kind": origin}, "message": {"content": "Internal context"}}).to_string());
+        }
+        lines.push(
+            serde_json::json!({"type": "user", "message": {"content": "Actual request"}})
+                .to_string(),
+        );
+        lines.push(
+            serde_json::json!({"type": "assistant", "message": {"content": "Reply"}}).to_string(),
+        );
+        let path =
+            std::env::temp_dir().join(format!("claudinal-context-{}.jsonl", uuid::Uuid::new_v4()));
+        std::fs::write(&path, lines.join("\n"))?;
+        let (count, _, title) = scan_jsonl(&path);
+        std::fs::remove_file(&path)?;
+        assert_eq!(count, 2);
+        assert_eq!(title.as_deref(), Some("Actual request"));
+        Ok(())
+    }
 
     #[test]
     fn subagent_chunk_reader_is_incremental_and_waits_for_complete_jsonl() -> Result<()> {

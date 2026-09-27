@@ -1,5 +1,4 @@
 import type { SubmissionActions } from "./SubmittedInputActions"
-import { isInjectedOnlyUserMessage } from "@/lib/userMessageText"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, MessageSquareDashed } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -136,7 +135,18 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
 
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]
-    if (e.kind === "message") {
+    if (e.kind === "skill_load" || e.kind === "activity") {
+      const block: UIBlock = e.kind === "skill_load"
+        ? { type: "skill_load", skill: e, toolUseId: e.toolUseId }
+        : { type: "activity", activity: e }
+      if (state.current) {
+        appendStep(state.current, { key: `${e.kind}-${e.id}`, block })
+        stamp(e.ts)
+      } else {
+        // Notifications between turns are completed records, not a new run.
+        groups.push({ kind: "entry", key: `${e.kind}-${e.id}`, entry: e })
+      }
+    } else if (e.kind === "message") {
       const m = e as UIMessage
       if (m.role === "user") {
         const toolResults: UIBlock[] = []
@@ -305,8 +315,7 @@ export function MessageStream({
   const timelineItems = useMemo<ChatTimelineItem[]>(
     () =>
       groups.flatMap((g) =>
-        // 仅含 CLI 注入通知的用户消息是系统事件，不作为时间线锚点
-        g.kind === "msg" && !isInjectedOnlyUserMessage(g.msg)
+        g.kind === "msg"
           ? [
               {
                 id: g.key,

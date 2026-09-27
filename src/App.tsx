@@ -4,7 +4,8 @@ import { SubmissionCoordinator, isActiveInput, type InputPayload, type Submitted
 import { retryInputFromTranscript } from "@/lib/retryInput"
 import { cn } from "@/lib/utils"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
-import { inputMetadataPatch, restoreInputMetadata } from "@/lib/inputMetadata"
+import { inputMetadataPatch, restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
+import { isAuthoredUserMessage, markAuthoredEvent } from "@/lib/messageOrigin"
 import { routeCommand } from "@/lib/commandRegistry"
 import { saveOutbox, removeOutbox, updateOutboxState } from "@/lib/outbox"
 import { InputRecovery } from "@/components/InputRecovery"
@@ -614,7 +615,7 @@ function collectFailedRetryableMessageIds(
   const ids = new Set<string>()
   let currentUserId: string | null = null
   for (const entry of entries) {
-    if (entry.kind === "message" && entry.role === "user") {
+    if (isAuthoredUserMessage(entry)) {
       currentUserId = sentInputs.has(entry.id) ? entry.id : null
       continue
     }
@@ -1457,6 +1458,7 @@ export default function App() {
 
   const activateRunningSession = useCallback((run: RunningSession) => {
     flushRunningActions(run)
+    viewOwnerRef.current = { token: switchTokenRef.current, projectId: run.project.id, key: run.owner.key }
     activeRuntimeIdRef.current = run.runtimeId
     sessionIdRef.current = run.runtimeId
     setSessionId(run.runtimeId)
@@ -1871,13 +1873,14 @@ export default function App() {
       }
       setRunningTick((tick) => tick + 1)
       const u1 = await listenSessionEvents(id, (ev) => {
-        const event = markInterruptedResult(
+        let event = markInterruptedResult(
           eventWithLaunchModelIntent(run, ev),
           run.interrupting
         )
         const acknowledgedId = (event as { type?: string; uuid?: string }).type === "user" ? (event as { uuid?: string }).uuid : undefined
         const localEcho = acknowledgedId && !(event as { parent_tool_use_id?: string }).parent_tool_use_id
           ? coordinatorRef.current.acknowledge(acknowledgedId) : false
+        event = markAuthoredEvent(localEcho ? { ...event, claudinalAuthored: true } : event, run.state.entries)
         const subagentTransition = reduceSubagentRegistry(run.subagents, event)
         if (subagentTransition.changed) {
           run.subagents = subagentTransition.registry
@@ -2412,8 +2415,13 @@ export default function App() {
       }
       return { kind: "local_action" }
     }
-    const key = viewOwnerRef.current.key
-    let owner = ownersRef.current.get(key)
+    // A reused runtime owns one coordinator queue. Its result listener also
+    // closes over this owner, so returning to it must not create another key.
+    const activeRun = activeRuntimeIdRef.current ? runningSessionsRef.current.get(activeRuntimeIdRef.current) : undefined
+    const runtimeOwner = activeRun?.project.id === project.id ? activeRun.owner : undefined
+    const key = runtimeOwner?.key ?? viewOwnerRef.current.key
+    if (runtimeOwner) viewOwnerRef.current = { token: switchTokenRef.current, projectId: project.id, key }
+    let owner = runtimeOwner ?? ownersRef.current.get(key)
     if (!owner) {
       owner = { key, project, sessionId: selectedSessionIdRef.current, runtimeId: activeRuntimeIdRef.current,
         state: stateRef.current, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer,
@@ -2710,7 +2718,6 @@ export default function App() {
       selectedSessionIdRef.current = s.id
       setLoadingSession(true)
       setCollaborationMode(false)
-      viewOwnerRef.current = { token, projectId: p.id, key: crypto.randomUUID() }
       stateRef.current = reducerInit()
       dispatch({ kind: "reset" })
       setReviewDiffs([])
@@ -2776,14 +2783,15 @@ export default function App() {
         )
         const merged: ClaudeEvent[] =
           sidecar?.result ? [...events, sidecar.result] : events
-        const restored = restoreInputMetadata(reduce(reducerInit(), { kind: "load_transcript", events: merged }), sidecar)
+        const preparedEvents = restoreTranscriptInputOrigins(merged, sidecar)
+        const restored = restoreInputMetadata(reduce(reducerInit(), { kind: "load_transcript", events: preparedEvents }), sidecar)
         dispatch({ kind: "replace_state", state: restored })
         stateRef.current = restored
         setReviewDiffs(parseStoredReviewDiffs(sidecar))
         // 还原会话级 composer 偏好：sidecar 是 GUI 显式选择；没有 sidecar
         // 时从 Claude CLI jsonl 里的 /model、/effort 和 system/init 反推。
         const transcriptPrefs = canUseSessionLaunchPrefs
-          ? pickComposerFromTranscript(events)
+          ? pickComposerFromTranscript(preparedEvents)
           : null
         const sessionPrefs = mergeComposerPrefs(
           transcriptPrefs,
@@ -3224,7 +3232,7 @@ export default function App() {
   const activeUpstreamStatus = activeRun?.upstreamStatus ?? null
   const activeInterrupting = activeRun?.interrupting ?? false
   const retryableMessageIds = useMemo(
-    () => new Set([...collectFailedRetryableMessageIds(state.entries, sentInputsRef.current), ...state.entries.filter((entry) => entry.kind === "message" && entry.role === "user" && entry.blocks.some((block) => block.type === "text" || block.type === "image" || block.type === "attachment")).map((entry) => (entry.kind === "message" ? entry.id : ""))]),
+    () => new Set([...collectFailedRetryableMessageIds(state.entries, sentInputsRef.current), ...state.entries.filter((entry) => isAuthoredUserMessage(entry) && entry.blocks.some((block) => block.type === "text" || block.type === "image" || block.type === "attachment")).map((entry) => (entry.kind === "message" ? entry.id : ""))]),
     [state.entries, sentInputVersion]
   )
   const activePermissionRequest =
@@ -3465,7 +3473,7 @@ export default function App() {
                 const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
                 if (run) activateRunningSession(run)
                 else { stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state }) }
-              }}>{owner.project.name} · {owner.state.entries.flatMap((e) => e.kind === "message" && e.role === "user" ? [e.rawText || "附件消息"] : [])[0]?.slice(0, 28) || "待处理消息"}</button>)}
+              }}>{owner.project.name} · {owner.state.entries.flatMap((e) => isAuthoredUserMessage(e) ? [e.rawText || "附件消息"] : [])[0]?.slice(0, 28) || "待处理消息"}</button>)}
             </nav>}
             <div className="flex min-h-0 flex-1 flex-col">
               {loadingSession ? (

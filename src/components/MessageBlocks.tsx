@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import {
   AlertTriangle,
   Bot,
+  BookOpen,
   Brain,
   CheckCircle2,
   ChevronRight,
@@ -10,6 +11,9 @@ import {
   FilePlus,
   FileText,
   Loader2,
+  Info,
+  ListChecks,
+  Webhook,
   MessageSquareText,
   Search,
   Terminal,
@@ -20,6 +24,7 @@ import { Badge } from "@/components/ui/badge"
 import { formatAttachmentType, formatBytes } from "@/lib/fileAttachments"
 import type { SubagentTask } from "@/lib/subagents"
 import { cn } from "@/lib/utils"
+import { parseTaskNotification } from "@/lib/userMessageText"
 import type { UIBlock } from "@/types/ui"
 import { AssistantMarkdown } from "./AssistantMarkdown"
 import { CopyButton } from "./CopyButton"
@@ -63,6 +68,8 @@ export function BlockView({
     )
   }
   if (block.type === "thinking") return <ThinkingBlock block={block} />
+  if (block.type === "skill_load") return <SkillLoadBlock block={block} />
+  if (block.type === "activity") return <ActivityBlock block={block} cwd={cwd} />
   if (block.type === "image") return <ImageBlock role={role} block={block} gallery={imageGallery} />
   if (block.type === "attachment") return <AttachmentBlock role={role} block={block} />
   if (block.type === "tool_use") {
@@ -79,6 +86,33 @@ export function BlockView({
     <summary className="cursor-pointer">当前版本尚未识别的内容</summary>
     <pre className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(block.raw ?? block, null, 2)?.slice(0, 8000)}</pre>
   </details>
+}
+
+function ActivityBlock({ block, cwd }: { block: UIBlock; cwd?: string | null }) {
+  const [open, setOpen] = useState(false)
+  const activity = block.activity
+  if (!activity) return null
+  const text = activity.blocks.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n")
+  const note = activity.category === "task" ? parseTaskNotification(text) : null
+  const icon = activity.category === "command" ? Terminal
+    : activity.category === "hook" ? Webhook
+    : activity.category === "compact" ? Brain
+    : activity.category === "teammate" || note?.kind === "agent" ? Bot
+    : note ? ListChecks : Info
+  return <ExpandableRow open={open} onToggle={() => setOpen(!open)} icon={icon}
+    label={activity.label} tone={note?.outcome === "failed" ? "error" : undefined}
+    meta={note?.exitCode !== undefined ? `退出码 ${note.exitCode}` : undefined}>
+    {open && <div className="max-h-80 min-w-0 space-y-2 overflow-auto rounded-md border bg-muted/40 p-3 scrollbar-thin" data-cli-activity={activity.category}>
+      {note?.outputFile && <div className="flex items-start gap-2 text-muted-foreground">
+        <span className="shrink-0">输出文件</span>
+        <span className="min-w-0 flex-1 break-all font-mono">{note.outputFile}</span>
+        <CopyButton text={note.outputFile} ariaLabel="复制输出文件路径" label="路径已复制" className="-my-1 shrink-0" />
+      </div>}
+      {activity.blocks.map((part, i) => part.type === "text"
+        ? <div key={i} className="whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">{part.text}</div>
+        : <BlockView key={i} role="assistant" block={part} imageGallery={activity.blocks} cwd={cwd} />)}
+    </div>}
+  </ExpandableRow>
 }
 
 function TextBlock({
@@ -172,6 +206,18 @@ function TextBlock({
       )}
     </div>
   )
+}
+
+function SkillLoadBlock({ block }: { block: UIBlock }) {
+  const [open, setOpen] = useState(false)
+  const skill = block.skill
+  if (!skill) return null
+  return <ExpandableRow open={open} onToggle={() => setOpen(!open)} icon={BookOpen} label={`加载 ${skill.name} Skill`}>
+    {open && <div className="max-h-80 min-w-0 overflow-auto rounded-lg border bg-muted/30 p-3 scrollbar-thin">
+      <div className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{skill.directory}</div>
+      <AssistantMarkdown text={skill.content} cwd={skill.directory} variant="activity" />
+    </div>}
+  </ExpandableRow>
 }
 
 function ThinkingBlock({ block }: { block: UIBlock }) {
@@ -630,6 +676,7 @@ export function ExpandableRow({
       <button
         type="button"
         onClick={onToggle}
+        aria-expanded={open}
         className={cn(
           "inline-flex items-center gap-1.5 transition-colors",
           tone === "error"
