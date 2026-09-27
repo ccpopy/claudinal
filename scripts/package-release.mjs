@@ -150,7 +150,7 @@ if (mode === "all" || mode === "portable") {
     const stage = join(STAGING, "portable")
     ensureDir(stage)
     cpSync(exePath, join(stage, `${PRODUCT}${ext}`))
-    const readme = `# ${PRODUCT} ${VERSION} (Portable)\n\n双击 ${PRODUCT}${ext} 即可运行，无需安装。\n配置写入：%APPDATA%\\com.claudinal.desktop（Windows）/ ~/Library/Application Support/com.claudinal.desktop（macOS）/ ~/.config/com.claudinal.desktop（Linux）。\n`
+    const readme = `# ${PRODUCT} ${VERSION} (Portable)\n\n解压后双击 ${PRODUCT}${ext} 即可运行，无需安装。\n配置与本地数据保存在程序同级的 .claudinal/ 目录。移动程序时请一并保留该目录。\n此压缩包不包含个人配置、会话、测试或日志。\n`
     const fs = await import("node:fs/promises")
     await fs.writeFile(join(stage, "README.txt"), readme, "utf8")
     const out = join(RELEASE, `${PRODUCT}-${VERSION}-portable.zip`)
