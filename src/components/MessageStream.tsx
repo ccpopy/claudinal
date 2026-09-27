@@ -1,3 +1,5 @@
+import type { SubmissionActions } from "./SubmittedInputActions"
+import { isInjectedOnlyUserMessage } from "@/lib/userMessageText"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, MessageSquareDashed } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -18,6 +20,7 @@ import { RunGroup, type RunStep } from "./RunGroup"
 import { RunReviewCard } from "./RunReviewCard"
 
 interface Props {
+  submissionActions?: SubmissionActions
   onOpenPermissions?: () => void
   entries: UIEntry[]
   streaming: boolean
@@ -163,6 +166,9 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
             })
             continue
           }
+          if (m.deliveryState && ["preparing", "needs_confirmation", "queued", "paused", "cancelled", "failed", "delivery_unknown"].includes(m.deliveryState)) {
+            groups.push({ kind: "msg", key: `msg-${m.id}`, msg: { ...m, blocks: userVisible } }); continue
+          }
           if (state.current) state.current.running = false
           state.current = null
           groups.push({
@@ -255,6 +261,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
 }
 
 export function MessageStream({
+  submissionActions,
   onOpenPermissions,
   entries,
   streaming,
@@ -298,7 +305,8 @@ export function MessageStream({
   const timelineItems = useMemo<ChatTimelineItem[]>(
     () =>
       groups.flatMap((g) =>
-        g.kind === "msg"
+        // 仅含 CLI 注入通知的用户消息是系统事件，不作为时间线锚点
+        g.kind === "msg" && !isInjectedOnlyUserMessage(g.msg)
           ? [
               {
                 id: g.key,
@@ -458,6 +466,7 @@ export function MessageStream({
                 className="scroll-mt-6"
               >
                 <MessageCard
+                  submissionActions={submissionActions}
                   entry={g.msg}
                   cwd={cwd}
                   retryableMessageIds={retryableMessageIds}
@@ -489,6 +498,7 @@ export function MessageStream({
             return (
               <div key={g.key}>
                 <MessageCard
+                  submissionActions={submissionActions}
                   entry={g.entry}
                   cwd={cwd}
                   retryableMessageIds={retryableMessageIds}
@@ -508,6 +518,7 @@ export function MessageStream({
           }
           return (
             <MessageCard
+                  submissionActions={submissionActions}
               key={g.key}
               entry={g.entry}
               cwd={cwd}

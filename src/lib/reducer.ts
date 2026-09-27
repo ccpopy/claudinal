@@ -20,6 +20,7 @@ export interface State {
 }
 
 export type Action =
+  | { kind: "submitted_input"; message: UIMessage }
   | { kind: "event"; event: ClaudeEvent }
   | {
       kind: "user_local"
@@ -45,6 +46,13 @@ export function init(): State {
 }
 
 export function reduce(state: State, action: Action): State {
+  if (action.kind === "submitted_input") {
+    const index = state.entries.findIndex((e) => e.kind === "message" && e.id === action.message.id)
+    const entries = state.entries.slice()
+    if (index < 0) entries.push(action.message)
+    else entries[index] = action.message
+    return { ...state, entries }
+  }
   if (action.kind === "delivery_changed") {
     return { ...state, entries: state.entries.map((entry) => entry.kind === "message" && entry.id === action.messageId
       ? { ...entry, deliveryState: action.state !== "responded" && (entry.deliveryState === "acknowledged" || entry.deliveryState === "responded") ? entry.deliveryState : action.state } : entry) }
@@ -451,6 +459,13 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
   // jsonl 中 CLI 注入的 system-reminder 标记为 isMeta:true，不展示给用户
   if (ev.isMeta === true) return state
   const uuid = typeof ev.uuid === "string" ? ev.uuid : undefined
+  if (uuid) {
+    const local = state.entries.find((entry) => entry.kind === "message" && entry.role === "user" && entry.attemptIds?.includes(uuid))
+    if (local?.kind === "message") {
+      if (local.attemptId !== uuid) return state
+      return { ...state, entries: state.entries.map((entry) => entry === local ? { ...local, transcriptUuid: uuid, deliveryState: local.deliveryState === "responded" ? "responded" : "acknowledged" } : entry) }
+    }
+  }
   if (uuid && state.entries.some((entry) => entry.kind === "message" && entry.role === "user" && entry.id === uuid)) {
     return { ...state, entries: state.entries.map((entry) => entry.kind === "message" && entry.id === uuid ? { ...entry, deliveryState: entry.deliveryState === "responded" ? "responded" : "acknowledged" } : entry) }
   }

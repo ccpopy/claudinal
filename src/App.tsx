@@ -1,3 +1,6 @@
+import { RunStatusStrip } from "@/components/RunReviewCard"
+import { MessageStream } from "@/components/MessageStream"
+import { SubmissionCoordinator, isActiveInput, type InputPayload, type SubmittedInput, type SubmissionAdapter } from "@/lib/submissionCoordinator"
 import { retryInputFromTranscript } from "@/lib/retryInput"
 import { cn } from "@/lib/utils"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
@@ -5,7 +8,7 @@ import { inputMetadataPatch, restoreInputMetadata } from "@/lib/inputMetadata"
 import { routeCommand } from "@/lib/commandRegistry"
 import { saveOutbox, removeOutbox, updateOutboxState } from "@/lib/outbox"
 import { InputRecovery } from "@/components/InputRecovery"
-import { deliveryAfterWriteError, type SubmitOutcome } from "@/lib/submission"
+import { type SubmitOutcome } from "@/lib/submission"
 import {
   useEffect,
   lazy,
@@ -139,7 +142,7 @@ import {
   removeProject as removeProjectStore,
   type Project
 } from "@/lib/projects"
-import type { DocumentPayload, ImagePayload, UIBlock } from "@/types/ui"
+import type { DocumentPayload, ImagePayload } from "@/types/ui"
 import type { ClaudeEvent } from "@/types/events"
 import { Welcome } from "@/components/Welcome"
 import { BuddyLoader } from "@/components/BuddyLoader"
@@ -207,16 +210,6 @@ const ClaudeWorkspaceTrustDialog = lazy(() =>
     default: m.ClaudeWorkspaceTrustDialog
   }))
 )
-const MessageStream = lazy(() =>
-  import("@/components/MessageStream").then((m) => ({
-    default: m.MessageStream
-  }))
-)
-const QueuedComposerBar = lazy(() =>
-  import("@/components/QueuedComposerBar").then((m) => ({
-    default: m.QueuedComposerBar
-  }))
-)
 const PluginsView = lazy(() =>
   import("@/components/PluginsView").then((m) => ({ default: m.PluginsView }))
 )
@@ -241,11 +234,6 @@ const CollaborationFlow = lazy(() =>
 const SubagentsPanel = lazy(() =>
   import("@/components/SubagentsPanel").then((m) => ({
     default: m.SubagentsPanel
-  }))
-)
-const RunStatusStrip = lazy(() =>
-  import("@/components/RunReviewCard").then((m) => ({
-    default: m.RunStatusStrip
   }))
 )
 const PermissionDialog = lazy(() =>
@@ -335,6 +323,9 @@ type SendOptions = {
   skillInvocation?: SkillInvocation | null
   sentAt?: number
   bypassPreprocess?: boolean
+  sourceDraftRevision?: number
+  draftKey?: string
+  payload?: InputPayload
 }
 type PendingDeleteSession = {
   project: Project
@@ -350,7 +341,25 @@ type ChatReturnTarget =
   | { kind: "project"; project: Project }
   | { kind: "session"; project: Project; session: SessionMeta }
 
+type ConversationOwner = {
+  key: string
+  project: Project
+  sessionId: string | null
+  runtimeId: string | null
+  state: ReducerState
+  selectedSessionMeta: SessionMeta | null
+  reviewDiffs: ReviewRunDiff[]
+  composerPrefs: ComposerPrefs
+  sessionComposer: ComposerPrefs | null
+  permissionMode: AppSettings["defaultPermissionMode"]
+  permissionModeSource: SessionPermissionModeSource
+  profileRevision: string
+  fork: { sourceId: string; resumeAt: string } | null
+}
+type InputContext = { approvedCommand?: string; authorizationRevision: string; composerPrefs: ComposerPrefs; sessionComposer: ComposerPrefs | null; permissionMode: AppSettings["defaultPermissionMode"]; owner: ConversationOwner; options: SendOptions; collaborationMode: boolean; cliBlocks?: Array<Record<string, unknown>> }
+
 type RunningSession = {
+  owner: ConversationOwner
   runtimeId: string
   project: Project
   jsonlSessionId: string | null
@@ -429,25 +438,6 @@ async function sendCliInput(
   await sendUserMessage(sessionId, blocks, clientMessageId)
 }
 
-const QUEUED_PREVIEW_LIMIT = 80
-
-function derivePreviewFromQueuedInput(q: QueuedInput): string {
-  const compacted = (q.text ?? "").replace(/\s+/g, " ").trim()
-  if (compacted) {
-    if (compacted.length <= QUEUED_PREVIEW_LIMIT) return compacted
-    return `${compacted.slice(0, QUEUED_PREVIEW_LIMIT - 1).trimEnd()}…`
-  }
-  const docName = q.documents?.[0]?.name
-  if (docName) return `附件：${docName}`
-  if (q.images?.length) return `图片 × ${q.images.length}`
-  if (q.documents?.length) return `附件 × ${q.documents.length}`
-  return "（空消息）"
-}
-
-function queuedInputUiBlocks(item: QueuedInput): UIBlock[] {
-  return inputUiBlocks(item.text, item.images, item.documents)
-}
-
 // The original input is restored by UUID sidecar metadata; literal markers are never stripped.
 const COLLAB_PREFIX_TAG = "[Claudinal 协同模式]"
 const COLLAB_PROMPT_SEPARATOR = "\n\n用户需求：\n"
@@ -462,6 +452,11 @@ function buildCollaborationPrompt(text: string, cfg: ReturnType<typeof loadColla
     `Agent：默认 ${cfg.defaultProvider}；已启用 ${enabledProviders.length ? enabledProviders.join("/") : "无"}；用户未指定时使用默认。`
   ].join("\n")
   return `${header}${COLLAB_PROMPT_SEPARATOR}${text}`
+}
+
+function currentAuthorizationRevision(): string {
+  const cfg = loadSettings()
+  return JSON.stringify([cfg.defaultPermissionMode, cfg.permissionMcpEnabled, cfg.permissionPromptTool, cfg.permissionMcpConfig])
 }
 
 function currentApiProfileKey(): string {
@@ -777,6 +772,24 @@ export default function App() {
   const collabMcpEnabledRef = useRef(false)
   const installedSkillCommandsRef = useRef<string[]>([])
   const switchTokenRef = useRef(0)
+  const ownersRef = useRef(new Map<string, ConversationOwner>())
+  const viewOwnerRef = useRef({ token: -1, projectId: "", key: "" })
+  if (viewOwnerRef.current.token !== switchTokenRef.current || viewOwnerRef.current.projectId !== (project?.id ?? "")) {
+    const known = [...ownersRef.current.values()].find((owner) => owner.project.id === project?.id && selectedSessionId && owner.sessionId === selectedSessionId)
+    viewOwnerRef.current = { token: switchTokenRef.current, projectId: project?.id ?? "", key: known?.key ?? crypto.randomUUID() }
+  }
+  const activeConversationKey = viewOwnerRef.current.key
+  const currentUiIntentRef = useRef({ key: activeConversationKey, composerPrefs, permissionMode: planMode ? "plan" : sessionPermissionMode })
+  currentUiIntentRef.current = { key: activeConversationKey, composerPrefs, permissionMode: planMode ? "plan" : sessionPermissionMode }
+  const submissionAdapterRef = useRef<SubmissionAdapter<InputContext>>(null!)
+  const coordinatorRef = useRef<SubmissionCoordinator<InputContext>>(null!)
+  if (!coordinatorRef.current) coordinatorRef.current = new SubmissionCoordinator<InputContext>({
+    changed: (task) => submissionAdapterRef.current.changed(task),
+    persist: (task) => submissionAdapterRef.current.persist(task),
+    prepare: (task) => submissionAdapterRef.current.prepare(task),
+    write: (task) => submissionAdapterRef.current.write(task),
+    settled: (task) => submissionAdapterRef.current.settled(task)
+  })
   const pendingApiRuntimeRefreshRef = useRef(false)
   const pendingComposerRuntimeRefreshRef = useRef(false)
   const streamingRefsCacheRef = useRef<{
@@ -939,6 +952,7 @@ export default function App() {
     }
     run.pendingActions = []
     run.state = next
+    run.owner.state = next
     if (activeRuntimeIdRef.current === run.runtimeId) {
       dispatch({ kind: "replace_state", state: next })
       stateRef.current = next
@@ -948,11 +962,12 @@ export default function App() {
   const applyRunningAction = useCallback(
     (run: RunningSession, action: ReducerAction) => {
       run.state = reduce(run.state, action)
+      run.owner.state = run.state
       if (activeRuntimeIdRef.current === run.runtimeId) {
         stateRef.current = run.state
         dispatch(action)
       }
-      if (run.jsonlSessionId && (action.kind === "user_local" || action.kind === "delivery_changed" || action.kind === "runtime_exited" || (action.kind === "event" && action.event.type === "user"))) {
+      if (run.jsonlSessionId && (action.kind === "submitted_input" || action.kind === "user_local" || action.kind === "delivery_changed" || action.kind === "runtime_exited" || (action.kind === "event" && action.event.type === "user"))) {
         void patchSessionSidecar(run.project.cwd, run.jsonlSessionId, inputMetadataPatch(run.state)).catch((error) => console.warn("input metadata persistence failed", error))
       }
     },
@@ -1054,7 +1069,7 @@ export default function App() {
       } catch (e) {
         run.reviewSnapshotId = null
         toast.error(`建立文件审查基线失败: ${String(e)}`)
-        return false
+        throw e
       }
     },
     []
@@ -1065,6 +1080,7 @@ export default function App() {
     run.reviewSnapshotId = null
     const appendReview = (review: ReviewRunDiff) => {
       run.reviewDiffs = [...run.reviewDiffs, review]
+      run.owner.reviewDiffs = run.reviewDiffs
       const runSessionId = run.jsonlSessionId
       if (shouldSyncRunReviewToConversation(
         activeRuntimeIdRef.current,
@@ -1204,7 +1220,8 @@ export default function App() {
       }
       run.unlisten.forEach((unlisten) => unlisten())
       run.unlisten = []
-      void discardRunReview(run)
+      void finishRunReview(run)
+      run.owner.runtimeId = null
       runningSessionsRef.current.delete(runtimeId)
       networkToastTimestampsRef.current.delete(runtimeId)
       setPermissionRequests((cur) =>
@@ -1223,7 +1240,7 @@ export default function App() {
       }
       setRunningTick((tick) => tick + 1)
     },
-    [applyRunningAction, clearInterruptState, discardRunReview]
+    [applyRunningAction, clearInterruptState, finishRunReview]
   )
 
   const deleteSessionRecord = useCallback(async (p: Project, sid: string) => {
@@ -1342,9 +1359,10 @@ export default function App() {
     if (
       run &&
       !run.streaming &&
+      ![...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === run.owner.key && isActiveInput(task)) &&
       run.pendingPermissionRequestIds.size === 0
     ) {
-      await closeRunningSession(runtimeId, { dropQueued: false })
+      void closeRunningSession(runtimeId, { dropQueued: false })
     }
   }, [closeRunningSession])
 
@@ -1740,62 +1758,17 @@ export default function App() {
     await stopActiveSession()
   }, [stopActiveSession])
 
-  const sendQueuedFollowup = useCallback(
-    async function drainQueued(run: RunningSession, requestedId?: string, guide = false): Promise<boolean> {
-      if (run.sendingQueued || run.interrupting || (!guide && run.streaming) || !runningSessionsRef.current.has(run.runtimeId)) return false
-      const item = run.queuedInputs.find((queued) => requestedId ? queued.localId === requestedId : true)
-      if (!item) return false
-      run.sendingQueued = true
-      let createdSnapshot = false
-      let sent = false
-      try {
-        createdSnapshot = await beginRunReview(run)
-        if (run.interrupting || !runningSessionsRef.current.has(run.runtimeId) || !run.queuedInputs.some((queued) => queued.localId === item.localId)) return false
-        const sentAt = Date.now()
-        await saveOutbox({ schemaVersion: 1, id: item.localId, cwd: run.project.cwd, conversationId: run.jsonlSessionId, runtimeId: run.runtimeId, text: item.text, images: item.images, documents: item.documents, mode: guide ? "guide" : "followup", state: "writing", createdAt: sentAt })
-        if (!runningSessionsRef.current.has(run.runtimeId)) return false
-        run.queuedInputs = run.queuedInputs.filter((queued) => queued.localId !== item.localId)
-        rememberSentInput({ ...item, ts: sentAt })
-        applyRunningAction(run, { kind: "user_local", blocks: queuedInputUiBlocks(item), rawText: item.text, delivery: guide ? "guide" : undefined, localId: item.localId, ts: sentAt })
-        if (!guide || !run.turnActive) { run.activeInputId = item.localId; setRunningSessionTurnActive(run, true) }
-        await sendCliInput(run.runtimeId, item.cliBlocks, item.skillInvocation, item.localId)
-        sent = true
-        applyRunningAction(run, { kind: "delivery_changed", messageId: item.localId, state: "awaiting_ack" })
-        setRunningTick((tick) => tick + 1)
-        return true
-      } catch (error) {
-        if (run.activeInputId === item.localId) { run.activeInputId = null; setRunningSessionTurnActive(run, false) }
-        void updateOutboxState(item.localId, deliveryAfterWriteError(error)).catch(console.warn)
-        applyRunningAction(run, { kind: "delivery_changed", messageId: item.localId, state: deliveryAfterWriteError(error) })
-        if (createdSnapshot) await discardRunReview(run)
-        toast.error(`发送跟进消息失败，输入保留在恢复区: ${String(error)}`)
-        return false
-      } finally {
-        run.sendingQueued = false
-        if (sent && !run.streaming && run.queuedInputs.length) void drainQueued(run)
-      }
-
-    },
-    [
-      applyRunningAction,
-      beginRunReview,
-      discardRunReview,
-      rememberSentInput,
-      setRunningSessionTurnActive
-    ]
-  )
-
   const pendingForkRef = useRef<{ sourceId: string; resumeAt: string } | null>(null)
-  const startSession = useCallback(async (): Promise<string | null> => {
-    if (!project) {
-      setShowAdd(true)
-      return null
+  const startSession = useCallback(async (owner: ConversationOwner, task: SubmittedInput<InputContext>): Promise<string | null> => {
+    const project = owner.project
+    if (owner.runtimeId && runningSessionsRef.current.has(owner.runtimeId)) return owner.runtimeId
+    const foreground = () => viewOwnerRef.current.key === owner.key
+    const guard = () => {
+      coordinatorRef.current.assertCurrent(task)
+      if (currentAuthorizationRevision() !== task.context.authorizationRevision) throw new Error("授权配置已改变，请恢复原配置后重试")
+      if (currentApiLaunchProfileKey() !== task.profileRevision) throw new Error("提供商配置已改变，请恢复原配置后重试")
     }
-    const activeSessionId = activeRuntimeIdRef.current ?? sessionIdRef.current
-    if (activeSessionId) return activeSessionId
-    const ownerToken = switchTokenRef.current
-    if (!(await ensureClaudeWorkspaceTrust())) return null
-    if (ownerToken !== switchTokenRef.current) return null
+    guard()
     let createdRuntimeId: string | null = null
     try {
       const proxyEnv = buildProxyEnv(await loadProxyAsync())
@@ -1812,46 +1785,19 @@ export default function App() {
       const env = { ...thirdPartyEnv, ...proxyEnv }
       const apiProfileKey = currentApiProfileKey()
       const apiLaunchProfileKey = currentApiLaunchProfileKey()
-      const fork = pendingForkRef.current
-      let resumeSessionId = fork?.sourceId ?? selectedSessionIdRef.current
+      const fork = owner.fork
+      let resumeSessionId = fork?.sourceId ?? owner.sessionId
       if (
         resumeSessionId &&
-        !hasResumableConversationContext(stateRef.current.entries)
+        !hasResumableConversationContext(owner.state.entries)
       ) {
         resumeSessionId = null
-        selectedSessionIdRef.current = null
-        setSelectedSessionId(null)
-        setSelectedSessionMeta(null)
-        setReviewDiffs([])
+        owner.sessionId = null
+        if (foreground()) { selectedSessionIdRef.current = null; setSelectedSessionId(null); setSelectedSessionMeta(null); setReviewDiffs([]) }
       }
-      let launchComposerPrefs = composerPrefs
-      let launchSessionComposer = sessionComposer
-      const launchReviewDiffs = resumeSessionId ? reviewDiffs : []
-      if (resumeSessionId) {
-        const sidecar = await readSessionSidecar(project.cwd, resumeSessionId)
-        const storedLaunchProfileKey = sidecarApiLaunchProfileKey(sidecar)
-        const canUseLaunchPrefs = canUseApiProfileLaunchPrefs(
-          storedLaunchProfileKey,
-          apiLaunchProfileKey
-        )
-        if (!canUseLaunchPrefs) {
-          const sidecarComposer = pickComposerFromSidecar(sidecar)
-          const composerCameFromStaleSidecar =
-            !launchSessionComposer ||
-            (!!sidecarComposer &&
-              sameComposerPrefs(launchSessionComposer, sidecarComposer))
-          if (composerCameFromStaleSidecar) {
-            sessionComposerRef.current = null
-            launchSessionComposer = null
-            setSessionComposer(null)
-            launchComposerPrefs = fallbackComposerPrefsForApiProfile(
-              apiProfileKey,
-              globalDefault
-            )
-            setComposerPrefs(launchComposerPrefs)
-          }
-        }
-      }
+      const launchComposerPrefs = task.context.composerPrefs
+      const launchSessionComposer = task.context.sessionComposer
+      const launchReviewDiffs = resumeSessionId ? owner.reviewDiffs : []
       const uiModel = launchComposerPrefs.model.trim()
       const thirdPartyLaunchModel =
         thirdPartyReady && uiModel
@@ -1868,13 +1814,11 @@ export default function App() {
           : uiEffort
       const model =
         (thirdPartyReady ? thirdPartyLaunchModel : uiModel) || null
-      const launchPermissionMode = planMode
-        ? "plan"
-        : sessionPermissionMode || cfg.defaultPermissionMode || "default"
-      if (ownerToken !== switchTokenRef.current) return null
+      const launchPermissionMode = task.context.permissionMode
+      guard()
       const id = crypto.randomUUID()
       createdRuntimeId = id
-      const baseRunState = resumeSessionId ? stateRef.current : reducerInit()
+      const baseRunState = owner.state
       const resumedSubagents = settleSubagentRegistryForResume(
         baseRunState.subagents
       )
@@ -1883,13 +1827,14 @@ export default function App() {
           ? baseRunState
           : { ...baseRunState, subagents: resumedSubagents }
       const run: RunningSession = {
+        owner,
         runtimeId: id,
         project,
         jsonlSessionId: fork ? null : resumeSessionId,
         launchModel: model,
         apiProfileKey,
         apiLaunchProfileKey,
-        selectedSessionMeta: resumeSessionId ? selectedSessionMeta : null,
+        selectedSessionMeta: resumeSessionId ? owner.selectedSessionMeta : null,
         state: runState,
         activeInputId: null,
         sendingQueued: false,
@@ -1903,7 +1848,7 @@ export default function App() {
         queuedInputs: [],
         unlisten: [],
         permissionMode: launchPermissionMode,
-        permissionModeSource: permissionModeSourceRef.current,
+        permissionModeSource: owner.permissionModeSource,
         composerPrefs: launchComposerPrefs,
         sessionComposer: launchSessionComposer,
         collabMcpEnabled: collabCfg.enabled,
@@ -1911,14 +1856,15 @@ export default function App() {
         reviewDiffs: launchReviewDiffs,
         upstreamStatus: null
       }
-      collabMcpEnabledRef.current = collabCfg.enabled
+      owner.runtimeId = id
       runningSessionsRef.current.set(id, run)
-      activeRuntimeIdRef.current = id
-      sessionIdRef.current = id
-      setSessionId(id)
-      if (runState !== baseRunState) {
-        dispatch({ kind: "replace_state", state: runState })
+      if (foreground()) {
+        collabMcpEnabledRef.current = collabCfg.enabled
+        activeRuntimeIdRef.current = id
+        sessionIdRef.current = id
+        setSessionId(id)
         stateRef.current = runState
+        dispatch({ kind: "replace_state", state: runState })
       }
       setRunningTick((tick) => tick + 1)
       const u1 = await listenSessionEvents(id, (ev) => {
@@ -1927,21 +1873,22 @@ export default function App() {
           run.interrupting
         )
         const acknowledgedId = (event as { type?: string; uuid?: string }).type === "user" ? (event as { uuid?: string }).uuid : undefined
-        if (acknowledgedId && !(event as { parent_tool_use_id?: string }).parent_tool_use_id && sentInputsRef.current.has(acknowledgedId)) {
-          void removeOutbox(acknowledgedId).catch((error) => console.warn("input recovery cleanup failed", error))
-        }
+        const localEcho = acknowledgedId && !(event as { parent_tool_use_id?: string }).parent_tool_use_id
+          ? coordinatorRef.current.acknowledge(acknowledgedId) : false
         const subagentTransition = reduceSubagentRegistry(run.subagents, event)
         if (subagentTransition.changed) {
           run.subagents = subagentTransition.registry
           syncRunningSessionStreaming(run)
         }
-        applyRunningAction(run, { kind: "event", event })
+        if (!localEcho) applyRunningAction(run, { kind: "event", event })
         if ((event as { parent_tool_use_id?: string }).parent_tool_use_id) return
         const t = (event as { type?: string }).type
+        if (t === "assistant" || t === "stream_event") coordinatorRef.current.response(owner.key)
         const evSessionId = (event as { parent_tool_use_id?: string }).parent_tool_use_id ? undefined : (event as { session_id?: string }).session_id
         const knownSessionId = evSessionId ?? run.jsonlSessionId
         if (knownSessionId && run.jsonlSessionId !== knownSessionId) {
           run.jsonlSessionId = knownSessionId
+          owner.sessionId = knownSessionId
           void patchSessionSidecar(run.project.cwd, knownSessionId, inputMetadataPatch(run.state)).catch(console.warn)
           void ensureSidecarApiProfile(
             run.project,
@@ -1965,7 +1912,9 @@ export default function App() {
             applyComposerPatch(run.sessionComposer ?? EMPTY_COMPOSER_PREFS, composerPatch)
           )
           run.composerPrefs = updated
+          owner.composerPrefs = updated
           run.sessionComposer = updatedSession
+          owner.sessionComposer = updatedSession
           if (activeRuntimeIdRef.current === run.runtimeId) {
             sessionComposerRef.current = updatedSession
             setSessionComposer(updatedSession)
@@ -2021,12 +1970,7 @@ export default function App() {
           }
         }
         if (t === "result") {
-          if (run.activeInputId) {
-            const completedId = run.activeInputId
-            run.activeInputId = null
-            applyRunningAction(run, { kind: "delivery_changed", messageId: completedId, state: "responded" })
-            void removeOutbox(completedId).catch((error) => console.warn("input recovery cleanup failed", error))
-          }
+          run.activeInputId = null
           // 软中断在此收尾：result 到达即回合已终止，清掉 interrupting 态与强杀兜底定时器
           clearInterruptState(run)
           // 把网络相关的失败 result 也走一遍 toast；主要看 result/error 文本。
@@ -2063,7 +2007,7 @@ export default function App() {
             setSidebarRefreshKey((k) => k + 1)
             return
           }
-          void finishRunReview(run).then(() => sendQueuedFollowup(run))
+          void finishRunReview(run).then(() => coordinatorRef.current.complete(owner.key, isError || interrupted))
           setSidebarRefreshKey((k) => k + 1)
           if (activeRuntimeIdRef.current === run.runtimeId) {
             gitWorktreeStatus(run.project.cwd)
@@ -2132,6 +2076,7 @@ export default function App() {
       run.unlisten.push(u3)
       const u4 = await listenSessionLifecycle(id, (event) => {
         if (!runningSessionsRef.current.has(id)) return
+        coordinatorRef.current.connectionLost(owner.key)
         applyRunningAction(run, { kind: "runtime_exited" })
         if (run.turnActive) {
           applyRunningAction(run, { kind: "event", event: {
@@ -2143,7 +2088,7 @@ export default function App() {
         void closeRunningSession(id, { stopProcess: false, preserveConversationState: true })
       })
       run.unlisten.push(u4)
-      if (ownerToken !== switchTokenRef.current) throw new Error("会话已切换，取消启动")
+      guard()
       await spawnSession({
         runtimeId: id,
         forkSession: !!fork,
@@ -2161,11 +2106,13 @@ export default function App() {
         collabProviderPaths: providerPathEnv(collabCfg),
         collabEnabledProviders: enabledProviderList(collabCfg)
       })
-      pendingForkRef.current = null
-      if (ownerToken !== switchTokenRef.current) {
+      owner.fork = null
+      if (foreground()) pendingForkRef.current = null
+      if (task.controller.signal.aborted) {
         await closeRunningSession(id, { preserveConversationState: true })
         return null
       }
+      guard()
       if (!runningSessionsRef.current.has(id)) return null
       return id
     } catch (e) {
@@ -2174,8 +2121,7 @@ export default function App() {
           console.error(err)
         )
       }
-      toast.error(`启动会话失败: ${String(e)}`)
-      return null
+      throw e
     }
   }, [
     planMode,
@@ -2192,7 +2138,6 @@ export default function App() {
     syncRunningSessionStreaming,
     clearInterruptState,
     finishRunReview,
-    sendQueuedFollowup,
     closeRunningSession,
     ensureSidecarApiProfile,
     reportNetworkError,
@@ -2201,11 +2146,12 @@ export default function App() {
     globalDefault
   ])
 
-  const startingSessionRef = useRef<Promise<string | null> | null>(null)
-  const ensureSession = useCallback((): Promise<string | null> => {
-    if (startingSessionRef.current) return startingSessionRef.current
-    const pending = startSession().finally(() => { startingSessionRef.current = null })
-    startingSessionRef.current = pending
+  const startingSessionsRef = useRef(new Map<string, Promise<string | null>>())
+  const ensureSession = useCallback((owner: ConversationOwner, task: SubmittedInput<InputContext>): Promise<string | null> => {
+    const existing = startingSessionsRef.current.get(owner.key)
+    if (existing) return existing
+    const pending = startSession(owner, task).finally(() => { startingSessionsRef.current.delete(owner.key) })
+    startingSessionsRef.current.set(owner.key, pending)
     return pending
   }, [startSession])
 
@@ -2310,162 +2256,190 @@ export default function App() {
     }
   }, [showDiff, diffScope.kind, refreshWorktreeDiff, sidebarRefreshKey])
 
-  const submittingRef = useRef(false)
-  const send = useCallback(
-    async (
-      text: string,
-      images: ImagePayload[],
-      documents: DocumentPayload[],
-      options: SendOptions = {}
-    ): Promise<SubmitOutcome> => {
-      if (submittingRef.current) return { kind: "rejected", reason: "提交进行中" }
-      submittingRef.current = true
-      const ownerToken = switchTokenRef.current
-      try {
-        // 客户端可处理的斜杠命令直接拦截，不投递给 CLI
-        const trimmed = text.trim()
-        if (!options.bypassPreprocess && (trimmed === "/clear" || trimmed === "/reset")) {
-          if (images.length || documents.length) { toast.info("新建会话命令不能携带附件，内容已保留"); return { kind: "cancelled" } }
-          await teardown()
-          if (ownerToken !== switchTokenRef.current) return { kind: "cancelled" }
-          ++switchTokenRef.current
-          stateRef.current = reducerInit()
-          dispatch({ kind: "reset" })
-          setReviewDiffs([])
-          setSelectedSessionId(null)
-          selectedSessionIdRef.current = null
-          setSelectedSessionMeta(null)
-          applyDefaultPermissionModeState()
-          toast.success("已新建会话，原历史仍保留")
-          return { kind: "accepted_local", clientMessageId: crypto.randomUUID() }
+  const updateSubmittedMessage = (task: SubmittedInput<InputContext>) => {
+    const owner = task.context.owner
+    const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+    const payload = task.payloadRef
+    const existing = (run?.state ?? owner.state).entries.find((e) => e.kind === "message" && e.id === task.messageId)
+    const uiBlocks = existing?.kind === "message" && existing.rawText === payload.text && existing.inputRevision === task.inputRevision && !existing.submissionPendingNames?.length
+      ? existing.blocks : payload.uiBlocks ?? inputUiBlocks(payload.text, payload.images, payload.documents)
+    const message = {
+      kind: "message" as const, role: "user" as const, id: task.messageId, streaming: false,
+      blocks: payload.pendingNames?.length ? [...uiBlocks, ...payload.pendingNames.map((name) => ({ type: "attachment" as const, attachmentName: name, attachmentContentMode: "metadata-only" as const }))] : uiBlocks,
+      rawText: payload.text, ts: task.createdAt, localState: task.localState, deliveryState: task.deliveryState,
+      runState: task.runState, attemptId: task.attemptId, attemptIds: task.attempts.map((a) => a.id), attemptDetails: task.attempts.map((a) => ({ ...a })), inputRevision: task.inputRevision,
+      transcriptUuid: task.deliveryState === "acknowledged" || task.deliveryState === "responded" ? task.attemptId : undefined,
+      submissionTimings: { registered: task.timings.registered, saved: task.timings.saved, writeStarted: task.timings.writeStarted, written: task.timings.written, firstResponse: task.timings.firstResponse },
+      submissionError: task.error, submissionPendingNames: payload.pendingNames
+    }
+    if (run) applyRunningAction(run, { kind: "submitted_input", message })
+    else {
+      owner.state = reduce(owner.state, { kind: "submitted_input", message })
+      if (viewOwnerRef.current.key === owner.key) { stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state }) }
+    }
+    setRunningTick((tick) => tick + 1)
+  }
+  const persistSubmittedInput = (task: SubmittedInput<InputContext>) => saveOutbox({
+    schemaVersion: 1, id: task.messageId, cwd: task.context.owner.project.cwd, conversationId: task.context.owner.sessionId,
+    runtimeId: task.context.owner.runtimeId ?? undefined, text: task.payloadRef.text, images: task.payloadRef.images, documents: task.payloadRef.documents, attempts: task.attempts.map((a) => ({ ...a })), mode: "normal", state: task.deliveryState,
+    createdAt: task.createdAt, conversationKey: task.conversationKey, attemptId: task.attemptId,
+    inputRevision: task.inputRevision, profileRevision: task.profileRevision
+  })
+  const checkInputTarget = (task: SubmittedInput<InputContext>) => {
+    coordinatorRef.current.assertCurrent(task)
+    if (currentAuthorizationRevision() !== task.context.authorizationRevision) throw new Error("授权配置已改变，请恢复原配置后重试")
+    const owner = task.context.owner
+    if (currentApiLaunchProfileKey() !== task.profileRevision) throw new Error("提供商配置已改变，请恢复原配置后重试")
+    if (currentUiIntentRef.current.key === owner.key && (task.context.permissionMode !== currentUiIntentRef.current.permissionMode || !sameComposerPrefs(task.context.composerPrefs, currentUiIntentRef.current.composerPrefs))) throw new Error("模型或权限已改变，请恢复提交时的配置后重试")
+    const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+    if (run && run.permissionMode !== task.context.permissionMode) throw new Error("此请求的权限已改变，尚未发送")
+  }
+  submissionAdapterRef.current = {
+    changed: updateSubmittedMessage,
+    persist: persistSubmittedInput,
+    prepare: async (task) => {
+      const { owner, options } = task.context
+      checkInputTarget(task)
+      let text = task.payloadRef.text
+      const { images, documents } = task.payloadRef
+      if (!options.bypassPreprocess) {
+        let route = routeCommand(text, findSlashCommands(owner.state, []), owner.state.entries.some((e) => e.kind === "system_init") ? [] : installedSkillCommandsRef.current)
+        if (/^\s*\/model(?:\s|$)/.test(text)) route = (await claudeCapabilities()).headlessModelCommand === "supported" ? "cli" : "confirm_text"
+        checkInputTarget(task)
+        if ((route === "preview" || route === "confirm_text") && task.context.approvedCommand !== text) {
+          coordinatorRef.current.status(task, "needs_confirmation")
+          if (viewOwnerRef.current.key !== owner.key) throw new Error("请回到此对话确认命令后重试")
+          const accepted = await confirmInputAction(route === "preview" ? "调用本地预览命令" : "此命令尚未确认可执行", "完整原文和附件已保留。此操作需要确认后才会交给 CLI。", route === "preview" ? "继续调用" : "作为文本发送")
+          checkInputTarget(task)
+          if (!accepted) { coordinatorRef.current.cancel(task.messageId); throw new DOMException("已取消", "AbortError") }
+          task.context.approvedCommand = text
         }
-        const skillInvocation = options.skillInvocation ?? null
-        let sendAsText = false
-        if (!options.bypassPreprocess) {
-          const runtimeCommands = findSlashCommands(stateRef.current, [])
-          let route = routeCommand(text, runtimeCommands, stateRef.current.entries.some((entry) => entry.kind === "system_init") ? [] : installedSkillCommands)
-          if (/^\s*\/model(?:\s|$)/.test(text)) {
-            const capabilities = await claudeCapabilities()
-            route = capabilities.headlessModelCommand === "supported" ? "cli" : "confirm_text"
-          }
-          if (route === "permissions") {
-            if (images.length || documents.length) { toast.info("设置命令不能携带附件，内容已保留"); return { kind: "cancelled" } }
-            setSettingsSection("config")
-            setShowSettings(true)
-            return { kind: "accepted_local", clientMessageId: crypto.randomUUID() }
-          }
-          if (route === "preview") {
-            const accepted = await confirmInputAction("调用本地预览命令", "此命令来自本地文件，尚未被当前 CLI 会话确认。继续会将完整命令和附件交给 CLI 解析。", "继续调用")
-            if (!accepted) return { kind: "cancelled" }
-          }
-          if (route === "confirm_text") {
-            const accepted = await confirmInputAction("此命令尚未确认可执行", "可在 Claude 终端中执行此命令，或明确将当前原文作为普通消息发送。附件会一起保留。", "作为文本发送")
-            if (!accepted) return { kind: "cancelled" }
-            sendAsText = true
-          }
-        }
-        if (ownerToken !== switchTokenRef.current) return { kind: "cancelled" }
-        let cliText = sendAsText ? `用户提供的普通文本：\n${text}` : text
-        if (!options.bypassPreprocess && collaborationMode && !skillInvocation) {
+        if (route === "confirm_text") text = `用户提供的普通文本：\n${text}`
+        if (task.context.collaborationMode) {
           const cfg = loadCollabSettings()
-          if (!cfg.enabled) {
-            setSettingsSection("collaboration")
-            setShowSettings(true)
-            toast.info("请先在设置中启用协同；启用后对新会话生效")
-            return { kind: "cancelled" }
-          }
-          const activeSessionId = activeRuntimeIdRef.current ?? sessionIdRef.current
-          if (activeSessionId && !collabMcpEnabledRef.current) {
-            toast.warning("当前 Claude 会话未加载协同 MCP；请新建会话后再使用协同")
-            return { kind: "cancelled" }
-          }
-          cliText = buildCollaborationPrompt(text, cfg)
+          if (!cfg.enabled) throw new Error("请先启用协同配置后重试")
+          text = buildCollaborationPrompt(text, cfg)
         }
-        if (!project) return { kind: "rejected", reason: "请先选择项目" }
-        const localId = options.localId ?? crypto.randomUUID()
-        const blocks = options.cliBlocks ?? compileUserInput(cliText, images, documents)
-        validateInputSize(blocks)
-        const recovery = {
-          schemaVersion: 1 as const, id: localId, cwd: project.cwd,
-          conversationId: selectedSessionIdRef.current, text, images, documents,
-          mode: "normal" as const, state: "queued" as const, createdAt: Date.now()
-        }
-        await saveOutbox(recovery)
-        const id = await measureSendStep("ensureSession", ensureSession)
-        if (!id) return { kind: "rejected", reason: "会话未启动，内容已保留" }
-        if (ownerToken !== switchTokenRef.current) return { kind: "cancelled" }
-        const run = runningSessionsRef.current.get(id)
-        if (!run) return { kind: "rejected", reason: "会话已结束，内容已保留" }
-        const mode = options.mode ?? "followup"
-        await saveOutbox({ ...recovery, conversationId: run.jsonlSessionId, runtimeId: id, mode })
-        if (ownerToken !== switchTokenRef.current || !runningSessionsRef.current.has(id)) return { kind: "cancelled" }
-        // Read the live run after asynchronous preflight; a captured React busy flag can be stale.
-        const queuedInput: QueuedInput = { localId, mode, text, images, documents, cliBlocks: blocks, skillInvocation }
-        if (run.streaming) {
-          run.queuedInputs = [...run.queuedInputs, queuedInput]
-          setRunningTick((tick) => tick + 1)
-          if (mode === "guide") {
-            const sent = await sendQueuedFollowup(run, localId, true)
-            // A busy writer leaves the item in the local queue; acceptance remains durable.
-            if (!sent && !run.queuedInputs.some((item) => item.localId === localId)) return { kind: "rejected", reason: "引导消息发送失败，内容已保留" }
-          }
-          if (collaborationMode) setCollaborationMode(false)
-          return { kind: "accepted_local", clientMessageId: localId }
-        }
-        await measureSendStep("beginRunReview", () => beginRunReview(run))
-        await updateOutboxState(localId, "writing")
-        if (ownerToken !== switchTokenRef.current || !runningSessionsRef.current.has(id)) return { kind: "cancelled" }
-        const sentAt = options.sentAt ?? Date.now()
-        rememberSentInput({ localId, text, images, documents, cliBlocks: blocks, skillInvocation, ts: sentAt })
-        applyRunningAction(run, { kind: "user_local", blocks: inputUiBlocks(text, images, documents), rawText: text, localId, ts: sentAt })
-        run.activeInputId = localId
-        setRunningSessionTurnActive(run, true)
-        try {
-          await measureSendStep("sendCliInput", () => sendCliInput(id, blocks, skillInvocation, localId))
-          applyRunningAction(run, { kind: "delivery_changed", messageId: localId, state: "awaiting_ack" })
-          if (collaborationMode) setCollaborationMode(false)
-          return { kind: "accepted_local", clientMessageId: localId }
-        } catch (error) {
-          void updateOutboxState(localId, deliveryAfterWriteError(error)).catch(console.warn)
-          applyRunningAction(run, { kind: "delivery_changed", messageId: localId, state: deliveryAfterWriteError(error) })
-          if (run.activeInputId === localId) { run.activeInputId = null; setRunningSessionTurnActive(run, false) }
-          void discardRunReview(run)
-          toast.error(`发送失败，内容已保留：${String(error)}`)
-          return { kind: "rejected", reason: String(error) }
-        }
-      } catch (error) {
-        toast.error(`未完成提交，内容已保留：${String(error)}`)
-        return { kind: "rejected", reason: String(error) }
-      } finally { submittingRef.current = false }
+      }
+      const trust = await claudeWorkspaceTrustInfo(owner.project.cwd)
+      checkInputTarget(task)
+      if (shouldPromptClaudeWorkspaceTrust(trust)) {
+        coordinatorRef.current.status(task, "needs_confirmation")
+        if (viewOwnerRef.current.key !== owner.key) throw new Error("请回到此对话确认工作区后重试")
+        if (!(await ensureClaudeWorkspaceTrust())) { coordinatorRef.current.cancel(task.messageId); throw new DOMException("工作区未授权", "AbortError") }
+      }
+      checkInputTarget(task)
+      coordinatorRef.current.status(task, "preparing")
+      task.context.cliBlocks = options.cliBlocks ?? compileUserInput(text, images, documents)
+      validateInputSize(task.context.cliBlocks)
+      const id = await measureSendStep("ensureSession", () => ensureSession(owner, task))
+      checkInputTarget(task)
+      const run = id ? runningSessionsRef.current.get(id) : undefined
+      if (!run) throw new Error("会话连接失败，尚未发送")
+      if (task.context.collaborationMode && !run.collabMcpEnabled) throw new Error("此会话未加载协同 MCP，请新建会话")
+      // A runtime resumed from elsewhere may still be working; never claim mid-turn support.
+      if (run.streaming) throw new Error("上一轮仍在执行，请完成后重试")
+      await measureSendStep("beginRunReview", () => beginRunReview(run))
+      if (task.controller.signal.aborted) { await discardRunReview(run); coordinatorRef.current.assertCurrent(task) }
+      checkInputTarget(task)
+      if (shouldPromptClaudeWorkspaceTrust(await claudeWorkspaceTrustInfo(owner.project.cwd))) throw new Error("工作区授权已撤销，尚未发送")
+      checkInputTarget(task)
     },
-    [
-      project,
-      installedSkillCommands,
-      confirmInputAction,
-      sendQueuedFollowup,
-      ensureSession,
-      teardown,
-      applyRunningAction,
-      setRunningSessionTurnActive,
-      beginRunReview,
-      discardRunReview,
-      collaborationMode,
-      applyDefaultPermissionModeState,
-      rememberSentInput
-    ]
-  )
+    write: async (task) => {
+      try { checkInputTarget(task) } catch (error) { throw Object.assign(new Error(String(error)), { deliveryCertainty: "not_sent" }) }
+      const owner = task.context.owner
+      const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+      if (!run) throw Object.assign(new Error("会话已结束"), { deliveryCertainty: "not_sent" })
+      const blocks = task.context.cliBlocks!
+      rememberSentInput({ localId: task.messageId, ...task.payloadRef, cliBlocks: blocks, ts: task.createdAt })
+      run.activeInputId = task.messageId
+      setRunningSessionTurnActive(run, true)
+      try { await sendCliInput(run.runtimeId, blocks, undefined, task.attemptId) }
+      catch (error) {
+        if (task.deliveryState !== "acknowledged" && task.deliveryState !== "responded") {
+          run.activeInputId = null; setRunningSessionTurnActive(run, false)
+          // Uncertain writes may have side effects; preserve and settle their baseline.
+          if ((error as { deliveryCertainty?: string })?.deliveryCertainty === "not_sent") await discardRunReview(run)
+          else await finishRunReview(run)
+        }
+        throw error
+      }
+    },
+    settled: (task) => {
+      if (task.deliveryState === "acknowledged" || task.deliveryState === "responded") void removeOutbox(task.messageId).catch(console.warn)
+      else void updateOutboxState(task.messageId, task.deliveryState, task.attemptId).catch(console.warn)
+    }
+  }
 
-  const prepareComposerSend = useCallback(
-    async (text: string): Promise<boolean> => {
-      const trimmed = text.trim()
-      if (trimmed === "/clear" || trimmed === "/reset") return true
-      if (collaborationMode && !loadCollabSettings().enabled) return true
-      return ensureClaudeWorkspaceTrust()
-    },
-    [collaborationMode, ensureClaudeWorkspaceTrust]
-  )
+  const send = useCallback((text: string, images: ImagePayload[], documents: DocumentPayload[], options: SendOptions = {}): SubmitOutcome => {
+    if (!project) return { kind: "rejected", reason: "请先选择项目" }
+    if (!text.trim() && !images.length && !documents.length && !options.payload?.prepare) return { kind: "rejected", reason: "输入为空" }
+    const command = text.trim()
+    if (!options.bypassPreprocess && ["/clear", "/reset", "/permissions"].includes(command)) {
+      if (images.length || documents.length || options.payload?.prepare) { toast.info("本地命令不能携带附件"); return { kind: "cancelled" } }
+      if (command === "/permissions") { setSettingsSection("config"); setShowSettings(true) }
+      else {
+        coordinatorRef.current.stop(viewOwnerRef.current.key)
+        const oldRuntime = activeRuntimeIdRef.current
+        if (oldRuntime) void closeRunningSession(oldRuntime, { preserveConversationState: true })
+        ++switchTokenRef.current
+        viewOwnerRef.current = { token: switchTokenRef.current, projectId: project.id, key: crypto.randomUUID() }
+        stateRef.current = reducerInit(); dispatch({ kind: "reset" })
+        setReviewDiffs([]); setSelectedSessionId(null); selectedSessionIdRef.current = null; setSelectedSessionMeta(null)
+        applyDefaultPermissionModeState()
+      }
+      return { kind: "local_action" }
+    }
+    const key = viewOwnerRef.current.key
+    let owner = ownersRef.current.get(key)
+    if (!owner) {
+      owner = { key, project, sessionId: selectedSessionIdRef.current, runtimeId: activeRuntimeIdRef.current,
+        state: stateRef.current, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer,
+        permissionMode: planMode ? "plan" : sessionPermissionMode, permissionModeSource: permissionModeSourceRef.current,
+        profileRevision: currentApiLaunchProfileKey(), fork: pendingForkRef.current }
+      ownersRef.current.set(key, owner)
+    }
+    owner.composerPrefs = { ...composerPrefs }; owner.sessionComposer = sessionComposer; owner.permissionMode = planMode ? "plan" : sessionPermissionMode
+    // Capture intent for each submission; queued requests do not silently adopt later settings.
+    owner.state = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId)?.state ?? owner.state : stateRef.current
+    return coordinatorRef.current.submit({ conversationKey: key, context: { owner, options, collaborationMode, authorizationRevision: currentAuthorizationRevision(), composerPrefs: { ...composerPrefs }, sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
+      profileRevision: currentApiLaunchProfileKey(), sourceDraftRevision: options.sourceDraftRevision ?? 0, draftKey: options.draftKey })
+  }, [project, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer, planMode, sessionPermissionMode, collaborationMode, applyDefaultPermissionModeState, closeRunningSession])
+
+  const hasLaterExecution = (task: SubmittedInput<InputContext>) => {
+    const entries = task.context.owner.state.entries
+    const index = entries.findIndex((e) => e.kind === "message" && e.id === task.messageId)
+    return entries.slice(index + 1).some((e) => e.kind === "message" && (e.role === "assistant" || e.role === "user" && ["acknowledged", "responded", "awaiting_ack", "writing", "delivery_unknown"].includes(e.deliveryState ?? "")))
+  }
+  const editSubmittedMessage = async (id: string, payload: InputPayload) => {
+    const task = coordinatorRef.current.tasks.get(id)
+    if (!task) return
+    const edited = { text: payload.text, images: payload.images, documents: payload.documents }
+    if (hasLaterExecution(task)) {
+      if (!(await confirmInputAction("编辑内容作为新请求", "后续执行历史保持不变，编辑后的内容将追加为新消息；已执行的操作不会回滚。", "发送新请求"))) return
+      coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: edited, profileRevision: task.profileRevision, context: { ...task.context, options: {} } })
+      coordinatorRef.current.resume(task.conversationKey)
+    } else { task.context.options = {}; coordinatorRef.current.retry(id, edited) }
+  }
 
   const retryUserMessage = useCallback(async (messageId: string) => {
+    const task = coordinatorRef.current.tasks.get(messageId)
+    if (task && hasLaterExecution(task)) {
+      if (await confirmInputAction("作为新请求重新发送", "此消息之后已有执行记录。重新发送会保留原历史和文件变更，并追加一条新请求。", "发送新请求")) {
+        coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: task.payloadRef, profileRevision: task.profileRevision, context: { ...task.context } })
+        coordinatorRef.current.resume(task.conversationKey)
+      }
+      return
+    }
+    if (task && ["failed", "cancelled", "paused", "queued"].includes(task.deliveryState)) { coordinatorRef.current.retry(messageId); return }
+    if (task?.deliveryState === "delivery_unknown") {
+      if (await confirmInputAction("再次发送可能重复执行", "无法确定原请求是否已被接收。请先检查现有记录；再次发送会作为一条新请求保留原消息。", "再次发送")) {
+        const { payloadRef, context } = task
+        coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: payloadRef, profileRevision: task.profileRevision, context: { ...context } })
+        coordinatorRef.current.resume(task.conversationKey)
+      }
+      return
+    }
     const retryOwner = switchTokenRef.current
     let item = sentInputsRef.current.get(messageId)
     if (!project) return
@@ -2473,11 +2447,12 @@ export default function App() {
     const sourceState = stateRef.current
     const sourceId = selectedSessionIdRef.current ?? findInitSessionId(sourceState)
     const entry = sourceState.entries.find((entry) => entry.kind === "message" && entry.id === messageId)
+    const transcriptMessageId = entry?.kind === "message" ? entry.transcriptUuid ?? messageId : messageId
     if (!item && entry?.kind === "message" && sourceId) {
       try {
         const events = await readSessionTranscript(project.cwd, sourceId)
         if (retryOwner !== switchTokenRef.current) return
-        item = retryInputFromTranscript(events.find((event) => (event as { uuid?: string }).uuid === messageId), entry) ?? undefined
+        item = retryInputFromTranscript(events.find((event) => (event as { uuid?: string }).uuid === transcriptMessageId), entry) ?? undefined
       } catch (error) { toast.error(`读取原始输入失败：${String(error)}`); return }
     }
     if (!item) { toast.warning("原始输入或完整附件不可用，请从本地恢复区取回"); return }
@@ -2491,7 +2466,7 @@ export default function App() {
       if (!notSent && sourceId) {
         const events = await readSessionTranscript(project.cwd, sourceId) as Array<ClaudeEvent & { uuid?: string }>
         if (retryOwner !== switchTokenRef.current) return
-        const index = events.findIndex((event) => event.uuid === messageId)
+        const index = events.findIndex((event) => event.uuid === transcriptMessageId)
         if (index < 0 && sourceState.entries.some((entry) => entry.kind === "message" && entry.role === "assistant")) {
           toast.warning("无法确认历史分支位置，原记录保持不变。请从恢复区取回输入并选择会话后发送。")
           return
@@ -2508,6 +2483,7 @@ export default function App() {
       if (retryOwner !== switchTokenRef.current) return
       if (!notSent) {
         ++switchTokenRef.current
+        viewOwnerRef.current = { token: switchTokenRef.current, projectId: project.id, key: crypto.randomUUID() }
         pendingForkRef.current = fork
         selectedSessionIdRef.current = null
         setSelectedSessionId(null)
@@ -2519,7 +2495,7 @@ export default function App() {
         setReviewDiffs([])
       }
       const outcome = await send(item.text, item.images, item.documents, { bypassPreprocess: true, cliBlocks: item.cliBlocks })
-      if (outcome.kind !== "accepted_local") {
+      if (outcome.kind !== "registered_in_ui") {
         pendingForkRef.current = null
         if (!activeRuntimeIdRef.current) {
           selectedSessionIdRef.current = sourceId
@@ -2533,6 +2509,9 @@ export default function App() {
   }, [project, streaming, send, closeRunningSession, confirmInputAction])
 
   const stop = useCallback(async () => {
+    coordinatorRef.current.stop(viewOwnerRef.current.key)
+    settleInputAction(false)
+    settleClaudeWorkspaceTrust(false)
     const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
     const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
     if (!run || !run.streaming) {
@@ -2586,66 +2565,6 @@ export default function App() {
     closeRunningSession,
     clearInterruptState
   ])
-
-  const findQueuedInput = useCallback((localId: string) => {
-    for (const run of runningSessionsRef.current.values()) {
-      const item = run.queuedInputs.find((queued) => queued.localId === localId)
-      if (item) return { run, item }
-    }
-    return null
-  }, [])
-
-  const recallQueuedInput = useCallback(
-    (localId: string) => {
-      const found = findQueuedInput(localId)
-      if (!found) return
-      if (found.item.mode === "guide") {
-        restoreQueuedInputsToDraft([found.item], "copy")
-        return
-      }
-      found.run.queuedInputs = found.run.queuedInputs.filter(
-        (item) => item.localId !== localId
-      )
-      restoreQueuedInputsToDraft([found.item])
-      setRunningTick((tick) => tick + 1)
-    },
-    [findQueuedInput, restoreQueuedInputsToDraft]
-  )
-
-  const deleteQueuedInput = useCallback(
-    (localId: string) => {
-      const found = findQueuedInput(localId)
-      if (!found) return
-      if (found.item.mode === "guide") {
-        toast.warning("引导消息已经送达 Claude，不能从本地删除")
-        return
-      }
-      found.run.queuedInputs = found.run.queuedInputs.filter(
-        (item) => item.localId !== localId
-      )
-      setRunningTick((tick) => tick + 1)
-    },
-    [findQueuedInput]
-  )
-
-  const promoteQueuedInputToGuide = useCallback(async (localId: string) => {
-    const found = findQueuedInput(localId)
-    if (!found) return
-    await sendQueuedFollowup(found.run, localId, true)
-  }, [findQueuedInput, sendQueuedFollowup])
-
-  const recallLatestQueuedInput = useCallback(() => {
-    const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
-    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
-    const item = run
-      ? [...run.queuedInputs].reverse().find((queued) => queued.mode === "followup")
-      : null
-    if (!item) {
-      toast.info("没有可取回的排队消息")
-      return
-    }
-    recallQueuedInput(item.localId)
-  }, [recallQueuedInput])
 
   const handlePermissionModeChange = useCallback(
     (mode: AppSettings["defaultPermissionMode"]) => {
@@ -2730,6 +2649,8 @@ export default function App() {
       const token = ++switchTokenRef.current
       await detachActiveSession()
       if (token !== switchTokenRef.current) return
+      viewOwnerRef.current = { token, projectId: next.id, key: crypto.randomUUID() }
+      stateRef.current = reducerInit()
       dispatch({ kind: "reset" })
       setReviewDiffs([])
       setProject(next)
@@ -2749,8 +2670,13 @@ export default function App() {
       const token = ++switchTokenRef.current
       await detachActiveSession()
       if (token !== switchTokenRef.current) return
+      const targetOwner = [...ownersRef.current.values()].find((owner) => owner.project.id === p.id && owner.sessionId === s.id)
+      viewOwnerRef.current = { token, projectId: p.id, key: targetOwner?.key ?? crypto.randomUUID() }
+      selectedSessionIdRef.current = s.id
       setLoadingSession(true)
       setCollaborationMode(false)
+      viewOwnerRef.current = { token, projectId: p.id, key: crypto.randomUUID() }
+      stateRef.current = reducerInit()
       dispatch({ kind: "reset" })
       setReviewDiffs([])
       setProject(p)
@@ -2779,6 +2705,14 @@ export default function App() {
           setLoadingSession(false)
           return
         }
+      }
+      const localOwner = [...ownersRef.current.values()].find((owner) => owner.project.id === p.id && owner.sessionId === s.id)
+      if (localOwner) {
+        viewOwnerRef.current = { token, projectId: p.id, key: localOwner.key }
+        stateRef.current = localOwner.state; dispatch({ kind: "replace_state", state: localOwner.state })
+        setReviewDiffs(localOwner.reviewDiffs); setComposerPrefs(localOwner.composerPrefs); setSessionComposer(localOwner.sessionComposer)
+        applyPermissionModeState(localOwner.permissionMode, localOwner.permissionModeSource)
+        setLoadingSession(false); return
       }
       try {
         const events = (await readSessionTranscript(p.cwd, s.id)) as ClaudeEvent[]
@@ -2848,6 +2782,8 @@ export default function App() {
       const token = ++switchTokenRef.current
       await detachActiveSession()
       if (token !== switchTokenRef.current) return
+      viewOwnerRef.current = { token, projectId: p.id, key: crypto.randomUUID() }
+      stateRef.current = reducerInit()
       dispatch({ kind: "reset" })
       setReviewDiffs([])
       setProject(p)
@@ -2911,6 +2847,9 @@ export default function App() {
     const token = ++switchTokenRef.current
     await detachActiveSession()
     if (token !== switchTokenRef.current) return
+    viewOwnerRef.current = { token, projectId: project?.id ?? "", key: crypto.randomUUID() }
+    stateRef.current = reducerInit()
+    selectedSessionIdRef.current = null
     dispatch({ kind: "reset" })
     setReviewDiffs([])
     setSelectedSessionId(null)
@@ -2921,7 +2860,7 @@ export default function App() {
     setComposerPrefs(currentComposerDefault(globalDefault))
     applyDefaultPermissionModeState()
     setCollaborationMode(false)
-  }, [applyDefaultPermissionModeState, detachActiveSession, globalDefault])
+  }, [applyDefaultPermissionModeState, detachActiveSession, globalDefault, project?.id])
 
   const openSettings = useCallback((section: string = "general") => {
     if (!showSettings) {
@@ -3177,7 +3116,7 @@ export default function App() {
   const activeRunningSubagentCount = runningSubagentCount(state.subagents)
   const draftOwnerRef = useRef<{ token: number; projectId?: string; key?: string }>({ token: -1 })
   if (draftOwnerRef.current.token !== switchTokenRef.current || draftOwnerRef.current.projectId !== project?.id) {
-    draftOwnerRef.current = { token: switchTokenRef.current, projectId: project?.id, key: project ? composerDraftKey(project.id, jsonlSessionId) : undefined }
+    draftOwnerRef.current = { token: switchTokenRef.current, projectId: project?.id, key: project ? composerDraftKey(project.id, jsonlSessionId ?? activeConversationKey) : undefined }
   }
   const activeComposerDraftKey = draftOwnerRef.current.key
   const activeComposerDraft = activeComposerDraftKey
@@ -3246,30 +3185,9 @@ export default function App() {
     const detail = sources.map((skill) => [skill.source, skill.description].filter(Boolean).join(" · ")).join(" / ")
     return [command, [runtimeCommandsKnown ? "当前 CLI 会话" : skillPreviewStale ? "缓存预览 · 读取失败" : "本地预览 · 待 CLI 确认", detail].filter(Boolean).join(" · ")]
   }))
-  const composerBarItems = useMemo(() => {
-    const runtimeId = activeRuntimeIdRef.current ?? sessionId
-    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
-    if (!run) return [] as Array<{ localId: string; preview: string }>
-    return run.queuedInputs
-      .filter((q) => q.mode === "followup")
-      .map((q) => ({
-        localId: q.localId,
-        preview: derivePreviewFromQueuedInput(q)
-      }))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runningTick, sessionId])
-  const activeUpstreamStatus = useMemo(() => {
-    const runtimeId = activeRuntimeIdRef.current ?? sessionId
-    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
-    return run?.upstreamStatus ?? null
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runningTick, sessionId])
-  const activeInterrupting = useMemo(() => {
-    const runtimeId = activeRuntimeIdRef.current ?? sessionId
-    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
-    return run?.interrupting ?? false
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runningTick, sessionId])
+  const activeRun = sessionId ? runningSessionsRef.current.get(sessionId) : undefined
+  const activeUpstreamStatus = activeRun?.upstreamStatus ?? null
+  const activeInterrupting = activeRun?.interrupting ?? false
   const retryableMessageIds = useMemo(
     () => new Set([...collectFailedRetryableMessageIds(state.entries, sentInputsRef.current), ...state.entries.filter((entry) => entry.kind === "message" && entry.role === "user" && entry.blocks.some((block) => block.type === "text" || block.type === "image" || block.type === "attachment")).map((entry) => (entry.kind === "message" ? entry.id : ""))]),
     [state.entries, sentInputVersion]
@@ -3499,6 +3417,21 @@ export default function App() {
               </Suspense>
             )}
 
+            {[...ownersRef.current.values()].some((owner) => owner.key !== activeConversationKey && [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === owner.key && task.deliveryState !== "responded")) && <nav aria-label="本地待处理对话" className="flex flex-wrap gap-2 border-b px-6 py-2 text-xs">
+              {[...ownersRef.current.values()].filter((owner) => owner.key !== activeConversationKey && [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === owner.key && task.deliveryState !== "responded")).map((owner) => <button key={owner.key} className="rounded-md border px-2 py-1 text-muted-foreground hover:text-foreground" onClick={async () => {
+                const token = ++switchTokenRef.current
+                await detachActiveSession()
+                if (token !== switchTokenRef.current) return
+                viewOwnerRef.current = { token, projectId: owner.project.id, key: owner.key }
+                setProject(owner.project); setSelectedSessionId(owner.sessionId); selectedSessionIdRef.current = owner.sessionId
+                setSelectedSessionMeta(owner.selectedSessionMeta); setReviewDiffs(owner.reviewDiffs)
+                setComposerPrefs(owner.composerPrefs); setSessionComposer(owner.sessionComposer)
+                applyPermissionModeState(owner.permissionMode, owner.permissionModeSource)
+                const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+                if (run) activateRunningSession(run)
+                else { stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state }) }
+              }}>{owner.project.name} · {owner.state.entries.flatMap((e) => e.kind === "message" && e.role === "user" ? [e.rawText || "附件消息"] : [])[0]?.slice(0, 28) || "待处理消息"}</button>)}
+            </nav>}
             <div className="flex min-h-0 flex-1 flex-col">
               {loadingSession ? (
                 <div className="flex-1 min-h-0 grid place-items-center"><BuddyLoader /></div>
@@ -3519,7 +3452,7 @@ export default function App() {
                 <Suspense fallback={<PaneLoader label="正在加载会话…" />}>
                   <MessageStream
                     onOpenPermissions={() => openSettings("config")}
-                    key={`stream-${selectedSessionId ?? sessionId ?? "new"}`}
+                    key={`stream-${activeConversationKey}`}
                     entries={state.entries}
                     streaming={streaming}
                     cwd={project?.cwd ?? null}
@@ -3527,6 +3460,13 @@ export default function App() {
                     onShowDiff={openReviewDiff}
                     retryableMessageIds={retryableMessageIds}
                     onRetryMessage={retryUserMessage}
+                    submissionActions={{
+                      payload: (id) => coordinatorRef.current.tasks.get(id)?.payloadRef,
+                      retry: retryUserMessage,
+                      edit: (id, payload) => { void editSubmittedMessage(id, payload) },
+                      cancel: (id) => coordinatorRef.current.cancel(id),
+                      resume: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resume(task.conversationKey) }
+                    }}
                     slashCommands={slashCommands}
                     pendingSubagentCount={activeRunningSubagentCount}
                     subagents={activeSubagents}
@@ -3564,21 +3504,9 @@ export default function App() {
                     />
                   </Suspense>
                 </div>
-                {composerBarItems.length > 0 && (
-                  <div className="shrink-0 bg-background px-6 pt-2">
-                    <Suspense fallback={null}>
-                      <QueuedComposerBar
-                        items={composerBarItems}
-                        onPromoteGuide={promoteQueuedInputToGuide}
-                        onRecall={recallQueuedInput}
-                        onDelete={deleteQueuedInput}
-                      />
-                    </Suspense>
-                  </div>
-                )}
                 <div className={cn(empty && "px-6 pb-6 pt-2")}>
                   <div className={cn(empty && "mx-auto max-w-3xl space-y-2 xl:max-w-4xl 2xl:max-w-5xl")}>
-                <InputRecovery cwd={project?.cwd} activeRuntimeIds={[...runningSessionsRef.current.keys()]} onRestore={(input) => {
+                <InputRecovery centered={empty} cwd={project?.cwd} liveMessageIds={[...coordinatorRef.current.tasks.keys()]} activeRuntimeIds={[...runningSessionsRef.current.keys()]} onRestore={(input) => {
                   const current = activeComposerDraft
                   setDraft([current?.text, input.text].filter(Boolean).join("\n\n"))
                   setDraftImages([...(current?.images ?? []), ...input.images])
@@ -3587,11 +3515,9 @@ export default function App() {
                 <Suspense fallback={<ComposerLoader />}>
                   <Composer
                     centered={empty}
-                    onBeforeSend={prepareComposerSend}
                     onSend={send}
                     onStop={stop}
-                    onRecallQueued={recallLatestQueuedInput}
-                    streaming={streaming}
+                    streaming={streaming || [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === activeConversationKey && isActiveInput(task))}
                     interrupting={activeInterrupting}
                     disabled={!cliPath || !project}
                     draftKey={activeComposerDraftKey}
@@ -3806,11 +3732,15 @@ export default function App() {
             />
           </Suspense>
         )}
+        {inputConfirmation && (
+          <Suspense fallback={null}>
+            <ConfirmDialog open onOpenChange={(open) => { if (!open) settleInputAction(false) }}
+              title={inputConfirmation.title} description={inputConfirmation.description}
+              confirmText={inputConfirmation.confirmText} onConfirm={() => settleInputAction(true)} />
+          </Suspense>
+        )}
         {activeToolPermissionRequest && (
           <Suspense fallback={null}>
-        <ConfirmDialog open={!!inputConfirmation} onOpenChange={(open) => { if (!open) settleInputAction(false) }}
-          title={inputConfirmation?.title ?? "确认操作"} description={inputConfirmation?.description}
-          confirmText={inputConfirmation?.confirmText} onConfirm={() => settleInputAction(true)} />
             <PermissionDialog
               request={activeToolPermissionRequest}
               onSettled={settlePermissionRequest}

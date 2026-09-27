@@ -1,3 +1,6 @@
+import { buildOutgoingText, prepareInputFiles, MAX_TEXT_FILE_BYTES, type PreparedBatch } from "@/lib/inputAttachments"
+import type { InputPayload } from "@/lib/submissionCoordinator"
+import { inputUiBlocks } from "@/lib/compileUserInput"
 import {
   useState,
   useRef,
@@ -8,8 +11,7 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
   type ClipboardEvent,
-  type DragEvent,
-  type ReactNode
+  type DragEvent
 } from "react"
 import {
   ArrowUp,
@@ -17,8 +19,6 @@ import {
   Bot,
   Check,
   ChevronDown,
-  CornerDownRight,
-  ListPlus,
   FileText,
   GitBranch,
   Image as ImageIcon,
@@ -30,8 +30,7 @@ import {
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
-  Square,
-  X
+  Square
 } from "lucide-react"
 import { toast } from "sonner"
 import { canClearSubmittedDraft, type SubmitOutcome } from "@/lib/submission"
@@ -57,6 +56,7 @@ import {
 import { cn } from "@/lib/utils"
 import { composerCommandPrefix } from "@/lib/composerCommand"
 import { CommandChip } from "./CommandChip"
+import { AttachmentChip } from "./composer/AttachmentChip"
 import {
   cloneComposerDraft,
   emptyComposerDraft,
@@ -81,17 +81,11 @@ import { listInstalledPlugins, type InstalledPlugin } from "@/lib/plugins"
 import { loadSettings } from "@/lib/settings"
 import {
   formatBytes,
-  isDocxFile,
-  isLegacyWordDocFile,
-  isPdfFile,
-  isSupportedUploadFile,
   pastedTextFileName,
   shouldAttachPastedText,
-  supportedImageMime,
   SUPPORTED_ATTACHMENT_ACCEPT,
   utf8ByteLength
 } from "@/lib/fileAttachments"
-import { extractDocxText } from "@/lib/docxText"
 import {
   parseTrigger,
   triggerSignature,
@@ -107,17 +101,12 @@ import { ImageLightbox } from "./ImageLightbox"
 import { ModelEffortPicker } from "./composer/ModelEffortPicker"
 
 interface Props {
-  onBeforeSend?: (
-    text: string,
-    images: ImagePayload[],
-    documents: DocumentPayload[]
-  ) => boolean | Promise<boolean>
   onSend: (
     text: string,
     images: ImagePayload[],
     documents: DocumentPayload[],
-    options?: { mode?: "guide" | "followup" }
-  ) => SubmitOutcome | Promise<SubmitOutcome>
+    options?: { mode?: "guide" | "followup"; sourceDraftRevision: number; draftKey?: string; payload: InputPayload }
+  ) => SubmitOutcome
   onStop: () => void | Promise<void>
   onRecallQueued?: () => void
   streaming: boolean
@@ -157,7 +146,6 @@ interface Props {
   sessionPrefs?: ComposerPrefs | null
 }
 
-const MAX_TEXT_FILE_BYTES = 1024 * 1024
 type Thumb = ComposerDraftImage
 type DocumentThumb = ComposerDraftDocument
 type FileAttachment = ComposerDraftFileAttachment
@@ -166,70 +154,7 @@ function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function readAsDataUrlPayload(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(reader.error)
-    reader.onload = () => {
-      const result = reader.result as string
-      const idx = result.indexOf("base64,")
-      resolve(idx >= 0 ? result.slice(idx + 7) : result)
-    }
-    reader.readAsDataURL(file)
-  })
-}
-
-function readAsTextPayload(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(reader.error)
-    reader.onload = () => resolve(String(reader.result ?? ""))
-    reader.readAsText(file)
-  })
-}
-
-function readAsArrayBufferPayload(file: File) {
-  return new Promise<ArrayBuffer>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(reader.error)
-    reader.onload = () => resolve(reader.result as ArrayBuffer)
-    reader.readAsArrayBuffer(file)
-  })
-}
-
-function escapeAttr(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-}
-
-function buildOutgoingText(text: string, files: FileAttachment[]) {
-  const parts = [text.trim()].filter(Boolean)
-  for (const file of files) {
-    const mime = file.mime || "application/octet-stream"
-    const contentAttr =
-      file.contentMode === "inline" ? "" : ` content="${file.contentMode}"`
-    const body =
-      file.contentMode === "metadata-only"
-        ? "[binary file content not included]"
-        : file.contentMode === "document"
-          ? "[pdf document attached separately]"
-          : (file.text ?? "")
-    parts.push(
-      [
-        `<uploaded_file name="${escapeAttr(file.name)}" mime="${escapeAttr(mime)}" size="${file.size}"${contentAttr}>`,
-        body,
-        "</uploaded_file>"
-      ].join("\n")
-    )
-  }
-  return parts.join("\n\n")
-}
-
 export function Composer({
-  onBeforeSend,
   onSend,
   onStop,
   onRecallQueued,
@@ -274,6 +199,9 @@ export function Composer({
   const attachmentGenerationRef = useRef(0)
   const pendingAttachmentsRef = useRef(0)
   const [pendingAttachments, setPendingAttachments] = useState(0)
+  const pendingBatchesRef = useRef<Array<{ names: string[]; promise: Promise<PreparedBatch> }>>([])
+  const editorInstanceRef = useRef(crypto.randomUUID())
+  const submittedRevisionRef = useRef<string | null>(null)
   const [text, updateText] = useState("")
   const setText = useCallback((value: React.SetStateAction<string>) => {
     revisionRef.current += 1
@@ -477,6 +405,7 @@ export function Composer({
     setActiveIdx(0)
     setPreviewIdx(null)
     attachmentGenerationRef.current += 1
+    pendingBatchesRef.current = []
     pendingAttachmentsRef.current = 0
     setPendingAttachments(0)
     return () => { attachmentGenerationRef.current += 1 }
@@ -542,41 +471,42 @@ export function Composer({
       .catch(() => setInstalledPlugins([]))
   }, [plusOpen])
 
-  const preparingSendRef = useRef(false)
-  const [preparingSend, setPreparingSend] = useState(false)
-
-  const send = async (mode?: "guide" | "followup") => {
-    if (preparingSendRef.current || disabled) return
-    if (pendingAttachmentsRef.current > 0) {
-      toast.info("附件仍在读取，请稍后发送")
-      return
-    }
+  const preparedText = useMemo(() => buildOutgoingText(text, fileAttachments), [text, fileAttachments])
+  const preparedBlocks = useMemo(() => inputUiBlocks(preparedText, images, documents), [preparedText, images, documents])
+  const send = (mode?: "guide" | "followup") => {
+    if (disabled) return
     const submitted = { key: draftKey, revision: revisionRef.current }
-    const outgoingText = buildOutgoingText(text, fileAttachments)
-    if (!outgoingText.trim() && images.length === 0 && documents.length === 0) return
-    const outgoingImages = images.map((i) => ({ data: i.data, mime: i.mime, order: i.order }))
+    const revisionKey = `${draftKey}:${submitted.revision}`
+    if (submittedRevisionRef.current === revisionKey) return
+    const batches = [...pendingBatchesRef.current]
+    if (!preparedText.trim() && !images.length && !documents.length && !batches.length) return
+    const outgoingImages = images.map(({ data, mime, order }) => ({ data, mime, order }))
     const outgoingDocuments = documents.map(({ data, mime, name, size, order }) => ({ data, mime, name, size, order }))
-    preparingSendRef.current = true
-    setPreparingSend(true)
-    try {
-      const canContinue = (await onBeforeSend?.(outgoingText, outgoingImages, outgoingDocuments)) ?? true
-      if (!canContinue || currentDraftKeyRef.current !== submitted.key) return
-      const outcome = await onSend(outgoingText, outgoingImages, outgoingDocuments, mode ? { mode } : undefined)
-      if (!canClearSubmittedDraft(submitted, { key: currentDraftKeyRef.current, revision: revisionRef.current }, outcome)) return
-      setText("")
-      setImages([])
-      setDocuments([])
-      setFileAttachments([])
-      if (collaborationMode) onCollaborationModeChange?.(false)
-    } catch (error) {
-      toast.error(`未完成发送，内容已保留：${String(error)}`)
-    } finally {
-      preparingSendRef.current = false
-      setPreparingSend(false)
+    const payload: InputPayload = { text: preparedText, images: outgoingImages, documents: outgoingDocuments, uiBlocks: preparedBlocks }
+    if (batches.length) {
+      payload.pendingNames = batches.flatMap((batch) => batch.names)
+      payload.prepare = Promise.all(batches.map((batch) => batch.promise)).then((ready) => ({
+        text: buildOutgoingText(text, [...fileAttachments, ...ready.flatMap((item) => item.files)]),
+        images: [...outgoingImages, ...ready.flatMap((item) => item.images)],
+        documents: [...outgoingDocuments, ...ready.flatMap((item) => item.documents)]
+      }))
+      void payload.prepare.catch(() => {}) // The application-owned task reports preparation errors.
     }
+    try {
+      const outcome = onSend(payload.text, payload.images, payload.documents, { mode, payload, sourceDraftRevision: submitted.revision, draftKey: `${editorInstanceRef.current}:${draftKey}` })
+      if (!canClearSubmittedDraft(submitted, { key: currentDraftKeyRef.current, revision: revisionRef.current }, outcome)) return
+      submittedRevisionRef.current = revisionKey
+      // Detach callbacks from this draft without invalidating their task-owned promises.
+      attachmentGenerationRef.current++
+      pendingBatchesRef.current = []
+      pendingAttachmentsRef.current = 0; setPendingAttachments(0)
+      setText(""); setImages([]); setDocuments([]); setFileAttachments([])
+      if (collaborationMode) onCollaborationModeChange?.(false)
+    } catch (error) { toast.error(`未完成发送，内容已保留：${String(error)}`) }
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && (e.repeat || e.nativeEvent.isComposing || e.keyCode === 229)) return
     // 快捷键优先级（高 → 低）：Alt 组合键（streaming 专用）→ slash token
     // 删除 → 候选菜单 → Enter 发送/排队 → Esc 软中断。
     //
@@ -615,7 +545,7 @@ export function Composer({
       !e.nativeEvent.isComposing
     ) {
       e.preventDefault()
-      send("guide")
+      send("followup")
       return
     }
     if (
@@ -701,130 +631,22 @@ export function Composer({
     const ownerKey = draftKey
     pendingAttachmentsRef.current += 1
     setPendingAttachments(pendingAttachmentsRef.current)
-    const nextImages: Thumb[] = []
-    const nextDocuments: DocumentThumb[] = []
-    const nextFileAttachments: FileAttachment[] = []
-    let skipped = 0
-    const skippedDetails: string[] = []
-
-    const batchOrder = Date.now()
-    let batchIndex = 0
-    for (const file of Array.from(files)) {
-      const order = batchOrder + batchIndex++ / 1000
-      try {
-        if (generation !== attachmentGenerationRef.current || ownerKey !== currentDraftKeyRef.current) break
-        if (file.size > 20 * 1024 * 1024) throw new Error("单个附件不能超过 20 MB")
-        if (isLegacyWordDocFile(file)) {
-          skipped += 1
-          skippedDetails.push(
-            `${file.name || "document.doc"} 是旧版 .doc 格式，请另存为 .docx 或 PDF 后上传`
-          )
-          continue
-        }
-
-        if (!isSupportedUploadFile(file)) {
-          skipped += 1
-          skippedDetails.push(
-            `${file.name || "文件"} 类型不支持；仅支持图片、PDF、DOCX 和文本文件`
-          )
-          continue
-        }
-
-        const imageMime = supportedImageMime(file)
-        if (imageMime) {
-          const data = await readAsDataUrlPayload(file)
-          nextImages.push({
-            order,
-            id: makeId(),
-            data,
-            mime: imageMime,
-            name: file.name || "image",
-            size: file.size
-          })
-          continue
-        }
-
-        if (isPdfFile(file)) {
-          const id = makeId()
-          const data = await readAsDataUrlPayload(file)
-          const name = file.name || "document.pdf"
-          const mime = "application/pdf"
-          nextDocuments.push({
-            order,
-            id,
-            data,
-            mime,
-            name,
-            size: file.size
-          })
-          nextFileAttachments.push({
-            id,
-            name,
-            mime,
-            size: file.size,
-            text: null,
-            contentMode: "document"
-          })
-          continue
-        }
-
-        if (isDocxFile(file)) {
-          const body = await extractDocxText(await readAsArrayBufferPayload(file))
-          if (!body.trim()) {
-            throw new Error("Word 文档中没有可提取的文本")
-          }
-          nextFileAttachments.push({
-            id: makeId(),
-            name: file.name || "document.docx",
-            mime:
-              file.type ||
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            size: file.size,
-            text: body,
-            contentMode: "inline"
-          })
-          continue
-        }
-
-        if (file.size > MAX_TEXT_FILE_BYTES) {
-          skipped += 1
-          skippedDetails.push(
-            `${file.name || "文本文件"} 超过 ${formatBytes(MAX_TEXT_FILE_BYTES)}`
-          )
-          continue
-        }
-
-        const body = await readAsTextPayload(file)
-        nextFileAttachments.push({
-          id: makeId(),
-          name: file.name || "file.txt",
-          mime: file.type || "text/plain",
-          size: file.size,
-          text: body,
-          contentMode: "inline"
-        })
-      } catch (error) {
-        skipped += 1
-        skippedDetails.push(`${file.name || "文件"}：${String(error)}`)
+    const batch = { names: Array.from(files).map((file) => file.name || "图片"), promise: prepareInputFiles(files) }
+    pendingBatchesRef.current.push(batch)
+    revisionRef.current++
+    try {
+      const ready = await batch.promise
+      if (generation !== attachmentGenerationRef.current || ownerKey !== currentDraftKeyRef.current) return
+      if (ready.images.length) setImages((cur) => [...cur, ...ready.images])
+      if (ready.documents.length) setDocuments((cur) => [...cur, ...ready.documents])
+      if (ready.files.length) setFileAttachments((cur) => [...cur, ...ready.files])
+    } catch (error) {
+      if (generation === attachmentGenerationRef.current && ownerKey === currentDraftKeyRef.current) toast.error(`附件不可用：${String(error)}`)
+    } finally {
+      if (generation === attachmentGenerationRef.current && ownerKey === currentDraftKeyRef.current) {
+        pendingBatchesRef.current = pendingBatchesRef.current.filter((item) => item !== batch)
+        pendingAttachmentsRef.current--; setPendingAttachments(pendingAttachmentsRef.current)
       }
-    }
-
-    if (generation !== attachmentGenerationRef.current || ownerKey !== currentDraftKeyRef.current) return
-    pendingAttachmentsRef.current -= 1
-    setPendingAttachments(pendingAttachmentsRef.current)
-    if (nextImages.length) setImages((cur) => [...cur, ...nextImages])
-    if (nextDocuments.length) {
-      setDocuments((cur) => [...cur, ...nextDocuments])
-    }
-    if (nextFileAttachments.length) {
-      setFileAttachments((cur) => [...cur, ...nextFileAttachments])
-    }
-    if (skipped > 0) {
-      toast.warning(
-        skippedDetails.length > 0
-          ? `已跳过 ${skipped} 个文件：${skippedDetails.slice(0, 2).join("；")}`
-          : `已跳过 ${skipped} 个文件`
-      )
     }
   }
 
@@ -882,9 +704,9 @@ export function Composer({
   }
 
   const canSend =
-    !!text.trim() || images.length > 0 || fileAttachments.length > 0
+    !!text.trim() || images.length > 0 || fileAttachments.length > 0 || pendingAttachments > 0
   const sendBlocked =
-    disabled || preparingSend || pendingAttachments > 0 || !canSend
+    disabled || !canSend
 
   return (
     <div
@@ -1201,78 +1023,19 @@ export function Composer({
                 />
               )}
               <PlanUsageIndicator usage={oauthUsage ?? null} />
-              {streaming ? (
-                // 运行中两种投递方式并排成一组：引导即时送达，排队等本轮结束
-                <div
-                  role="group"
-                  aria-label="运行中发送方式"
-                  className="flex h-8 items-center rounded-lg border bg-background shadow-sm"
-                >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={sendBlocked || interrupting}
-                    onClick={() => void send("guide")}
-                    aria-label="立即引导"
-                    title="立即引导：马上送达，模型在当前回合内参考 (Ctrl+Enter)"
-                    className="h-full gap-1 rounded-r-none px-2.5 text-xs"
-                  >
-                    <CornerDownRight className="size-3.5" />
-                    引导
-                  </Button>
-                  <span className="h-4 w-px bg-border" aria-hidden />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={sendBlocked}
-                    onClick={() => void send("followup")}
-                    aria-label="排入后续消息"
-                    title="排队：当前回合全部完成后送达 (Enter)"
-                    className="h-full gap-1 rounded-l-none px-2.5 text-xs"
-                  >
-                    {preparingSend ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <ListPlus className="size-3.5" />
-                    )}
-                    排队
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  onClick={() => void send()}
-                  disabled={sendBlocked}
-                  size="icon"
-                  aria-label="发送"
-                  title="发送 (Enter)"
-                  className="size-8 rounded-lg shadow-sm"
-                >
-                  {preparingSend ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <ArrowUp className="size-4" />
-                  )}
-                </Button>
-              )}
-              {streaming && (
-                <Button
-                  onClick={() => onStop()}
-                  variant="outline"
-                  size="icon"
-                  disabled={disabled || interrupting}
-                  aria-label="中断当前回合"
-                  title={interrupting ? "正在中断…" : "中断当前回合 (Esc)"}
-                  className="size-8 rounded-lg text-foreground/70 shadow-sm hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
-                >
-                  {interrupting ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Square fill="currentColor" className="size-2.5" />
-                  )}
-                </Button>
-              )}
+              {(!streaming || canSend) && <Button
+                key="primary-action"
+                onClick={() => send(streaming ? "followup" : undefined)} disabled={sendBlocked}
+                size={streaming ? "sm" : "icon"} aria-label={streaming ? "排队发送" : "发送"}
+                title={streaming ? "排队发送，等待本轮结束 (Enter)" : "发送 (Enter)"}
+                className="h-8 rounded-lg shadow-sm"
+              ><ArrowUp className="size-4" />{streaming && "排队发送"}</Button>}
+              {streaming && <Button
+                key={canSend ? "independent-stop" : "primary-action"}
+                onClick={(event) => { if (event.detail <= 1) void onStop() }} variant="outline" size="icon"
+                disabled={interrupting} aria-label="停止或取消请求" title={interrupting ? "正在停止…" : "停止或取消请求 (Esc)"}
+                className="size-8 rounded-lg text-foreground/70 shadow-sm hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+              >{interrupting ? <Loader2 className="size-3.5 animate-spin" /> : <Square fill="currentColor" className="size-2.5" />}</Button>}
             </div>
           </div>
         </div>
@@ -1286,63 +1049,6 @@ export function Composer({
         />
       )}
     </div>
-  )
-}
-
-function AttachmentChip({
-  icon,
-  label,
-  meta,
-  onClick,
-  onRemove
-}: {
-  icon: ReactNode
-  label: string
-  meta: string
-  onClick?: () => void
-  onRemove: () => void
-}) {
-  const body = (
-    <>
-      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-background text-muted-foreground">
-        {icon}
-      </span>
-      <span className="min-w-0">
-        <span className="block max-w-40 truncate text-xs font-medium">
-          {label}
-        </span>
-        <span className="block text-[10px] leading-none text-muted-foreground">
-          {meta}
-        </span>
-      </span>
-    </>
-  )
-
-  return (
-    <span className="group/chip inline-flex max-w-full items-center gap-2 rounded-full border bg-muted/60 py-1 pl-1 pr-1.5">
-      {onClick ? (
-        <button
-          type="button"
-          onClick={onClick}
-          className="inline-flex min-w-0 items-center gap-2 rounded-full text-left"
-          title={label}
-        >
-          {body}
-        </button>
-      ) : (
-        <span className="inline-flex min-w-0 items-center gap-2" title={label}>
-          {body}
-        </span>
-      )}
-      <button
-        type="button"
-        aria-label={`移除 ${label}`}
-        onClick={onRemove}
-        className="grid size-5 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-      >
-        <X className="size-3" />
-      </button>
-    </span>
   )
 }
 

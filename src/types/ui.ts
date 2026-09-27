@@ -1,4 +1,4 @@
-import type { DeliveryState } from "@/lib/submission"
+import type { DeliveryState, LocalState, RunState } from "@/lib/submission"
 export type UIBlockType =
   | "text"
   | "thinking"
@@ -69,6 +69,15 @@ export interface UIMessage {
   streaming: boolean
   delivery?: "guide"
   deliveryState?: DeliveryState
+  localState?: LocalState
+  runState?: RunState
+  inputRevision?: number
+  attemptId?: string
+  attemptIds?: string[]
+  attemptDetails?: Array<{ id: string; revision: number; state: DeliveryState; error?: string }>
+  submissionError?: string
+  submissionPendingNames?: string[]
+  submissionTimings?: { registered: number; saved?: number; writeStarted?: number; written?: number; firstResponse?: number }
   transcriptUuid?: string
   rawText?: string
   /** CLI 标记的 API 错误消息（isApiErrorMessage）：按错误卡片渲染而非普通 markdown */

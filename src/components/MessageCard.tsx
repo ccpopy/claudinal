@@ -1,11 +1,13 @@
+import { MessageInlineEditor, SubmissionFooter, canEditSubmission, hasSubmissionFooter, type SubmissionActions } from "./SubmittedInputActions"
 import { deliveryLabel, type DeliveryState } from "@/lib/submission"
 import { parseCommand } from "@/lib/commandRegistry"
 import { RetryButton } from "./RetryButton"
 import { CommandChip } from "./CommandChip"
-import { splitInjectedContext, type InjectedContext } from "@/lib/userMessageText"
-import { useState } from "react"
+import { isInjectedOnlyUserMessage, parseTaskNotification, splitInjectedContext, type InjectedContext, type TaskNotification } from "@/lib/userMessageText"
+import { useEffect, useState } from "react"
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   ChevronDown,
   Info,
@@ -17,8 +19,10 @@ import {
   DollarSign,
   FileWarning,
   Gauge,
+  ListChecks,
   Loader2,
   ShieldAlert,
+  Terminal,
   Timer,
   Webhook,
   type LucideIcon
@@ -30,6 +34,7 @@ import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
 import { CopyButton } from "./CopyButton"
 
 interface Props {
+  submissionActions?: SubmissionActions
   onOpenPermissions?: () => void
   entry: UIEntry
   cwd?: string | null
@@ -40,6 +45,7 @@ interface Props {
 }
 
 export function MessageCard({
+  submissionActions,
   entry,
   onOpenPermissions,
   cwd,
@@ -50,6 +56,7 @@ export function MessageCard({
   if (entry.kind === "message") {
     return (
       <MessageView
+        submissionActions={submissionActions}
         msg={entry}
         cwd={cwd}
         slashCommands={slashCommands}
@@ -73,12 +80,14 @@ export function MessageCard({
 }
 
 function MessageView({
+  submissionActions,
   msg,
   cwd,
   slashCommands,
   onRetryMessage,
   retryableMessageIds
 }: {
+  submissionActions?: SubmissionActions
   msg: UIMessage
   cwd?: string | null
   slashCommands?: readonly string[]
@@ -96,6 +105,7 @@ function MessageView({
   if (msg.role === "user") {
     return (
       <UserMessageView
+        submissionActions={submissionActions}
         msg={msg}
         cwd={cwd}
         slashCommands={slashCommands}
@@ -128,12 +138,15 @@ function MessageView({
  * 开头的 slash 命令渲染成与输入框一致的行内 chip；
  * 投递状态只在「未完成 / 异常」时以气泡下方小字出现，正常送达不打扰。
  */
-function UserMessageView({ msg, cwd, slashCommands, onRetry }: {
+function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }: {
+  submissionActions?: SubmissionActions
   msg: UIMessage
   cwd?: string | null
   slashCommands?: readonly string[]
   onRetry?: () => void | Promise<void>
 }) {
+  const [showPendingLabel, setShowPendingLabel] = useState(false)
+  useEffect(() => { setShowPendingLabel(false); const timer = setTimeout(() => setShowPendingLabel(true), 400); return () => clearTimeout(timer) }, [msg.attemptId])
   const textBlocks = msg.blocks.filter((b) => b.type === "text" && b.text)
   const images = msg.blocks.filter((b) => b.type === "image")
   const others = msg.blocks.filter((b) => b.type !== "text" && b.type !== "image")
@@ -148,7 +161,32 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry }: {
   const guide = msg.delivery === "guide"
   const delivery = msg.deliveryState
   const status = delivery ? DELIVERY_STATUS[delivery] : null
+  const [editing, setEditing] = useState(false)
+  const payload = submissionActions?.payload(msg.id)
+  // 状态变化（如重试后进入发送中）或原始输入失效时退出编辑
+  useEffect(() => { if (!payload || !canEditSubmission(msg)) setEditing(false) }, [payload, msg])
+  if (editing && payload && submissionActions) {
+    return <div className="flex min-w-0 flex-col items-end">
+      <MessageInlineEditor
+        message={msg}
+        payload={payload}
+        onCancel={() => setEditing(false)}
+        onSubmit={(next) => { submissionActions.edit(msg.id, next); setEditing(false) }}
+      />
+    </div>
+  }
+  // 后台任务通知是 CLI 发给模型的系统事件，按左侧事件行展示，不混进用户气泡
+  const taskNotes = injected.filter((item) => item.tag === "task-notification").map((item) => parseTaskNotification(item.content))
+  const contextNotes = injected.filter((item) => item.tag !== "task-notification")
+  if (isInjectedOnlyUserMessage(msg)) {
+    return <div className="flex min-w-0 flex-col items-start gap-1.5">
+      {taskNotes.map((note, index) => <TaskNotificationRow key={note.taskId ?? index} note={note} />)}
+      {contextNotes.length > 0 && <InjectedContextView items={contextNotes} align="start" />}
+    </div>
+  }
+  const footer = hasSubmissionFooter(msg, submissionActions)
   return <div className="group/msg flex min-w-0 flex-col items-end gap-1.5">
+    {taskNotes.map((note, index) => <div key={note.taskId ?? index} className="self-start"><TaskNotificationRow note={note} /></div>)}
     {others.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-2 [&>*]:max-w-full">
       {others.map((block, index) => <BlockView key={index} role="user" block={block} variant="user" cwd={cwd} />)}
     </div>}
@@ -167,23 +205,74 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry }: {
         {body}
       </div>
     </div>}
-    {injected.length > 0 && <InjectedContextView items={injected} />}
-    {status &&<p role="status" className={cn("flex items-center gap-1 px-1 text-[11px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
-      <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
-      {deliveryLabel[delivery!]}
-    </p>}
+    {msg.submissionPendingNames?.length && !footer ? <p className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
+      <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />附件准备中：{msg.submissionPendingNames.join("、")}
+    </p> : null}
+    {contextNotes.length > 0 && <InjectedContextView items={contextNotes} />}
+    {footer && submissionActions
+      ? <SubmissionFooter message={msg} actions={submissionActions} onEdit={() => setEditing(true)} />
+      : status && (delivery !== "preparing" || showPendingLabel) && <p role="status" className={cn("flex items-center gap-1 px-1 text-[11px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
+        <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
+        {deliveryLabel[delivery!]}
+      </p>}
     <div className="flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
-      {onRetry && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}
+      {onRetry && (!submissionActions?.payload(msg.id) || msg.deliveryState === "responded" || msg.deliveryState === "acknowledged") && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}
       {original && <CopyButton text={original} ariaLabel="复制原始输入" label="原始输入已复制" />}
     </div>
   </div>
 }
 
+const TASK_OUTCOME_LABEL: Record<TaskNotification["outcome"], string> = {
+  completed: "已完成",
+  failed: "失败",
+  killed: "已停止",
+  unknown: "已结束"
+}
+const TASK_KIND_LABEL: Record<TaskNotification["kind"], string> = {
+  command: "后台命令",
+  agent: "子智能体",
+  task: "后台任务"
+}
+
+/** 后台命令 / 异步 Agent 的结束通知：与「会话开始」同款的可展开事件行。 */
+function TaskNotificationRow({ note }: { note: TaskNotification }) {
+  const [open, setOpen] = useState(false)
+  const failed = note.outcome === "failed"
+  const subject = note.name ?? (note.kind === "task" ? note.summary : undefined)
+  const details: Array<[string, string]> = [
+    ...(!note.name && note.summary && subject !== note.summary ? [["摘要", note.summary] as [string, string]] : []),
+    ...(note.taskId ? [["任务 ID", note.taskId] as [string, string]] : []),
+    ...(note.toolUseId ? [["工具调用", note.toolUseId] as [string, string]] : []),
+    ...(note.status ? [["状态", note.status] as [string, string]] : [])
+  ]
+  return <ExpandableRow
+    open={open}
+    onToggle={() => setOpen(!open)}
+    icon={note.kind === "agent" ? Bot : note.kind === "command" ? Terminal : ListChecks}
+    tone={failed ? "error" : undefined}
+    label={`${TASK_KIND_LABEL[note.kind]}${TASK_OUTCOME_LABEL[note.outcome]}${subject ? ` · ${subject}` : ""}`}
+    meta={note.exitCode !== undefined && note.exitCode !== 0 ? `退出码 ${note.exitCode}` : undefined}
+  >
+    <div className="flex flex-col gap-1 rounded-lg border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+      {details.map(([key, value]) => <div key={key} className="flex gap-2">
+        <span className="w-14 shrink-0">{key}</span>
+        <span className="min-w-0 break-all font-mono text-foreground/80">{value}</span>
+      </div>)}
+      {note.outputFile && <div className="flex items-start gap-2">
+        <span className="w-14 shrink-0">输出文件</span>
+        <span className="min-w-0 flex-1 break-all font-mono text-foreground/80">{note.outputFile}</span>
+        <CopyButton text={note.outputFile} ariaLabel="复制输出文件路径" label="路径已复制" className="-my-1 shrink-0" />
+      </div>}
+      {!details.length && !note.outputFile && <div>CLI 未提供更多信息</div>}
+    </div>
+  </ExpandableRow>
+}
+
 /** CLI 随用户消息注入的上下文：默认折叠成一行小字，按需展开查看原文。 */
-function InjectedContextView({ items }: { items: InjectedContext[] }) {
+function InjectedContextView({ items, align = "end" }: { items: InjectedContext[]; align?: "start" | "end" }) {
   const [open, setOpen] = useState(false)
   const labels = [...new Set(items.map((item) => item.label))].join("、")
-  return <div className="flex max-w-[85%] flex-col items-end gap-1">
+  return <div className={cn("flex max-w-[85%] flex-col gap-1", align === "start" ? "items-start" : "items-end")}>
     <button
       type="button"
       onClick={() => setOpen((value) => !value)}
@@ -205,6 +294,10 @@ function InjectedContextView({ items }: { items: InjectedContext[] }) {
 
 /** 已确认 / 已响应属于正常态，不展示；其余状态给出图标与语气。 */
 const DELIVERY_STATUS: Partial<Record<DeliveryState, { icon: LucideIcon; tone: "muted" | "error"; spin?: boolean }>> = {
+  preparing: { icon: Clock, tone: "muted" },
+  needs_confirmation: { icon: Info, tone: "muted" },
+  paused: { icon: Clock, tone: "muted" },
+  cancelled: { icon: CircleStop, tone: "muted" },
   queued: { icon: Clock, tone: "muted" },
   writing: { icon: Loader2, tone: "muted", spin: true },
   awaiting_ack: { icon: Loader2, tone: "muted", spin: true },

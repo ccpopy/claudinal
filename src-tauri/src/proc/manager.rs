@@ -696,7 +696,22 @@ impl Manager {
             "request_id": Uuid::new_v4().to_string(),
             "request": { "subtype": "interrupt" }
         });
-        self.write_json_line(session_id, payload).await
+        let session = self.sessions.get(session_id).map(|entry| entry.clone());
+        let Some(session) = session else {
+            return Ok(());
+        };
+        // Never wait behind a blocked input frame. The supervisor can close the
+        // process independently; inserting control bytes into that frame is unsafe.
+        let result = if let Ok(mut stdin) = session.stdin.try_lock() {
+            let body = format!("{}\n", serde_json::to_string(&payload)?);
+            Some(write_frame(&mut *stdin, body.as_bytes(), Duration::from_secs(1)).await)
+        } else {
+            None
+        };
+        match result {
+            Some(Ok(())) => Ok(()),
+            _ => self.stop(session_id).await,
+        }
     }
 
     async fn write_json_line(&self, session_id: &str, payload: Value) -> Result<()> {
