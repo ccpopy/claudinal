@@ -188,7 +188,7 @@ fn claude_cli_available_info(probe: ClaudeCliVersionProbe) -> ClaudeCliVersionIn
     }
 }
 
-async fn probe_claude_cli_version(
+pub(crate) async fn probe_claude_cli_version(
     path: &std::path::Path,
     env: &std::collections::HashMap<String, String>,
 ) -> std::result::Result<String, String> {
@@ -5083,86 +5083,16 @@ pub async fn write_claude_md(scope: String, cwd: Option<String>, contents: Strin
     atomic_write_str(&path, &contents)
 }
 
-/// 读 ~/.claude/.credentials.json 中的 claudeAiOauth.accessToken。
-/// macOS 上 CLI 把凭据存在系统钥匙串（item 名 "Claude Code-credentials"），
-/// 文件可能根本不存在；这里只读文件、不访问系统钥匙串，由调用方决定如何提示用户。
-fn read_oauth_access_token() -> Result<Option<String>> {
-    let home = dirs::home_dir().ok_or_else(|| Error::Other("home dir not found".into()))?;
-    let path = home.join(".claude").join(".credentials.json");
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let raw = std::fs::read_to_string(&path)?;
-    let v: Value = serde_json::from_str(&raw)?;
-    let token = v
-        .pointer("/claudeAiOauth/accessToken")
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string());
-    Ok(token)
-}
-
-#[cfg(target_os = "macos")]
-const MACOS_OAUTH_KEYCHAIN_HINT: &str = "macOS 上的 OAuth token 存在系统钥匙串（\"Claude Code-credentials\"），桌面端不会读取。可在终端运行 `claude auth status` 查看登录态，或在「第三方 API」页配置 ANTHROPIC_API_KEY 查看用量。";
-
+/// Read the same OAuth credential source used by the usage client.
 #[tauri::command]
 pub async fn read_claude_oauth_token() -> Result<Option<String>> {
-    read_oauth_access_token()
+    crate::oauth_usage::read_access_token()
 }
 
-/// `anthropic-beta` 头当前默认值（抓包社区共识，非官方公开文档）。
-/// Anthropic 升级 beta 时此处会失效；可通过环境变量 `ANTHROPIC_OAUTH_BETA` 临时覆盖。
-const DEFAULT_OAUTH_BETA: &str = "oauth-2025-04-20";
-
-/// 调用 Anthropic 的 OAuth usage 端点；返回 JSON 透传给前端。
-/// 端点：GET https://api.anthropic.com/api/oauth/usage
-/// 头：Authorization: Bearer <token> + anthropic-beta: <ANTHROPIC_OAUTH_BETA or default>
 #[tauri::command]
 pub async fn fetch_oauth_usage() -> Result<Value> {
-    let token = match read_oauth_access_token()? {
-        Some(token) => token,
-        None => {
-            #[cfg(target_os = "macos")]
-            {
-                return Err(Error::Other(MACOS_OAUTH_KEYCHAIN_HINT.into()));
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                return Err(Error::Other(
-                    "OAuth 未登录：未找到 ~/.claude/.credentials.json".into(),
-                ));
-            }
-        }
-    };
-    let beta =
-        std::env::var("ANTHROPIC_OAUTH_BETA").unwrap_or_else(|_| DEFAULT_OAUTH_BETA.to_string());
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| Error::Other(format!("http client: {e}")))?;
-    let resp = client
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .bearer_auth(token)
-        .header("anthropic-beta", beta)
-        .header("Content-Type", "application/json")
-        .header("User-Agent", "Claudinal/0.1")
-        .send()
-        .await
-        .map_err(|e| Error::Other(format!("usage request: {e}")))?;
-    let status = resp.status();
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| Error::Other(format!("usage parse: {e}")))?;
-    if !status.is_success() {
-        return Err(Error::Other(format!(
-            "usage http {}: {}",
-            status,
-            serde_json::to_string(&body).unwrap_or_default()
-        )));
-    }
-    Ok(body)
+    crate::oauth_usage::fetch().await
 }
-
 /// 把任意文本写入用户在系统对话框中显式选择的路径。当前唯一使用方是
 /// 设置页的「导出配置」流程（`ConfigExportDialog`）：路径由 `dialog.save()`
 /// 返回，文件由用户主动选择，这里不做额外的路径白名单。原子写避免半截文件。

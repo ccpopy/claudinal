@@ -1345,6 +1345,12 @@ function GitBranchPicker({
 }
 
 function PlanUsageIndicator({ usage }: { usage: OauthUsage | null }) {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (!usage) return
+    const timer = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(timer)
+  }, [usage])
   // 仅 Anthropic OAuth 登录用户能拿到 plan usage；第三方 API / 未登录返回 null。
   // 该控件的存在本身="官方账号已登录"。
   if (!usage) return null
@@ -1356,10 +1362,10 @@ function PlanUsageIndicator({ usage }: { usage: OauthUsage | null }) {
   const sevenDayOpus = usage.seven_day_opus ?? undefined
   const sevenDaySonnet = usage.seven_day_sonnet ?? undefined
 
-  const fmtReset = (resetsAt: string | undefined) => {
-    const t = shortResets(resetsAt)
+  const fmtReset = (resetsAt: string | null | undefined) => {
+    const t = shortResets(resetsAt, now)
     if (!t) return ""
-    return t === "已重置" ? "已重置" : `${t}后重置`
+    return t === "等待更新" ? "等待更新" : `${t}后重置`
   }
 
   const ringStyle = {

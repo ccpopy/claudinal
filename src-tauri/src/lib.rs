@@ -9,6 +9,7 @@ mod error;
 mod fs_atomic;
 mod keychain;
 mod network_proxy;
+mod oauth_usage;
 mod permission_mcp;
 mod plugins;
 mod proc;

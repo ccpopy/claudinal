@@ -1008,7 +1008,7 @@ export async function writeClaudeMd(
 
 export interface OauthUsageWindow {
   utilization: number
-  resets_at: string
+  resets_at: string | null
 }
 
 export interface OauthUsageExtra {
@@ -1031,8 +1031,18 @@ export async function readClaudeOauthToken(): Promise<string | null> {
   return invoke<string | null>("read_claude_oauth_token")
 }
 
-export async function fetchOauthUsage(): Promise<OauthUsage> {
-  return invoke<OauthUsage>("fetch_oauth_usage")
+let pendingOauthUsage: Promise<OauthUsage> | null = null
+export function invalidateOauthUsageRequest(): void {
+  pendingOauthUsage = null
+}
+export function fetchOauthUsage(): Promise<OauthUsage> {
+  if (!pendingOauthUsage) {
+    const request = invoke<OauthUsage>("fetch_oauth_usage").finally(() => {
+      if (pendingOauthUsage === request) pendingOauthUsage = null
+    })
+    pendingOauthUsage = request
+  }
+  return pendingOauthUsage
 }
 
 export interface ProviderModelsRequest {

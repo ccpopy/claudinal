@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
   Cloud,
@@ -15,24 +15,23 @@ import { toast } from "sonner"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Separator } from "@/components/ui/separator"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
-import { cn } from "@/lib/utils"
+import { PlanUsageSection } from "./PlanUsage"
 import {
   authCancelLogin,
   authLogout,
   authStartLogin,
   fetchOauthUsage,
   getAuthStatus,
+  invalidateOauthUsageRequest,
   readClaudeSettings,
   type AuthStatus,
-  type OauthUsage,
-  type OauthUsageWindow
+  type OauthUsage
 } from "@/lib/ipc"
 import {
   SettingsCard,
@@ -79,35 +78,6 @@ function maskToken(t: string | undefined): string {
   return `${t.slice(0, 6)}…${t.slice(-4)}`
 }
 
-function fmtCountdown(resetsAt: string | undefined): string {
-  if (!resetsAt) return ""
-  const ms = Date.parse(resetsAt) - Date.now()
-  if (ms <= 0) return "已重置"
-  const h = Math.floor(ms / 3_600_000)
-  const m = Math.floor((ms % 3_600_000) / 60_000)
-  if (h >= 24) {
-    const d = Math.floor(h / 24)
-    return `${d} 天 ${h % 24} 小时后重置`
-  }
-  if (h > 0) return `${h} 小时 ${m} 分钟后重置`
-  return `${m} 分钟后重置`
-}
-
-function fmtResetAt(resetsAt: string | undefined): string {
-  if (!resetsAt) return ""
-  try {
-    const d = new Date(resetsAt)
-    return d.toLocaleString("zh-CN", {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit"
-    })
-  } catch {
-    return resetsAt
-  }
-}
-
 function describeMethod(method: string): string {
   const m = method.toLowerCase()
   if (m === "claude.ai" || m === "claudeai") return "Claude.ai 订阅"
@@ -131,35 +101,44 @@ export function Account() {
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [awaitingLogin, setAwaitingLogin] = useState(false)
+  const requestRef = useRef(0)
+  const accountKeyRef = useRef("")
 
-  const refreshOauth = useCallback(async () => {
+  const refreshOauth = useCallback(async (request: number) => {
+    if (request !== requestRef.current) return
     setOauthLoading(true)
     setOauthError(null)
     try {
       const data = await fetchOauthUsage()
+      if (request !== requestRef.current) return
       setOauth(data)
       setOauthFetchedAt(Date.now())
     } catch (e) {
-      setOauth(null)
+      if (request !== requestRef.current) return
+      // Keep the last successful snapshot for this account, visibly marked stale.
       setOauthError(String(e))
     } finally {
-      setOauthLoading(false)
+      if (request === requestRef.current) setOauthLoading(false)
     }
   }, [])
 
   const refresh = useCallback(async () => {
+    const request = ++requestRef.current
     setLoading(true)
     let nextEnv: Record<string, string> = {}
     let nextStatus: AuthStatus | null = null
     try {
       const raw = (await readClaudeSettings("global")) as CliSettings | null
+      if (request !== requestRef.current) return
       nextEnv = raw?.env ?? {}
       setEnv(nextEnv)
     } catch (e) {
+      if (request !== requestRef.current) return
       toast.error(`读取 settings.json 失败: ${String(e)}`)
     }
     try {
       nextStatus = await getAuthStatus()
+      if (request !== requestRef.current) return
       setAuthStatus(nextStatus)
       setAuthStatusError(null)
       // 同步缓存给 Composer 等位置（保留旧 key 名兼容）
@@ -173,14 +152,26 @@ export function Account() {
         // ignore
       }
     } catch (e) {
-      setAuthStatus(null)
+      if (request !== requestRef.current) return
       setAuthStatusError(String(e))
+      setOauthLoading(false)
+      return
     } finally {
-      setLoading(false)
+      if (request === requestRef.current) setLoading(false)
     }
+    if (request !== requestRef.current) return
     const nextAuth = detectAuth(nextEnv, nextStatus)
+    const nextAccountKey = nextAuth.kind === "oauth"
+      ? JSON.stringify([nextAuth.status.orgId, nextAuth.status.email, nextAuth.method]) : ""
+    if (nextAccountKey !== accountKeyRef.current) {
+      accountKeyRef.current = nextAccountKey
+      invalidateOauthUsageRequest()
+      setOauth(null)
+      setOauthError(null)
+      setOauthFetchedAt(0)
+    }
     if (nextAuth.kind === "oauth") {
-      refreshOauth().catch(() => undefined)
+      await refreshOauth(request)
     } else {
       setOauth(null)
       setOauthError(null)
@@ -190,9 +181,16 @@ export function Account() {
   }, [refreshOauth])
 
   useEffect(() => {
-    refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    void refresh()
+    return () => { requestRef.current += 1 }
+  }, [refresh])
+
+  // Returning from the official usage/reset page updates counts without re-entry.
+  useEffect(() => {
+    const onFocus = () => { if (!loading && !oauthLoading && !awaitingLogin && !logoutBusy) void refresh() }
+    window.addEventListener("focus", onFocus)
+    return () => window.removeEventListener("focus", onFocus)
+  }, [refresh, loading, oauthLoading, awaitingLogin, logoutBusy])
 
   const stopAwaitingLogin = useCallback(async () => {
     setAwaitingLogin(false)
@@ -216,12 +214,12 @@ export function Account() {
       try {
         const s = await getAuthStatus()
         if (!alive) return
-        setAuthStatus(s)
         if (s.loggedIn) {
           authCancelLogin().catch(() => undefined)
           setAwaitingLogin(false)
           toast.success("登录已生效")
-          refreshOauth().catch(() => undefined)
+          invalidateOauthUsageRequest()
+          void refresh()
           return
         }
       } catch {
@@ -238,16 +236,26 @@ export function Account() {
       alive = false
       clearInterval(id)
     }
-  }, [awaitingLogin, refreshOauth])
+  }, [awaitingLogin, refresh])
 
   const auth = useMemo(() => detectAuth(env, authStatus), [env, authStatus])
 
   const showPlanUsage = auth.kind === "oauth"
 
   const performLogout = useCallback(async () => {
+    requestRef.current += 1
+    invalidateOauthUsageRequest()
+    setOauthLoading(false)
+    setLoading(false)
     setLogoutBusy(true)
     try {
       await authLogout()
+      invalidateOauthUsageRequest()
+      accountKeyRef.current = ""
+      setAuthStatus(null)
+      setOauth(null)
+      setOauthError(null)
+      setOauthFetchedAt(0)
       toast.success("已登出")
       await refresh()
     } catch (e) {
@@ -303,7 +311,7 @@ export function Account() {
             />
           </div>
           <AuthBlock auth={auth} env={env} />
-          {authStatusError && auth.kind === "none" && (
+          {authStatusError && (
             <div className="flex items-start gap-2 rounded-md border border-warn/30 bg-warn/5 p-3 text-xs">
               <AlertTriangle className="size-3.5 shrink-0 text-warn mt-0.5" />
               <div className="min-w-0 break-all">
@@ -338,6 +346,7 @@ export function Account() {
             error={oauthError}
             loading={oauthLoading}
             fetchedAt={oauthFetchedAt}
+            onRefresh={() => { void refresh() }}
           />
         )}
       </SettingsSectionBody>
@@ -445,140 +454,6 @@ function AuthActions({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  )
-}
-
-function PlanUsageSection({
-  data,
-  error,
-  loading,
-  fetchedAt
-}: {
-  data: OauthUsage | null
-  error: string | null
-  loading: boolean
-  fetchedAt: number
-}) {
-  if (error) {
-    return (
-      <SettingsCard className="space-y-2">
-        <SettingsCardTitle>计划用量限额</SettingsCardTitle>
-        <div className="flex items-start gap-2 text-xs text-warn">
-          <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
-          <span className="break-all">{error}</span>
-        </div>
-        <div className="text-[11px] text-muted-foreground">
-          仅 OAuth 登录用户可查看。macOS 上 token 存在系统钥匙串（"Claude Code-credentials"），桌面端不读取；终端运行 `claude auth status` 可查看登录态。
-        </div>
-      </SettingsCard>
-    )
-  }
-  if (loading && !data) {
-    return (
-      <SettingsCard>
-        <div className="text-xs text-muted-foreground">加载计划用量中…</div>
-      </SettingsCard>
-    )
-  }
-  if (!data) return null
-
-  const fiveHour = data.five_hour
-  const sevenDay = data.seven_day
-  const sevenDayOpus = data.seven_day_opus ?? undefined
-  const sevenDaySonnet = data.seven_day_sonnet ?? undefined
-
-  return (
-    <SettingsCard className="space-y-5">
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="text-sm font-semibold">计划用量限额</div>
-          <Badge
-            variant="outline"
-            className="font-sans text-[10px] tracking-normal"
-          >
-            Anthropic OAuth
-          </Badge>
-        </div>
-        <div className="text-[11px] text-muted-foreground">
-          数据来自 <code className="font-mono">/api/oauth/usage</code>，显示 Anthropic 账号的 5 小时滚动窗口与每周限额，与桌面端是否运行无关。「设置 → 统计」展示的是本地会话用量。
-        </div>
-        {fiveHour && (
-          <UsageBar
-            label="当前会话"
-            sub={fmtCountdown(fiveHour.resets_at)}
-            window={fiveHour}
-          />
-        )}
-      </div>
-
-      <Separator />
-
-      <div className="space-y-3">
-        <div className="text-sm font-semibold">每周限额</div>
-        {sevenDay && (
-          <UsageBar
-            label="全部模型"
-            sub={`${fmtResetAt(sevenDay.resets_at)} 重置`}
-            window={sevenDay}
-          />
-        )}
-        {sevenDaySonnet && (
-          <UsageBar
-            label="Sonnet"
-            sub={`${fmtResetAt(sevenDaySonnet.resets_at)} 重置`}
-            window={sevenDaySonnet}
-          />
-        )}
-        {sevenDayOpus && (
-          <UsageBar
-            label="仅 Opus"
-            sub={`${fmtResetAt(sevenDayOpus.resets_at)} 重置`}
-            window={sevenDayOpus}
-          />
-        )}
-        {fetchedAt > 0 && (
-          <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1">
-            <RefreshCw className="size-3" />
-            最近更新：{new Date(fetchedAt).toLocaleTimeString("zh-CN")}
-          </div>
-        )}
-      </div>
-    </SettingsCard>
-  )
-}
-
-function UsageBar({
-  label,
-  sub,
-  window: w,
-  hideValueRight
-}: {
-  label: string
-  sub?: string
-  window: OauthUsageWindow
-  hideValueRight?: boolean
-}) {
-  const pct = Math.max(0, Math.min(100, w.utilization))
-  const tone =
-    pct >= 90 ? "bg-destructive" : pct >= 60 ? "bg-warn" : "bg-primary"
-  return (
-    <div className="grid grid-cols-[160px_1fr_56px] items-center gap-3">
-      <div>
-        <div className="text-sm">{label}</div>
-        {sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}
-      </div>
-      <div className="h-2 rounded-full bg-muted overflow-hidden">
-        <div
-          className={cn("h-full transition-[width]", tone)}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      {!hideValueRight && (
-        <div className="text-xs text-muted-foreground tabular-nums text-right">
-          已用 {pct.toFixed(0)}%
-        </div>
-      )}
-    </div>
   )
 }
 
