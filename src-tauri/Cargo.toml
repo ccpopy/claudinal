@@ -1,6 +1,6 @@
 [package]
 name = "claudecli-desktop"
-version = "0.5.12"
+version = "0.5.13"
 edition = "2021"
 default-run = "claudecli-desktop"
 

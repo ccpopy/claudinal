@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "claudecli-desktop"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "anyhow",
  "chrono",
