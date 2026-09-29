@@ -9,6 +9,8 @@ mod error;
 mod fs_atomic;
 mod keychain;
 mod network_proxy;
+mod oauth_reset;
+mod oauth_reset_ledger;
 mod oauth_usage;
 mod permission_mcp;
 mod plugins;
@@ -176,6 +178,7 @@ pub fn run() {
             commands::write_claude_md,
             commands::read_claude_oauth_token,
             commands::fetch_oauth_usage,
+            oauth_reset::consume_claude_usage_reset,
             commands::fetch_provider_models,
             commands::scan_global_usage,
             commands::scan_activity_heatmap,

@@ -1743,11 +1743,18 @@ export default function App() {
     const off4 = subscribeSettingsBus("settings", () =>
       setCollabSettingsTick((t) => t + 1)
     )
+    const off5 = subscribeSettingsBus("oauthUsage", () => {
+      setOauthUsage(null)
+      if (isOfficialApi()) {
+        fetchOauthUsage().then(setOauthUsage).catch(() => setOauthUsage(null))
+      }
+    })
     return () => {
       off1()
       off2()
       off3()
       off4()
+      off5()
     }
   }, [
     applyDefaultPermissionModeState,

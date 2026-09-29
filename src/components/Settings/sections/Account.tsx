@@ -101,6 +101,7 @@ export function Account() {
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [awaitingLogin, setAwaitingLogin] = useState(false)
+  const [resetBusy, setResetBusy] = useState(false)
   const requestRef = useRef(0)
   const accountKeyRef = useRef("")
 
@@ -187,10 +188,10 @@ export function Account() {
 
   // Returning from the official usage/reset page updates counts without re-entry.
   useEffect(() => {
-    const onFocus = () => { if (!loading && !oauthLoading && !awaitingLogin && !logoutBusy) void refresh() }
+    const onFocus = () => { if (!loading && !oauthLoading && !awaitingLogin && !logoutBusy && !resetBusy) void refresh() }
     window.addEventListener("focus", onFocus)
     return () => window.removeEventListener("focus", onFocus)
-  }, [refresh, loading, oauthLoading, awaitingLogin, logoutBusy])
+  }, [refresh, loading, oauthLoading, awaitingLogin, logoutBusy, resetBusy])
 
   const stopAwaitingLogin = useCallback(async () => {
     setAwaitingLogin(false)
@@ -290,7 +291,7 @@ export function Account() {
             variant="outline"
             size="sm"
             onClick={refresh}
-            disabled={loading || oauthLoading}
+            disabled={loading || oauthLoading || resetBusy}
           >
             <RefreshCw className={loading || oauthLoading ? "animate-spin" : ""} />
             刷新
@@ -304,8 +305,8 @@ export function Account() {
             <SettingsCardTitle>登录</SettingsCardTitle>
             <AuthActions
               auth={auth}
-              awaitingLogin={awaitingLogin}
-              logoutBusy={logoutBusy}
+              awaitingLogin={awaitingLogin || resetBusy}
+              logoutBusy={logoutBusy || resetBusy}
               onLogout={() => setShowLogoutConfirm(true)}
               onLogin={startLogin}
             />
@@ -342,11 +343,14 @@ export function Account() {
 
         {showPlanUsage && (
           <PlanUsageSection
+            key={`${authStatus?.orgId}:${authStatus?.email}`}
             data={oauth}
             error={oauthError}
             loading={oauthLoading}
             fetchedAt={oauthFetchedAt}
             onRefresh={() => { void refresh() }}
+            account={{ orgId: authStatus?.orgId ?? null, email: authStatus?.email ?? null }}
+            onResetBusyChange={setResetBusy}
           />
         )}
       </SettingsSectionBody>

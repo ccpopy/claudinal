@@ -72,6 +72,8 @@ export function limitResets(data: OauthUsage | null, now = Date.now()): LimitRes
   const status = data?.cedar_ember
   if (!record(status) || status.eligible !== true || !Array.isArray(status.grants)) return { kind: "unknown" }
   const grants: LimitResetGrant[] = []
+  const cooldown = status.cooldown_until
+  const cooldownClear = optionalDate(cooldown) && (cooldown == null || Date.parse(String(cooldown)) <= now)
   const ids = new Set<string>()
   for (const value of status.grants) {
     if (!record(value) || typeof value.id !== "string" || !value.id || ids.has(value.id)
@@ -93,7 +95,8 @@ export function limitResets(data: OauthUsage | null, now = Date.now()): LimitRes
       startsAt,
       limits: Array.isArray(value.clears) ? value.clears.flatMap(key =>
         typeof key === "string" && Object.hasOwn(labels, key) ? [labels[key]] : []) : [],
-      usable: value.usable_now === true, paused: value.paused,
+      usable: value.usable_now === true && cooldownClear
+        && (value.use_requires_limit === false || status.at_limit === true), paused: value.paused,
     })
   }
   const remaining = grants.reduce((total, grant) => total + grant.remaining, 0)

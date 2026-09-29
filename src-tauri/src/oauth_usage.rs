@@ -25,7 +25,7 @@ fn cli_user_agent(version: &str) -> Option<String> {
     Some(format!("claude-cli/{version} (external, cli)"))
 }
 
-async fn user_agent() -> String {
+pub(crate) async fn user_agent() -> String {
     let mut cached = CLIENT_IDENTITY.lock().await;
     if let Some((value, checked_at)) = cached.as_ref() {
         if checked_at.elapsed() < Duration::from_secs(60) {
@@ -90,7 +90,7 @@ pub fn read_access_token() -> Result<Option<String>> {
         .map(str::to_owned))
 }
 
-fn required_token() -> Result<String> {
+pub(crate) fn required_token() -> Result<String> {
     read_access_token()?.ok_or_else(|| {
         #[cfg(target_os = "macos")]
         let message = "未找到可读取的 OAuth 凭据。macOS 钥匙串中的 CLI 凭据暂不支持读取，可前往 Claude 查看用量";
@@ -208,6 +208,10 @@ pub async fn fetch() -> Result<Value> {
         fetched_at: Instant::now(),
     });
     Ok(data)
+}
+
+pub(crate) async fn invalidate() {
+    *CACHE.lock().await = None;
 }
 
 #[cfg(test)]

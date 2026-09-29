@@ -1,27 +1,28 @@
 import { useEffect, useState } from "react"
-import { AlertTriangle, ExternalLink, Loader2, RefreshCw, RotateCcw } from "lucide-react"
-import { toast } from "sonner"
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import { openExternal, type OauthUsage, type OauthUsageWindow } from "@/lib/ipc"
-import { CLAUDE_USAGE_URL, limitResets, resetCountdown, resetTime } from "@/lib/oauthUsage"
+import { type OauthUsage, type OauthUsageWindow } from "@/lib/ipc"
+import { resetCountdown, resetTime } from "@/lib/oauthUsage"
 import { cn } from "@/lib/utils"
 import { SettingsCard } from "./layout"
+import { LimitResetSection, type ResetAccount } from "./LimitReset"
 
-export function PlanUsageSection({ data, error, loading, fetchedAt, onRefresh }: {
+export function PlanUsageSection({ data, error, loading, fetchedAt, onRefresh, account, onResetBusyChange }: {
   data: OauthUsage | null
   error: string | null
   loading: boolean
   fetchedAt: number
   onRefresh: () => void
+  account?: ResetAccount
+  onResetBusyChange?: (busy: boolean) => void
 }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000)
+    const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [])
-  const resets = limitResets(data, now)
   const weekly = [
     ["全部模型", data?.seven_day], ["Sonnet", data?.seven_day_sonnet], ["仅 Opus", data?.seven_day_opus]
   ] as const
@@ -60,32 +61,8 @@ export function PlanUsageSection({ data, error, loading, fetchedAt, onRefresh }:
       </div>}
     </SettingsCard>
 
-    <SettingsCard className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-sm font-semibold"><RotateCcw className="size-4 text-primary" />额度重置</div>
-        {resets.kind === "known" && <Badge variant="outline">剩余 {resets.remaining} 次</Badge>}
-      </div>
-      {error && data && <p className="text-xs text-warn">重置次数也为上次获取的信息，使用前请在 Claude 确认。</p>}
-      {resets.kind === "unknown" ? <p className="text-xs text-muted-foreground">
-        {loading && !data ? "正在读取重置信息…" : "暂时无法读取剩余重置次数，请前往 Claude 查看。"}
-      </p> : resets.remaining === 0 ? <p className="text-xs text-muted-foreground">当前没有剩余的额度重置次数。</p> : <div className="space-y-3">
-        {resets.grants.filter(grant => grant.remaining > 0).map(grant => <div key={grant.id} className="space-y-1 rounded-md border p-3 text-xs">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-medium">{grant.limits.join("、") || "额度重置"}</span>
-            <span className="tabular-nums">{grant.remaining} 次</span>
-          </div>
-          <p className="text-muted-foreground">{grant.endsAt ? `请在 ${resetTime(grant.endsAt)} 前使用` : "未提供到期时间"}</p>
-          <p className="text-muted-foreground">{grant.paused ? "暂不可用" : grant.startsAt && Date.parse(grant.startsAt) > now
-            ? `${resetTime(grant.startsAt)} 起可用` : grant.usable ? "可前往 Claude 使用" : "使用条件请在 Claude 确认"}</p>
-        </div>)}
-      </div>}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">重置可立即恢复指定额度，原定每周重置时间不变。可在 Claude 网页或官方 Desktop 中确认使用。</p>
-        <Button variant="outline" size="sm" onClick={() => openExternal(CLAUDE_USAGE_URL).catch(error => toast.error(`无法打开 Claude：${String(error)}`))}>
-          <ExternalLink />前往 Claude 查看和使用
-        </Button>
-      </div>
-    </SettingsCard>
+    <LimitResetSection data={data} error={error} loading={loading} now={now} account={account}
+      onRefresh={onRefresh} onBusyChange={onResetBusyChange} />
   </>
 }
 

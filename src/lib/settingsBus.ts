@@ -15,6 +15,7 @@ export type SettingsBusTopic =
   | "proxy"
   | "appearance"
   | "usage"
+  | "oauthUsage"
   | "pricing"
 
 const subs = new Map<SettingsBusTopic, Set<() => void>>()

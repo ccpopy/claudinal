@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import type { ClaudeEvent, ProxyStatusEvent } from "../types/events"
 import type { ClaudeWorkspaceTrustInfo } from "./claudeWorkspaceTrust"
+import { emitSettingsBus } from "./settingsBus"
 
 export interface AppRuntimeInfo {
   executable_path: string
@@ -1043,6 +1044,29 @@ export function fetchOauthUsage(): Promise<OauthUsage> {
     pendingOauthUsage = request
   }
   return pendingOauthUsage
+}
+
+export interface ClaudeResetRequest {
+  grantId: string
+  requestId: string
+  expectedOrgId: string
+  expectedEmail: string
+}
+
+export interface ClaudeResetOutcome {
+  code: "reset" | "already_used" | "not_limited" | "cooldown" | "ineligible" | "unavailable"
+    | "auth_error" | "rate_limited" | "unknown" | "unknown_expired" | "in_flight"
+  resetsLeft: number | null
+  retryAt: number | null
+}
+
+export async function consumeClaudeUsageReset(request: ClaudeResetRequest): Promise<ClaudeResetOutcome> {
+  try {
+    return await invoke<ClaudeResetOutcome>("consume_claude_usage_reset", { request })
+  } finally {
+    invalidateOauthUsageRequest()
+    emitSettingsBus("oauthUsage")
+  }
 }
 
 export interface ProviderModelsRequest {
