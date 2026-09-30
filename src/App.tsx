@@ -1,5 +1,7 @@
 import { RunStatusStrip } from "@/components/RunReviewCard"
 import { MessageStream } from "@/components/MessageStream"
+import { QueuedComposerBar } from "@/components/QueuedComposerBar"
+import type { SubmissionActions } from "@/components/SubmittedInputActions"
 import { SubmissionCoordinator, isActiveInput, type InputPayload, type SubmittedInput, type SubmissionAdapter } from "@/lib/submissionCoordinator"
 import { retryInputFromTranscript } from "@/lib/retryInput"
 import { cn } from "@/lib/utils"
@@ -85,9 +87,7 @@ import {
   type ComposerPrefs
 } from "@/lib/composerPrefs"
 import {
-  cloneComposerDraft,
-  composerDraftKey,
-  isComposerDraftEmpty,
+  ComposerDraftStore,
   type ComposerDraft
 } from "@/lib/composerDrafts"
 import {
@@ -764,7 +764,7 @@ export default function App() {
   const runningSessionsRef = useRef<Map<string, RunningSession>>(new Map())
   const sentInputsRef = useRef<Map<string, SentInput>>(new Map())
   const sessionComposerRef = useRef<ComposerPrefs | null>(null)
-  const composerDraftsRef = useRef<Map<string, ComposerDraft>>(new Map())
+  const composerDraftsRef = useRef(new ComposerDraftStore())
   const apiProfileKeyRef = useRef(currentApiProfileKey())
   const apiLaunchProfileKeyRef = useRef(currentApiLaunchProfileKey())
   const permissionModeSourceRef =
@@ -1162,11 +1162,7 @@ export default function App() {
   const rememberComposerDraft = useCallback(
     (key: string | undefined, next: ComposerDraft) => {
       if (!key) return
-      if (isComposerDraftEmpty(next)) {
-        composerDraftsRef.current.delete(key)
-        return
-      }
-      composerDraftsRef.current.set(key, cloneComposerDraft(next))
+      composerDraftsRef.current.set(key, next)
     },
     []
   )
@@ -2278,22 +2274,24 @@ export default function App() {
     const owner = task.context.owner
     const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
     const payload = task.payloadRef
-    const existing = (run?.state ?? owner.state).entries.find((e) => e.kind === "message" && e.id === task.messageId)
+    const currentState = run?.state ?? owner.state
+    const existing = [...currentState.entries, ...(currentState.pendingInputs ?? [])].find((e) => e.kind === "message" && e.id === task.messageId)
     const uiBlocks = existing?.kind === "message" && existing.rawText === payload.text && existing.inputRevision === task.inputRevision && !existing.submissionPendingNames?.length
       ? existing.blocks : payload.uiBlocks ?? inputUiBlocks(payload.text, payload.images, payload.documents)
     const message = {
       kind: "message" as const, role: "user" as const, id: task.messageId, streaming: false,
       blocks: payload.pendingNames?.length ? [...uiBlocks, ...payload.pendingNames.map((name) => ({ type: "attachment" as const, attachmentName: name, attachmentContentMode: "metadata-only" as const }))] : uiBlocks,
-      rawText: payload.text, ts: task.createdAt, localState: task.localState, deliveryState: task.deliveryState,
+      rawText: payload.text, ts: existing?.ts ?? task.createdAt, localState: task.localState, deliveryState: task.deliveryState,
       delivery: task.mode === "guide" ? "guide" as const : undefined,
       runState: task.runState, attemptId: task.attemptId, attemptIds: task.attempts.map((a) => a.id), attemptDetails: task.attempts.map((a) => ({ ...a })), inputRevision: task.inputRevision,
       transcriptUuid: task.deliveryState === "acknowledged" || task.deliveryState === "responded" ? task.attemptId : undefined,
       submissionTimings: { registered: task.timings.registered, saved: task.timings.saved, writeStarted: task.timings.writeStarted, written: task.timings.written, firstResponse: task.timings.firstResponse },
       submissionError: task.error, submissionPendingNames: payload.pendingNames
     }
-    if (run) applyRunningAction(run, { kind: "submitted_input", message })
+    const pending = task.queuedBehindTurn && task.timings.writeStarted === undefined
+    if (run) applyRunningAction(run, { kind: "submitted_input", message, pending })
     else {
-      owner.state = reduce(owner.state, { kind: "submitted_input", message })
+      owner.state = reduce(owner.state, { kind: "submitted_input", message, pending })
       if (viewOwnerRef.current.key === owner.key) { stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state }) }
     }
     setRunningTick((tick) => tick + 1)
@@ -2448,6 +2446,7 @@ export default function App() {
   }, [project, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer, planMode, sessionPermissionMode, collaborationMode, applyDefaultPermissionModeState, closeRunningSession])
 
   const hasLaterExecution = (task: SubmittedInput<InputContext>) => {
+    if (task.timings.writeStarted === undefined) return false
     const entries = task.context.owner.state.entries
     const index = entries.findIndex((e) => e.kind === "message" && e.id === task.messageId)
     return entries.slice(index + 1).some((e) => e.kind === "message" && (e.role === "assistant" || e.role === "user" && ["acknowledged", "responded", "awaiting_ack", "writing", "delivery_unknown"].includes(e.deliveryState ?? "")))
@@ -2972,6 +2971,7 @@ export default function App() {
     if (target?.kind === "session") {
       setShowPlugins(false)
       setShowHistory(false)
+      if (currentProjectId === target.project.id && selectedSessionIdRef.current === target.session.id) return
       void switchSession(target.project, target.session)
     } else if (target?.kind === "project") {
       setShowPlugins(false)
@@ -3090,9 +3090,7 @@ export default function App() {
     try {
       await stopRunningSessionForJsonl(target.project, target.sessionId)
       await deleteSessionRecord(target.project, target.sessionId)
-      composerDraftsRef.current.delete(
-        composerDraftKey(target.project.id, target.sessionId)
-      )
+      composerDraftsRef.current.deleteSession(target.project.id, target.sessionId)
       setPendingDeleteSession(null)
       if (deletingCurrent) {
         activeRuntimeIdRef.current = null
@@ -3164,20 +3162,17 @@ export default function App() {
   const jsonlSessionId = selectedSessionId ?? findInitSessionId(state)
   const activeSubagents = state.subagents.agents
   const activeRunningSubagentCount = runningSubagentCount(state.subagents)
-  const draftOwnerRef = useRef<{ token: number; projectId?: string; key?: string }>({ token: -1 })
-  if (draftOwnerRef.current.token !== switchTokenRef.current || draftOwnerRef.current.projectId !== project?.id) {
-    draftOwnerRef.current = { token: switchTokenRef.current, projectId: project?.id, key: project ? composerDraftKey(project.id, jsonlSessionId ?? activeConversationKey) : undefined }
-  }
-  const activeComposerDraftKey = draftOwnerRef.current.key
+  const activeComposerDraftKey = project
+    ? composerDraftsRef.current.keyFor(project.id, jsonlSessionId, activeConversationKey)
+    : undefined
   const activeComposerDraft = activeComposerDraftKey
     ? composerDraftsRef.current.get(activeComposerDraftKey)
     : undefined
   const handleComposerDraftChange = useCallback(
     (next: ComposerDraft) => {
       rememberComposerDraft(activeComposerDraftKey, next)
-      if (project && jsonlSessionId) rememberComposerDraft(composerDraftKey(project.id, jsonlSessionId), next)
     },
-    [activeComposerDraftKey, rememberComposerDraft, project, jsonlSessionId]
+    [activeComposerDraftKey, rememberComposerDraft]
   )
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const streamingSessionRefs = useMemo(() => {
@@ -3238,6 +3233,23 @@ export default function App() {
   const activeRun = sessionId ? runningSessionsRef.current.get(sessionId) : undefined
   const activeUpstreamStatus = activeRun?.upstreamStatus ?? null
   const activeInterrupting = activeRun?.interrupting ?? false
+  const submissionActions: SubmissionActions = {
+    payload: (id) => coordinatorRef.current.tasks.get(id)?.payloadRef,
+    retry: retryUserMessage,
+    edit: (id, payload) => { void editSubmittedMessage(id, payload) },
+    cancel: (id) => coordinatorRef.current.cancel(id),
+    canGuide: (id) => {
+      const task = coordinatorRef.current.tasks.get(id)
+      const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
+      return task?.deliveryState === "queued" && task.mode !== "guide" && !!run?.midTurnInput && run.streaming && !run.interrupting
+    },
+    guide: (id) => {
+      const task = coordinatorRef.current.tasks.get(id)
+      const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
+      if (run?.midTurnInput && run.streaming && !run.interrupting) coordinatorRef.current.promote(id)
+    },
+    resume: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resume(task.conversationKey) }
+  }
   const retryableMessageIds = useMemo(
     () => new Set([...collectFailedRetryableMessageIds(state.entries, sentInputsRef.current), ...state.entries.filter((entry) => isAuthoredUserMessage(entry) && entry.blocks.some((block) => block.type === "text" || block.type === "image" || block.type === "attachment")).map((entry) => (entry.kind === "message" ? entry.id : ""))]),
     [state.entries, sentInputVersion]
@@ -3510,23 +3522,7 @@ export default function App() {
                     onShowDiff={openReviewDiff}
                     retryableMessageIds={retryableMessageIds}
                     onRetryMessage={retryUserMessage}
-                    submissionActions={{
-                      payload: (id) => coordinatorRef.current.tasks.get(id)?.payloadRef,
-                      retry: retryUserMessage,
-                      edit: (id, payload) => { void editSubmittedMessage(id, payload) },
-                      cancel: (id) => coordinatorRef.current.cancel(id),
-                      canGuide: (id) => {
-                        const task = coordinatorRef.current.tasks.get(id)
-                        const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
-                        return task?.deliveryState === "queued" && task.mode !== "guide" && !!run?.midTurnInput && run.streaming && !run.interrupting
-                      },
-                      guide: (id) => {
-                        const task = coordinatorRef.current.tasks.get(id)
-                        const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
-                        if (run?.midTurnInput && run.streaming && !run.interrupting) coordinatorRef.current.promote(id)
-                      },
-                      resume: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resume(task.conversationKey) }
-                    }}
+                    submissionActions={submissionActions}
                     slashCommands={slashCommands}
                     pendingSubagentCount={activeRunningSubagentCount}
                     subagents={activeSubagents}
@@ -3536,6 +3532,9 @@ export default function App() {
               )}
               {/* Keep one Composer mounted when the first event replaces the welcome view. */}
               <div className={cn("shrink-0", (loadingSession || (empty && !project)) && "hidden")}>
+                {!!state.pendingInputs?.length && <div className="px-6 pt-2">
+                  <QueuedComposerBar messages={state.pendingInputs} actions={submissionActions} />
+                </div>}
                 {project && projectActions.length > 0 && (
                   <div className="shrink-0 bg-background px-6 pt-2">
                     <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">

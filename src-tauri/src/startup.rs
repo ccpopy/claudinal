@@ -17,6 +17,20 @@ const BONES_PLACEHOLDER: &str = "/*__BUDDY_BONES__*/null";
 /// 走完整流程，后续直接返回 Ok 不重复 show / close / 打 INFO 日志。
 static FRONTEND_READY_FIRED: AtomicBool = AtomicBool::new(false);
 
+pub(crate) fn focus_existing_window(app: &AppHandle) {
+    let label = if FRONTEND_READY_FIRED.load(Ordering::SeqCst) {
+        "main"
+    } else {
+        "splash"
+    };
+    if let Some(window) = app.get_webview_window(label) {
+        // Try each operation even if an earlier one is unsupported by the WM.
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn response() -> http::Response<Vec<u8>> {
     let html = HTML.replacen(BONES_PLACEHOLDER, &buddy::current_json(), 1);
     http::Response::builder()

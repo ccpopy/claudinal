@@ -62,6 +62,10 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tracing::info!("another app launch received; activating existing window");
+            startup::focus_existing_window(app);
+        }))
         .plugin(tauri_plugin_process::init())
         .plugin(updater_builder().build())
         .register_uri_scheme_protocol(startup::PROTOCOL, |_ctx, _request| startup::response())

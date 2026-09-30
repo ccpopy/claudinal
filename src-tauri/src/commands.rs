@@ -818,24 +818,9 @@ pub async fn spawn_session(
 }
 
 fn version_at_least(version: &str, min_version: &str) -> Option<bool> {
-    let current = parse_semver_prefix(version)?;
-    let minimum = parse_semver_prefix(min_version)?;
+    let current = crate::proc::capabilities::parse_version(version)?;
+    let minimum = crate::proc::capabilities::parse_version(min_version)?;
     Some(current >= minimum)
-}
-
-fn parse_semver_prefix(version: &str) -> Option<(u64, u64, u64)> {
-    let token = version.split_whitespace().next()?.trim_start_matches('v');
-    let mut parts = token.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch_raw = parts.next()?;
-    let patch = patch_raw
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .ok()?;
-    Some((major, minor, patch))
 }
 
 fn read_json_file_if_exists(path: &std::path::Path) -> Result<Option<Value>> {

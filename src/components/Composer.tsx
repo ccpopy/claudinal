@@ -156,7 +156,11 @@ function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-export function Composer({
+export function Composer(props: Props) {
+  return <ComposerEditor key={props.draftKey} {...props} />
+}
+
+function ComposerEditor({
   onSend,
   onStop,
   onRecallQueued,
@@ -205,22 +209,23 @@ export function Composer({
   const pendingBatchesRef = useRef<Array<{ names: string[]; promise: Promise<PreparedBatch> }>>([])
   const editorInstanceRef = useRef(crypto.randomUUID())
   const submittedRevisionRef = useRef<string | null>(null)
-  const [text, updateText] = useState("")
+  const [restoredDraft] = useState(() => cloneComposerDraft(initialDraft ?? emptyComposerDraft()))
+  const [text, updateText] = useState(restoredDraft.text)
   const setText = useCallback((value: React.SetStateAction<string>) => {
     revisionRef.current += 1
     updateText(value)
   }, [])
-  const [images, updateImages] = useState<Thumb[]>([])
+  const [images, updateImages] = useState<Thumb[]>(restoredDraft.images)
   const setImages = useCallback((value: React.SetStateAction<Thumb[]>) => {
     revisionRef.current += 1
     updateImages(value)
   }, [])
-  const [documents, updateDocuments] = useState<DocumentThumb[]>([])
+  const [documents, updateDocuments] = useState<DocumentThumb[]>(restoredDraft.documents)
   const setDocuments = useCallback((value: React.SetStateAction<DocumentThumb[]>) => {
     revisionRef.current += 1
     updateDocuments(value)
   }, [])
-  const [fileAttachments, updateFileAttachments] = useState<FileAttachment[]>([])
+  const [fileAttachments, updateFileAttachments] = useState<FileAttachment[]>(restoredDraft.fileAttachments)
   const setFileAttachments = useCallback((value: React.SetStateAction<FileAttachment[]>) => {
     revisionRef.current += 1
     updateFileAttachments(value)
@@ -230,8 +235,6 @@ export function Composer({
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([])
   const ref = useRef<HTMLTextAreaElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const initialDraftRef = useRef<ComposerDraft | undefined>(initialDraft)
-  const skipNextDraftReportRef = useRef(true)
   const [trigger, setTrigger] = useState<TriggerInfo | null>(null)
   const [items, setItems] = useState<SuggestionItem[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
@@ -391,34 +394,9 @@ export function Composer({
     [trigger, items, visibleText, commandPrefix, slashCommands, closeSuggestions]
   )
 
-  useEffect(() => {
-    initialDraftRef.current = initialDraft
-  }, [initialDraft])
+  useEffect(() => () => { attachmentGenerationRef.current += 1 }, [])
 
   useEffect(() => {
-    const restored = cloneComposerDraft(
-      initialDraftRef.current ?? emptyComposerDraft()
-    )
-    skipNextDraftReportRef.current = true
-    setText(restored.text)
-    setImages(restored.images)
-    setDocuments(restored.documents)
-    setFileAttachments(restored.fileAttachments)
-    closeSuggestions()
-    setActiveIdx(0)
-    setPreviewIdx(null)
-    attachmentGenerationRef.current += 1
-    pendingBatchesRef.current = []
-    pendingAttachmentsRef.current = 0
-    setPendingAttachments(0)
-    return () => { attachmentGenerationRef.current += 1 }
-  }, [draftKey, closeSuggestions])
-
-  useEffect(() => {
-    if (skipNextDraftReportRef.current) {
-      skipNextDraftReportRef.current = false
-      return
-    }
     onDraftChange?.({ text, images, documents, fileAttachments })
   }, [fileAttachments, images, documents, onDraftChange, text])
 

@@ -13,6 +13,8 @@ export interface InputPayload {
 export interface InputAttempt { id: string; revision: number; state: DeliveryState; error?: string }
 export interface SubmittedInput<C> {
   mode: "guide" | "followup"
+  /** Follow-ups registered behind an earlier input stay outside the transcript until dispatch. */
+  queuedBehindTurn: boolean
   messageId: string
   conversationKey: string
   inputRevision: number
@@ -61,6 +63,8 @@ export class SubmissionCoordinator<C> {
     const messageId = crypto.randomUUID(), attemptId = crypto.randomUUID()
     const task: SubmittedInput<C> = {
       ...input, mode: input.mode ?? "followup", messageId, inputRevision: 1, payloadRef: input.payload, localState: "saving",
+      queuedBehindTurn: input.mode !== "guide" && (this.paused.has(input.conversationKey)
+        || [...this.tasks.values()].some((task) => task.conversationKey === input.conversationKey && (isPendingInput(task) || isActiveInput(task)))),
       deliveryState: this.paused.has(input.conversationKey) ? "paused" : "preparing", runState: "idle", attemptId,
       attempts: [{ id: attemptId, revision: 1, state: "preparing" }], createdAt: Date.now(), controller: new AbortController(),
       timings: { registered: performance.now() }

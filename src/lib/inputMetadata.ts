@@ -35,7 +35,7 @@ export function restoreTranscriptInputOrigins(events: ClaudeEvent[], sidecar: un
 
 export function inputMetadataPatch(state: State): Record<string, unknown> {
   const patch: Record<string, unknown> = { inputMetadataVersion: 1 }
-  for (const entry of state.entries) {
+  for (const entry of [...state.entries, ...(state.pendingInputs ?? [])]) {
     if (entry.kind !== "message" || entry.role !== "user" || !entry.deliveryState) continue
     const metadata = { visualId: entry.id, inputRevision: entry.inputRevision, attemptId: entry.attemptId, attemptIds: entry.attemptIds, intent: entry.delivery, deliveryState: entry.deliveryState, rawText: entry.rawText, ts: entry.ts }
     patch[`input:${entry.id}`] = metadata
@@ -55,6 +55,9 @@ export function restoreInputMetadata(state: State, sidecar: unknown): State {
     const meta = value as Record<string, unknown>
     const deliveryState = typeof meta.deliveryState === "string" && Object.hasOwn(deliveryLabel, meta.deliveryState)
       ? meta.deliveryState as UIMessage["deliveryState"] : undefined
+    // A matching CLI transcript UUID confirms receipt even if the last sidecar
+    // save happened while this follow-up was still queued locally.
+    const confirmedInTranscript = typeof meta.attemptId === "string" && entry.id === meta.attemptId
     const original = typeof meta.rawText === "string" ? splitUploadedFileText(meta.rawText) : null
     const restoredBlocks = original ? [...original, ...entry.blocks.filter((block) => block.type !== "text" && (block.type !== "attachment" || (block.attachmentContentMode !== "inline" && !original.some((part) => part.type === "attachment" && part.attachmentName === block.attachmentName))))] : entry.blocks
     return { ...entry, id: typeof meta.visualId === "string" ? meta.visualId : entry.id, transcriptUuid: entry.id,
@@ -62,7 +65,8 @@ export function restoreInputMetadata(state: State, sidecar: unknown): State {
       attemptId: typeof meta.attemptId === "string" ? meta.attemptId : undefined,
       attemptIds: Array.isArray(meta.attemptIds) ? meta.attemptIds.filter((id): id is string => typeof id === "string") : undefined,
       blocks: restoredBlocks, delivery: meta.intent === "guide" ? "guide" as const : undefined,
-      deliveryState: deliveryState === "writing" || deliveryState === "awaiting_ack" ? "delivery_unknown" as const : deliveryState,
+      deliveryState: confirmedInTranscript ? (deliveryState === "responded" ? "responded" as const : "acknowledged" as const)
+        : deliveryState === "writing" || deliveryState === "awaiting_ack" ? "delivery_unknown" as const : deliveryState,
       rawText: typeof meta.rawText === "string" ? meta.rawText : undefined }
   }) }
 }

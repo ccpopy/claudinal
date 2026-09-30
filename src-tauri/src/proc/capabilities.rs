@@ -45,18 +45,24 @@ pub struct CliCapabilities {
     pub certification: &'static str,
 }
 
+pub fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
+    version.split_whitespace().find_map(|token| {
+        let core = token.trim_start_matches('v').split(['-', '+']).next()?;
+        let mut parts = core.split('.');
+        let version = (
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        );
+        parts.next().is_none().then_some(version)
+    })
+}
+
 pub fn version_at_least(version: &str, minimum: (u32, u32, u32)) -> Support {
-    let Some(token) = version
-        .split_whitespace()
-        .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
-    else {
+    let Some(current) = parse_version(version) else {
         return Support::Unknown;
     };
-    let numbers: Vec<_> = token.split('.').map(str::parse::<u32>).collect();
-    let [Ok(major), Ok(minor), Ok(patch)] = numbers.as_slice() else {
-        return Support::Unknown;
-    };
-    if (*major, *minor, *patch) >= minimum {
+    if current >= minimum {
         Support::Supported
     } else {
         Support::Unsupported
@@ -74,19 +80,13 @@ pub fn from_help(flag: &str, help: &str) -> Support {
     }
 }
 
-pub fn mid_turn_input(version: &str, help: &str) -> Support {
-    // Official desktop/interactive docs describe safe-point ingestion. A local
-    // stream-json fixture on 2.1.283 verified tool-result -> injected input ->
-    // next model request, plus result.user_message_uuids for turn attribution.
-    // Keep other versions unknown until their wire contract is checked too.
-    if version.split_whitespace().next() == Some("2.1.283")
-        && from_help("--input-format", help) == Support::Supported
-        && from_help("--replay-user-messages", help) == Support::Supported
-    {
-        Support::Supported
-    } else {
-        Support::Unknown
-    }
+pub fn mid_turn_input(version: &str) -> Support {
+    // Streaming input predates this minimum. We need the result's complete input
+    // UUID list to settle guides without completing a late guide from the next
+    // turn. 2.1.259 added the list; 2.1.265 also covers no-API/deferred results.
+    // See the SDK reference's user_message_uuid / user_message_uuids contract.
+    // https://code.claude.com/docs/en/agent-sdk/typescript#user_message_uuid
+    version_at_least(version, (2, 1, 265))
 }
 
 pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabilities {
@@ -102,10 +102,13 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
         fingerprint: format!("{:016x}", hash.finish()),
         evidence: std::collections::BTreeMap::from([
             ("coreStream", "help; missing entries remain unknown"),
-            ("userMessageReplay", "help"),
+            (
+                "userMessageReplay",
+                "help or documented introduction: >=1.0.86",
+            ),
             (
                 "midTurnInput",
-                "official Code docs; local stream-json fixture: 2.1.283, 2026-09-27",
+                "stream-json; complete result input UUID attribution: >=2.1.265",
             ),
             ("hookEvents", "help"),
             (
@@ -133,8 +136,12 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
         }
         .into(),
         core_stream: from_help("--input-format", help),
-        user_message_replay: from_help("--replay-user-messages", help),
-        mid_turn_input: mid_turn_input(&version, help),
+        user_message_replay: if from_help("--replay-user-messages", help) == Support::Supported {
+            Support::Supported
+        } else {
+            version_at_least(&version, (1, 0, 86))
+        },
+        mid_turn_input: mid_turn_input(&version),
         hook_events: from_help("--include-hook-events", help),
         headless_model_command: version_at_least(&version, (2, 1, 205)),
         native_ultracode_effort: version_at_least(&version, (2, 1, 203)),
@@ -155,24 +162,37 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
 mod tests {
     use super::*;
     #[test]
-    fn mid_turn_requires_verified_protocol_and_replay() {
-        let help = "--input-format --replay-user-messages";
-        assert_eq!(
-            mid_turn_input("2.1.283 (Claude Code)", help),
-            Support::Supported
-        );
-        assert_eq!(
-            mid_turn_input("2.1.282 (Claude Code)", help),
-            Support::Unknown
-        );
-        assert_eq!(
-            mid_turn_input("2.1.284 (Claude Code)", help),
-            Support::Unknown
-        );
-        assert_eq!(
-            mid_turn_input("2.1.283", "--input-format"),
-            Support::Unknown
-        );
+    fn mid_turn_uses_result_attribution_minimum_not_a_version_allowlist() {
+        for version in [
+            "2.1.265",
+            "2.1.282",
+            "2.1.283 (Claude Code)",
+            "2.1.284",
+            "2.2.0",
+            "3.0.0",
+        ] {
+            // --help is not a complete protocol capability inventory.
+            let caps = detect(std::path::Path::new("claude"), version.into(), "");
+            assert_eq!(caps.mid_turn_input, Support::Supported, "{version}");
+            assert_eq!(caps.user_message_replay, Support::Supported, "{version}");
+        }
+        assert_eq!(mid_turn_input("2.1.264"), Support::Unsupported);
+        assert_eq!(mid_turn_input("unknown"), Support::Unknown);
+    }
+
+    #[test]
+    fn supported_version_formats_share_the_same_numeric_comparison() {
+        for version in [
+            "v2.1.284",
+            "Claude Code 2.1.284",
+            "2.1.284-beta.1",
+            "2.1.284+build.2",
+        ] {
+            assert_eq!(version_at_least(version, (2, 1, 265)), Support::Supported);
+        }
+        for version in ["", "unknown", "2.1", "2.1.bad", "2.1.284.1"] {
+            assert_eq!(version_at_least(version, (2, 1, 265)), Support::Unknown);
+        }
     }
     #[test]
     fn missing_help_is_unknown_and_versions_are_exact() {

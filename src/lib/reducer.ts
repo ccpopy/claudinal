@@ -15,6 +15,8 @@ import {
 
 export interface State {
   entries: UIEntry[]
+  /** Local follow-ups are not transcript entries or boundaries in the current turn. */
+  pendingInputs?: UIMessage[]
   hiddenStream?: boolean
   /** 已隐藏中断协议消息，等待对应 result 到达并归一成 interrupted。 */
   pendingInterruption: boolean
@@ -22,7 +24,7 @@ export interface State {
 }
 
 export type Action =
-  | { kind: "submitted_input"; message: UIMessage }
+  | { kind: "submitted_input"; message: UIMessage; pending?: boolean }
   | { kind: "event"; event: ClaudeEvent }
   | {
       kind: "user_local"
@@ -49,11 +51,21 @@ export function init(): State {
 
 export function reduce(state: State, action: Action): State {
   if (action.kind === "submitted_input") {
+    const pending = state.pendingInputs ?? []
+    const pendingIndex = pending.findIndex((entry) => entry.id === action.message.id)
     const index = state.entries.findIndex((e) => e.kind === "message" && e.id === action.message.id)
+    if (action.pending && index < 0) {
+      const pendingInputs = pending.slice()
+      if (pendingIndex < 0) pendingInputs.push(action.message)
+      else pendingInputs[pendingIndex] = action.message
+      return { ...state, pendingInputs }
+    }
     const entries = state.entries.slice()
-    if (index < 0) entries.push(action.message)
+    // Insert at dispatch, after the preceding result and final response. Later
+    // acknowledgements only update this position; registration time isn't send time.
+    if (index < 0) entries.push(pendingIndex < 0 ? action.message : { ...action.message, ts: Date.now() })
     else entries[index] = action.message
-    return { ...state, entries }
+    return { ...state, entries, ...(pendingIndex >= 0 ? { pendingInputs: pending.filter((entry) => entry.id !== action.message.id) } : {}) }
   }
   if (action.kind === "delivery_changed") {
     return { ...state, entries: state.entries.map((entry) => entry.kind === "message" && entry.id === action.messageId
