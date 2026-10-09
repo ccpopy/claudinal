@@ -32,6 +32,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
 
 [profile.dev]
 incremental = true

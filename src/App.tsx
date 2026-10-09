@@ -98,6 +98,7 @@ import {
 import { getProjectEnv, loadProjectEnvStore } from "@/lib/projectEnv"
 import { saveMcpStatusCache } from "@/lib/mcp"
 import {
+  loadSlashCommandsCache,
   mergeSlashCommands,
   saveSlashCommandsCache,
   slashCommandsFromSkills
@@ -163,6 +164,8 @@ import {
 } from "@/lib/archivedSessions"
 import { unpin } from "@/lib/pinned"
 import { subscribeSettingsBus } from "@/lib/settingsBus"
+import { completionPreview, notifyCompletion, setUnreadBadge } from "@/lib/completionNotice"
+import { sidebarSessionKey } from "@/lib/sidebarActivity"
 import { checkForAppUpdate } from "@/lib/updater"
 import {
   detectNetworkError,
@@ -544,7 +547,8 @@ function findSlashCommands(
     const entry = state.entries[i]
     if (entry.kind === "system_init") return mergeSlashCommands(entry.slashCommands, entry.skills)
   }
-  return mergeSlashCommands(["clear", "reset", "permissions"], installedSkillCommands)
+  // 尚无 system_init：沿用上次 CLI 上报的命令（含内置命令），再补本地扫描到的技能
+  return mergeSlashCommands(["clear", "reset", "permissions"], loadSlashCommandsCache(), installedSkillCommands)
 }
 
 function applyComposerPatch(
@@ -921,7 +925,6 @@ export default function App() {
     const commands = slashCommandsFromSkills(skills)
     installedSkillCommandsRef.current = commands
     setInstalledSkillCommands(commands)
-    saveSlashCommandsCache(findSlashCommands(stateRef.current, commands))
   }, [])
 
   const refreshInstalledSkills = useCallback(async () => {
@@ -1158,6 +1161,25 @@ export default function App() {
   const notifyQueuedRecovery = useCallback((items: QueuedInput[]) => {
     if (items.length) toast.info(`${items.length} 条未发送输入已保留在本地恢复区`)
   }, [])
+
+  // 会话完成通知：记录"完成时未在查看"的会话，任务栏角标显示其数量
+  const unreadCompletionsRef = useRef(new Set<string>())
+  const syncUnreadBadge = useCallback(() => {
+    void setUnreadBadge(unreadCompletionsRef.current.size).catch((e) => console.warn("更新任务栏角标失败:", e))
+  }, [])
+  /** 当前查看的会话（project::sessionId），每次渲染更新 */
+  const viewedSessionKeyRef = useRef<string | null>(null)
+  const noteCompletion = useCallback((sessionKey: string, projectName: string, isError: boolean, result: unknown) => {
+    if (!loadSettings().completionNotify) return
+    const focused = document.hasFocus()
+    if (focused && viewedSessionKeyRef.current === sessionKey) return
+    unreadCompletionsRef.current.add(sessionKey)
+    syncUnreadBadge()
+    if (!focused) {
+      void notifyCompletion(isError ? "会话出错" : "会话已完成", [projectName, completionPreview(result)].filter(Boolean).join(" · "))
+        .catch((e) => console.warn("发送完成通知失败:", e))
+    }
+  }, [syncUnreadBadge])
 
   const rememberComposerDraft = useCallback(
     (key: string | undefined, next: ComposerDraft) => {
@@ -2017,6 +2039,7 @@ export default function App() {
             return
           }
           coordinatorRef.current.complete(owner.key, isError || interrupted, eventInputIds(event), () => finishRunReview(run))
+          if (!interrupted) noteCompletion(sidebarSessionKey(run.project.id, resultSessionId ?? owner.key), run.project.name, isError, (event as { result?: unknown }).result)
           // A guide sent at the boundary may already be waiting in the CLI for
           // the next turn. Keep it active; this result must not settle that input.
           setRunningSessionTurnActive(run, coordinatorRef.current.hasRunning(owner.key))
@@ -2152,6 +2175,7 @@ export default function App() {
     syncRunningSessionStreaming,
     clearInterruptState,
     finishRunReview,
+    noteCompletion,
     closeRunningSession,
     ensureSidecarApiProfile,
     reportNetworkError,
@@ -2320,13 +2344,15 @@ export default function App() {
       let text = task.payloadRef.text
       const { images, documents } = task.payloadRef
       if (!options.bypassPreprocess) {
-        let route = routeCommand(text, findSlashCommands(owner.state, []), owner.state.entries.some((e) => e.kind === "system_init") ? [] : installedSkillCommandsRef.current)
+        // 新会话尚未收到 system_init 时，CLI 上次上报或本地扫描到的命令直接交给 CLI 解析；
+        // 只有两边都不认识的命令才需要确认，避免每个新会话首条命令都弹窗。
+        let route = routeCommand(text, findSlashCommands(owner.state, installedSkillCommandsRef.current))
         if (/^\s*\/model(?:\s|$)/.test(text)) route = (await claudeCapabilities()).headlessModelCommand === "supported" ? "cli" : "confirm_text"
         checkInputTarget(task)
-        if ((route === "preview" || route === "confirm_text") && task.context.approvedCommand !== text) {
+        if (route === "confirm_text" && task.context.approvedCommand !== text) {
           coordinatorRef.current.status(task, "needs_confirmation")
           if (viewOwnerRef.current.key !== owner.key) throw new Error("请回到此对话确认命令后重试")
-          const accepted = await confirmInputAction(route === "preview" ? "调用本地预览命令" : "此命令尚未确认可执行", "完整原文和附件已保留。此操作需要确认后才会交给 CLI。", route === "preview" ? "继续调用" : "作为文本发送")
+          const accepted = await confirmInputAction("此命令尚未确认可执行", "完整原文和附件已保留。CLI 与本地均未发现该命令，确认后将作为普通文本发送。", "作为文本发送")
           checkInputTarget(task)
           if (!accepted) { coordinatorRef.current.cancel(task.messageId); throw new DOMException("已取消", "AbortError") }
           task.context.approvedCommand = text
@@ -3174,6 +3200,23 @@ export default function App() {
     },
     [activeComposerDraftKey, rememberComposerDraft]
   )
+  const viewedSessionKey = project && jsonlSessionId ? sidebarSessionKey(project.id, jsonlSessionId) : null
+  viewedSessionKeyRef.current = viewedSessionKey
+  useEffect(() => {
+    // 窗口聚焦且正在查看该会话即视为已读
+    const clearViewed = () => {
+      const key = viewedSessionKeyRef.current
+      if (key && document.hasFocus() && unreadCompletionsRef.current.delete(key)) syncUnreadBadge()
+    }
+    clearViewed()
+    window.addEventListener("focus", clearViewed)
+    return () => window.removeEventListener("focus", clearViewed)
+  }, [viewedSessionKey, syncUnreadBadge])
+  useEffect(() => subscribeSettingsBus("settings", () => {
+    if (loadSettings().completionNotify || unreadCompletionsRef.current.size === 0) return
+    unreadCompletionsRef.current.clear()
+    syncUnreadBadge()
+  }), [syncUnreadBadge])
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const streamingSessionRefs = useMemo(() => {
     const refs: Array<{ projectId: string; sessionId: string }> = []

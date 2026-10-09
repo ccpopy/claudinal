@@ -447,10 +447,10 @@ function ComposerEditor({
   // 打开 + 菜单时再拉一次已安装插件，避免 GUI 启动时阻塞
   useEffect(() => {
     if (!plusOpen) return
-    listInstalledPlugins()
+    listInstalledPlugins(cwd)
       .then(setInstalledPlugins)
       .catch(() => setInstalledPlugins([]))
-  }, [plusOpen])
+  }, [plusOpen, cwd])
 
   const preparedText = useMemo(() => buildOutgoingText(text, fileAttachments), [text, fileAttachments])
   const preparedBlocks = useMemo(() => inputUiBlocks(preparedText, images, documents), [preparedText, images, documents])
@@ -954,11 +954,7 @@ function ComposerEditor({
                             <Package className="size-4 text-muted-foreground" />
                             <span className="flex-1 truncate">{p.name}</span>
                             <span className="text-[10px] text-muted-foreground">
-                              {p.scope === "user"
-                                ? ""
-                                : p.scope === "project"
-                                  ? "项目"
-                                  : "本地"}
+                              {[p.enabled ? "" : "已停用", p.scope === "project" ? "项目" : p.scope === "local" ? "本地" : ""].filter(Boolean).join(" · ")}
                             </span>
                           </DropdownMenuItem>
                         ))}

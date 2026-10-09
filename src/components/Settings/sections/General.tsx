@@ -38,6 +38,7 @@ import {
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxyAsync } from "@/lib/proxy"
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings"
+import { ensureNotificationPermission } from "@/lib/completionNotice"
 import { checkForAppUpdate } from "@/lib/updater"
 import appPackage from "../../../../package.json"
 import {
@@ -583,6 +584,28 @@ export function General() {
                 <RefreshCw className={checkingUpdate ? "animate-spin" : ""} />
                 立即检查
               </Button>
+            </div>
+            <Separator />
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label className="text-sm">会话完成通知</Label>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  未在查看的会话完成时发送系统通知，并在任务栏图标上显示未读数量；打开对应会话后清除。
+                </div>
+              </div>
+              <Switch
+                checked={cfg.completionNotify}
+                onCheckedChange={(v) => {
+                  update({ completionNotify: v })
+                  if (v) {
+                    void ensureNotificationPermission()
+                      .then((granted) => {
+                        if (!granted) toast.warning("系统未授予通知权限，仅显示任务栏角标")
+                      })
+                      .catch((e) => toast.error(`申请通知权限失败：${String(e)}`))
+                  }
+                }}
+              />
             </div>
             <Separator />
             <CliDiagnostics />

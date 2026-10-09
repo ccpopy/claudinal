@@ -1,6 +1,7 @@
 //! Claude Code 原生插件 / 技能的读取与命令封装。
 //!
-//! 设计：读 → 直接读文件系统（更可靠），写 → spawn `claude plugin` 子命令（避免破坏 schema）。
+//! 设计：插件安装与启用状态读 `claude plugin list --json`（CLI 才知道 defaultEnabled、多 scope 合并等规则）；
+//! 技能 / marketplace 元数据直接读文件系统；写 → spawn `claude plugin` 子命令（避免破坏 schema）。
 //!
 //! 关键路径（与 Claude Code 一致）：
 //! - 已安装插件：`~/.claude/plugins/installed_plugins.json`
@@ -30,6 +31,8 @@ pub struct InstalledPlugin {
     pub project_path: Option<String>,
     pub installed_at: Option<String>,
     pub last_updated: Option<String>,
+    /// CLI 在当前 cwd 下判定的启用状态；停用插件的技能与命令不会被加载
+    pub enabled: bool,
     /// 来自 marketplace.json 的描述（可能为空）
     pub description: Option<String>,
     pub author: Option<String>,
@@ -152,79 +155,75 @@ fn read_marketplace_plugins(name: &str) -> Vec<MarketplacePlugin> {
         .collect()
 }
 
+/// `claude plugin list --json` 的单条安装记录。启用状态以 CLI 计算结果为准：
+/// 它已合并 enabledPlugins 各 scope、defaultEnabled 与依赖规则，应用不再自行推断。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliPluginEntry {
+    id: String,
+    version: Option<String>,
+    scope: Option<String>,
+    enabled: Option<bool>,
+    install_path: Option<String>,
+    project_path: Option<String>,
+    installed_at: Option<String>,
+    last_updated: Option<String>,
+}
+
+/// 在 `cwd` 下运行 `claude plugin list --json`，使项目级 enabledPlugins 也参与计算。
+async fn cli_plugin_entries(cwd: Option<&str>) -> Result<Vec<CliPluginEntry>> {
+    let output =
+        run_claude_plugin(vec!["plugin".into(), "list".into(), "--json".into()], cwd).await?;
+    if output.exit_code != 0 {
+        return Err(Error::Other(format!(
+            "claude plugin list 失败：{}",
+            output.stderr.trim()
+        )));
+    }
+    serde_json::from_str(&output.stdout)
+        .map_err(|e| Error::Other(format!("无法解析 claude plugin list 输出：{e}")))
+}
+
+/// 与 CLI 同口径：仅当前 cwd 可见的安装记录（user，或 projectPath 指向 cwd）。
+fn entry_visible_in(entry: &CliPluginEntry, cwd: Option<&str>) -> bool {
+    entry.scope.as_deref().unwrap_or("user") == "user"
+        || matches!((entry.project_path.as_deref(), cwd), (Some(p), Some(c)) if Path::new(p) == Path::new(c))
+}
+
 #[tauri::command]
-pub async fn list_installed_plugins() -> Result<Vec<InstalledPlugin>> {
-    let root = marketplaces_root()?;
-    let installed_path = root.join("installed_plugins.json");
-    let Some(value) = read_json_file(&installed_path)? else {
-        return Ok(Vec::new());
-    };
-    let plugins = value
-        .get("plugins")
-        .and_then(Value::as_object)
-        .ok_or_else(|| Error::Other("无法识别插件安装清单格式".into()))?;
+pub async fn list_installed_plugins(cwd: Option<String>) -> Result<Vec<InstalledPlugin>> {
+    let entries = cli_plugin_entries(cwd.as_deref()).await?;
 
     // 缓存每个 marketplace 的描述，避免重复 IO。
     let mut market_cache: std::collections::HashMap<String, Vec<MarketplacePlugin>> =
         std::collections::HashMap::new();
 
     let mut out = Vec::new();
-    for (id, entries) in plugins {
-        let (name, marketplace) = match id.split_once('@') {
+    for entry in entries {
+        let (name, marketplace) = match entry.id.split_once('@') {
             Some((n, m)) => (n.to_string(), m.to_string()),
-            None => (id.clone(), String::new()),
+            None => (entry.id.clone(), String::new()),
         };
         let market_plugins = market_cache
             .entry(marketplace.clone())
             .or_insert_with(|| read_marketplace_plugins(&marketplace));
         let meta = market_plugins.iter().find(|p| p.name == name);
-
-        let entries = match entries.as_array() {
-            Some(a) => a,
-            None => continue,
-        };
-        for entry in entries {
-            let scope = entry
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("user")
-                .to_string();
-            let version = entry
-                .get("version")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let install_path = entry
-                .get("installPath")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let project_path = entry
-                .get("projectPath")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let installed_at = entry
-                .get("installedAt")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let last_updated = entry
-                .get("lastUpdated")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            out.push(InstalledPlugin {
-                id: id.clone(),
-                name: name.clone(),
-                marketplace: marketplace.clone(),
-                version,
-                scope,
-                install_path,
-                project_path,
-                installed_at,
-                last_updated,
-                description: meta.and_then(|m| m.description.clone()),
-                author: meta.and_then(|m| m.author.clone()),
-                homepage: meta.and_then(|m| m.homepage.clone()),
-                category: meta.and_then(|m| m.category.clone()),
-            });
-        }
+        out.push(InstalledPlugin {
+            enabled: entry.enabled.unwrap_or(false),
+            name,
+            marketplace,
+            version: entry.version,
+            scope: entry.scope.unwrap_or_else(|| "user".into()),
+            install_path: entry.install_path,
+            project_path: entry.project_path,
+            installed_at: entry.installed_at,
+            last_updated: entry.last_updated,
+            description: meta.and_then(|m| m.description.clone()),
+            author: meta.and_then(|m| m.author.clone()),
+            homepage: meta.and_then(|m| m.homepage.clone()),
+            category: meta.and_then(|m| m.category.clone()),
+            id: entry.id,
+        });
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
@@ -382,7 +381,7 @@ fn scan_legacy_commands(root: &Path, source: &str, prefix: &str, out: &mut Vec<S
     }
 }
 
-fn collect_skills(cwd: Option<&str>) -> Result<Vec<Skill>> {
+fn collect_skills(cwd: Option<&str>, plugins: &[CliPluginEntry]) -> Result<Vec<Skill>> {
     let mut out = Vec::new();
     // 用户级
     let user_dir = home()?.join(".claude").join("skills");
@@ -401,44 +400,20 @@ fn collect_skills(cwd: Option<&str>) -> Result<Vec<Skill>> {
             &mut out,
         );
     }
-    let mut enabled = serde_json::Map::new();
-    let mut settings_paths = vec![home()?.join(".claude/settings.json")];
-    if let Some(cwd) = cwd {
-        settings_paths.extend([
-            Path::new(cwd).join(".claude/settings.json"),
-            Path::new(cwd).join(".claude/settings.local.json"),
-        ]);
-    }
-    for path in settings_paths {
-        if let Some(value) = read_json_file(&path)? {
-            if let Some(plugins) = value.get("enabledPlugins").and_then(Value::as_object) {
-                enabled.extend(plugins.clone());
-            }
+    // 只收录 CLI 判定为启用的插件，避免预览出 CLI 实际不会加载的命令
+    for entry in plugins {
+        if entry.enabled != Some(true) || !entry_visible_in(entry, cwd) {
+            continue;
         }
-    }
-    let installed = home()?.join(".claude/plugins/installed_plugins.json");
-    if let Some(value) = read_json_file(&installed)? {
-        let plugins = value
-            .get("plugins")
-            .and_then(Value::as_object)
-            .ok_or_else(|| Error::Other("无法识别插件安装清单格式，不能视为未安装".into()))?;
-        for (id, entries) in plugins {
-            if enabled.get(id).and_then(Value::as_bool) == Some(false) {
-                continue;
-            }
-            let name = id.split('@').next().unwrap_or(id);
-            for entry in entries.as_array().into_iter().flatten() {
-                let scope = entry.get("scope").and_then(Value::as_str).unwrap_or("user");
-                if scope != "user" && entry.get("projectPath").and_then(Value::as_str) != cwd {
-                    continue;
-                }
-                let Some(path) = entry.get("installPath").and_then(Value::as_str) else {
-                    continue;
-                };
-                let source = format!("plugin:{id}");
-                let start = out.len();
-                scan_skill_dir(&Path::new(path).join("skills"), source.clone(), &mut out);
-                if let Some(manifest) =
+        let id = &entry.id;
+        let name = id.split('@').next().unwrap_or(id);
+        let Some(path) = entry.install_path.as_deref() else {
+            continue;
+        };
+        let source = format!("plugin:{id}");
+        let start = out.len();
+        scan_skill_dir(&Path::new(path).join("skills"), source.clone(), &mut out);
+        if let Some(manifest) =
                     read_json_file(&Path::new(path).join(".claude-plugin/plugin.json")).unwrap_or_else(|_| { tracing::warn!(plugin = %id, "invalid plugin manifest; default preview entries retained"); None })
                 {
                     let roots = match manifest.get("skills") {
@@ -469,11 +444,9 @@ fn collect_skills(cwd: Option<&str>) -> Result<Vec<Skill>> {
                         }
                     }
                 }
-                scan_legacy_commands(&Path::new(path).join("commands"), &source, "", &mut out);
-                for skill in &mut out[start..] {
-                    skill.name = format!("{name}:{}", skill.name);
-                }
-            }
+        scan_legacy_commands(&Path::new(path).join("commands"), &source, "", &mut out);
+        for skill in &mut out[start..] {
+            skill.name = format!("{name}:{}", skill.name);
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
@@ -584,7 +557,8 @@ fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
 
 #[tauri::command]
 pub async fn list_skills(cwd: Option<String>) -> Result<Vec<Skill>> {
-    collect_skills(cwd.as_deref())
+    let plugins = cli_plugin_entries(cwd.as_deref()).await?;
+    collect_skills(cwd.as_deref(), &plugins)
 }
 
 #[tauri::command]
@@ -595,7 +569,8 @@ pub async fn expand_skill_command(
     let Some((requested_name, arguments)) = parse_skill_command(&text) else {
         return Ok(None);
     };
-    let known = collect_skills(cwd.as_deref())?
+    let plugins = cli_plugin_entries(cwd.as_deref()).await?;
+    let known = collect_skills(cwd.as_deref(), &plugins)?
         .iter()
         .any(|skill| skill.user_invocable && skill.name == requested_name);
     if !known {
@@ -776,7 +751,6 @@ pub struct PluginCommandResult {
 /// 调用 `claude plugin ...` 子命令；同步等待结果。
 #[tauri::command]
 pub async fn run_plugin_command(args: PluginCommand) -> Result<PluginCommandResult> {
-    let claude = crate::proc::spawn::find_claude()?;
     let mut cmd_args: Vec<String> = vec!["plugin".into()];
     match args.kind.as_str() {
         "marketplace" => {
@@ -798,10 +772,17 @@ pub async fn run_plugin_command(args: PluginCommand) -> Result<PluginCommandResu
         }
         other => return Err(Error::Other(format!("invalid plugin kind: {other}"))),
     }
+    run_claude_plugin(cmd_args, args.cwd.as_deref()).await
+}
 
+async fn run_claude_plugin(
+    cmd_args: Vec<String>,
+    cwd: Option<&str>,
+) -> Result<PluginCommandResult> {
+    let claude = crate::proc::spawn::find_claude()?;
     let mut cmd = tokio::process::Command::new(&claude);
     cmd.args(&cmd_args);
-    if let Some(cwd) = args.cwd.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(cwd) = cwd.filter(|s| !s.is_empty()) {
         cmd.current_dir(cwd);
     }
     cmd.stdin(std::process::Stdio::null());

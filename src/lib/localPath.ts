@@ -156,6 +156,8 @@ export function resolveOpenablePath(
 export function isLikelyMarkdownFileReference(value: string): boolean {
   const reference = trimPathReference(value)
   if (!reference || /^[#?]/.test(reference)) return false
+  // `/compact`、`/plugin:skill` 是 slash 命令；无扩展名的单段根路径在正文里几乎不会指文件
+  if (/^\/[\w:-]+$/.test(reference)) return false
   if (fileUrlToPath(reference) || isLikelyLocalPath(reference)) return true
   if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(reference)) return false
   if (/^\.{1,2}[\\/]/.test(reference)) return true

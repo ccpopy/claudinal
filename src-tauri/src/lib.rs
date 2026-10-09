@@ -70,6 +70,7 @@ pub fn run() {
         .plugin(updater_builder().build())
         .register_uri_scheme_protocol(startup::PROTOCOL, |_ctx, _request| startup::response())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(proc::Manager::new())
         .manage(auth::AuthLoginState::new())
         .manage(permission_mcp::PermissionMcpBridge::new())

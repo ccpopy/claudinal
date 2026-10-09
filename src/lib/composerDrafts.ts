@@ -65,6 +65,9 @@ export class ComposerDraftStore {
   private drafts = new Map<string, ComposerDraft>()
   private sessions = new Map<string, string>()
   private conversations = new Map<string, { key: string; session: string | null }>()
+  /** Per-project bucket shared by every view of a not-yet-started conversation. */
+  private unstarted = new Map<string, string>()
+  private generation = 0
 
   keyFor(projectId: string, sessionId: string | null, conversationId: string): string {
     const conversation = composerDraftKey(projectId, `draft:${conversationId}`)
@@ -75,9 +78,23 @@ export class ComposerDraftStore {
     const conversationKey = existing && (!existing.session || existing.session === session)
       ? existing.key : undefined
     const key = (session ? this.sessions.get(session) : undefined)
-      ?? conversationKey ?? session ?? conversation
+      ?? conversationKey ?? session ?? this.unstartedKey(projectId)
     this.conversations.set(conversation, { key, session })
-    if (session) this.sessions.set(session, key)
+    if (session) {
+      this.sessions.set(session, key)
+      // The bucket now belongs to this session; the next new chat starts empty.
+      if (this.unstarted.get(projectId) === key) this.unstarted.delete(projectId)
+    }
+    return key
+  }
+
+  /** Leaving an unsent new chat and starting another one restores its draft. */
+  private unstartedKey(projectId: string): string {
+    let key = this.unstarted.get(projectId)
+    if (!key) {
+      key = `${composerDraftKey(projectId, null)}:${this.generation++}`
+      this.unstarted.set(projectId, key)
+    }
     return key
   }
 

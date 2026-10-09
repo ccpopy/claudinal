@@ -113,7 +113,7 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
             ("hookEvents", "help"),
             (
                 "forkSession",
-                "help; requires both fork-session and resume-session-at",
+                "help lists --fork-session; --resume-session-at is the SDK's hidden resumeSessionAt flag",
             ),
             ("headlessModelCommand", "documented version rule: >=2.1.205"),
             (
@@ -145,13 +145,9 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
         hook_events: from_help("--include-hook-events", help),
         headless_model_command: version_at_least(&version, (2, 1, 205)),
         native_ultracode_effort: version_at_least(&version, (2, 1, 203)),
-        fork_session: if from_help("--fork-session", help) == Support::Supported
-            && from_help("--resume-session-at", help) == Support::Supported
-        {
-            Support::Supported
-        } else {
-            Support::Unknown
-        },
+        // --resume-session-at backs the SDK's documented resumeSessionAt option and is
+        // never listed in --help, so requiring it there left branching permanently off.
+        fork_session: from_help("--fork-session", help),
         resolved_version: version,
         checked_at: chrono::Utc::now().to_rfc3339(),
         certification: "unverified; help and documented version rules only",
@@ -177,6 +173,9 @@ mod tests {
             assert_eq!(caps.user_message_replay, Support::Supported, "{version}");
         }
         assert_eq!(mid_turn_input("2.1.264"), Support::Unsupported);
+        let help = "  --fork-session  When resuming, create a new session ID";
+        let caps = detect(std::path::Path::new("claude"), "2.1.295".into(), help);
+        assert_eq!(caps.fork_session, Support::Supported);
         assert_eq!(mid_turn_input("unknown"), Support::Unknown);
     }
 

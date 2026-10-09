@@ -175,8 +175,8 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }
     {others.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-2 [&>*]:max-w-full">
       {others.map((block, index) => <BlockView key={index} role="user" block={block} variant="user" cwd={cwd} />)}
     </div>}
-    {images.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-2 [&_img]:max-h-48">
-      {images.map((block, index) => <BlockView key={index} role="user" block={block} imageGallery={images} variant="user" cwd={cwd} />)}
+    {images.length > 0 && <div className={cn("flex max-w-[85%] flex-wrap justify-end gap-2", images.length === 1 && "[&_img]:max-h-48")}>
+      {images.map((block, index) => <BlockView key={index} role="user" block={block} imageGallery={images} imageTile={images.length > 1} variant="user" cwd={cwd} />)}
     </div>}
     {(text || (guide && !images.length && !others.length)) && <div className={cn(
       "min-w-0 max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed text-foreground",

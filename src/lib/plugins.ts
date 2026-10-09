@@ -10,6 +10,8 @@ export interface InstalledPlugin {
   project_path: string | null
   installed_at: string | null
   last_updated: string | null
+  /** CLI 在当前项目下判定的启用状态；停用插件的技能与命令不会被加载 */
+  enabled: boolean
   description: string | null
   author: string | null
   homepage: string | null
@@ -74,8 +76,14 @@ export type MarketplaceAction = "add" | "remove" | "update" | "list"
 export type PluginScope = "user" | "project" | "local"
 export type SkillScope = "user" | "project"
 
-export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
-  return invoke<InstalledPlugin[]>("list_installed_plugins")
+/** Anthropic 官方插件市场（Claude Code 内置名称与仓库） */
+export const OFFICIAL_MARKETPLACE = {
+  name: "claude-plugins-official",
+  source: "anthropics/claude-plugins-official"
+} as const
+
+export async function listInstalledPlugins(cwd?: string | null): Promise<InstalledPlugin[]> {
+  return invoke<InstalledPlugin[]>("list_installed_plugins", { cwd: cwd ?? null })
 }
 
 export async function listMarketplaces(): Promise<Marketplace[]> {
@@ -181,6 +189,21 @@ export async function installPlugin(
   return runPluginCommand({
     kind: "plugin",
     action: "install",
+    target: pluginAtMarketplace,
+    scope,
+    cwd: cwd ?? null
+  })
+}
+
+export async function setPluginEnabled(
+  pluginAtMarketplace: string,
+  enabled: boolean,
+  scope: PluginScope,
+  cwd?: string | null
+): Promise<PluginCommandResult> {
+  return runPluginCommand({
+    kind: "plugin",
+    action: enabled ? "enable" : "disable",
     target: pluginAtMarketplace,
     scope,
     cwd: cwd ?? null

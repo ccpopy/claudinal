@@ -24,6 +24,8 @@ export interface AppSettings {
   permissionMcpConfig: string
   // 高频 slash 命令 pin（不带 / 前缀，与 system/init.slash_commands 一致）
   pinnedSlash: string[]
+  // 会话完成通知：未在查看的会话完成时发系统通知，并在任务栏图标显示未读数
+  completionNotify: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -32,7 +34,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   permissionMcpEnabled: false,
   permissionPromptTool: DEFAULT_PERMISSION_MCP_TOOL,
   permissionMcpConfig: DEFAULT_PERMISSION_MCP_CONFIG,
-  pinnedSlash: []
+  pinnedSlash: [],
+  completionNotify: false
 }
 
 export function loadSettings(): AppSettings {

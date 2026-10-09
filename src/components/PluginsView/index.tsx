@@ -78,7 +78,9 @@ import {
   listInstalledPlugins,
   listMarketplaces,
   listSkills,
+  OFFICIAL_MARKETPLACE,
   removeMarketplace,
+  setPluginEnabled,
   uninstallPlugin,
   updateMarketplace,
   type InstalledPlugin,
@@ -153,7 +155,7 @@ export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
     setLoading(true)
     try {
       const [inst, marks, sk] = await Promise.all([
-        listInstalledPlugins(),
+        listInstalledPlugins(cwd ?? null),
         listMarketplaces(),
         listSkills(cwd ?? null)
       ])
@@ -304,6 +306,30 @@ export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
         await refresh()
       } catch (e) {
         reportPluginError("卸载插件", e)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [cwd, refresh]
+  )
+
+  const onToggleEnabled = useCallback(
+    async (p: InstalledPlugin, enabled: boolean) => {
+      setBusy(true)
+      try {
+        const r = await setPluginEnabled(
+          p.id,
+          enabled,
+          p.scope as PluginScope,
+          p.scope === "user" ? cwd ?? null : p.project_path ?? cwd ?? null
+        )
+        if (r.exit_code !== 0) {
+          throw new Error(r.stderr || r.stdout || `exit ${r.exit_code}`)
+        }
+        toast.success(`已${enabled ? "启用" : "停用"} ${p.name}，新会话生效`)
+        await refresh()
+      } catch (e) {
+        reportPluginError(enabled ? "启用插件" : "停用插件", e)
       } finally {
         setBusy(false)
       }
@@ -514,39 +540,62 @@ export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
               正在读取
             </div>
           ) : tab === "plugins" ? (
-            <Tabs
-              value={pluginsTab}
-              onValueChange={(v) => setPluginsTab(v as PluginsTab)}
-            >
-              <TabsContent value="installed" className="mt-0">
-                <InstalledList
-                  rows={installedFiltered}
-                  busy={busy}
-                  onUninstall={(p) => setPendingUninstall(p)}
-                />
-              </TabsContent>
-              <TabsContent value="discover" className="mt-0">
-                <DiscoverList
-                  rows={discoverList}
-                  busy={busy}
-                  onPick={(it) =>
-                    setInstallTarget({
-                      id: `${it.plugin.name}@${it.market}`,
-                      name: it.plugin.name,
-                      description: it.plugin.description
-                    })
-                  }
-                />
-              </TabsContent>
-              <TabsContent value="marketplaces" className="mt-0">
-                <MarketplaceList
-                  rows={marketplaces}
-                  busy={busy}
-                  onUpdate={onUpdateMarket}
-                  onRemove={(m) => setPendingRemoveMarket(m)}
-                />
-              </TabsContent>
-            </Tabs>
+            <>
+              {!marketplaces.some((m) => m.name === OFFICIAL_MARKETPLACE.name) && (
+                <div className="flex items-center gap-3 rounded-lg border bg-card p-4">
+                  <Store className="size-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1 text-sm">
+                    <div className="font-medium">Anthropic 官方插件市场</div>
+                    <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+                      {OFFICIAL_MARKETPLACE.source}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => onAddMarket(OFFICIAL_MARKETPLACE.source)}
+                  >
+                    <Plus />
+                    添加
+                  </Button>
+                </div>
+              )}
+              <Tabs
+                value={pluginsTab}
+                onValueChange={(v) => setPluginsTab(v as PluginsTab)}
+              >
+                <TabsContent value="installed" className="mt-0">
+                  <InstalledList
+                    rows={installedFiltered}
+                    busy={busy}
+                    onToggleEnabled={onToggleEnabled}
+                    onUninstall={(p) => setPendingUninstall(p)}
+                  />
+                </TabsContent>
+                <TabsContent value="discover" className="mt-0">
+                  <DiscoverList
+                    rows={discoverList}
+                    busy={busy}
+                    onPick={(it) =>
+                      setInstallTarget({
+                        id: `${it.plugin.name}@${it.market}`,
+                        name: it.plugin.name,
+                        description: it.plugin.description
+                      })
+                    }
+                  />
+                </TabsContent>
+                <TabsContent value="marketplaces" className="mt-0">
+                  <MarketplaceList
+                    rows={marketplaces}
+                    busy={busy}
+                    onUpdate={onUpdateMarket}
+                    onRemove={(m) => setPendingRemoveMarket(m)}
+                  />
+                </TabsContent>
+              </Tabs>
+            </>
           ) : (
             <SkillsContent
               skills={skillsFiltered}
@@ -633,10 +682,12 @@ export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
 function InstalledList({
   rows,
   busy,
+  onToggleEnabled,
   onUninstall
 }: {
   rows: InstalledPlugin[]
   busy: boolean
+  onToggleEnabled: (p: InstalledPlugin, enabled: boolean) => void
   onUninstall: (p: InstalledPlugin) => void
 }) {
   if (rows.length === 0) {
@@ -661,7 +712,7 @@ function InstalledList({
                 <Badge variant="outline" className="font-sans">
                   {scopeLabel(p.scope)}
                 </Badge>
-                {p.version && (
+                {p.version && p.version !== "unknown" && (
                   <Badge variant="secondary" className="font-mono">
                     v{p.version}
                   </Badge>
@@ -671,9 +722,16 @@ function InstalledList({
                     {p.category}
                   </Badge>
                 )}
+                {!p.enabled && (
+                  <Badge variant="outline" className="font-sans text-warn">
+                    已停用
+                  </Badge>
+                )}
               </div>
               <div className="mt-1 truncate text-xs text-muted-foreground">
-                {p.description || `来自 ${p.marketplace}`}
+                {p.enabled
+                  ? p.description || `来自 ${p.marketplace}`
+                  : "已停用：CLI 不会加载其技能与命令"}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -690,6 +748,12 @@ function InstalledList({
                   <ExternalLink className="size-4" />
                 </Button>
               )}
+              <Switch
+                checked={p.enabled}
+                onCheckedChange={(enabled) => onToggleEnabled(p, enabled)}
+                disabled={busy}
+                aria-label={p.enabled ? `停用 ${p.name}` : `启用 ${p.name}`}
+              />
               <Button
                 type="button"
                 variant="ghost"

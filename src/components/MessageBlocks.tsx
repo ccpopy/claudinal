@@ -45,9 +45,12 @@ export function BlockView({
   cwd,
   subagent,
   onOpenSubagent,
-  imageGallery
+  imageGallery,
+  imageTile
 }: {
   imageGallery?: UIBlock[]
+  /** 多图时渲染为等尺寸方形缩略图，避免大小不一的图片挤在同一行 */
+  imageTile?: boolean
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
@@ -70,7 +73,7 @@ export function BlockView({
   if (block.type === "thinking") return <ThinkingBlock block={block} />
   if (block.type === "skill_load") return <SkillLoadBlock block={block} />
   if (block.type === "activity") return <ActivityBlock block={block} cwd={cwd} />
-  if (block.type === "image") return <ImageBlock role={role} block={block} gallery={imageGallery} />
+  if (block.type === "image") return <ImageBlock role={role} block={block} gallery={imageGallery} tile={imageTile} />
   if (block.type === "attachment") return <AttachmentBlock role={role} block={block} />
   if (block.type === "tool_use") {
     return (
@@ -241,9 +244,11 @@ function ThinkingBlock({ block }: { block: UIBlock }) {
 function ImageBlock({
   role,
   block,
-  gallery
+  gallery,
+  tile = false
 }: {
   gallery?: UIBlock[]
+  tile?: boolean
   role: "user" | "assistant"
   block: UIBlock
 }) {
@@ -259,13 +264,14 @@ function ImageBlock({
         onClick={() => setOpen(true)}
         className={cn(
           "group/img relative max-w-full rounded-lg border overflow-hidden cursor-zoom-in transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-ring",
-          role === "user" && "self-end"
+          role === "user" && "self-end",
+          tile && "size-28 bg-muted"
         )}
         aria-label={alt ? `放大图片 ${alt}` : "放大图片"}
         title={alt || "点击放大"}
       >
-        <img src={src} alt={alt} className="block max-h-72 max-w-full object-contain" loading="lazy" />
-        {block.imageAlt && (
+        <img src={src} alt={alt} className={tile ? "block size-full object-cover" : "block max-h-72 max-w-full object-contain"} loading="lazy" />
+        {block.imageAlt && !tile && (
           <span className="absolute right-1 bottom-1 rounded-md bg-background/85 text-foreground/90 text-[10px] font-mono px-1.5 py-0.5 border">
             {block.imageAlt}
           </span>
