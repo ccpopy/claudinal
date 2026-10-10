@@ -145,6 +145,17 @@ export function ChatTimelineNav({
     setPointerY(null)
   }, [])
 
+  // 切换会话、rail 隐藏重排时元素会在指针下被替换，pointerleave 不一定触发；
+  // 内容变化或窗口失焦后若指针已不在 rail 上，清掉残留的放大状态。
+  useEffect(() => {
+    if (!contentRef.current?.matches(":hover")) resetPointerInteraction()
+  }, [items, railLeft, resetPointerInteraction])
+
+  useEffect(() => {
+    window.addEventListener("blur", resetPointerInteraction)
+    return () => window.removeEventListener("blur", resetPointerInteraction)
+  }, [resetPointerInteraction])
+
   if (!hasItems) return null
   return (
     <nav
