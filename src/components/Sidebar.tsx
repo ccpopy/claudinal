@@ -42,6 +42,7 @@ import {
   type SessionMeta
 } from "@/lib/ipc"
 import type { Project } from "@/lib/projects"
+import type { TranscriptTarget } from "@/lib/transcriptNavigation"
 import { isEditableShortcutTarget } from "@/lib/keyboard"
 import { listPinned, togglePin, type PinnedRef } from "@/lib/pinned"
 import {
@@ -81,7 +82,7 @@ interface Props {
   waitingSessionRefs?: SidebarSessionRef[]
   inPlugins?: boolean
   onSelectProject: (p: Project) => void
-  onSelectSession: (p: Project, s: SessionMeta) => void
+  onSelectSession: (p: Project, s: SessionMeta, target?: TranscriptTarget) => void
   onDeleteSession: (p: Project, s: SessionMeta) => void
   onAdd: () => void
   onRemove: (id: string) => void

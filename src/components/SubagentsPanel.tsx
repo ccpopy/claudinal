@@ -33,6 +33,7 @@ import {
 import { cn, formatRunDuration } from "@/lib/utils"
 import type { ClaudeEvent } from "@/types/events"
 import type { UIEntry } from "@/types/ui"
+import { subagentMainToolTarget, type TranscriptNavigationRequest } from "@/lib/transcriptNavigation"
 
 interface Props {
   open: boolean
@@ -42,6 +43,7 @@ interface Props {
   sessionId: string | null
   selectedAgentId: string | null
   onSelectedAgentChange: (agentId: string | null) => void
+  onNavigateToMainTool?: (toolUseId: string) => void
 }
 
 interface StatusPresentation {
@@ -259,12 +261,16 @@ function SubagentTranscript({
   agent,
   cwd,
   sessionId,
-  onOpenSubagent
+  onOpenSubagent,
+  navigationRequest,
+  onNavigationSettled
 }: {
   agent: SubagentTask
   cwd: string | null
   sessionId: string | null
   onOpenSubagent: (agentId: string) => void
+  navigationRequest?: TranscriptNavigationRequest | null
+  onNavigationSettled?: (id: string) => void
 }) {
   const [events, setEvents] = useState<ClaudeEvent[]>([])
   const [loading, setLoading] = useState(true)
@@ -384,6 +390,8 @@ function SubagentTranscript({
           pendingSubagentCount={nestedRunning}
           subagents={transcriptState.subagents.agents}
           onOpenSubagent={onOpenSubagent}
+          navigationRequest={!loading ? navigationRequest : null}
+          onNavigationSettled={(id, found) => { if (!found) toast.warning("对应调用已不在可读取的父任务记录中"); onNavigationSettled?.(id) }}
         />}
       </>
     )
@@ -428,11 +436,14 @@ export function SubagentsPanel({
   cwd,
   sessionId,
   selectedAgentId,
-  onSelectedAgentChange
+  onSelectedAgentChange,
+  onNavigateToMainTool
 }: Props) {
   const [now, setNow] = useState(() => Date.now())
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId || agent.aliases?.includes(selectedAgentId ?? "")) ?? null
-  const selectedParent = agents.find((agent) => agent.id === selectedAgent?.parentTaskId)
+  const selectedParent = agents.find((agent) => agent.id === selectedAgent?.parentTaskId || agent.aliases?.includes(selectedAgent?.parentTaskId ?? ""))
+  const mainToolUseId = selectedAgent ? subagentMainToolTarget(selectedAgent, agents) : null
+  const [agentNavigation, setAgentNavigation] = useState<{ agentId: string; sessionId: string | null; request: TranscriptNavigationRequest } | null>(null)
   const groups = useMemo(() => partitionSubagents(agents), [agents])
 
   useEffect(() => {
@@ -489,6 +500,13 @@ export function SubagentsPanel({
                       {selectedAgent.rawStatus && selectedAgent.status === "unknown" && <span title={selectedAgent.rawStatus}>{selectedAgent.rawStatus}</span>}
                     </div>
                   )}
+                  <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-primary">
+                    {selectedParent && selectedAgent.toolUseId && <button type="button" className="hover:underline" onClick={() => {
+                      setAgentNavigation({ agentId: selectedParent.id, sessionId, request: { id: crypto.randomUUID(), target: { toolUseId: selectedAgent.toolUseId! } } })
+                      onSelectedAgentChange(selectedParent.id)
+                    }}>查看父任务调用</button>}
+                    {mainToolUseId && onNavigateToMainTool && <button type="button" className="hover:underline" onClick={() => onNavigateToMainTool(mainToolUseId)}>查看主会话调用</button>}
+                  </div>
                 </div>
                 <DialogPrimitive.Close asChild>
                   <Button variant="ghost" size="icon" className="size-8" aria-label="关闭">
@@ -497,10 +515,13 @@ export function SubagentsPanel({
                 </DialogPrimitive.Close>
               </div>
               <SubagentTranscript
+                key={`${sessionId}:${selectedAgent.id}`}
                 agent={selectedAgent}
                 cwd={cwd}
                 sessionId={sessionId}
-                onOpenSubagent={onSelectedAgentChange}
+                onOpenSubagent={(agentId) => { setAgentNavigation(null); onSelectedAgentChange(agentId) }}
+                navigationRequest={agentNavigation?.sessionId === sessionId && agentNavigation.agentId === selectedAgent.id ? agentNavigation.request : null}
+                onNavigationSettled={(id) => setAgentNavigation((current) => current?.request.id === id ? null : current)}
               />
             </>
           ) : (

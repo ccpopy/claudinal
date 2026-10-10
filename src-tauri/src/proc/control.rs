@@ -115,10 +115,15 @@ pub fn unsupported_response(request: &Value) -> Option<Value> {
 #[derive(Default)]
 pub struct ControlReceipts {
     ids: HashSet<String>,
+    pending_permissions: HashSet<String>,
+    cancelled_permissions: HashSet<String>,
     order: VecDeque<String>,
 }
 impl ControlReceipts {
-    pub fn should_forward_permission(&self, event: &Value) -> std::result::Result<bool, String> {
+    pub fn should_forward_permission(
+        &mut self,
+        event: &Value,
+    ) -> std::result::Result<bool, String> {
         if event.get("type").and_then(Value::as_str) != Some("control_request")
             || event.pointer("/request/subtype").and_then(Value::as_str) != Some("can_use_tool")
         {
@@ -129,9 +134,40 @@ impl ControlReceipts {
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
             .ok_or_else(|| "CLI 权限请求缺少有效 request_id，无法安全回复".to_string())?;
-        Ok(!self.ids.contains(id))
+        if self.ids.contains(id) || self.pending_permissions.contains(id) {
+            return Ok(false);
+        }
+        if self.pending_permissions.len() >= 1024 {
+            return Err("CLI 未完成权限请求已达到上限".into());
+        }
+        self.pending_permissions.insert(id.into());
+        Ok(true)
+    }
+    pub fn cancel_permission(&mut self, id: &str) {
+        if !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control) {
+            self.pending_permissions.remove(id);
+            if self.insert(id) {
+                self.cancelled_permissions.insert(id.into());
+            }
+        }
+    }
+    /// Called under the stdin write lock: cancellation received while waiting
+    /// for a prior frame must invalidate this reply before it reaches the CLI.
+    pub fn claim_permission_reply(&mut self, id: &str) -> std::result::Result<bool, String> {
+        if self.cancelled_permissions.contains(id) {
+            return Err("CLI 权限请求已取消，未发送授权回复".into());
+        }
+        if self.ids.contains(id) {
+            return Ok(false);
+        }
+        if !self.pending_permissions.remove(id) {
+            return Err("CLI 权限请求已结束或未知，未发送授权回复".into());
+        }
+        self.insert(id);
+        Ok(true)
     }
     pub fn insert(&mut self, id: &str) -> bool {
+        self.pending_permissions.remove(id);
         if !self.ids.insert(id.into()) {
             return false;
         }
@@ -139,6 +175,7 @@ impl ControlReceipts {
         while self.order.len() > 512 {
             if let Some(oldest) = self.order.pop_front() {
                 self.ids.remove(&oldest);
+                self.cancelled_permissions.remove(&oldest);
             }
         }
         true
@@ -285,6 +322,65 @@ mod tests {
             malformed["request_id"] = id;
             assert!(receipts.should_forward_permission(&malformed).is_err());
         }
+    }
+    #[test]
+    fn cancelled_permission_replay_does_not_reopen_backend_busy_state() {
+        let mut receipts = ControlReceipts::default();
+        let mut activity = super::super::runtime_controls::Activity::default();
+        let request = json!({"type":"control_request","request_id":"cancelled","request":{"subtype":"can_use_tool"}});
+        if receipts.should_forward_permission(&request).unwrap() {
+            activity.observe(&request);
+        }
+        receipts.cancel_permission("cancelled");
+        activity.observe(&json!({"type":"control_cancel_request","request_id":"cancelled"}));
+        assert!(activity.idle());
+        if receipts.should_forward_permission(&request).unwrap() {
+            activity.observe(&request);
+        }
+        assert!(
+            activity.idle(),
+            "cancelled permission replay must stay settled"
+        );
+    }
+    #[test]
+    fn only_pending_permission_can_be_answered_and_other_runtimes_remain_isolated() {
+        let mut first = ControlReceipts::default();
+        let mut second = ControlReceipts::default();
+        let request = json!({"type":"control_request","request_id":"same","request":{"subtype":"can_use_tool"}});
+        assert!(first.claim_permission_reply("unknown").is_err());
+        assert!(first.should_forward_permission(&request).unwrap());
+        assert!(!first.should_forward_permission(&request).unwrap());
+        assert!(second.should_forward_permission(&request).unwrap());
+        first.cancel_permission("same");
+        assert!(first.claim_permission_reply("same").is_err());
+        assert!(second.claim_permission_reply("same").unwrap());
+        assert!(!second.claim_permission_reply("same").unwrap());
+        assert!(!second.should_forward_permission(&request).unwrap());
+    }
+    #[tokio::test]
+    async fn cancellation_while_reply_waits_for_writer_revokes_the_reply() {
+        use tokio::sync::Mutex;
+        let receipts = Arc::new(Mutex::new(ControlReceipts::default()));
+        let request = json!({"type":"control_request","request_id":"waiting","request":{"subtype":"can_use_tool"}});
+        assert!(receipts
+            .lock()
+            .await
+            .should_forward_permission(&request)
+            .unwrap());
+        let writer = Arc::new(Mutex::new(()));
+        let held = writer.lock().await;
+        let pending = tokio::spawn({
+            let receipts = receipts.clone();
+            let writer = writer.clone();
+            async move {
+                let _write_guard = writer.lock().await;
+                receipts.lock().await.claim_permission_reply("waiting")
+            }
+        });
+        tokio::task::yield_now().await;
+        receipts.lock().await.cancel_permission("waiting");
+        drop(held);
+        assert!(pending.await.unwrap().is_err());
     }
     #[test]
     fn extension_response_uses_error_envelope_without_permissions() {

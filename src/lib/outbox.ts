@@ -82,6 +82,33 @@ export async function removeOutbox(id: string): Promise<void> {
   window.dispatchEvent(new Event(CHANGED))
 }
 
+/** A delayed restart scan cannot delete a replacement attempt's recovery copy. */
+export async function removeOutboxAttempt(id: string, attemptId: string | undefined,
+  expected?: Pick<OutboxHeader, "cwd" | "conversationId" | "createdAt" | "inputRevision">): Promise<boolean> {
+  const db = await open()
+  let removed = false
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(["inputs", "metadata"], "readwrite")
+    const meta = tx.objectStore("metadata")
+    const request = meta.get(id)
+    request.onsuccess = () => {
+      if (!request.result || request.result.attemptId !== attemptId) return
+      // Legacy rows have no attempt UUID. Require their captured identity;
+      // absence alone cannot authorize deleting a later legacy replacement.
+      if (!attemptId && !expected) return
+      if (expected && (request.result.cwd !== expected.cwd || request.result.conversationId !== expected.conversationId
+        || request.result.createdAt !== expected.createdAt || request.result.inputRevision !== expected.inputRevision)) return
+      meta.delete(id)
+      tx.objectStore("inputs").delete(id)
+      removed = true
+    }
+    tx.oncomplete = () => resolve()
+    tx.onabort = tx.onerror = () => reject(tx.error)
+  })
+  if (removed) window.dispatchEvent(new Event(CHANGED))
+  return removed
+}
+
 /** Never recreate a recovery record already removed by a CLI acknowledgement. */
 export async function updateOutboxState(id: string, state: DeliveryState, attemptId?: string): Promise<void> {
   const db = await open()

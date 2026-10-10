@@ -26,6 +26,7 @@ export function restoreTranscriptInputOrigins(events: ClaudeEvent[], sidecar: un
   if (!ids.size) return events
   const stored = sidecar as Record<string, unknown>
   return events.map((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return raw
     const event = markAuthoredEvent(raw, [], ids)
     if (event.type !== "user" || event.claudinalAuthored !== true) return event
     const meta = stored[`input:${event.uuid}`] as { rawText?: unknown } | undefined

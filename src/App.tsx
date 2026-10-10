@@ -75,6 +75,8 @@ import { CheckpointRewindDialog } from "@/components/CheckpointRewindDialog"
 import { PromptSuggestionTracker, appendPromptSuggestionToDraft, normalizeContextUsageSummary, parseCompactBoundary,
   type CompactBoundary, type ContextUsageSummary } from "@/lib/agentFeatures"
 import { AgentFeaturesPanel } from "@/components/AgentFeaturesPanel"
+import { TranscriptHistoryPreview, type TranscriptHistoryRequest } from "@/components/TranscriptHistoryPreview"
+import { compactHistoryTarget, resolveTranscriptTarget, type TranscriptNavigationRequest, type TranscriptTarget } from "@/lib/transcriptNavigation"
 import {
   parseStoredReviewDiffs,
   stampReviewResult,
@@ -750,6 +752,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [transcriptNavigation, setTranscriptNavigation] = useState<{ cwd: string; sessionId: string; token: number; request: TranscriptNavigationRequest } | null>(null)
+  const [historyPreview, setHistoryPreview] = useState<TranscriptHistoryRequest | null>(null)
+  useEffect(() => { setTranscriptNavigation(null); setHistoryPreview(null) }, [project?.id, selectedSessionId])
   const [chatReturnTarget, setChatReturnTarget] =
     useState<ChatReturnTarget | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(true)
@@ -872,6 +877,7 @@ export default function App() {
     viewOwnerRef.current = { token: switchTokenRef.current, projectId: project?.id ?? "", key: known?.key ?? crypto.randomUUID() }
   }
   const activeConversationKey = viewOwnerRef.current.key
+  const recoveryViewToken = switchTokenRef.current
   const currentUiIntentRef = useRef({ key: activeConversationKey, composerPrefs, permissionMode: planMode ? "plan" : sessionPermissionMode })
   currentUiIntentRef.current = { key: activeConversationKey, composerPrefs, permissionMode: planMode ? "plan" : sessionPermissionMode }
   const submissionAdapterRef = useRef<SubmissionAdapter<InputContext>>(null!)
@@ -1286,8 +1292,9 @@ export default function App() {
       run.publication?.cancel()
       run.unlisten.forEach((unlisten) => unlisten())
       run.unlisten = []
-      await discardRunReview(run, true, true)
-      run.owner.runtimeId = null
+      // Retire synchronously before review cleanup yields. Queued old event
+      // callbacks and permission frames must no longer find an owned runtime.
+      if (run.owner.runtimeId === runtimeId) run.owner.runtimeId = null
       runningSessionsRef.current.delete(runtimeId)
       pruneClosedConversationOwners()
       networkToastTimestampsRef.current.delete(runtimeId)
@@ -1302,9 +1309,11 @@ export default function App() {
         if (!opts.preserveConversationState) setReviewDiffs([])
         collabMcpEnabledRef.current = false
       }
-      if (opts.stopProcess !== false) {
-        await stopSession(runtimeId).catch((e) => console.error(e))
-      }
+      setRunningTick((tick) => tick + 1)
+      // Start process termination immediately; review cancellation can await
+      // descendants and must not leave the old writer alive in that interval.
+      const stopping = opts.stopProcess !== false ? stopSession(runtimeId).catch((e) => console.error(e)) : Promise.resolve()
+      await Promise.all([discardRunReview(run, true, true), stopping])
       setRunningTick((tick) => tick + 1)
     },
     [applyRunningAction, clearInterruptState, discardRunReview, flushRunningActions, pruneClosedConversationOwners]
@@ -2053,6 +2062,7 @@ export default function App() {
       })
       run.reviewLifecycle = createRunReview(run)
       owner.runtimeId = id
+      owner.profileRevision = apiLaunchProfileKey
       runningSessionsRef.current.set(id, run)
       if (foreground()) {
         collabMcpEnabledRef.current = collabCfg.enabled
@@ -2323,7 +2333,7 @@ export default function App() {
       })
       run.unlisten.push(u3)
       const u4 = await listenSessionLifecycle(id, (event) => {
-        if (!runningSessionsRef.current.has(id)) return
+        if (runningSessionsRef.current.get(id) !== run) return
         coordinatorRef.current.connectionLost(owner.key)
         applyRunningAction(run, { kind: "runtime_exited" })
         if (run.turnActive) {
@@ -3092,7 +3102,9 @@ export default function App() {
         }
         try {
           await closeRunningSession(runningSession.runtimeId, { dropQueued: false })
+          if (token !== switchTokenRef.current) return
         } catch (error) {
+          if (token !== switchTokenRef.current) return
           toast.error(`关闭旧 API 运行会话失败: ${String(error)}`)
           setLoadingSession(false)
           return
@@ -3102,7 +3114,11 @@ export default function App() {
       if (localOwner) {
         viewOwnerRef.current = { token, projectId: p.id, key: localOwner.key }
         stateRef.current = localOwner.state; dispatch({ kind: "replace_state", state: localOwner.state })
-        setReviewDiffs(localOwner.reviewDiffs); setComposerPrefs(localOwner.composerPrefs); setSessionComposer(localOwner.sessionComposer)
+        const canUseOwnerLaunchPrefs = canUseApiProfileLaunchPrefs(localOwner.profileRevision, currentApiLaunchProfileKey())
+        const restoredComposer = canUseOwnerLaunchPrefs ? localOwner.sessionComposer : null
+        const restoredPrefs = canUseOwnerLaunchPrefs ? localOwner.composerPrefs : fallbackComposerPrefsForApiProfile(currentApiProfileKey(), globalDefault)
+        sessionComposerRef.current = restoredComposer
+        setReviewDiffs(localOwner.reviewDiffs); setComposerPrefs(restoredPrefs); setSessionComposer(restoredComposer)
         applyPermissionModeState(localOwner.permissionMode, localOwner.permissionModeSource)
         setLoadingSession(false); return
       }
@@ -3169,6 +3185,23 @@ export default function App() {
       globalDefault
     ]
   )
+
+  const navigateSession = useCallback(async (p: Project, s: SessionMeta, target?: TranscriptTarget) => {
+    setTranscriptNavigation(null)
+    const switching = switchSession(p, s)
+    const token = switchTokenRef.current
+    await switching
+    if (!target || token !== switchTokenRef.current) return
+    try {
+      const [events, sidecar] = await Promise.all([readSessionTranscript(p.cwd, s.id), readSessionSidecar(p.cwd, s.id)])
+      if (token !== switchTokenRef.current) return
+      const resolved = resolveTranscriptTarget(restoreTranscriptInputOrigins(events, sidecar), target)
+      if (!resolved) { toast.warning("搜索命中的原始消息位置已不可用，请在会话中查看"); return }
+      setTranscriptNavigation({ cwd: p.cwd, sessionId: s.id, token, request: { id: crypto.randomUUID(), target: resolved } })
+    } catch (error) {
+      if (token === switchTokenRef.current) toast.error(`读取命中消息位置失败：${String(error)}`)
+    }
+  }, [switchSession])
 
   const onProjectAdded = useCallback(
     async (p: Project) => {
@@ -3805,10 +3838,10 @@ export default function App() {
                       setShowHistory(false)
                       switchProject(p)
                     }}
-                    onSelectSession={(p, s) => {
+                    onSelectSession={(p, s, target) => {
                       setShowPlugins(false)
                       setShowHistory(false)
-                      switchSession(p, s)
+                      void navigateSession(p, s, target)
                     }}
                     onDeleteSession={requestDeleteSession}
                     onAdd={() => setShowAdd(true)}
@@ -3842,9 +3875,9 @@ export default function App() {
                 <HistoryView
                   projects={projects}
                   onBack={returnToChat}
-                  onSelectSession={(p, s) => {
+                  onSelectSession={(p, s, target) => {
                     setShowHistory(false)
-                    void switchSession(p, s)
+                    void navigateSession(p, s, target)
                   }}
                 />
               </Suspense>
@@ -3939,6 +3972,12 @@ export default function App() {
                     pendingSubagentCount={activeRunningSubagentCount}
                     subagents={activeSubagents}
                     onOpenSubagent={(agentId) => openSubagents(agentId)}
+                    navigationRequest={transcriptNavigation?.token === switchTokenRef.current
+                      && transcriptNavigation.cwd === project?.cwd && transcriptNavigation.sessionId === jsonlSessionId ? transcriptNavigation.request : null}
+                    onNavigationSettled={(requestId, found) => {
+                      if (transcriptNavigation?.request.id === requestId && !found) toast.warning("对应消息已不在当前会话记录中")
+                      setTranscriptNavigation((current) => current?.request.id === requestId ? null : current)
+                    }}
                   />
                   </MarkdownCommandsContext.Provider>
                 </Suspense>
@@ -3994,9 +4033,13 @@ export default function App() {
                   compactBoundary={activeRun.compactBoundary} compactSupported={runtimeCommandsKnown && slashCommands.includes("compact")}
                   compacting={activeRun.compacting} busy={streaming || !!activeRun.configurationUpdate || !!activeRun.pendingPermissionRequestIds.size
                     || [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === activeConversationKey && isActiveInput(task))}
-                  onCompact={(raw) => { void send(raw, [], []) }} onOpenHistory={() => { setShowHistory(true) }}
+                  onCompact={(raw) => { void send(raw, [], []) }} onOpenHistory={(boundary) => {
+                    if (boundary.sessionId !== jsonlSessionId || !project) return
+                    setHistoryPreview({ id: crypto.randomUUID(), cwd: project.cwd, sessionId: boundary.sessionId, target: compactHistoryTarget(boundary) })
+                  }}
                 />}
-                <InputRecovery centered={empty} cwd={project?.cwd} liveMessageIds={[...coordinatorRef.current.tasks.keys()]} activeRuntimeIds={[...runningSessionsRef.current.keys()]} onRestore={(input) => {
+                <InputRecovery centered={empty} cwd={project?.cwd} liveMessageIds={[...coordinatorRef.current.tasks.keys()]} activeRuntimeIds={[...runningSessionsRef.current.keys()]}
+                  canRestore={() => recoveryViewToken === switchTokenRef.current && activeConversationKey === viewOwnerRef.current.key} onRestore={(input) => {
                   const current = activeComposerDraft
                   setDraft([current?.text, input.text].filter(Boolean).join("\n\n"))
                   setDraftImages([...(current?.images ?? []), ...input.images])
@@ -4215,9 +4258,16 @@ export default function App() {
               sessionId={jsonlSessionId}
               selectedAgentId={selectedSubagentId}
               onSelectedAgentChange={setSelectedSubagentId}
+              onNavigateToMainTool={(toolUseId) => {
+                if (!project || !jsonlSessionId) return
+                setShowSubagents(false)
+                setTranscriptNavigation({ cwd: project.cwd, sessionId: jsonlSessionId, token: switchTokenRef.current,
+                  request: { id: crypto.randomUUID(), target: { toolUseId } } })
+              }}
             />
           </Suspense>
         )}
+        {historyPreview && <TranscriptHistoryPreview key={historyPreview.id} request={historyPreview} onClose={() => setHistoryPreview(null)} />}
         {pendingClaudeWorkspaceTrust && (
           <Suspense fallback={null}>
             <ClaudeWorkspaceTrustDialog

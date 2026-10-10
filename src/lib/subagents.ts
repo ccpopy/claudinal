@@ -411,7 +411,7 @@ function lifecycleTransition(current: SubagentRegistry, event: ClaudeEvent, ts: 
   const obj = event as Record<string, unknown>
   const id = stringValue(obj.task_id)
   if (!id) return null
-  const toolUseId = stringValue(obj.tool_use_id)
+  const toolUseId = stringValue(obj.tool_use_id) ?? stringValue(obj.parent_tool_use_id)
   const previous = current.agents.find((agent) => matchesTask(agent, id))
     ?? current.agents.find((agent) => !!toolUseId && agent.toolUseId === toolUseId)
   // Shell/MCP/workflow task events share the public schema but are not Agents.

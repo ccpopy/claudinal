@@ -17,6 +17,8 @@ import { ChatTimelineNav, type ChatTimelineItem } from "./ChatTimelineNav"
 import { MessageCard } from "./MessageCard"
 import { RunGroup, type RunStep } from "./RunGroup"
 import { RunReviewCard } from "./RunReviewCard"
+import { FoldReveal } from "@/lib/foldState"
+import { entryMatchesTarget, type TranscriptNavigationRequest, type TranscriptTarget } from "@/lib/transcriptNavigation"
 
 interface Props {
   submissionActions?: SubmissionActions
@@ -37,6 +39,8 @@ interface Props {
   onOpenSubagent?: (agentId: string) => void
   /** 当前会话可用的 slash 命令，用于把用户消息开头的命令渲染成 chip */
   slashCommands?: readonly string[]
+  navigationRequest?: TranscriptNavigationRequest | null
+  onNavigationSettled?: (requestId: string, found: boolean) => void
 }
 
 interface MsgGroup {
@@ -134,13 +138,12 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
 
   const appendStep = (run: RunPlaceholder, step: RunStep) => {
     const text = step.block.type === "text" ? step.block.text?.trim() : null
-    if (
-      text &&
-      run.steps.some(
+    const duplicate = text ? run.steps.find(
         (existing) =>
           existing.block.type === "text" && existing.block.text?.trim() === text
-      )
-    ) {
+      ) : undefined
+    if (duplicate) {
+      if (step.messageId) duplicate.sourceMessageIds = [...(duplicate.sourceMessageIds ?? []), step.messageId]
       return
     }
     run.steps.push(step)
@@ -153,7 +156,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
         ? { type: "skill_load", skill: e, toolUseId: e.toolUseId }
         : { type: "activity", activity: e }
       if (state.current) {
-        appendStep(state.current, { key: `${e.kind}-${e.id}`, block })
+        appendStep(state.current, { key: `${e.kind}-${e.id}`, block, messageId: e.id, messageUuid: e.kind === "activity" ? e.eventId : undefined })
         stamp(e.ts)
       } else {
         // Notifications between turns are completed records, not a new run.
@@ -174,7 +177,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
           for (let k = 0; k < toolResults.length; k++) {
             appendStep(run, {
               key: `${m.id}-tr-${k}`,
-              block: toolResults[k]
+              block: toolResults[k], messageId: m.id, messageUuid: m.transcriptUuid
             })
           }
           stamp(m.ts)
@@ -221,7 +224,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
           for (let k = 0; k < stepBlocks.length; k++) {
             appendStep(run, {
               key: `${m.id}-st-${k}`,
-              block: stepBlocks[k]
+              block: stepBlocks[k], messageId: m.id, messageUuid: m.transcriptUuid
             })
           }
         }
@@ -283,6 +286,26 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
   return groups
 }
 
+export function resolveGroupNavigation(groups: Group[], target: TranscriptTarget): { groupKey: string; stepKey?: string } | null {
+  const candidates: Array<{ groupKey: string; stepKey?: string; text: string }> = []
+  const searchText = (block: UIBlock) => block.type === "tool_use" ? `[tool] ${block.toolName ?? ""}` : block.text ?? ""
+  for (const group of groups) {
+    if (group.kind === "msg" && entryMatchesTarget(group.msg, target)) candidates.push({ groupKey: group.key, text: group.msg.blocks.map(searchText).join("\n") })
+    if (group.kind === "entry" && entryMatchesTarget(group.entry, target)) candidates.push({ groupKey: group.key, text: group.entry.kind === "activity" ? group.entry.blocks.map(searchText).join("\n") : "" })
+    if (group.kind !== "run") continue
+    const matches = group.steps.filter((step) => target.toolUseId
+      ? step.block.type === "tool_use" && step.block.toolUseId === target.toolUseId
+      : (target.messageId !== undefined && (step.messageId === target.messageId || step.sourceMessageIds?.includes(target.messageId)))
+        || (target.messageUuid !== undefined && step.messageUuid === target.messageUuid))
+    for (const step of matches) candidates.push({ groupKey: group.key, stepKey: step.key, text: searchText(step.block) })
+  }
+  const terms = [...(target.snippet ?? "").matchAll(/<<<([\s\S]*?)>>>/g)].map((match) => match[1].toLocaleLowerCase())
+  // A single assistant record can split into folded thinking and a final reply.
+  // Search evidence chooses across every visual candidate for that identity.
+  const selected = candidates.find((candidate) => terms.length > 0 && terms.every((term) => candidate.text.toLocaleLowerCase().includes(term))) ?? candidates[0]
+  return selected ? { groupKey: selected.groupKey, ...(selected.stepKey ? { stepKey: selected.stepKey } : {}) } : null
+}
+
 export function MessageStream({
   submissionActions,
   onOpenPermissions,
@@ -298,7 +321,9 @@ export function MessageStream({
   pendingSubagentCount = 0,
   subagents = [],
   onOpenSubagent,
-  slashCommands
+  slashCommands,
+  navigationRequest,
+  onNavigationSettled
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -330,6 +355,10 @@ export function MessageStream({
   }, [])
 
   const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
+  const navigation = useMemo(() => navigationRequest ? resolveGroupNavigation(groups, navigationRequest.target) : null, [groups, navigationRequest])
+  const navigationSettledRef = useRef<string | null>(null)
+  const onNavigationSettledRef = useRef(onNavigationSettled)
+  onNavigationSettledRef.current = onNavigationSettled
 
   // 审查 diff 归位：旧版按顺位 reviews[n] 配第 n 个 result，resume CLI 跑过的
   // 会话时（result 数 > review 数）会把 review 错挂到最早的 result 上；改为
@@ -363,7 +392,7 @@ export function MessageStream({
   )
 
   useEffect(() => {
-    const validIds = new Set(timelineItems.map((item) => item.id))
+    const validIds = new Set(groups.map((group) => group.key))
     for (const id of timelineTargetRefs.current.keys()) {
       if (!validIds.has(id)) timelineTargetRefs.current.delete(id)
     }
@@ -375,7 +404,7 @@ export function MessageStream({
       activeTimelineIdRef.current = next
       setActiveTimelineId(next)
     }
-  }, [timelineItems])
+  }, [timelineItems, groups])
 
   const getTimelineTargetRef = useCallback(
     (id: string) => {
@@ -502,20 +531,53 @@ export function MessageStream({
     scrollToBottom()
   }, [entries, streaming, autoScroll, pinnedToBottom])
 
-  const scrollToTimelineItem = useCallback((id: string) => {
+  const scrollToTarget = useCallback((id: string, target: HTMLElement, behavior: ScrollBehavior) => {
     const el = ref.current
     const viewport = el?.querySelector(
       "[data-slot='scroll-area-viewport']"
     ) as HTMLElement | null
-    const target = timelineTargetRefs.current.get(id)
     if (!viewport || !target) return
+    pinnedToBottomRef.current = false
+    setPinnedToBottom(false)
     viewport.scrollTo({
       top: Math.max(target.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop - 24, 0),
-      behavior: "smooth"
+      behavior
     })
     activeTimelineIdRef.current = id
     setActiveTimelineId(id)
+    target.focus({ preventScroll: true })
   }, [])
+
+  const scrollToTimelineItem = useCallback((id: string) => {
+    const target = timelineTargetRefs.current.get(id)
+    if (target) scrollToTarget(id, target, "smooth")
+  }, [scrollToTarget])
+
+  useLayoutEffect(() => {
+    if (!navigationRequest || navigationSettledRef.current === navigationRequest.id) return
+    pinnedToBottomRef.current = false
+    setPinnedToBottom(false)
+    // Parent run and its nested folds mount during this commit. Wait until both
+    // are laid out before measuring; cleanup invalidates old session requests.
+    let secondFrame: number | null = null
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const group = navigation ? timelineTargetRefs.current.get(navigation.groupKey) : null
+        const step = navigation?.stepKey && group
+          ? [...group.querySelectorAll<HTMLElement>("[data-navigation-step]")].find((node) => node.dataset.navigationStep === navigation.stepKey) : null
+        const target = navigation?.stepKey ? step : group
+        if (target && navigation) {
+          geometryDirtyRef.current = true
+          updateTimelineStateRef.current()
+          scrollToTarget(navigation.groupKey, target, "instant")
+          scheduleTimelineUpdate()
+        }
+        navigationSettledRef.current = navigationRequest.id
+        onNavigationSettledRef.current?.(navigationRequest.id, !!target)
+      })
+    })
+    return () => { cancelAnimationFrame(firstFrame); if (secondFrame !== null) cancelAnimationFrame(secondFrame) }
+  }, [navigationRequest, navigation?.groupKey, navigation?.stepKey, scrollToTarget, scheduleTimelineUpdate])
 
   if (entries.length === 0) {
     return (
@@ -545,8 +607,10 @@ export function MessageStream({
                 key={g.key}
                 ref={getTimelineTargetRef(g.key)}
                 data-timeline-target={g.key}
-                className="scroll-mt-6"
+                tabIndex={-1}
+                className="scroll-mt-6 rounded-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
               >
+                <FoldReveal requestId={navigation?.groupKey === g.key ? navigationRequest?.id : undefined}>
                 <MemoMessageCard
                   submissionActions={submissionActions}
                   entry={g.msg}
@@ -557,13 +621,14 @@ export function MessageStream({
                   onOpenPermissions={onOpenPermissions}
                   onRewindMessage={onRewindMessage}
                 />
+                </FoldReveal>
               </div>
             )
           }
           if (g.kind === "run") {
             return (
+              <div key={g.key} ref={getTimelineTargetRef(g.key)} data-navigation-group={g.key}>
               <RunGroup
-                key={g.key}
                 steps={g.steps}
                 running={g.running}
                 cwd={cwd}
@@ -573,7 +638,10 @@ export function MessageStream({
                 pendingSubagentCount={g.running ? pendingSubagentCount : 0}
                 subagents={subagents}
                 onOpenSubagent={onOpenSubagent}
+                navigation={navigation?.groupKey === g.key && navigation.stepKey && navigationRequest
+                  ? { requestId: navigationRequest.id, stepKey: navigation.stepKey } : undefined}
               />
+              </div>
             )
           }
           if (g.entry.kind === "result") {
@@ -601,6 +669,8 @@ export function MessageStream({
             )
           }
           return (
+            <div key={g.key} ref={getTimelineTargetRef(g.key)} tabIndex={-1} className="rounded-sm focus:outline-none focus:ring-2 focus:ring-primary/40">
+            <FoldReveal requestId={navigation?.groupKey === g.key ? navigationRequest?.id : undefined}>
             <MemoMessageCard
                   submissionActions={submissionActions}
               key={g.key}
@@ -612,6 +682,8 @@ export function MessageStream({
                   onOpenPermissions={onOpenPermissions}
               onRewindMessage={onRewindMessage}
             />
+            </FoldReveal>
+            </div>
           )
         })}
       </div>

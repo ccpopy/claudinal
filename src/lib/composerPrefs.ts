@@ -439,6 +439,7 @@ export function pickComposerFromTranscript(
   let hasValue = false
 
   for (const ev of events) {
+    if (ev === null || typeof ev !== "object" || Array.isArray(ev)) continue
     const t = (ev as { type?: string }).type
     if (t === "system") {
       const subtype = (ev as { subtype?: string }).subtype

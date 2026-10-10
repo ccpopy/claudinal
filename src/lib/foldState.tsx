@@ -15,6 +15,12 @@ export function createFoldStateStore(): FoldStateStore {
 
 interface FoldScope { store: FoldStateStore; path: string[] }
 const FoldContext = createContext<FoldScope | null>(null)
+const FoldRevealContext = createContext<string | null>(null)
+
+/** A one-shot navigation request expands only the targeted subtree. */
+export function FoldReveal({ requestId, children }: { requestId?: string; children: ReactNode }) {
+  return <FoldRevealContext.Provider value={requestId ?? null}>{children}</FoldRevealContext.Provider>
+}
 
 export function FoldStateScope({ store, scope, children }: {
   store?: FoldStateStore
@@ -31,8 +37,10 @@ export function FoldStateScope({ store, scope, children }: {
 
 export function useFoldOpen(name: string, initiallyOpen = false) {
   const scope = useContext(FoldContext)
+  const reveal = useContext(FoldRevealContext)
+  const revealedRef = useRef<string | null>(null)
   const key = JSON.stringify([...(scope?.path ?? []), name])
-  const [open, setOpen] = useState(() => scope?.store.expanded.get(key) ?? initiallyOpen)
+  const [open, setOpen] = useState(() => reveal !== null || (scope?.store.expanded.get(key) ?? initiallyOpen))
   const update = useCallback((value: SetStateAction<boolean>) => {
     setOpen((previous) => {
       const next = typeof value === "function" ? value(previous) : value
@@ -40,6 +48,9 @@ export function useFoldOpen(name: string, initiallyOpen = false) {
       return next
     })
   }, [scope, key])
+  useLayoutEffect(() => {
+    if (reveal !== null && revealedRef.current !== reveal) { revealedRef.current = reveal; update(true) }
+  }, [reveal, update])
   return [open, update] as const
 }
 

@@ -463,12 +463,8 @@ impl Manager {
                             }
                             match serde_json::from_str::<Value>(trimmed) {
                                 Ok(value) => {
-                                    match session
-                                        .control_responses
-                                        .lock()
-                                        .await
-                                        .should_forward_permission(&value)
-                                    {
+                                    let mut controls = session.control_responses.lock().await;
+                                    match controls.should_forward_permission(&value) {
                                         Ok(false) => continue,
                                         Ok(true) => {}
                                         Err(_) => {
@@ -481,6 +477,15 @@ impl Manager {
                                             let _ = app.emit(&topic, json!({"type":"stderr","line":"CLI 权限请求缺少有效 request_id，会话已停止。"}));
                                             session.close("malformed_permission_request");
                                             break;
+                                        }
+                                    }
+                                    if value.get("type").and_then(Value::as_str)
+                                        == Some("control_cancel_request")
+                                    {
+                                        if let Some(id) =
+                                            value.get("request_id").and_then(Value::as_str)
+                                        {
+                                            controls.cancel_permission(id);
                                         }
                                     }
                                     let permission_cancel =
@@ -499,6 +504,7 @@ impl Manager {
                                         } else {
                                             false
                                         };
+                                    drop(controls);
                                     if session.replies.consume(&value) && !permission_cancel {
                                         continue;
                                     }
@@ -820,7 +826,10 @@ impl Manager {
         request_id: &str,
         response: Value,
     ) -> Result<()> {
-        if request_id.is_empty() || request_id.len() > 256 {
+        if request_id.is_empty()
+            || request_id.len() > 256
+            || request_id.chars().any(char::is_control)
+        {
             return Err(Error::Other("控制请求 ID 无效".into()));
         }
         let session = self
@@ -828,9 +837,6 @@ impl Manager {
             .get(session_id)
             .map(|entry| entry.clone())
             .ok_or_else(|| Error::Other("会话进程已结束".into()))?;
-        if !session.control_responses.lock().await.insert(request_id) {
-            return Ok(());
-        }
         let payload = json!({
             "type": "control_response",
             "response": {
@@ -845,9 +851,9 @@ impl Manager {
                 activity.permissions.remove(request_id);
             }
         }
-        if result.is_err() {
-            session.close("control_reply_failed");
-        }
+        // The writer closes the runtime on an uncertain/failed frame. A
+        // cancelled or unknown permission is rejected before writing and must
+        // not terminate an otherwise healthy process.
         result
     }
 
@@ -1172,6 +1178,16 @@ impl Manager {
         let authored_input = payloads
             .iter()
             .any(|payload| payload.get("type").and_then(Value::as_str) == Some("user"));
+        let permission_reply_id = payloads.iter().find_map(|payload| {
+            (payload.get("type").and_then(Value::as_str) == Some("control_response"))
+                .then(|| {
+                    payload
+                        .pointer("/response/request_id")
+                        .and_then(Value::as_str)
+                })
+                .flatten()
+                .map(str::to_string)
+        });
         let input_ids: Vec<String> = payloads
             .iter()
             .filter(|payload| payload.get("type").and_then(Value::as_str) == Some("user"))
@@ -1237,6 +1253,19 @@ impl Manager {
                 "会话连接已结束，输入尚未发送".into(),
                 None,
             ));
+        }
+        // Hold the same receipt gate used by inbound cancellation until the
+        // frame is written. Never authorize a cancelled/unknown request, even
+        // if a GUI callback was already queued before stdin became available.
+        let mut permission_guard = if permission_reply_id.is_some() {
+            Some(session.control_responses.lock().await)
+        } else {
+            None
+        };
+        if let (Some(receipts), Some(id)) = (&mut permission_guard, &permission_reply_id) {
+            if !receipts.claim_permission_reply(id).map_err(Error::Other)? {
+                return Ok(());
+            }
         }
         self.diagnostics
             .record(session_id, "write_started", Some(body.len()), None);

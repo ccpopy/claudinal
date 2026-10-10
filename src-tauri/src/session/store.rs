@@ -20,7 +20,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::app_paths::claudinal_dir;
 use crate::error::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub fn db_path() -> Result<PathBuf> {
     Ok(claudinal_dir()?.join("session-index-v1.sqlite3"))
@@ -89,17 +89,9 @@ fn is_rebuildable_database_error(error: &rusqlite::Error) -> bool {
 }
 
 fn try_open_and_migrate(path: &std::path::Path) -> Result<Connection> {
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
-
-    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > SCHEMA_VERSION {
-        return Err(Error::Other(format!(
-            "SCHEMA_DOWNGRADE current={version} max_supported={SCHEMA_VERSION}"
-        )));
-    }
-
-    create_or_migrate_schema(&conn, version)?;
+    create_or_migrate_schema(&mut conn)?;
     Ok(conn)
 }
 
@@ -119,9 +111,9 @@ fn backup_and_recreate(path: &std::path::Path) -> Result<Connection> {
             let _ = std::fs::rename(&from, &to);
         }
     }
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
-    create_or_migrate_schema(&conn, 0)?;
+    create_or_migrate_schema(&mut conn)?;
     Ok(conn)
 }
 
@@ -148,7 +140,17 @@ pub fn begin_write(conn: &mut Connection) -> Result<Transaction<'_>> {
     Ok(conn.transaction_with_behavior(TransactionBehavior::Immediate)?)
 }
 
-fn create_or_migrate_schema(conn: &Connection, from_version: i64) -> Result<()> {
+fn create_or_migrate_schema(conn: &mut Connection) -> Result<()> {
+    // Read the schema version only after reserving the writer. Another process
+    // may finish the same upgrade while this connection waits for the lock.
+    let tx = begin_write(conn)?;
+    let conn = &tx;
+    let from_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if from_version > SCHEMA_VERSION {
+        return Err(Error::Other(format!(
+            "SCHEMA_DOWNGRADE current={from_version} max_supported={SCHEMA_VERSION}"
+        )));
+    }
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS session_index (
@@ -218,17 +220,44 @@ fn create_or_migrate_schema(conn: &Connection, from_version: i64) -> Result<()> 
           last_size INTEGER NOT NULL,
           last_mtime_millis INTEGER NOT NULL,
           byte_offset INTEGER NOT NULL DEFAULT 0,
+          record_count INTEGER NOT NULL DEFAULT 0,
           last_scanned_at INTEGER NOT NULL DEFAULT 0
         );
 
         DROP TABLE IF EXISTS jsonl_scan_progress;
 
+        "#,
+    )?;
+
+    ensure_column(
+        conn,
+        "fts_progress",
+        "record_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+
+    if from_version < 6 {
+        // FTS virtual tables cannot gain locator columns through ALTER TABLE.
+        // Rebuild this derived cache once, including unchanged transcripts.
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS session_text;
+            DELETE FROM fts_progress;
+            "#,
+        )?;
+    }
+
+    conn.execute_batch(
+        r#"
         CREATE VIRTUAL TABLE IF NOT EXISTS session_text USING fts5(
           session_id UNINDEXED,
           cwd UNINDEXED,
           role UNINDEXED,
           ts UNINDEXED,
           body,
+          message_uuid UNINDEXED,
+          transcript_index UNINDEXED,
+          file_path UNINDEXED,
           tokenize = 'unicode61 remove_diacritics 2'
         );
         "#,
@@ -249,7 +278,15 @@ fn create_or_migrate_schema(conn: &Connection, from_version: i64) -> Result<()> 
     if from_version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
+    tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn test_connection() -> Result<Connection> {
+    let mut conn = Connection::open_in_memory()?;
+    create_or_migrate_schema(&mut conn)?;
+    Ok(conn)
 }
 
 fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
@@ -452,8 +489,8 @@ mod tests {
 
     #[test]
     fn v4_migration_invalidates_visibility_dependent_caches() -> Result<()> {
-        let conn = Connection::open_in_memory()?;
-        create_or_migrate_schema(&conn, 0)?;
+        let mut conn = Connection::open_in_memory()?;
+        create_or_migrate_schema(&mut conn)?;
         conn.execute(
             r#"
             INSERT INTO session_index
@@ -481,12 +518,13 @@ mod tests {
 
         conn.execute("INSERT INTO session_usage (session_id, sidecar_path, sidecar_mtime_millis, sidecar_size, cost_usd) VALUES ('session', 'sidecar', 1, 1, 2.5)", [])?;
         // Opening a current database must keep its caches intact.
-        create_or_migrate_schema(&conn, SCHEMA_VERSION)?;
+        create_or_migrate_schema(&mut conn)?;
         let cached: i64 =
             conn.query_row("SELECT COUNT(*) FROM session_text", [], |row| row.get(0))?;
         assert_eq!(cached, 1);
 
-        create_or_migrate_schema(&conn, 4)?;
+        conn.pragma_update(None, "user_version", 4)?;
+        create_or_migrate_schema(&mut conn)?;
 
         for table in ["session_index", "fts_progress", "session_text"] {
             let rows: i64 =
@@ -503,6 +541,133 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(cost, 2.5);
+        Ok(())
+    }
+
+    #[test]
+    fn v5_migration_rebuilds_search_locators_without_erasing_other_caches() -> Result<()> {
+        let mut conn = test_connection()?;
+        conn.execute_batch(
+            r#"
+            DROP TABLE session_text;
+            CREATE VIRTUAL TABLE session_text USING fts5(
+              session_id UNINDEXED, cwd UNINDEXED, role UNINDEXED,
+              ts UNINDEXED, body, tokenize = 'unicode61 remove_diacritics 2'
+            );
+            DROP TABLE fts_progress;
+            CREATE TABLE fts_progress (
+              file_path TEXT PRIMARY KEY, last_size INTEGER NOT NULL,
+              last_mtime_millis INTEGER NOT NULL, byte_offset INTEGER NOT NULL DEFAULT 0,
+              last_scanned_at INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO session_text (session_id, cwd, role, body)
+            VALUES ('session', 'cwd', 'user', 'cached body without locator');
+            INSERT INTO fts_progress (file_path, last_size, last_mtime_millis, byte_offset)
+            VALUES ('session.jsonl', 200, 1, 200);
+            INSERT INTO session_index
+              (cwd, session_id, file_path, modified_ts, modified_millis, size_bytes, msg_count)
+            VALUES ('cwd', 'session', 'session.jsonl', 1, 1, 200, 1);
+            INSERT INTO session_usage
+              (session_id, sidecar_path, sidecar_mtime_millis, sidecar_size, cost_usd)
+            VALUES ('session', 'sidecar', 1, 1, 2.5);
+            PRAGMA user_version = 5;
+            "#,
+        )?;
+        create_or_migrate_schema(&mut conn)?;
+        for table in ["fts_progress", "session_text"] {
+            let count: i64 =
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(count, 0, "old locator-less {table} must rebuild");
+        }
+        let metadata_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM session_index", [], |row| row.get(0))?;
+        assert_eq!(metadata_count, 1);
+        let cost: f64 = conn.query_row(
+            "SELECT cost_usd FROM session_usage WHERE session_id = 'session'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(cost, 2.5);
+        conn.execute(
+            "INSERT INTO session_text (session_id, cwd, role, body, message_uuid, transcript_index, file_path) VALUES ('session', 'cwd', 'user', 'rebuiltneedle', 'uuid', 7, 'session.jsonl')",
+            [],
+        )?;
+        conn.execute("INSERT INTO fts_progress (file_path, last_size, last_mtime_millis, record_count) VALUES ('session.jsonl', 200, 1, 8)", [])?;
+        create_or_migrate_schema(&mut conn)?;
+        let locator: (String, i64) = conn.query_row(
+            "SELECT message_uuid, transcript_index FROM session_text WHERE session_text MATCH 'rebuiltneedle'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(locator, ("uuid".into(), 7));
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(version, SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_schema_upgrade_rechecks_version_after_writer_reservation() -> Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "claudinal-search-migration-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let mut first = try_open_and_migrate(&path)?;
+        // The second connection still sees v5 until the first upgrade commits.
+        first.pragma_update(None, "user_version", 5)?;
+        let first_tx = begin_write(&mut first)?;
+        first_tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        first_tx.execute(
+            "INSERT INTO session_text (session_id, cwd, role, body, message_uuid, transcript_index, file_path) VALUES ('session', 'cwd', 'user', 'freshneedle', 'fresh-uuid', 9, 'session.jsonl')",
+            [],
+        )?;
+
+        let second_path = path.clone();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            let mut conn = Connection::open(second_path).expect("open second schema connection");
+            apply_pragmas(&conn).expect("configure second schema connection");
+            let old_version: i64 = conn
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .expect("read old committed version");
+            assert_eq!(old_version, 5);
+            ready_tx.send(()).expect("signal old version observed");
+            create_or_migrate_schema(&mut conn).expect("wait and recheck schema version");
+            let uuid: String = conn
+                .query_row(
+                    "SELECT message_uuid FROM session_text WHERE session_text MATCH 'freshneedle'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("concurrent upgrade must preserve freshly rebuilt rows");
+            finished_tx.send(uuid).expect("signal migration completed");
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second schema connection ready");
+        assert!(matches!(
+            finished_rx.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        first_tx.commit()?;
+        assert_eq!(
+            finished_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("second upgrade completed"),
+            "fresh-uuid"
+        );
+        second.join().expect("second schema thread");
+        drop(first);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(path.with_file_name(format!(
+                "{}{}",
+                path.file_name().unwrap().to_string_lossy(),
+                suffix
+            )));
+        }
         Ok(())
     }
 }

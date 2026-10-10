@@ -60,7 +60,6 @@ impl WatcherState {
 
 fn watch_dir(app: AppHandle, cwd: String, dir: std::path::PathBuf) -> Result<RecommendedWatcher> {
     let cwd_for_event = cwd.clone();
-    let topic = format!("claudinal://sessions/{}/changed", cwd);
     let last = Mutex::new(Instant::now() - Duration::from_secs(10));
 
     let mut watcher: RecommendedWatcher =
@@ -84,7 +83,8 @@ fn watch_dir(app: AppHandle, cwd: String, dir: std::path::PathBuf) -> Result<Rec
                 *last_lock = now;
                 drop(last_lock);
 
-                if let Err(e) = app.emit(&topic, &cwd_for_event) {
+                // Paths may contain characters that Tauri forbids in event names.
+                if let Err(e) = app.emit("sessions-changed", &cwd_for_event) {
                     error!("watcher emit failed: {e}");
                 }
             }

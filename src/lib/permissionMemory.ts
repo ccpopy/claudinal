@@ -26,8 +26,18 @@ interface Store {
   rules: PermissionMemoryRule[]
 }
 
+function isWindowsCwd(cwd: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(cwd) || /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(cwd)
+}
+
 function normalizeCwd(cwd: string | undefined): string {
-  return (cwd ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+  const raw = cwd ?? ""
+  const windows = isWindowsCwd(raw)
+  const normalized = windows ? raw.replace(/\\/g, "/") : raw
+  const trimmed = normalized.replace(/\/+$/, "")
+  const scoped = !trimmed && normalized.startsWith("/") ? "/"
+    : windows && /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}/` : trimmed
+  return windows ? scoped.toLowerCase() : scoped
 }
 
 function requestCommand(request: PermissionRequestPayload | null): string | null {
@@ -44,12 +54,15 @@ function loadStore(): Store {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return { rules: [] }
-    const parsed = JSON.parse(raw) as Partial<Store>
+    const parsed = JSON.parse(raw) as Partial<Store> & { pathNormalization?: number }
     return {
       rules: Array.isArray(parsed.rules)
         ? parsed.rules.flatMap((rule) => {
             const normalized = normalizePermissionMemoryRule(rule)
-            return normalized ? [normalized] : []
+            // Older POSIX rules discarded the original path case. Their owning
+            // project can no longer be proved, so require an explicit new grant.
+            return normalized && (parsed.pathNormalization === 2 || isWindowsCwd(normalized.cwd))
+              ? [normalized] : []
           })
         : []
     }
@@ -60,7 +73,7 @@ function loadStore(): Store {
 }
 
 function saveStore(store: Store) {
-  localStorage.setItem(KEY, JSON.stringify(store))
+  localStorage.setItem(KEY, JSON.stringify({ ...store, pathNormalization: 2 }))
 }
 
 function normalizePermissionMemoryRule(

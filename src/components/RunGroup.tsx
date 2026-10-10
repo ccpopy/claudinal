@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, Loader2 } from "lucide-react"
 import type { SubagentTask } from "@/lib/subagents"
 import { cn, formatRunDuration } from "@/lib/utils"
 import type { UIBlock } from "@/types/ui"
-import { createFoldStateStore, FoldBody, FoldStateScope } from "@/lib/foldState"
+import { createFoldStateStore, FoldBody, FoldReveal, FoldStateScope } from "@/lib/foldState"
 import { BlockView } from "./MessageBlocks"
 
 export interface RunStep {
   key: string
   block: UIBlock
+  messageId?: string
+  messageUuid?: string
+  sourceMessageIds?: string[]
 }
 
 interface Props {
@@ -21,6 +24,7 @@ interface Props {
   pendingSubagentCount?: number
   subagents?: SubagentTask[]
   onOpenSubagent?: (agentId: string) => void
+  navigation?: { requestId: string; stepKey: string }
 }
 
 function computeRunMs(
@@ -43,9 +47,10 @@ export function RunGroup({
   endTs,
   pendingSubagentCount = 0,
   subagents = [],
-  onOpenSubagent
+  onOpenSubagent,
+  navigation
 }: Props) {
-  const [open, setOpen] = useState<boolean>(running)
+  const [open, setOpen] = useState<boolean>(running || !!navigation)
   const [foldState] = useState(createFoldStateStore)
   const wasRunning = useRef<boolean>(running)
   const [, setTick] = useState(0)
@@ -55,6 +60,7 @@ export function RunGroup({
     if (!wasRunning.current && running) setOpen(true)
     wasRunning.current = running
   }, [running])
+  useLayoutEffect(() => { if (navigation) setOpen(true) }, [navigation?.requestId])
 
   useEffect(() => {
     if (!running) return
@@ -119,6 +125,8 @@ export function RunGroup({
                   : undefined
                 return (
                   <FoldStateScope key={s.key} store={foldState} scope={s.key}>
+                  <div data-navigation-step={s.key} tabIndex={-1} className="rounded-sm focus:outline-none focus:ring-2 focus:ring-primary/40">
+                  <FoldReveal requestId={navigation?.stepKey === s.key ? navigation.requestId : undefined}>
                   <BlockView
                     role="assistant"
                     block={s.block}
@@ -127,6 +135,8 @@ export function RunGroup({
                     subagent={subagent}
                     onOpenSubagent={onOpenSubagent}
                   />
+                  </FoldReveal>
+                  </div>
                   </FoldStateScope>
                 )
               })}

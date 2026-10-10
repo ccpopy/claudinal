@@ -116,6 +116,7 @@ export function reduce(state: State, action: Action): State {
   if (action.kind === "load_transcript") {
     let s: State = init()
     for (const ev of action.events) {
+      if (ev === null || typeof ev !== "object" || Array.isArray(ev)) continue
       const t = (ev as { type?: string }).type
       // queue-operation 本身不进入消息流，但其中的 task-notification
       // 是异步 Agent 生命周期的权威完成信号，必须先归一后再隐藏。

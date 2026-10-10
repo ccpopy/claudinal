@@ -32,6 +32,7 @@ import {
 } from "@/lib/sessionTime"
 import { isArchived } from "@/lib/archivedSessions"
 import { cn } from "@/lib/utils"
+import { searchHitTarget, searchHitKey, type TranscriptTarget } from "@/lib/transcriptNavigation"
 
 interface IndexedSession {
   project: Project
@@ -43,6 +44,7 @@ interface IndexedSession {
 }
 
 interface BodyHit {
+  target: TranscriptTarget
   project: Project
   session: SessionMeta
   title: string
@@ -66,7 +68,7 @@ const SORT_OPTIONS: Array<{ value: SortMode; label: string }> = [
 interface Props {
   projects: Project[]
   onBack: () => void
-  onSelectSession: (project: Project, session: SessionMeta) => void
+  onSelectSession: (project: Project, session: SessionMeta, target?: TranscriptTarget) => void
 }
 
 function basename(p: string): string {
@@ -104,6 +106,7 @@ function mapBodyHits(
       first_user_text: hit.firstUserText ?? null
     }
     out.push({
+      target: searchHitTarget(hit),
       project,
       session,
       title: sessionDisplayTitle(session),
@@ -272,19 +275,18 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
 
   const dedupedBodyHits = useMemo(() => {
     if (bodyHits.length === 0) return [] as BodyHit[]
-    const titleIds = new Set(filteredSessions.map((m) => m.session.id))
     const seen = new Set<string>()
     const out: BodyHit[] = []
     for (const hit of bodyHits) {
       if (projectFilter && hit.project.id !== projectFilter) continue
-      if (titleIds.has(hit.session.id)) continue
-      if (seen.has(hit.session.id)) continue
+      const key = searchHitKey(hit)
+      if (seen.has(key)) continue
       if (!includeArchived && hit.archived) continue
-      seen.add(hit.session.id)
+      seen.add(key)
       out.push(hit)
     }
     return out.slice(0, 30)
-  }, [bodyHits, filteredSessions, projectFilter, includeArchived])
+  }, [bodyHits, projectFilter, includeArchived])
 
   const totalIndexed = index.length
   const totalArchived = useMemo(
@@ -292,8 +294,8 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
     [index]
   )
 
-  const handleSelect = (entry: { project: Project; session: SessionMeta }) => {
-    onSelectSession(entry.project, entry.session)
+  const handleSelect = (entry: { project: Project; session: SessionMeta }, target?: TranscriptTarget) => {
+    onSelectSession(entry.project, entry.session, target)
   }
 
   return (
@@ -453,10 +455,10 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
                   <div className="overflow-hidden rounded-lg border bg-card">
                     {dedupedBodyHits.map((hit, idx) => (
                       <BodyHitRow
-                        key={`body:${hit.project.id}:${hit.session.id}`}
+                        key={searchHitKey(hit)}
                         hit={hit}
                         isLast={idx === dedupedBodyHits.length - 1}
-                        onSelect={() => handleSelect(hit)}
+                        onSelect={() => handleSelect(hit, hit.target)}
                       />
                     ))}
                   </div>

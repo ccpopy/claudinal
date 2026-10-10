@@ -527,6 +527,17 @@ export async function readSessionTranscript(
   return invoke<ClaudeEvent[]>("read_session_transcript", { cwd, sessionId })
 }
 
+export interface InputReceiptQuery { attemptId: string; sessionId: string | null }
+export interface InputReceiptScan {
+  accepted: Array<{ attemptId: string; sessionId: string }>
+  complete: boolean
+  reason: string | null
+}
+
+export async function findSessionInputReceipts(cwd: string, inputs: InputReceiptQuery[]): Promise<InputReceiptScan> {
+  return invoke<InputReceiptScan>("find_session_input_receipts", { cwd, inputs })
+}
+
 export interface SubagentTranscriptChunk {
   events: ClaudeEvent[]
   nextOffset: number
@@ -940,7 +951,14 @@ export async function listenSessionsChanged(
   cwd: string,
   handler: () => void
 ): Promise<UnlistenFn> {
-  return listen(`claudinal://sessions/${cwd}/changed`, () => handler())
+  let active = true
+  const unlisten = await listen<string>("sessions-changed", (event) => {
+    if (active && event.payload === cwd) handler()
+  })
+  return () => {
+    active = false
+    unlisten()
+  }
 }
 
 export interface FileMatch {
@@ -1197,6 +1215,8 @@ export interface SessionSearchHit {
   sessionId: string
   cwd: string
   role: string
+  messageUuid: string | null
+  transcriptIndex: number
   ts: string | null
   snippet: string
   filePath: string | null

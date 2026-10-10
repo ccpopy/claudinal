@@ -1,4 +1,5 @@
 mod index;
+pub mod input_receipts;
 pub mod reader;
 pub mod search;
 pub mod stats;

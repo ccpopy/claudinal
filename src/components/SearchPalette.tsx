@@ -19,6 +19,7 @@ import { sessionDisplayTitle } from "@/lib/sessionDisplayTitle"
 import { isArchived } from "@/lib/archivedSessions"
 import { Kbd, KbdGroup } from "@/components/ui/kbd"
 import { cn } from "@/lib/utils"
+import { searchHitTarget, searchHitKey, type TranscriptTarget } from "@/lib/transcriptNavigation"
 
 type IndexedSession = {
   project: Project
@@ -31,6 +32,7 @@ type IndexedSession = {
 }
 
 type BodyHit = {
+  target: TranscriptTarget
   project: Project
   session: SessionMeta
   title: string
@@ -44,7 +46,7 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: Project[]
-  onSelectSession: (project: Project, session: SessionMeta) => void
+  onSelectSession: (project: Project, session: SessionMeta, target?: TranscriptTarget) => void
   onSelectProject: (project: Project) => void
   onNewConversation: () => void
   onAddProject: () => void
@@ -293,9 +295,9 @@ export function SearchPalette({
     )
   }, [actions, trimmedQuery, lowerQuery])
 
-  const handleRunSession = (entry: IndexedSession) => {
+  const handleRunSession = (entry: { project: Project; session: SessionMeta }, target?: TranscriptTarget) => {
     onOpenChange(false)
-    onSelectSession(entry.project, entry.session)
+    onSelectSession(entry.project, entry.session, target)
   }
 
   useEffect(() => {
@@ -318,18 +320,17 @@ export function SearchPalette({
 
   const dedupedBodyHits = useMemo(() => {
     if (bodyHits.length === 0) return [] as BodyHit[]
-    const titleIds = new Set(sessionMatches.map((m) => m.session.id))
     const seen = new Set<string>()
     const out: BodyHit[] = []
     for (const hit of bodyHits) {
-      if (titleIds.has(hit.session.id)) continue
-      if (seen.has(hit.session.id)) continue
-      seen.add(hit.session.id)
+      const key = searchHitKey(hit)
+      if (seen.has(key)) continue
+      seen.add(key)
       out.push(hit)
       if (out.length >= 8) break
     }
     return out
-  }, [bodyHits, sessionMatches])
+  }, [bodyHits])
 
   const showEmpty =
     !loading &&
@@ -395,20 +396,13 @@ export function SearchPalette({
                   <PaletteSection title="正文命中">
                     {dedupedBodyHits.map((hit) => (
                       <PaletteRow
-                        key={`body-${hit.session.id}`}
+                        key={searchHitKey(hit)}
                         icon={MessageSquare}
                         label={hit.title}
                         meta={renderSnippet(hit.snippet)}
                         metaTitle={hit.snippet}
                         onSelect={() =>
-                          handleRunSession({
-                            project: hit.project,
-                            session: hit.session,
-                            title: hit.title,
-                            haystack: "",
-                            projectLabel: hit.projectLabel,
-                            archived: hit.archived
-                          })
+                          handleRunSession(hit, hit.target)
                         }
                         highlight={lowerQuery}
                         badge={hit.archived ? "已归档" : undefined}
@@ -574,6 +568,7 @@ function mapBodyHits(
       first_user_text: hit.firstUserText
     }
     out.push({
+      target: searchHitTarget(hit),
       project,
       session,
       title: sessionDisplayTitle(session),

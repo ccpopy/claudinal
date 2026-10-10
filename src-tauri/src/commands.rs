@@ -4246,6 +4246,18 @@ pub async fn read_session_transcript(cwd: String, session_id: String) -> Result<
 }
 
 #[tauri::command]
+pub async fn find_session_input_receipts(
+    cwd: String,
+    inputs: Vec<crate::session::input_receipts::InputReceiptQuery>,
+) -> Result<crate::session::input_receipts::InputReceiptScan> {
+    tokio::task::spawn_blocking(move || {
+        crate::session::input_receipts::find_session_input_receipts(&cwd, &inputs)
+    })
+    .await
+    .map_err(|error| Error::Other(format!("input receipt scan failed: {error}")))?
+}
+
+#[tauri::command]
 pub async fn read_subagent_transcript_chunk(
     cwd: String,
     session_id: String,
