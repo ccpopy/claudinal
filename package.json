@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "check:tauri-versions": "node scripts/check-tauri-versions.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -43,7 +44,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
-    "@tauri-apps/plugin-notification": "^2.5.1",
+    "@tauri-apps/plugin-notification": "~2.4.0",
     "@tauri-apps/plugin-process": "~2.3.1",
     "@tauri-apps/plugin-updater": "~2.10.1",
     "class-variance-authority": "^0.7.1",

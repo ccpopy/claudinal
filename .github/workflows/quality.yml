@@ -39,6 +39,8 @@ jobs:
         with:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
+      - name: Check Tauri NPM and Rust version compatibility
+        run: pnpm check:tauri-versions
       - name: Type check and frontend production build
         run: pnpm build
       - name: Rust formatting
