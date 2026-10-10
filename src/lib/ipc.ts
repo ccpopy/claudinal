@@ -33,6 +33,7 @@ export type SpawnArgs = {
   forwardSubagentText?: boolean
   promptSuggestions?: boolean
   ultracode?: boolean
+  enableWorkflows?: boolean
   fastMode?: boolean
   modelSettings?: Record<string, SessionModelSettings>
 }
@@ -1290,6 +1291,8 @@ export interface CliCapabilities {
   subagentTextForwarding: "supported" | "unsupported" | "unknown"
   fileCheckpoints: "supported" | "unsupported" | "unknown"
   runtimeSettingsControl: "supported" | "unsupported" | "unknown"
+  settingsProbeEvidence?: "metadata" | "version_hint"
+  settingsProbeReason?: "confirmed" | "unsupported" | "timeout" | "invalid_response" | "limit_exceeded" | "launch_failed"
   independentUltracode: "supported" | "unsupported" | "unknown"
   modelSettings: "supported" | "unsupported" | "unknown"
   autoCompactWindow: "supported" | "unsupported" | "unknown"
@@ -1297,7 +1300,7 @@ export interface CliCapabilities {
   promptSuggestions: "supported" | "unsupported" | "unknown"
   contextUsageSummary: "supported" | "unsupported" | "unknown"
 }
-export function claudeCapabilities(sessionId?: string): Promise<CliCapabilities> { return invoke("claude_capabilities", { sessionId }) }
+export function claudeCapabilities(sessionId?: string, refresh?: boolean): Promise<CliCapabilities> { return invoke("claude_capabilities", { sessionId, refresh }) }
 
 export type PersistedEffort = "low" | "medium" | "high" | "xhigh"
 export interface SessionModelSettings {
@@ -1308,6 +1311,7 @@ export interface SessionModelSettings {
 export interface SessionSettingsPatch {
   effortLevel?: PersistedEffort
   ultracode?: boolean
+  enableWorkflows?: boolean
   fastMode?: boolean
   modelSettings?: Record<string, SessionModelSettings>
 }

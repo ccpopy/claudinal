@@ -20,6 +20,8 @@ export interface ComposerPrefs {
   model: string
   effort: string
   ultracode?: boolean
+  /** Explicit session opt-in; never copied into new-session/global defaults. */
+  enableWorkflows?: boolean
   fastMode?: boolean
   autoCompactWindow?: AutoCompactWindow
   /** In-memory/session overrides, keyed by the selected model. */
@@ -48,6 +50,7 @@ export interface ComposerSettingsLayer {
     maxEffortLevel?: PersistedEffort | "max"
     modelSettings?: Record<string, ModelComposerSettings>
     ultracode?: boolean
+    enableWorkflows?: boolean
     fastMode?: boolean
     autoCompactWindow?: AutoCompactWindow
   }
@@ -66,7 +69,9 @@ export interface ComposerFeatureCapabilities {
   independentUltracode?: boolean
   fastMode?: boolean
   autoCompactWindow?: boolean
-  reason?: string
+  ultracodeReason?: string
+  fastModeReason?: string
+  autoCompactWindowReason?: string
 }
 export interface ComposerModelCapabilities {
   supportsEffort?: boolean
@@ -104,6 +109,7 @@ function pickComposerSettings(value: unknown): ComposerSettingsLayer["settings"]
   if (typeof raw.maxEffortLevel === "string" && (PERSISTED_EFFORTS.has(raw.maxEffortLevel) || raw.maxEffortLevel === "max")) settings.maxEffortLevel = raw.maxEffortLevel as PersistedEffort | "max"
   if (raw.modelSettings !== undefined) settings.modelSettings = pickModelSettings(raw.modelSettings)
   if (typeof raw.ultracode === "boolean") settings.ultracode = raw.ultracode
+  if (typeof raw.enableWorkflows === "boolean") settings.enableWorkflows = raw.enableWorkflows
   if (typeof raw.fastMode === "boolean") settings.fastMode = raw.fastMode
   const window = parseAutoCompactWindow(raw.autoCompactWindow)
   if (window !== undefined) settings.autoCompactWindow = window
@@ -182,6 +188,11 @@ export function patchComposerPrefs(current: ComposerPrefs, patch: Partial<Compos
 export function composerPrefsForPersistence(prefs: ComposerPrefs, scope: "session" | "default" = "session"): ComposerPrefs {
   if (scope === "session") return { ...prefs }
   const next = { ...prefs, effort: prefs.effort === "max" ? "" : prefs.effort }
+  delete next.enableWorkflows
+  // A runtime flag layer belongs to its captured session, never another session.
+  if (next.settingsSources) next.settingsSources = next.settingsSources
+    .filter((layer) => layer.source !== "flagSettings")
+    .map((layer) => { const settings = { ...layer.settings }; delete settings.enableWorkflows; return { ...layer, settings } })
   if (prefs.modelEfforts) next.modelEfforts = Object.fromEntries(Object.entries(prefs.modelEfforts).filter(([, value]) => value !== "max"))
   return next
 }
@@ -234,7 +245,11 @@ export async function loadGlobalDefault(cwd?: string, runtimeSettings?: unknown)
   let layers: ComposerSettingsLayer[]
   let legacyEffortLevel: string | undefined
   if (runtime) {
-    layers = runtime.layers
+    // Startup/hot flags are session overrides, not defaults for other sessions.
+    layers = runtime.layers.filter((layer) => layer.source !== "flagSettings").map((layer) => {
+      const settings = { ...layer.settings }; delete settings.enableWorkflows
+      return { ...layer, settings }
+    })
   } else {
     const scopes = cwd ? ["global", "project", "project-local"] as const : ["global"] as const
     const responses = await Promise.allSettled(scopes.map((scope) => readClaudeSettings(scope, cwd)))
@@ -246,6 +261,7 @@ export async function loadGlobalDefault(cwd?: string, runtimeSettings?: unknown)
     })
   }
   if (!layers.length) {
+    if (runtime) return { ...EMPTY_COMPOSER_PREFS, defaultsKnowledge: "runtime" }
     const legacy = consumeLegacyPrefs()
     return legacy ? { ...composerPrefsForPersistence(normalizeStoredComposerPrefs(legacy), "default"), defaultsKnowledge: "legacy" } : { ...EMPTY_COMPOSER_PREFS, defaultsKnowledge: "files", ...(legacyEffortLevel ? { legacyEffortLevel } : {}) }
   }
@@ -309,6 +325,7 @@ function normalizeStoredComposerPrefs(value: unknown): ComposerPrefs {
   if (typeof obj.ultracode === "boolean") prefs.ultracode = obj.ultracode
   else if (legacyUltra) prefs.ultracode = legacyUltra[1] !== "off"
   if (typeof obj.fastMode === "boolean") prefs.fastMode = obj.fastMode
+  if (typeof obj.enableWorkflows === "boolean") prefs.enableWorkflows = obj.enableWorkflows
   const window = parseAutoCompactWindow(obj.autoCompactWindow)
   if (window !== undefined) prefs.autoCompactWindow = window
   const efforts = objectValue(obj.modelEfforts)
@@ -332,7 +349,7 @@ export function pickComposerFromSidecar(
   const obj = composer as Record<string, unknown>
   // 已污染的 sidecar（model=<synthetic>）读回时净化为 ""，下次写回即自愈
   const prefs = normalizeStoredComposerPrefs(obj)
-  if (!prefs.model && !prefs.effort && prefs.ultracode === undefined && prefs.fastMode === undefined && prefs.autoCompactWindow === undefined && !prefs.modelEfforts && !prefs.modelSettings) return null
+  if (!prefs.model && !prefs.effort && prefs.ultracode === undefined && prefs.enableWorkflows === undefined && prefs.fastMode === undefined && prefs.autoCompactWindow === undefined && !prefs.modelEfforts && !prefs.modelSettings) return null
   return prefs
 }
 
@@ -345,7 +362,7 @@ export function mergeComposerPrefs(
   if (base?.modelEfforts || override?.modelEfforts) next.modelEfforts = { ...base?.modelEfforts, ...override?.modelEfforts }
   if (base?.modelSettings || override?.modelSettings) next.modelSettings = { ...base?.modelSettings, ...override?.modelSettings }
   if (base?.modelAutoCompactWindows || override?.modelAutoCompactWindows) next.modelAutoCompactWindows = { ...base?.modelAutoCompactWindows, ...override?.modelAutoCompactWindows }
-  if (!next.model && !next.effort && next.ultracode === undefined && next.fastMode === undefined && next.autoCompactWindow === undefined && !next.modelEfforts && !next.modelAutoCompactWindows && !next.modelSettings) return null
+  if (!next.model && !next.effort && next.ultracode === undefined && next.enableWorkflows === undefined && next.fastMode === undefined && next.autoCompactWindow === undefined && !next.modelEfforts && !next.modelAutoCompactWindows && !next.modelSettings) return null
   return next
 }
 

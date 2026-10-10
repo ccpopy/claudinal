@@ -1,4 +1,5 @@
 import { CliDiagnostics } from "@/components/CliDiagnostics"
+import { invalidateSlashCommandsCache } from "@/lib/slashCommands"
 import { useEffect, useRef, useState } from "react"
 import {
   ChevronDown,
@@ -393,6 +394,8 @@ export function General() {
         })
       } else {
         finishCliCommandProgress("completed")
+        invalidateSlashCommandsCache()
+        window.dispatchEvent(new Event("claudinal:cli-installation-changed"))
         toast.success(`Claude CLI 已安装：${info.version}`, {
           description: cliCommandDescription(result)
         })
@@ -467,6 +470,10 @@ export function General() {
         info.installed &&
         isCliUpdateAvailabilityPending(detectedUpdate, info.version)
       setCliUpdateAvailability(stillHasUpdate ? detectedUpdate : null)
+      if (info.installed && info.supported && !packageManagerOutcome.error) {
+        invalidateSlashCommandsCache()
+        window.dispatchEvent(new Event("claudinal:cli-installation-changed"))
+      }
 
       if (packageManagerOutcome.error) {
         const errText = String(packageManagerOutcome.error)

@@ -140,12 +140,14 @@ interface Props {
   model?: string
   effort?: string
   ultracode?: boolean
+  enableWorkflows?: boolean
   fastMode?: boolean
   autoCompactWindow?: AutoCompactWindow
   modelEfforts?: Record<string, string>
   canonicalModels?: Readonly<Record<string, string>>
   modelCapabilities?: Readonly<Record<string, ComposerModelCapabilities>>
   actualConfig?: ComposerRuntimeConfig | null
+  actualProviderLabel?: string
   featureCapabilities?: ComposerFeatureCapabilities
   configurationPending?: boolean
   onModelEffortChange?: (next: Partial<ComposerPrefs>) => void
@@ -202,12 +204,14 @@ function ComposerEditor({
   model = "",
   effort = "",
   ultracode = false,
+  enableWorkflows,
   fastMode = false,
   autoCompactWindow,
   modelEfforts,
   canonicalModels,
   modelCapabilities,
   actualConfig,
+  actualProviderLabel,
   featureCapabilities,
   configurationPending,
   onModelEffortChange,
@@ -1009,12 +1013,14 @@ function ComposerEditor({
                   model={model}
                   effort={effort}
                   ultracode={ultracode}
+                  enableWorkflows={enableWorkflows}
                   fastMode={fastMode}
                   autoCompactWindow={autoCompactWindow}
                   modelEfforts={modelEfforts}
                   canonicalModels={canonicalModels}
                   modelCapabilities={modelCapabilities}
                   actualConfig={actualConfig}
+                  actualProviderLabel={actualProviderLabel}
                   featureCapabilities={featureCapabilities}
                   configurationPending={configurationPending}
                   onChange={onModelEffortChange}

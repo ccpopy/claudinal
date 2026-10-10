@@ -6,6 +6,8 @@ import type { SubmissionActions } from "@/components/SubmittedInputActions"
 import { SubmissionCoordinator, isActiveInput, isAwaitingDefinitiveResult, type InputPayload, type SubmittedInput, type SubmissionAdapter } from "@/lib/submissionCoordinator"
 import { retryInputFromTranscript } from "@/lib/retryInput"
 import { cn } from "@/lib/utils"
+import { useInstalledCliCapabilities } from "@/hooks/useInstalledCliCapabilities"
+import { capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch } from "@/lib/composerCapabilities"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
 import { inputMetadataPatch, restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
 import { isAuthoredUserMessage, markAuthoredEvent } from "@/lib/messageOrigin"
@@ -619,7 +621,7 @@ function findSlashCommands(
 function cloneComposerPrefs(prefs: ComposerPrefs): ComposerPrefs { return structuredClone(prefs) }
 
 function nullableComposerPrefs(prefs: ComposerPrefs): ComposerPrefs | null {
-  return prefs.model || prefs.effort || prefs.ultracode !== undefined || prefs.fastMode !== undefined
+  return prefs.model || prefs.effort || prefs.ultracode !== undefined || prefs.enableWorkflows !== undefined || prefs.fastMode !== undefined
     || prefs.autoCompactWindow !== undefined || prefs.modelEfforts || prefs.modelAutoCompactWindows ? prefs : null
 }
 
@@ -643,6 +645,7 @@ function runtimeSettingsPatch(prefs: ComposerPrefs, canonicalModels: Record<stri
   const ultracode = prefs.ultracode ?? actual?.ultracodeRequested ?? actual?.ultracode
   if (ultracode !== undefined) settings.ultracode = ultracode
   if (prefs.fastMode !== undefined) settings.fastMode = prefs.fastMode
+  if (prefs.enableWorkflows !== undefined) settings.enableWorkflows = prefs.enableWorkflows
   const canonical = canonicalModels[prefs.model] ?? prefs.model.replace(/\[1m\]$/i, "")
   if (/^claude-[^\s]+$/.test(canonical) && prefs.autoCompactWindow !== undefined) {
     settings.modelSettings = { [canonical]: { autoCompactWindow: prefs.autoCompactWindow } }
@@ -789,6 +792,7 @@ export default function App() {
   )
   // claude --help 动态解析的 effort 档位（空数组 = 回退内置清单）
   const [effortLevels, setEffortLevels] = useState<string[]>([])
+  const installedCli = useInstalledCliCapabilities()
   useEffect(() => {
     let generation = 0
     const refreshEffortLevels = () => {
@@ -1368,13 +1372,24 @@ export default function App() {
   )
 
   const refreshActiveComposerRuntime = useCallback(
-    (message = "会话启动配置已刷新，下一次发送会使用新配置") => {
+    (message = "会话启动配置已刷新，下一次发送会使用新配置"): void => {
       const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
       if (!runtimeId) {
         pendingComposerRuntimeRefreshRef.current = false
         return
       }
       const run = runningSessionsRef.current.get(runtimeId)
+      if (run && run.apiLaunchProfileKey !== currentApiLaunchProfileKey()) {
+        // New-provider selections must never patch the captured old process.
+        pendingApiRuntimeRefreshRef.current = true
+        return
+      }
+      if (run?.configurationUpdate) {
+        // Coalesce quick successive choices; the current confirmation schedules
+        // only the latest selection after it settles.
+        pendingComposerRuntimeRefreshRef.current = true
+        return
+      }
       if (run?.streaming || (run && run.pendingPermissionRequestIds.size > 0)) {
         pendingComposerRuntimeRefreshRef.current = true
         toast.warning(
@@ -1393,12 +1408,15 @@ export default function App() {
         && (run.composerPrefs.effort === run.launchComposerPrefs.effort || run.composerPrefs.ultracode !== undefined
           || run.actualConfig.ultracodeRequested !== undefined || run.actualConfig.ultracode !== undefined)) {
         const selected = cloneComposerPrefs(run.composerPrefs)
-        const patch = runtimeSettingsPatch(selected, run.canonicalModels, run.actualConfig)
-        if (run.apiProfileKey !== "official") delete patch.fastMode
-        if (run.capabilities.independentUltracode !== "supported") delete patch.ultracode
-        if (run.capabilities.autoCompactWindow !== "supported") delete patch.modelSettings
+        const profile = loadThirdPartyApiConfig()
+        const patch = filterComposerRuntimePatch(runtimeSettingsPatch(selected, run.canonicalModels, run.actualConfig), run.capabilities,
+          profile.enabled && profile.inputFormat === "openai-chat-completions")
         const work = (async () => {
           await coordinatorRef.current.waitForSettlement(run.owner.key)
+          if (runningSessionsRef.current.get(runtimeId) !== run
+            || run.apiLaunchProfileKey !== currentApiLaunchProfileKey()
+            || run.permissionMode !== run.launchPermissionMode
+            || !sameComposerPrefs(run.composerPrefs, selected)) return
           const observed = await applySessionRuntimeSettings(runtimeId, patch)
           if (runningSessionsRef.current.get(runtimeId) !== run) return
           run.actualConfig = { ...run.actualConfig, ...observed.applied,
@@ -1415,7 +1433,16 @@ export default function App() {
           throw error
         })
         run.configurationUpdate = update
-        void update.catch(() => {}).finally(() => { if (run.configurationUpdate === update) run.configurationUpdate = null; setRunningTick((tick) => tick + 1) })
+        void update.catch(() => {}).finally(() => {
+          if (run.configurationUpdate !== update) return
+          run.configurationUpdate = null
+          setRunningTick((tick) => tick + 1)
+          if (runningSessionsRef.current.get(runtimeId) === run && activeRuntimeIdRef.current === runtimeId
+            && run.apiLaunchProfileKey === currentApiLaunchProfileKey()
+            && (pendingComposerRuntimeRefreshRef.current || !sameComposerPrefs(run.composerPrefs, run.launchComposerPrefs))) {
+            refreshActiveComposerRuntime(message)
+          }
+        })
         setRunningTick((tick) => tick + 1)
         return
       }
@@ -2001,6 +2028,9 @@ export default function App() {
         (thirdPartyReady ? thirdPartyLaunchModel : uiModel) || null
       const launchPermissionMode = task.context.permissionMode
       const launchCapabilities = await claudeCapabilities()
+      const claudeFeatureControls = !(thirdPartyReady && thirdPartyApi.inputFormat === "openai-chat-completions")
+      const launchSettings = filterComposerRuntimePatch(runtimeSettingsPatch(launchComposerPrefs, {}), launchCapabilities,
+        !claudeFeatureControls)
       guard()
       const id = crypto.randomUUID()
       createdRuntimeId = id
@@ -2013,7 +2043,9 @@ export default function App() {
           ? baseRunState
           : { ...baseRunState, subagents: resumedSubagents }
       const run: RunningSession = {
-        commandScope: { cwd: project.cwd, cliFingerprint: launchCapabilities.fingerprint, configuration: apiLaunchProfileKey, generation: slashCommandGeneration() },
+        // Do not cache init commands under preflight identity: the selected
+        // installation may change before the backend captures its executable.
+        commandScope: { cwd: project.cwd, cliFingerprint: "", configuration: apiLaunchProfileKey, generation: slashCommandGeneration() },
         owner,
         runtimeId: id,
         project,
@@ -2021,7 +2053,7 @@ export default function App() {
         launchModel: model,
         launchComposerPrefs: cloneComposerPrefs(launchComposerPrefs),
         launchPermissionMode,
-        actualConfig: {}, capabilities: launchCapabilities, canonicalModels: {}, configurationUpdate: null,
+        actualConfig: {}, capabilities: capturedRuntimeCapabilities(null), canonicalModels: {}, configurationUpdate: null,
         suggestionTracker: new PromptSuggestionTracker({ conversationKey: owner.key, runtimeId: id, generation: id }, cfg.promptSuggestionsEnabled),
         suggestionTurnId: task.attemptId, contextSummary: null, contextLoading: false, contextError: null, contextGeneration: 0,
         compactBoundary: null, compacting: false,
@@ -2102,6 +2134,11 @@ export default function App() {
         applyRunningAction(run, { kind: "event", event, subagentTransition })
         if (isForwardedSubagentEvent(event)) return
         const t = (event as { type?: string }).type
+        if (t === "notification" || t === "system" || t === "result") {
+          // Native fields only; do not infer Fast from preferences or message text.
+          applyFastModeReport(run.actualConfig, ev as { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown })
+          setRunningTick((tick) => tick + 1)
+        }
         if (t === "assistant" || t === "stream_event") coordinatorRef.current.response(owner.key, eventInputIds(event))
         const evSessionId = (event as { parent_tool_use_id?: string }).parent_tool_use_id ? undefined : (event as { session_id?: string }).session_id
         const knownSessionId = evSessionId ?? run.jsonlSessionId
@@ -2163,7 +2200,6 @@ export default function App() {
               run.actualConfig.model = init.model
               if (/^claude-[^\s]+$/.test(init.model)) run.canonicalModels[run.launchComposerPrefs.model] = init.model
             }
-            applyFastModeReport(run.actualConfig, init)
             setRunningTick((tick) => tick + 1)
           }
           const apiKeySource = (event as { apiKeySource?: string }).apiKeySource
@@ -2203,8 +2239,6 @@ export default function App() {
           }
         }
         if (t === "result") {
-          const fastReport = ev as { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown }
-          applyFastModeReport(run.actualConfig, fastReport)
           // Set the file boundary synchronously before exposing an idle turn.
           const resultIds = eventInputIds(event)
           const written = [...coordinatorRef.current.tasks.values()].filter((task) => task.conversationKey === owner.key
@@ -2357,9 +2391,10 @@ export default function App() {
         cwd: project.cwd,
         model,
         effort: launchEffort || null,
-        ultracode: launchCapabilities.independentUltracode === "supported" ? launchComposerPrefs.ultracode : undefined,
-        fastMode: !thirdPartyReady && launchCapabilities.headlessFastMode === "supported" ? launchComposerPrefs.fastMode : undefined,
-        modelSettings: launchCapabilities.modelSettings === "supported" ? runtimeSettingsPatch(launchComposerPrefs, {}).modelSettings : undefined,
+        ultracode: launchSettings.ultracode,
+        enableWorkflows: launchSettings.enableWorkflows,
+        fastMode: launchSettings.fastMode,
+        modelSettings: launchSettings.modelSettings,
         permissionMode: launchPermissionMode,
         resumeSessionId,
         env: Object.keys(env).length > 0 ? env : null,
@@ -2372,20 +2407,30 @@ export default function App() {
       })
       owner.fork = null
       const runtimeCapabilities = await claudeCapabilities(id).catch(() => null)
-      if (runtimeCapabilities) run.capabilities = runtimeCapabilities
+      if (runningSessionsRef.current.get(id) !== run) return null
+      run.capabilities = capturedRuntimeCapabilities(runtimeCapabilities)
+      if (runtimeCapabilities) {
+        run.commandScope.cliFingerprint = runtimeCapabilities.fingerprint
+        // An init may already have arrived while spawn/metadata was pending.
+        if (run.state.entries.some((entry) => entry.kind === "system_init")) {
+          saveSlashCommandsCache(findSlashCommands(run.state), run.commandScope)
+        }
+      }
       run.midTurnInput = run.capabilities.midTurnInput === "supported"
       if (run.capabilities.runtimeSettingsControl === "supported") {
         let mutationStarted = false
         try {
+          const viewGeneration = switchTokenRef.current
           const observed = await getSessionRuntimeSettings(id)
-          if (foreground()) setGlobalDefault(await loadGlobalDefault(project.cwd, observed))
+          const defaults = await loadGlobalDefault(project.cwd, observed)
+          if (foreground() && viewGeneration === switchTokenRef.current && runningSessionsRef.current.get(id) === run) setGlobalDefault(defaults)
           if (runningSessionsRef.current.get(id) === run) {
             run.actualConfig = { ...run.actualConfig, ...observed.applied,
               fastModeState: observed.fastModeState ?? undefined,
               fastModeDisabledReason: observed.fastModeDisabledReason ?? undefined }
             if (observed.applied.model && /^claude-[^\s]+$/.test(observed.applied.model)) run.canonicalModels[launchComposerPrefs.model] = observed.applied.model
             const compactPatch = runtimeSettingsPatch(launchComposerPrefs, run.canonicalModels).modelSettings
-            if (compactPatch && run.capabilities.autoCompactWindow === "supported") {
+            if (compactPatch && claudeFeatureControls && run.capabilities.autoCompactWindow === "supported") {
               mutationStarted = true
               await applySessionRuntimeSettings(id, { modelSettings: compactPatch })
             }
@@ -3626,6 +3671,9 @@ export default function App() {
     return [command, [runtimeCommandsKnown ? "当前 CLI 会话" : skillPreviewStale ? "缓存预览 · 读取失败" : "本地预览 · 待 CLI 确认", detail].filter(Boolean).join(" · ")]
   }))
   const activeRun = sessionId ? runningSessionsRef.current.get(sessionId) : undefined
+  const selectedRuntimeProfile = currentApiLaunchProfileKey()
+  const activeRunMatchesProfile = activeRun?.apiLaunchProfileKey === selectedRuntimeProfile
+  const selectedFeatureCapabilities = composerFeatureCapabilities(installedCli, activeRun, selectedRuntimeProfile)
   const runtimeSummaries = useMemo<LiveRuntimeSummary[]>(() => [...runningSessionsRef.current.values()].map((run) => ({
     runtimeId: run.runtimeId, cwd: run.project.cwd, cliFingerprint: run.commandScope.cliFingerprint,
     provider: run.providerLabel, model: run.actualConfig.model ?? run.launchModel ?? "", effort: run.actualConfig.effort ?? run.launchComposerPrefs.effort,
@@ -3710,7 +3758,8 @@ export default function App() {
     (next: Partial<ComposerPrefs>) => {
       setComposerPrefs((cur) => {
         const runtimeId = activeRuntimeIdRef.current
-        const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : undefined
+        const capturedRun = runtimeId ? runningSessionsRef.current.get(runtimeId) : undefined
+        const run = capturedRun?.apiLaunchProfileKey === currentApiLaunchProfileKey() ? capturedRun : undefined
         const updated = patchComposerPrefs(cur, next, globalDefault, run?.canonicalModels)
         if (sameComposerPrefs(cur, updated)) return cur
         // 用户已显式覆盖：标记到 sessionComposer，并尝试写入当前会话的 sidecar。
@@ -3721,7 +3770,7 @@ export default function App() {
         const activeRun = activeRuntimeId
           ? runningSessionsRef.current.get(activeRuntimeId)
           : null
-        if (activeRun) {
+        if (activeRun?.apiLaunchProfileKey === currentApiLaunchProfileKey()) {
           activeRun.sessionComposer = updated
           activeRun.composerPrefs = updated
           activeRun.owner.sessionComposer = cloneComposerPrefs(updated)
@@ -4082,18 +4131,15 @@ export default function App() {
                     model={composerPrefs.model}
                     effort={composerPrefs.effort}
                     ultracode={composerPrefs.ultracode}
+                    enableWorkflows={composerPrefs.enableWorkflows}
                     fastMode={composerPrefs.fastMode}
                     autoCompactWindow={composerPrefs.autoCompactWindow}
                     modelEfforts={composerPrefs.modelEfforts}
-                    canonicalModels={activeRun?.canonicalModels}
+                    canonicalModels={activeRunMatchesProfile ? activeRun?.canonicalModels : undefined}
                     actualConfig={activeRun?.actualConfig}
-                    configurationPending={!!activeRun && (!!activeRun.configurationUpdate || !sameComposerPrefs(composerPrefs, activeRun.launchComposerPrefs))}
-                    featureCapabilities={{
-                      independentUltracode: activeRun?.capabilities.independentUltracode === "supported",
-                      fastMode: !thirdPartyApiConfig.enabled && activeRun?.capabilities.headlessFastMode === "supported",
-                      autoCompactWindow: activeRun?.capabilities.autoCompactWindow === "supported",
-                      reason: thirdPartyApiConfig.enabled ? "第三方提供商未认证 Fast" : "需要当前 CLI 的已确认能力"
-                    }}
+                    actualProviderLabel={activeRun?.providerLabel}
+                    configurationPending={!!activeRun && (!activeRunMatchesProfile || !!activeRun.configurationUpdate || !sameComposerPrefs(composerPrefs, activeRun.launchComposerPrefs))}
+                    featureCapabilities={selectedFeatureCapabilities}
                     onModelEffortChange={handleModelEffortChange}
                     modelOptions={modelOptions}
                     restrictModelOptions={thirdPartyApiConfig.enabled}

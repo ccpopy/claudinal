@@ -9,6 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use super::capabilities::{self, Support};
 use super::control::{unsupported_response, ControlReceipts, ReplyWaiters};
 use super::diagnostics::{Diagnostics, RuntimeDiagnostics};
+use super::metadata_probe;
 use super::runtime_controls::{self, Activity, Preview};
 use super::supervisor::{supervise, ProcessTree};
 use super::transport::{read_line, write_frame, WriteFailure, MAX_EVENT_BYTES, MAX_INPUT_BYTES};
@@ -47,6 +48,7 @@ pub struct SpawnOptions {
     pub prompt_suggestions: Option<bool>,
     pub ultracode: Option<bool>,
     pub fast_mode: Option<bool>,
+    pub enable_workflows: Option<bool>,
     pub model_settings: Option<Value>,
 }
 
@@ -82,6 +84,7 @@ impl Session {
 pub struct Manager {
     sessions: Arc<DashMap<String, Arc<Session>>>,
     claude_help_cache: DashMap<ClaudeHelpCacheKey, String>,
+    metadata_cache: metadata_probe::Cache,
     diagnostics: Arc<Diagnostics>,
 }
 
@@ -166,6 +169,7 @@ impl Manager {
         }
         save_claude_path(path.as_deref().map(Path::new))?;
         self.claude_help_cache.clear();
+        self.metadata_cache.clear().await;
         Ok(())
     }
 
@@ -187,6 +191,14 @@ impl Manager {
         &self,
         session_id: Option<&str>,
     ) -> Result<capabilities::CliCapabilities> {
+        self.refresh_capabilities(session_id, false).await
+    }
+
+    pub async fn refresh_capabilities(
+        &self,
+        session_id: Option<&str>,
+        refresh: bool,
+    ) -> Result<capabilities::CliCapabilities> {
         if let Some(id) = session_id {
             return self
                 .sessions
@@ -198,7 +210,29 @@ impl Manager {
         let help = claude_help_cached(&claude, &version, &self.claude_help_cache)
             .await
             .unwrap_or_default();
-        Ok(capabilities::detect(&claude, version, &help))
+        let mut caps = capabilities::detect(&claude, version, &help);
+        if refresh {
+            self.metadata_cache.refresh(&caps.fingerprint).await;
+        }
+        self.metadata_cache
+            .get(&claude, &caps.fingerprint)
+            .await
+            .apply(&mut caps);
+        Ok(caps)
+    }
+
+    async fn detect_capabilities(
+        &self,
+        claude: &Path,
+        version: String,
+        help: &str,
+    ) -> capabilities::CliCapabilities {
+        let mut caps = capabilities::detect(claude, version, help);
+        self.metadata_cache
+            .get(claude, &caps.fingerprint)
+            .await
+            .apply(&mut caps);
+        caps
     }
 
     pub async fn spawn(&self, app: AppHandle, mut opts: SpawnOptions) -> Result<String> {
@@ -233,8 +267,10 @@ impl Manager {
         let help = claude_help_cached(&claude, &version, &self.claude_help_cache)
             .await
             .unwrap_or_default();
-        let caps = capabilities::detect(&claude, version.clone(), &help);
-        configure_session_settings(&mut opts, &version)?;
+        let caps = self
+            .detect_capabilities(&claude, version.clone(), &help)
+            .await;
+        configure_session_settings_for_capabilities(&mut opts, &caps)?;
         let checkpoints_enabled = opts.file_checkpointing.unwrap_or(true)
             && caps.file_checkpoints == Support::Supported
             && caps.user_message_replay == Support::Supported;
@@ -427,7 +463,7 @@ impl Manager {
         let (stop_tx, stop_rx) = watch::channel(false);
         let (done_tx, done_rx) = watch::channel(false);
         let session = Arc::new(Session {
-            capabilities: capabilities::detect(&claude, version.clone(), &help),
+            capabilities: caps,
             stdin: Mutex::new(stdin),
             available: AtomicBool::new(true),
             stop: stop_tx,
@@ -884,13 +920,15 @@ impl Manager {
         }
     }
 
-    fn control_session(&self, session_id: &str) -> Result<Arc<Session>> {
+    fn control_session(&self, session_id: &str, native_contract: bool) -> Result<Arc<Session>> {
         let session = self
             .sessions
             .get(session_id)
             .map(|entry| entry.clone())
             .ok_or_else(|| Error::Other("会话进程已结束".into()))?;
-        runtime_controls::supported(&session.capabilities.resolved_version)?;
+        if native_contract {
+            runtime_controls::supported(&session.capabilities.resolved_version)?;
+        }
         if !session.available.load(Ordering::Acquire) {
             return Err(Error::Other("会话连接已关闭".into()));
         }
@@ -974,7 +1012,7 @@ impl Manager {
     }
 
     pub async fn runtime_settings(&self, session_id: &str) -> Result<Value> {
-        let session = self.control_session(session_id)?;
+        let session = self.control_session(session_id, false)?;
         let raw = Self::request_control(&session, json!({"subtype":"get_settings"})).await?;
         runtime_controls::validate_settings_reply(&raw)?;
         let activity = session
@@ -989,8 +1027,8 @@ impl Manager {
         session_id: &str,
         mut settings: Value,
     ) -> Result<Value> {
-        let session = self.control_session(session_id)?;
-        runtime_controls::validate_settings(&settings, &session.capabilities.resolved_version)?;
+        let session = self.control_session(session_id, false)?;
+        runtime_controls::validate_settings_for_capabilities(&settings, &session.capabilities)?;
         let _guard = session
             .mutation_gate
             .try_lock()
@@ -1040,6 +1078,17 @@ impl Manager {
                 ));
             }
         };
+        if fast_changed {
+            // initialize returns an actual current-state snapshot. It is not a
+            // model request, and an absent state leaves honest pending status.
+            if let Ok(metadata) =
+                Self::request_control(&session, json!({"subtype":"initialize"})).await
+            {
+                if let Ok(mut activity) = session.activity.lock() {
+                    activity.observe_fast(&metadata);
+                }
+            }
+        }
         let activity = session.activity.lock().map_err(|_| {
             session.close("control_apply_verification_failed");
             Error::Other("配置已提交但运行状态无法确认，会话已停止".into())
@@ -1048,7 +1097,7 @@ impl Manager {
     }
 
     pub async fn context_usage(&self, session_id: &str) -> Result<Value> {
-        let session = self.control_session(session_id)?;
+        let session = self.control_session(session_id, true)?;
         let raw = Self::request_control(
             &session,
             json!({"subtype":"get_context_usage", "detail":"summary"}),
@@ -1059,7 +1108,7 @@ impl Manager {
 
     pub async fn preview_rewind(&self, session_id: &str, message_id: String) -> Result<Value> {
         Uuid::parse_str(&message_id).map_err(|_| Error::Other("invalid checkpoint UUID".into()))?;
-        let session = self.control_session(session_id)?;
+        let session = self.control_session(session_id, true)?;
         if !session.checkpoints_enabled {
             return Err(Error::Other(
                 "此运行实例未启用文件检查点，不能补造历史检查点".into(),
@@ -1106,7 +1155,7 @@ impl Manager {
         preview_id: String,
     ) -> Result<Value> {
         Uuid::parse_str(&message_id).map_err(|_| Error::Other("invalid checkpoint UUID".into()))?;
-        let session = self.control_session(session_id)?;
+        let session = self.control_session(session_id, true)?;
         if !session.checkpoints_enabled {
             return Err(Error::Other("此运行实例未启用文件检查点".into()));
         }
@@ -1332,7 +1381,16 @@ struct RuntimeSettings {
     session_id: String,
 }
 
+#[cfg(test)]
 fn configure_session_settings(opts: &mut SpawnOptions, version: &str) -> Result<()> {
+    let caps = capabilities::detect(Path::new("claude"), version.into(), "");
+    configure_session_settings_for_capabilities(opts, &caps)
+}
+
+fn configure_session_settings_for_capabilities(
+    opts: &mut SpawnOptions,
+    caps: &capabilities::CliCapabilities,
+) -> Result<()> {
     let mut settings: Value = opts
         .settings_json
         .as_deref()
@@ -1354,10 +1412,13 @@ fn configure_session_settings(opts: &mut SpawnOptions, version: &str) -> Result<
     if let Some(fast) = opts.fast_mode {
         patch.insert("fastMode".into(), json!(fast));
     }
+    if let Some(workflows) = opts.enable_workflows {
+        patch.insert("enableWorkflows".into(), json!(workflows));
+    }
     if let Some(models) = &opts.model_settings {
         patch.insert("modelSettings".into(), models.clone());
     }
-    runtime_controls::validate_settings(&Value::Object(patch.clone()), version)?;
+    runtime_controls::validate_settings_for_capabilities(&Value::Object(patch.clone()), caps)?;
     for (key, value) in patch {
         if key == "modelSettings" {
             let existing = object
@@ -1382,7 +1443,7 @@ fn configure_session_settings(opts: &mut SpawnOptions, version: &str) -> Result<
             object.insert(key, value);
         }
     }
-    if capabilities::version_at_least(version, (2, 1, 205)) == Support::Supported {
+    if caps.headless_fast_mode == Support::Supported {
         object.entry("fastMode").or_insert(json!(false));
     }
     if opts.ultracode.is_some() && opts.effort.as_deref() == Some("ultracode") {
@@ -1592,7 +1653,7 @@ mod tests {
     #[test]
     fn startup_settings_keep_independent_ultra_model_prefs_and_manual_fields() {
         let mut options = SpawnOptions {
-            effort:Some("low".into()), ultracode:Some(true), fast_mode:Some(false),
+            effort:Some("low".into()), ultracode:Some(true), fast_mode:Some(false), enable_workflows:Some(true),
             model_settings:Some(json!({"claude-opus-5-5":{"effortLevel":"low","autoCompactWindow":"auto"}})),
             settings_json:Some(json!({"hooks":{},"env":{"CUSTOM":"kept"},"modelSettings":{"claude-opus-5-5":{"maxEffortLevel":"max"},"other":{"effortLevel":"medium"}}}).to_string()),
             ..SpawnOptions::default()
@@ -1602,12 +1663,36 @@ mod tests {
             serde_json::from_str(options.settings_json.as_deref().unwrap()).unwrap();
         assert_eq!(settings["ultracode"], true);
         assert_eq!(settings["fastMode"], false);
+        assert_eq!(settings["enableWorkflows"], true);
         assert_eq!(settings["env"]["CUSTOM"], "kept");
         assert_eq!(
             settings["modelSettings"]["claude-opus-5-5"]["maxEffortLevel"],
             "max"
         );
         assert_eq!(settings["modelSettings"]["other"]["effortLevel"], "medium");
+        assert_eq!(options.effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn observed_settings_support_overrides_older_version_without_changing_effort() {
+        let mut caps =
+            super::capabilities::detect(std::path::Path::new("claude"), "2.1.196".into(), "");
+        caps.runtime_settings_control = super::Support::Supported;
+        caps.independent_ultracode = super::Support::Supported;
+        caps.headless_fast_mode = super::Support::Supported;
+        let mut options = SpawnOptions {
+            effort: Some("low".into()),
+            ultracode: Some(true),
+            fast_mode: Some(true),
+            enable_workflows: Some(true),
+            ..SpawnOptions::default()
+        };
+        super::configure_session_settings_for_capabilities(&mut options, &caps).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(options.settings_json.as_deref().unwrap()).unwrap();
+        assert_eq!(settings["enableWorkflows"], true);
+        assert_eq!(settings["ultracode"], true);
+        assert_eq!(settings["fastMode"], true);
         assert_eq!(options.effort.as_deref(), Some("low"));
     }
 

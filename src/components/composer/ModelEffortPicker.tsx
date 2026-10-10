@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { fastModeStatusText, ultracodeStatusText } from "@/lib/composerCapabilities"
 import {
   BUILTIN_MODELS,
   buildEffortOrder,
@@ -38,12 +39,14 @@ interface Props {
   effort: string
   onChange: (next: Partial<ComposerPrefs>) => void
   ultracode?: boolean
+  enableWorkflows?: boolean
   fastMode?: boolean
   autoCompactWindow?: AutoCompactWindow
   modelEfforts?: Record<string, string>
   canonicalModels?: Readonly<Record<string, string>>
   modelCapabilities?: Readonly<Record<string, ComposerModelCapabilities>>
   actualConfig?: ComposerRuntimeConfig | null
+  actualProviderLabel?: string
   featureCapabilities?: ComposerFeatureCapabilities
   configurationPending?: boolean
   modelOptions?: Array<{ value: string; label?: string }>
@@ -67,12 +70,14 @@ export function ModelEffortPicker({
   model,
   effort,
   ultracode = false,
+  enableWorkflows,
   fastMode = false,
   autoCompactWindow,
   modelEfforts,
   canonicalModels,
   modelCapabilities,
   actualConfig,
+  actualProviderLabel,
   featureCapabilities = {},
   configurationPending = false,
   onChange,
@@ -136,7 +141,7 @@ export function ModelEffortPicker({
 
   const baselineDefault = globalDefault ?? EMPTY_COMPOSER_PREFS
   const defaultsForModel = resolveComposerModelDefaults(baselineDefault, model, { canonicalModels })
-  const currentPrefs: ComposerPrefs = { ...sessionPrefs, model, effort, ultracode, fastMode, autoCompactWindow, modelEfforts: modelEfforts ?? sessionPrefs?.modelEfforts }
+  const currentPrefs: ComposerPrefs = { ...sessionPrefs, model, effort, ultracode, enableWorkflows, fastMode, autoCompactWindow, modelEfforts: modelEfforts ?? sessionPrefs?.modelEfforts }
   const chooseModel = (nextModel: string) => onChange(selectComposerModel(currentPrefs, nextModel, baselineDefault, canonicalModels))
   const chooseEffort = (nextEffort: string) => onChange(patchComposerPrefs(currentPrefs, { effort: nextEffort }, baselineDefault, canonicalModels))
   const source = effortSource(effort, sessionPrefs ?? null, baselineDefault, model)
@@ -206,7 +211,7 @@ export function ModelEffortPicker({
       >
         <div className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
           <div>已选择：{triggerLabel}</div>
-          <div>当前进程：{actualLabel}</div>
+          <div>当前进程{actualProviderLabel ? `（${actualProviderLabel}）` : ""}：{actualLabel}</div>
           <div>{configurationPending ? "配置待应用；当前请求保持原配置" : "修改用于下一次请求；当前请求保持原配置"}</div>
         </div>
         <DropdownMenuLabel className={MENU_LABEL_CLASS}>
@@ -306,11 +311,16 @@ export function ModelEffortPicker({
           <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={!featureCapabilities.independentUltracode} onSelect={() => onChange({ ultracode: !ultracode })}>
             <span className="flex-1">Ultracode</span><span className={MENU_META_CLASS}>{ultracode ? "已选择开启" : "关闭"}</span>{ultracode && <Check className={MENU_CHECK_CLASS} />}
           </DropdownMenuItem>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">独立开关，保留当前思考强度。{!featureCapabilities.independentUltracode ? featureCapabilities.reason ?? "当前 CLI / 模型能力尚未确认" : actualConfig?.ultracodeAvailable === false ? "当前运行环境报告不可用" : "实际生效受 CLI、模型及账号条件影响"}</div>
+          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">独立开关，保留当前思考强度。{!featureCapabilities.independentUltracode ? featureCapabilities.ultracodeReason ?? "当前 CLI 能力尚未确认" : "须启用 Dynamic workflows，且模型及组织策略允许。Pro 可使用下方本会话开关。"}</div>
+          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">{ultracodeStatusText(actualConfig, configurationPending || (!!ultracode && actualConfig?.ultracodeRequested === undefined))}</div>
+          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={!featureCapabilities.independentUltracode} onSelect={() => onChange({ enableWorkflows: enableWorkflows !== true })}>
+            <span className="flex-1">Dynamic workflows</span><span className={MENU_META_CLASS}>{enableWorkflows === true ? "本会话开启" : enableWorkflows === false ? "本会话关闭" : "跟随 CLI"}</span>{enableWorkflows === true && <Check className={MENU_CHECK_CLASS} />}
+          </DropdownMenuItem>
+          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">仅授权当前会话，随该会话恢复；不修改永久设置或思考强度，组织限制仍以 CLI 回读为准。</div>
           <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={!featureCapabilities.fastMode} onSelect={() => onChange({ fastMode: !fastMode })}>
             <span className="flex-1">Fast mode</span><span className={MENU_META_CLASS}>{fastMode ? "已选择开启" : "关闭"}</span>{fastMode && <Check className={MENU_CHECK_CLASS} />}
           </DropdownMenuItem>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">默认关闭；按更高单价或使用额度计费，可能切换至支持的 Opus。用于下一轮。实际：{actualConfig?.fastModeState ?? "尚未确认"}{actualConfig?.fastModeDisabledReason ? `（${actualConfig.fastModeDisabledReason}）` : ""}。{!featureCapabilities.fastMode && (featureCapabilities.reason ?? "当前运行环境尚未确认支持")}</div>
+          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">默认关闭；可能使用更高单价或 Usage credits，且需支持的 Opus、账号和上游授权。第三方网关须实际支持，不自动绕过检查。实际：{fastModeStatusText(actualConfig, configurationPending || (!!fastMode && !actualConfig?.fastModeState))}。{!featureCapabilities.fastMode && (featureCapabilities.fastModeReason ?? "当前运行环境尚未确认支持")}</div>
           <DropdownMenuLabel className={MENU_LABEL_CLASS}>此模型自动压缩窗口</DropdownMenuLabel>
           <div className="flex items-center gap-2 px-2 py-1">
             <input aria-label="此模型自动压缩窗口（token）" className="h-7 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs" disabled={!featureCapabilities.autoCompactWindow} key={`${model}:${autoCompactWindow ?? "auto"}`} defaultValue={autoCompactWindow ?? "auto"} placeholder="auto 或 100000–1000000" onKeyDown={(event) => {
@@ -324,7 +334,7 @@ export function ModelEffortPicker({
             }} />
             <span className={MENU_META_CLASS}>token</span>
           </div>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">{featureCapabilities.autoCompactWindow ? "auto 跟随模型默认；更高优先级设置可能覆盖。" : "当前 CLI 尚未确认支持按模型设置。"}窗口大小不表示当前上下文用量。</div>
+          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">{featureCapabilities.autoCompactWindow ? "auto 跟随模型默认；更高优先级设置可能覆盖。" : featureCapabilities.autoCompactWindowReason ?? "当前 CLI 尚未确认支持按模型设置。"}窗口大小不表示当前上下文用量。</div>
         </>}
 
         {supportsEffort && canPersistGlobal && (

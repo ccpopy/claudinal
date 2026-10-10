@@ -707,6 +707,7 @@ pub async fn spawn_session(
     prompt_suggestions: Option<bool>,
     ultracode: Option<bool>,
     fast_mode: Option<bool>,
+    enable_workflows: Option<bool>,
     model_settings: Option<Value>,
 ) -> Result<String> {
     if !std::path::Path::new(&cwd).is_dir() {
@@ -817,6 +818,7 @@ pub async fn spawn_session(
         prompt_suggestions,
         ultracode,
         fast_mode,
+        enable_workflows,
         model_settings,
     };
     let session_id = manager.spawn(app.clone(), opts).await?;
@@ -6380,8 +6382,11 @@ pub async fn collab_run_verification(
 pub async fn claude_capabilities(
     manager: State<'_, Manager>,
     session_id: Option<String>,
+    refresh: Option<bool>,
 ) -> Result<crate::proc::capabilities::CliCapabilities> {
-    manager.capabilities(session_id.as_deref()).await
+    manager
+        .refresh_capabilities(session_id.as_deref(), refresh.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]

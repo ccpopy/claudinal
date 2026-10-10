@@ -1,6 +1,6 @@
 //! Public native/SDK control contracts. Every exported reply is an allowlisted
 //! projection; env, hooks, auth, provider URLs, and arbitrary settings stay private.
-use super::capabilities::{version_at_least, Support};
+use super::capabilities::{version_at_least, CliCapabilities, Support};
 use crate::error::{Error, Result};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -18,7 +18,43 @@ pub fn supported(version: &str) -> Result<()> {
     }
 }
 
+#[cfg(test)]
 pub fn validate_settings(settings: &Value, version: &str) -> Result<()> {
+    let caps = super::capabilities::detect(std::path::Path::new("claude"), version.into(), "");
+    validate_settings_for_capabilities(settings, &caps)
+}
+
+pub fn validate_settings_for_capabilities(settings: &Value, caps: &CliCapabilities) -> Result<()> {
+    validate_settings_shape(settings)?;
+    for (key, support) in [
+        ("ultracode", caps.independent_ultracode),
+        ("fastMode", caps.headless_fast_mode),
+        ("enableWorkflows", caps.runtime_settings_control),
+    ] {
+        if settings.get(key).is_some() && support != Support::Supported {
+            return Err(Error::Other(format!("{key} 的实际 CLI 控制契约尚未确认")));
+        }
+    }
+    if let Some(models) = settings.get("modelSettings").and_then(Value::as_object) {
+        require_minimum(&caps.resolved_version, (2, 1, 251), "per-model settings")?;
+        for preferences in models.values() {
+            if preferences.get("maxEffortLevel").is_some() {
+                require_minimum(&caps.resolved_version, (2, 1, 267), "per-model effort cap")?;
+            }
+            if preferences.get("autoCompactWindow").is_some() {
+                require_minimum(
+                    &caps.resolved_version,
+                    (2, 1, 288),
+                    "per-model compact window",
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Shape checks are independent of version hints and precede every mutation.
+pub fn validate_settings_shape(settings: &Value) -> Result<()> {
     let object = settings
         .as_object()
         .ok_or_else(|| Error::Other("session settings must be an object".into()))?;
@@ -41,19 +77,21 @@ pub fn validate_settings(settings: &Value, version: &str) -> Result<()> {
                 }
             }
             "ultracode" => {
-                require_minimum(version, (2, 1, 284), "independent Ultracode")?;
                 if !value.is_boolean() {
                     return Err(Error::Other("ultracode must be boolean".into()));
                 }
             }
             "fastMode" => {
-                require_minimum(version, (2, 1, 205), "headless Fast mode")?;
                 if !value.is_boolean() {
                     return Err(Error::Other("fastMode must be boolean".into()));
                 }
             }
+            "enableWorkflows" => {
+                if !value.is_boolean() {
+                    return Err(Error::Other("enableWorkflows must be boolean".into()));
+                }
+            }
             "modelSettings" => {
-                require_minimum(version, (2, 1, 251), "per-model settings")?;
                 let models = value
                     .as_object()
                     .ok_or_else(|| Error::Other("modelSettings must be an object".into()))?;
@@ -89,18 +127,12 @@ pub fn validate_settings(settings: &Value, version: &str) -> Result<()> {
                                 if matches!(
                                     value.as_str(),
                                     Some("low" | "medium" | "high" | "xhigh" | "max")
-                                ) =>
-                            {
-                                require_minimum(version, (2, 1, 267), "per-model effort cap")?
-                            }
+                                ) => {}
                             "autoCompactWindow"
                                 if value.as_str() == Some("auto")
                                     || value
                                         .as_u64()
-                                        .is_some_and(|n| (100_000..=1_000_000).contains(&n)) =>
-                            {
-                                require_minimum(version, (2, 1, 288), "per-model compact window")?
-                            }
+                                        .is_some_and(|n| (100_000..=1_000_000).contains(&n)) => {}
                             _ => {
                                 return Err(Error::Other(format!(
                                     "unsupported model preference: {key}"
@@ -133,6 +165,7 @@ pub fn project_settings(settings: &Value) -> Value {
         "ultracode",
         "fastMode",
         "fastModePerSessionOptIn",
+        "enableWorkflows",
         "maxEffortLevel",
         "autoCompactWindow",
     ] {
@@ -180,7 +213,9 @@ fn setting_value(key: &str, value: &Value, per_model: bool) -> bool {
                     .as_u64()
                     .is_some_and(|n| (100_000..=1_000_000).contains(&n))
         }
-        "ultracode" | "fastMode" | "fastModePerSessionOptIn" => value.is_boolean(),
+        "ultracode" | "fastMode" | "fastModePerSessionOptIn" | "enableWorkflows" => {
+            value.is_boolean()
+        }
         _ => false,
     }
 }
@@ -195,7 +230,7 @@ pub fn validate_settings_reply(raw: &Value) -> Result<()> {
         || !raw
             .pointer("/applied/effort")
             .and_then(Value::as_str)
-            .is_some_and(|s| s.len() <= 256 && !s.is_empty())
+            .is_some_and(|s| matches!(s, "low" | "medium" | "high" | "xhigh" | "max"))
     {
         return Err(Error::Other("CLI 设置响应无效，实际配置尚未确认".into()));
     }
@@ -405,16 +440,18 @@ impl Activity {
         Ok(())
     }
     pub fn observe(&mut self, value: &Value) {
-        if value.get("type").and_then(Value::as_str) == Some("result") {
+        if value.get("parent_tool_use_id").is_none_or(Value::is_null)
+            && matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("result" | "system" | "notification")
+            )
+        {
             self.observe_fast(value);
         }
         match (
             value.get("type").and_then(Value::as_str),
             value.get("subtype").and_then(Value::as_str),
         ) {
-            (Some("system"), Some("init")) => {
-                self.observe_fast(value);
-            }
             (Some("system"), Some("task_started")) => {
                 if let Some(id) = value.get("task_id").and_then(Value::as_str) {
                     self.track_task(id, value.get("run_id").and_then(Value::as_str));
@@ -520,7 +557,7 @@ impl Activity {
             _ => {}
         }
     }
-    fn observe_fast(&mut self, value: &Value) {
+    pub fn observe_fast(&mut self, value: &Value) {
         if let Some(state) = value
             .get("fast_mode_state")
             .and_then(Value::as_str)
@@ -817,6 +854,37 @@ mod tests {
         assert_eq!(activity.fast_state.as_deref(), Some("on"));
         activity.observe(&json!({"type":"result","fast_mode_state":"invalid","fast_mode_disabled_reason":"secret"}));
         assert_eq!(activity.fast_state.as_deref(), Some("on"));
+        activity.observe(&json!({"type":"notification","fast_mode_state":"off","fast_mode_disabled_reason":"extra_usage_disabled"}));
+        assert_eq!(activity.fast_state.as_deref(), Some("off"));
+        assert_eq!(
+            activity.fast_reason.as_deref(),
+            Some("extra_usage_disabled")
+        );
+        activity.observe(&json!({"type":"system","subtype":"init","parent_tool_use_id":"child","fast_mode_state":"on"}));
+        assert_eq!(activity.fast_state.as_deref(), Some("off"));
+        activity.observe_fast(&json!({"fast_mode_state":"on"}));
+        assert_eq!(activity.fast_state.as_deref(), Some("on"));
+        assert!(activity.fast_reason.is_none());
+    }
+
+    #[test]
+    fn workflow_shape_and_projection_never_export_raw_settings() {
+        assert!(validate_settings_shape(
+            &json!({"enableWorkflows":true,"ultracode":true,"effortLevel":"low"})
+        )
+        .is_ok());
+        assert!(validate_settings_shape(&json!({"enableWorkflows":false})).is_ok());
+        assert!(validate_settings_shape(&json!({"enableWorkflows":"true"})).is_err());
+        assert!(validate_settings_shape(
+            &json!({"enableWorkflows":true,"env":{"SECRET":"hidden"}})
+        )
+        .is_err());
+        assert_eq!(
+            project_settings(
+                &json!({"enableWorkflows":false,"env":{"SECRET":"hidden"},"hooks":{"secret":true}})
+            ),
+            json!({"enableWorkflows":false})
+        );
     }
 
     #[test]

@@ -1,11 +1,12 @@
-import { useState, useSyncExternalStore } from "react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { installedCliCapabilities, refreshInstalledCliCapabilities } from "@/lib/installedCliCapabilities"
 import { liveRuntimeSnapshot, subscribeLiveRuntimeSummaries } from "@/lib/runtimeStatus"
 import { invalidateSlashCommandsCache } from "@/lib/slashCommands"
 import { AGENT_TEAMS_DIAGNOSTIC, localDaemonStatus, UNVERIFIED_LOCAL_DAEMON_STATUS, type LocalDaemonStatus } from "@/lib/localDaemon"
 import {
-  claudeCapabilities, claudeInstallations, claudeRuntimeDiagnostics,
+  claudeInstallations, claudeRuntimeDiagnostics,
   selectClaudeInstallation, writeTextFile,
-  type CliCapabilities, type CliInstallations, type RuntimeDiagnostics,
+  type CliInstallations, type RuntimeDiagnostics,
 } from "@/lib/ipc"
 import { save } from "@tauri-apps/plugin-dialog"
 import { toast } from "sonner"
@@ -14,7 +15,10 @@ import { CopyButton } from "./CopyButton"
 
 export function CliDiagnostics() {
   const sessions = useSyncExternalStore(subscribeLiveRuntimeSummaries, liveRuntimeSnapshot, liveRuntimeSnapshot)
-  const [info, setInfo] = useState<CliCapabilities | null>(null)
+  const capabilitySnapshot = useSyncExternalStore(installedCliCapabilities.subscribe, installedCliCapabilities.getSnapshot, installedCliCapabilities.getSnapshot)
+  const info = capabilitySnapshot.capabilities
+  const requestGeneration = useRef(0)
+  useEffect(() => () => { requestGeneration.current++ }, [])
   const [installations, setInstallations] = useState<CliInstallations | null>(null)
   const [selectedPath, setSelectedPath] = useState("")
   const [timeline, setTimeline] = useState<RuntimeDiagnostics | null>(null)
@@ -24,20 +28,21 @@ export function CliDiagnostics() {
   const [daemon, setDaemon] = useState<Readonly<LocalDaemonStatus>>(UNVERIFIED_LOCAL_DAEMON_STATUS)
 
   const probe = async () => {
+    const generation = ++requestGeneration.current
     setBusy(true)
     setError("")
     setPreviewExport(false)
     const [capabilities, choices, diagnostics, daemonGate] = await Promise.allSettled([
-      claudeCapabilities(), claudeInstallations(), claudeRuntimeDiagnostics(), localDaemonStatus(),
+      refreshInstalledCliCapabilities(), claudeInstallations(), claudeRuntimeDiagnostics(), localDaemonStatus(),
     ])
-    setInfo(capabilities.status === "fulfilled" ? capabilities.value : null)
+    if (generation !== requestGeneration.current) return
     setTimeline(diagnostics.status === "fulfilled" ? diagnostics.value : null)
     setInstallations(choices.status === "fulfilled" ? choices.value : null)
     setDaemon(daemonGate.status === "fulfilled" ? daemonGate.value : UNVERIFIED_LOCAL_DAEMON_STATUS)
     if (choices.status === "fulfilled") setSelectedPath(choices.value.selectedPath ?? "")
     setError([capabilities, choices, diagnostics, daemonGate]
       .filter((result) => result.status === "rejected")
-      .map((result) => String(result.reason)).join("；"))
+      .map((result) => String(result.reason)).concat(capabilities.status === "fulfilled" && !capabilities.value ? ["CLI 能力检测未完成，请重试"] : []).join("；"))
     setBusy(false)
   }
 
@@ -75,7 +80,7 @@ export function CliDiagnostics() {
     <summary className="cursor-pointer">运行环境诊断</summary>
     <div className="mt-3 space-y-2">
       <Button variant="outline" size="sm" disabled={busy} onClick={() => void probe()}>{busy ? "检测中…" : "检测实际 CLI"}</Button>
-      <p className="text-xs text-muted-foreground">仅读取版本和帮助信息。诊断包含安装路径及本次应用运行的最近 500 条状态记录，不包含消息、凭据或 stderr 原文。</p>
+      <p className="text-xs text-muted-foreground">读取版本、帮助及隔离进程的设置控制响应，不发送模型请求。诊断包含安装路径及本次应用运行的最近 500 条状态记录，不包含消息、凭据或 stderr 原文；检测结果同步用于下一次启动前的功能选择。</p>
       <div className="space-y-2 rounded border p-2 text-xs" data-local-daemon-isolation={daemon.isolation}>
         <p>外部后台任务：隔离待验证，未启用查询</p>
         <p className="text-muted-foreground">{daemon.reason}</p>
@@ -117,10 +122,13 @@ export function CliDiagnostics() {
           <dt>用户消息确认</dt><dd>{labels[info.userMessageReplay]}</dd>
           <dt>引导</dt><dd>{labels[info.midTurnInput]}</dd>
           <dt>Hook 事件</dt><dd>{labels[info.hookEvents]}</dd>
-          <dt>原生 Ultracode</dt><dd>{labels[info.nativeUltracodeEffort]}</dd>
+          <dt>旧式 Ultracode effort</dt><dd>{labels[info.nativeUltracodeEffort]}</dd>
+          <dt>独立 Ultracode 开关</dt><dd>{labels[info.independentUltracode]}</dd>
+          <dt>设置读取 / 热应用</dt><dd>{labels[info.runtimeSettingsControl]}</dd>
+          <dt>headless Fast 控制</dt><dd>{labels[info.headlessFastMode]}</dd>
           <dt>历史分支</dt><dd>{labels[info.forkSession]}</dd>
         </dl>
-        <p className="text-xs text-muted-foreground">能力依据：CLI 帮助及已记录的版本规则；尚未完成此安装的端到端认证。</p>
+        <p className="text-xs text-muted-foreground">设置控制依据：{info.settingsProbeEvidence === "metadata" ? "实际 CLI 控制响应" : "版本兼容提示，待实际响应确认"}。功能支持仅说明控制契约；账号、模型、Dynamic workflows 和 Fast 资格须由当前进程回读，尚未认证付费推理。</p>
       </>}
       {(info || timeline) && <>
         {timeline && <p className="text-xs text-muted-foreground">运行记录：{timeline.events.length} 条{timeline.droppedEvents > 0 ? `，已丢弃较早的 ${timeline.droppedEvents} 条` : ""}。点击检测可刷新快照。</p>}
