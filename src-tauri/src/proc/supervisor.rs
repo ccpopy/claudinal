@@ -13,6 +13,14 @@ impl ProcessTree {
         let pid = child
             .id()
             .ok_or_else(|| io::Error::other("child already exited"))?;
+        Self::attach_pid(pid)
+    }
+
+    pub fn attach_std(child: &std::process::Child) -> io::Result<Self> {
+        Self::attach_pid(child.id())
+    }
+
+    fn attach_pid(pid: u32) -> io::Result<Self> {
         #[cfg(windows)]
         unsafe {
             use windows_sys::Win32::{

@@ -41,6 +41,14 @@ pub struct CliCapabilities {
     pub headless_model_command: Support,
     pub native_ultracode_effort: Support,
     pub fork_session: Support,
+    pub file_checkpoints: Support,
+    pub runtime_settings_control: Support,
+    pub independent_ultracode: Support,
+    pub model_settings: Support,
+    pub auto_compact_window: Support,
+    pub headless_fast_mode: Support,
+    pub prompt_suggestions: Support,
+    pub context_usage_summary: Support,
     pub checked_at: String,
     pub certification: &'static str,
 }
@@ -89,6 +97,13 @@ pub fn mid_turn_input(version: &str) -> Support {
     version_at_least(version, (2, 1, 265))
 }
 
+fn observed_control_support(version: &str) -> Support {
+    match version_at_least(version, (2, 1, 296)) {
+        Support::Supported => Support::Supported,
+        _ => Support::Unknown,
+    }
+}
+
 pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabilities {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -121,10 +136,26 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
                 "documented version rule: >=2.1.203",
             ),
             ("interrupt", "runtime confirmation pending"),
-            ("subagentTextForwarding", "runtime confirmation pending"),
+            ("subagentTextForwarding", "installed public help; live child event matrix unverified"),
+            ("fileCheckpoints", "SDK checkpoint env/rewind contract and link safeguards >=2.1.216; restore success unverified"),
+            ("runtimeSettingsControl", "native 2.1.296 get_settings/apply_flag_settings metadata; earlier contract unknown"),
+            ("independentUltracode", "documented >=2.1.284; account eligibility unverified"),
+            ("modelSettings", "documented per-model effort >=2.1.251"),
+            ("autoCompactWindow", "documented per-model window >=2.1.288"),
+            ("headlessFastMode", "documented >=2.1.205; actual init/account/provider state required"),
+            ("promptSuggestions", "public help; actual suggestions/provider usage unverified"),
+            ("contextUsageSummary", "native 2.1.296 explicit summary metadata; model window estimate"),
         ]),
         interrupt: Support::Unknown,
-        subagent_text_forwarding: Support::Unknown,
+        subagent_text_forwarding: from_help("--forward-subagent-text", help),
+        file_checkpoints: version_at_least(&version, (2, 1, 216)),
+        runtime_settings_control: observed_control_support(&version),
+        independent_ultracode: version_at_least(&version, (2,1,284)),
+        model_settings: version_at_least(&version, (2,1,251)),
+        auto_compact_window: version_at_least(&version, (2,1,288)),
+        headless_fast_mode: version_at_least(&version, (2,1,205)),
+        prompt_suggestions: from_help("--prompt-suggestions", help),
+        context_usage_summary: observed_control_support(&version),
         executable_path: path.display().to_string(),
         install_kind: if path
             .extension()
@@ -157,6 +188,37 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conditional_controls_have_distinct_evidence_and_never_certify_accounts() {
+        let path = std::path::Path::new("claude");
+        let old = detect(path, "2.1.295".into(), "");
+        assert_eq!(old.runtime_settings_control, Support::Unknown);
+        assert_eq!(old.context_usage_summary, Support::Unknown);
+        let current = detect(
+            path,
+            "2.1.296".into(),
+            "--forward-subagent-text --prompt-suggestions",
+        );
+        assert_eq!(current.runtime_settings_control, Support::Supported);
+        assert_eq!(current.file_checkpoints, Support::Supported);
+        assert_eq!(current.user_message_replay, Support::Supported);
+        assert_eq!(current.prompt_suggestions, Support::Supported);
+        assert_eq!(current.subagent_text_forwarding, Support::Supported);
+        assert!(current.certification.contains("unverified"));
+        assert!(current.evidence["headlessFastMode"].contains("account"));
+        assert_eq!(
+            detect(path, "2.1.283".into(), "").independent_ultracode,
+            Support::Unsupported
+        );
+        assert_eq!(
+            detect(path, "2.1.287".into(), "").auto_compact_window,
+            Support::Unsupported
+        );
+        assert_eq!(
+            detect(path, "unknown".into(), "").file_checkpoints,
+            Support::Unknown
+        );
+    }
     #[test]
     fn mid_turn_uses_result_attribution_minimum_not_a_version_allowlist() {
         for version in [

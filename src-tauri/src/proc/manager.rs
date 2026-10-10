@@ -7,11 +7,13 @@ use std::sync::{
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::capabilities::{self, Support};
+use super::control::{unsupported_response, ControlReceipts, ReplyWaiters};
 use super::diagnostics::{Diagnostics, RuntimeDiagnostics};
+use super::runtime_controls::{self, Activity, Preview};
 use super::supervisor::{supervise, ProcessTree};
 use super::transport::{read_line, write_frame, WriteFailure, MAX_EVENT_BYTES, MAX_INPUT_BYTES};
 use dashmap::DashMap;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::io::BufReader;
 use tokio::process::{ChildStdin, Command};
@@ -25,6 +27,7 @@ use crate::proc::spawn::{
     claude_lookup_candidates, configured_claude_path, find_claude, save_claude_path,
 };
 
+#[derive(Default)]
 pub struct SpawnOptions {
     pub runtime_id: Option<String>,
     pub fork_session: bool,
@@ -39,6 +42,12 @@ pub struct SpawnOptions {
     pub permission_prompt_tool: Option<String>,
     pub mcp_config: Option<String>,
     pub settings_json: Option<String>,
+    pub file_checkpointing: Option<bool>,
+    pub forward_subagent_text: Option<bool>,
+    pub prompt_suggestions: Option<bool>,
+    pub ultracode: Option<bool>,
+    pub fast_mode: Option<bool>,
+    pub model_settings: Option<Value>,
 }
 
 struct Session {
@@ -49,11 +58,17 @@ struct Session {
     done: watch::Receiver<bool>,
     stop_reason: std::sync::Mutex<Option<String>>,
     submissions: Mutex<std::collections::HashMap<String, std::result::Result<(), DeliveryError>>>,
+    control_responses: Mutex<ControlReceipts>,
+    replies: Arc<ReplyWaiters>,
+    mutation_gate: Mutex<()>,
+    activity: std::sync::Mutex<Activity>,
+    checkpoints_enabled: bool,
 }
 
 impl Session {
     fn close(&self, reason: &str) {
         self.available.store(false, Ordering::Release);
+        self.replies.close("CLI 会话已停止，控制请求已取消");
         if let Ok(mut stored) = self.stop_reason.lock() {
             if stored.is_none() {
                 *stored = Some(reason.into());
@@ -207,7 +222,7 @@ impl Manager {
         result
     }
 
-    async fn spawn_inner(&self, app: AppHandle, opts: SpawnOptions) -> Result<String> {
+    async fn spawn_inner(&self, app: AppHandle, mut opts: SpawnOptions) -> Result<String> {
         let (claude, version) = resolve_claude().await?;
         self.diagnostics.installation(
             opts.runtime_id.as_deref().unwrap_or_default(),
@@ -218,6 +233,16 @@ impl Manager {
         let help = claude_help_cached(&claude, &version, &self.claude_help_cache)
             .await
             .unwrap_or_default();
+        let caps = capabilities::detect(&claude, version.clone(), &help);
+        configure_session_settings(&mut opts, &version)?;
+        let checkpoints_enabled = opts.file_checkpointing.unwrap_or(true)
+            && caps.file_checkpoints == Support::Supported
+            && caps.user_message_replay == Support::Supported;
+        if opts.file_checkpointing == Some(true) && !checkpoints_enabled {
+            return Err(Error::Other(
+                "当前 CLI 的文件检查点及用户 UUID 回放能力尚未确认".into(),
+            ));
+        }
         if opts.effort.as_deref() == Some("ultracode")
             && capabilities::version_at_least(&version, (2, 1, 203)) != Support::Supported
         {
@@ -288,6 +313,25 @@ impl Manager {
         }
         if capabilities::from_help("--replay-user-messages", &help) == Support::Supported {
             cmd.arg("--replay-user-messages");
+        } else if checkpoints_enabled {
+            cmd.arg("--replay-user-messages");
+        }
+        if opts.forward_subagent_text.unwrap_or(true)
+            && caps.subagent_text_forwarding == Support::Supported
+        {
+            cmd.arg("--forward-subagent-text");
+        } else if opts.forward_subagent_text == Some(true) {
+            return Err(Error::Other("当前 CLI 未确认支持子代理文本转发".into()));
+        }
+        if caps.prompt_suggestions == Support::Supported {
+            cmd.arg("--prompt-suggestions")
+                .arg(if opts.prompt_suggestions.unwrap_or(false) {
+                    "true"
+                } else {
+                    "false"
+                });
+        } else if opts.prompt_suggestions == Some(true) {
+            return Err(Error::Other("当前 CLI 未确认支持输入建议".into()));
         }
 
         if let Some(model) = &opts.model {
@@ -343,6 +387,10 @@ impl Manager {
         for key in &opts.env_remove {
             cmd.env_remove(key);
         }
+        cmd.env(
+            "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+            if checkpoints_enabled { "true" } else { "false" },
+        );
 
         cmd.current_dir(&opts.cwd)
             .stdin(Stdio::piped())
@@ -386,6 +434,11 @@ impl Manager {
             done: done_rx,
             stop_reason: std::sync::Mutex::new(None),
             submissions: Mutex::new(std::collections::HashMap::new()),
+            control_responses: Mutex::new(ControlReceipts::default()),
+            replies: Arc::new(ReplyWaiters::default()),
+            mutation_gate: Mutex::new(()),
+            activity: std::sync::Mutex::new(Activity::default()),
+            checkpoints_enabled,
         });
         self.sessions.insert(session_id.clone(), session.clone());
         self.diagnostics.record(&session_id, "spawned", None, None);
@@ -410,6 +463,45 @@ impl Manager {
                             }
                             match serde_json::from_str::<Value>(trimmed) {
                                 Ok(value) => {
+                                    match session
+                                        .control_responses
+                                        .lock()
+                                        .await
+                                        .should_forward_permission(&value)
+                                    {
+                                        Ok(false) => continue,
+                                        Ok(true) => {}
+                                        Err(_) => {
+                                            diagnostics.record(
+                                                &sid,
+                                                "malformed_permission_request",
+                                                None,
+                                                None,
+                                            );
+                                            let _ = app.emit(&topic, json!({"type":"stderr","line":"CLI 权限请求缺少有效 request_id，会话已停止。"}));
+                                            session.close("malformed_permission_request");
+                                            break;
+                                        }
+                                    }
+                                    let permission_cancel =
+                                        if let Ok(mut activity) = session.activity.lock() {
+                                            let permission_cancel =
+                                                value.get("type").and_then(Value::as_str)
+                                                    == Some("control_cancel_request")
+                                                    && value
+                                                        .get("request_id")
+                                                        .and_then(Value::as_str)
+                                                        .is_some_and(|id| {
+                                                            activity.permissions.contains(id)
+                                                        });
+                                            activity.observe(&value);
+                                            permission_cancel
+                                        } else {
+                                            false
+                                        };
+                                    if session.replies.consume(&value) && !permission_cancel {
+                                        continue;
+                                    }
                                     let event_type = value
                                         .get("type")
                                         .and_then(|v| v.as_str())
@@ -468,9 +560,39 @@ impl Manager {
                                                 None,
                                                 None,
                                             );
-                                            let _ = app.emit(&topic, json!({"type":"stderr", "line":"CLI 发出了未识别的控制请求，会话已停止；未授予权限。"}));
-                                            session.close("unknown_control_request");
-                                            break;
+                                            let Some(response) = unsupported_response(&value)
+                                            else {
+                                                let _ = app.emit(&topic, json!({"type":"stderr", "line":"CLI 控制请求缺少有效 request_id，无法回复；会话已停止。"}));
+                                                session.close("malformed_control_request");
+                                                break;
+                                            };
+                                            let id =
+                                                value["request_id"].as_str().unwrap_or_default();
+                                            if session.control_responses.lock().await.insert(id) {
+                                                let body = format!("{}\n", response);
+                                                let replied = match tokio::time::timeout(
+                                                    Duration::from_secs(2),
+                                                    session.stdin.lock(),
+                                                )
+                                                .await
+                                                {
+                                                    Ok(mut stdin) => write_frame(
+                                                        &mut *stdin,
+                                                        body.as_bytes(),
+                                                        Duration::from_secs(2),
+                                                    )
+                                                    .await
+                                                    .is_ok(),
+                                                    Err(_) => false,
+                                                };
+                                                if !replied {
+                                                    session
+                                                        .close("unsupported_control_reply_failed");
+                                                    break;
+                                                }
+                                                let _ = app.emit(&topic, json!({"type":"stderr", "line":"CLI 控制扩展暂不支持，已回复明确错误；会话继续运行。"}));
+                                            }
+                                            continue;
                                         }
                                         let mut payload = value.clone();
                                         if let Some(obj) = payload.as_object_mut() {
@@ -484,6 +606,14 @@ impl Manager {
                                                 session = %sid,
                                                 "permission request emit failed: {e}"
                                             );
+                                            diagnostics.record(
+                                                &sid,
+                                                "permission_emit_failed",
+                                                None,
+                                                None,
+                                            );
+                                            session.close("permission_emit_failed");
+                                            break;
                                         }
                                         continue;
                                     }
@@ -596,6 +726,7 @@ impl Manager {
                 stdout_task.abort();
                 stderr_task.abort();
             }
+            session.replies.close("CLI 进程已退出，控制请求未完成");
             drop(runtime_settings_file);
             drop(runtime_mcp_file);
             let _ = app.emit(
@@ -673,6 +804,7 @@ impl Manager {
     ) -> Result<()> {
         let command_payload = json!({
             "type": "user",
+            "uuid": Uuid::new_v4().to_string(),
             "message": {
                 "role": "user",
                 "content": command_text
@@ -688,6 +820,17 @@ impl Manager {
         request_id: &str,
         response: Value,
     ) -> Result<()> {
+        if request_id.is_empty() || request_id.len() > 256 {
+            return Err(Error::Other("控制请求 ID 无效".into()));
+        }
+        let session = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.clone())
+            .ok_or_else(|| Error::Other("会话进程已结束".into()))?;
+        if !session.control_responses.lock().await.insert(request_id) {
+            return Ok(());
+        }
         let payload = json!({
             "type": "control_response",
             "response": {
@@ -696,7 +839,16 @@ impl Manager {
                 "response": response
             }
         });
-        self.write_json_line(session_id, payload).await
+        let result = self.write_json_line(session_id, payload).await;
+        if result.is_ok() {
+            if let Ok(mut activity) = session.activity.lock() {
+                activity.permissions.remove(request_id);
+            }
+        }
+        if result.is_err() {
+            session.close("control_reply_failed");
+        }
+        result
     }
 
     /// 软中断当前回合：向会话 stdin 写一行 interrupt control_request（等价 TUI Esc）。
@@ -724,6 +876,268 @@ impl Manager {
             Some(Ok(())) => Ok(()),
             _ => self.stop(session_id).await,
         }
+    }
+
+    fn control_session(&self, session_id: &str) -> Result<Arc<Session>> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.clone())
+            .ok_or_else(|| Error::Other("会话进程已结束".into()))?;
+        runtime_controls::supported(&session.capabilities.resolved_version)?;
+        if !session.available.load(Ordering::Acquire) {
+            return Err(Error::Other("会话连接已关闭".into()));
+        }
+        Ok(session)
+    }
+
+    async fn request_control(session: &Arc<Session>, request: Value) -> Result<Value> {
+        if !session.available.load(Ordering::Acquire) {
+            return Err(Error::Other("会话连接已关闭".into()));
+        }
+        let pending = session.replies.register().map_err(Error::Other)?;
+        let request_id = pending.id.clone();
+        let mutation = request.get("subtype").and_then(Value::as_str)
+            == Some("apply_flag_settings")
+            || (request.get("subtype").and_then(Value::as_str) == Some("rewind_files")
+                && request.get("dry_run").and_then(Value::as_bool) == Some(false));
+        let body = format!(
+            "{}\n",
+            json!({"type":"control_request", "request_id":request_id, "request":request})
+        );
+        if body.len() > 1024 * 1024 {
+            return Err(Error::Other("CLI 控制请求超过大小限制".into()));
+        }
+        {
+            let mut stdin = tokio::time::timeout(Duration::from_secs(2), session.stdin.lock())
+                .await
+                .map_err(|_| Error::Other("CLI 输入通道繁忙，控制请求尚未写入".into()))?;
+            if !session.available.load(Ordering::Acquire) {
+                return Err(Error::Other("会话连接已关闭".into()));
+            }
+            if mutation {
+                Self::ensure_idle(session)?;
+            }
+            if write_frame(&mut *stdin, body.as_bytes(), Duration::from_secs(2))
+                .await
+                .is_err()
+            {
+                session.close("control_write_unknown");
+                return Err(Error::Other(
+                    "控制请求写入结果未确认，会话已停止；未自动重试".into(),
+                ));
+            }
+        }
+        match pending.receive(Duration::from_secs(10)).await {
+            Ok(reply) => Ok(reply),
+            Err(error) => {
+                if mutation {
+                    session.close("control_mutation_unconfirmed");
+                    return Err(Error::Other(format!("{error}；运行实例已停止，未自动重试")));
+                }
+                if error.starts_with("CLI 控制请求超时") {
+                    if let Ok(mut stdin) = session.stdin.try_lock() {
+                        let cancel = format!(
+                            "{}\n",
+                            json!({"type":"control_cancel_request", "request_id":request_id})
+                        );
+                        if write_frame(&mut *stdin, cancel.as_bytes(), Duration::from_secs(1))
+                            .await
+                            .is_err()
+                        {
+                            session.close("control_cancel_write_failed");
+                        }
+                    }
+                }
+                Err(Error::Other(error))
+            }
+        }
+    }
+
+    fn ensure_idle(session: &Session) -> Result<()> {
+        let activity = session
+            .activity
+            .lock()
+            .map_err(|_| Error::Other("runtime activity lock poisoned".into()))?;
+        if !activity.idle() {
+            return Err(Error::Other(
+                "请等待本轮、后台任务和权限请求结束后再操作".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn runtime_settings(&self, session_id: &str) -> Result<Value> {
+        let session = self.control_session(session_id)?;
+        let raw = Self::request_control(&session, json!({"subtype":"get_settings"})).await?;
+        runtime_controls::validate_settings_reply(&raw)?;
+        let activity = session
+            .activity
+            .lock()
+            .map_err(|_| Error::Other("runtime activity lock poisoned".into()))?;
+        Ok(runtime_controls::settings_reply(&raw, &activity))
+    }
+
+    pub async fn apply_runtime_settings(
+        &self,
+        session_id: &str,
+        mut settings: Value,
+    ) -> Result<Value> {
+        let session = self.control_session(session_id)?;
+        runtime_controls::validate_settings(&settings, &session.capabilities.resolved_version)?;
+        let _guard = session
+            .mutation_gate
+            .try_lock()
+            .map_err(|_| Error::Other("已有文件或配置操作正在执行".into()))?;
+        Self::ensure_idle(&session)?;
+        if let Some(patch) = settings
+            .get("modelSettings")
+            .and_then(Value::as_object)
+            .cloned()
+        {
+            let raw = Self::request_control(&session, json!({"subtype":"get_settings"})).await?;
+            runtime_controls::validate_settings_reply(&raw)?;
+            let mut models = raw
+                .pointer("/effective/modelSettings")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            for (model, preferences) in patch {
+                let existing = models.entry(model).or_insert_with(|| json!({}));
+                let existing = existing
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Other("现有模型设置无法安全合并".into()))?;
+                existing.extend(preferences.as_object().unwrap().clone());
+            }
+            settings["modelSettings"] = Value::Object(models);
+        }
+        let fast_changed = settings.get("fastMode").is_some();
+        Self::request_control(
+            &session,
+            json!({"subtype":"apply_flag_settings", "settings":settings}),
+        )
+        .await?;
+        if let Ok(mut activity) = session.activity.lock() {
+            activity.epoch = activity.epoch.saturating_add(1);
+            activity.preview = None;
+            if fast_changed {
+                activity.fast_state = None;
+                activity.fast_reason = Some("pending".into());
+            }
+        }
+        let raw = match Self::request_control(&session, json!({"subtype":"get_settings"})).await {
+            Ok(raw) if runtime_controls::validate_settings_reply(&raw).is_ok() => raw,
+            _ => {
+                session.close("control_apply_verification_failed");
+                return Err(Error::Other(
+                    "配置已提交但权威回读失败，会话已停止；未自动重试配置更改".into(),
+                ));
+            }
+        };
+        let activity = session.activity.lock().map_err(|_| {
+            session.close("control_apply_verification_failed");
+            Error::Other("配置已提交但运行状态无法确认，会话已停止".into())
+        })?;
+        Ok(runtime_controls::settings_reply(&raw, &activity))
+    }
+
+    pub async fn context_usage(&self, session_id: &str) -> Result<Value> {
+        let session = self.control_session(session_id)?;
+        let raw = Self::request_control(
+            &session,
+            json!({"subtype":"get_context_usage", "detail":"summary"}),
+        )
+        .await?;
+        Ok(runtime_controls::context_reply(&raw))
+    }
+
+    pub async fn preview_rewind(&self, session_id: &str, message_id: String) -> Result<Value> {
+        Uuid::parse_str(&message_id).map_err(|_| Error::Other("invalid checkpoint UUID".into()))?;
+        let session = self.control_session(session_id)?;
+        if !session.checkpoints_enabled {
+            return Err(Error::Other(
+                "此运行实例未启用文件检查点，不能补造历史检查点".into(),
+            ));
+        }
+        let _guard = session
+            .mutation_gate
+            .try_lock()
+            .map_err(|_| Error::Other("已有文件或配置操作正在执行".into()))?;
+        Self::ensure_idle(&session)?;
+        let raw = Self::request_control(
+            &session,
+            json!({"subtype":"rewind_files", "user_message_id":message_id, "dry_run":true}),
+        )
+        .await?;
+        let mut result = runtime_controls::rewind_reply(&raw)?;
+        if result["canRewind"] == true {
+            let preview_id = Uuid::new_v4().to_string();
+            let mut activity = session
+                .activity
+                .lock()
+                .map_err(|_| Error::Other("runtime activity lock poisoned".into()))?;
+            let epoch = activity.epoch;
+            activity.preview = Some(Preview {
+                id: preview_id.clone(),
+                message_id,
+                epoch,
+                created: std::time::Instant::now(),
+                result: result.clone(),
+            });
+            result["previewId"] = json!(preview_id);
+        } else {
+            if let Ok(mut activity) = session.activity.lock() {
+                activity.preview = None;
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn rewind_files(
+        &self,
+        session_id: &str,
+        message_id: String,
+        preview_id: String,
+    ) -> Result<Value> {
+        Uuid::parse_str(&message_id).map_err(|_| Error::Other("invalid checkpoint UUID".into()))?;
+        let session = self.control_session(session_id)?;
+        if !session.checkpoints_enabled {
+            return Err(Error::Other("此运行实例未启用文件检查点".into()));
+        }
+        let _guard = session
+            .mutation_gate
+            .try_lock()
+            .map_err(|_| Error::Other("已有文件或配置操作正在执行".into()))?;
+        Self::ensure_idle(&session)?;
+        let preview = {
+            let mut activity = session
+                .activity
+                .lock()
+                .map_err(|_| Error::Other("runtime activity lock poisoned".into()))?;
+            if !activity.preview_matches(&preview_id, &message_id) {
+                return Err(Error::Other(
+                    "回退预览已过期或运行回合已变化，请重新预览".into(),
+                ));
+            }
+            activity.preview.take().unwrap()
+        };
+        let raw = Self::request_control(
+            &session,
+            json!({"subtype":"rewind_files", "user_message_id":message_id, "dry_run":true}),
+        )
+        .await?;
+        let current = runtime_controls::rewind_reply(&raw)?;
+        if current["canRewind"] != true || current != preview.result {
+            return Err(Error::Other(
+                "CLI 回退范围已变化或无法回退，请重新预览确认".into(),
+            ));
+        }
+        let raw = Self::request_control(
+            &session,
+            json!({"subtype":"rewind_files", "user_message_id":message_id, "dry_run":false}),
+        )
+        .await?;
+        runtime_controls::rewind_reply(&raw)
     }
 
     async fn write_json_line(&self, session_id: &str, payload: Value) -> Result<()> {
@@ -755,6 +1169,44 @@ impl Manager {
                     None,
                 )
             })?;
+        let authored_input = payloads
+            .iter()
+            .any(|payload| payload.get("type").and_then(Value::as_str) == Some("user"));
+        let input_ids: Vec<String> = payloads
+            .iter()
+            .filter(|payload| payload.get("type").and_then(Value::as_str) == Some("user"))
+            .map(|payload| {
+                payload
+                    .get("uuid")
+                    .and_then(Value::as_str)
+                    .filter(|id| Uuid::parse_str(id).is_ok())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        fail(
+                            "not_sent",
+                            "invalid_input_id",
+                            "输入缺少有效 UUID，尚未发送".into(),
+                            None,
+                        )
+                    })
+            })
+            .collect::<Result<_>>()?;
+        let _mutation_guard = if authored_input {
+            Some(
+                tokio::time::timeout(Duration::from_secs(10), session.mutation_gate.lock())
+                    .await
+                    .map_err(|_| {
+                        fail(
+                            "not_sent",
+                            "mutation_busy",
+                            "文件回退或配置更改尚未完成，输入尚未发送".into(),
+                            None,
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let mut body = String::new();
         for payload in payloads {
             body.push_str(&serde_json::to_string(&payload)?);
@@ -788,6 +1240,24 @@ impl Manager {
         }
         self.diagnostics
             .record(session_id, "write_started", Some(body.len()), None);
+        if authored_input {
+            let mut activity = session.activity.lock().map_err(|_| {
+                fail(
+                    "not_sent",
+                    "activity_unavailable",
+                    "无法确认运行状态，输入尚未发送".into(),
+                    None,
+                )
+            })?;
+            activity.begin_inputs(&input_ids).map_err(|_| {
+                fail(
+                    "not_sent",
+                    "pending_input_limit",
+                    "未完成输入已达到上限，输入尚未发送".into(),
+                    None,
+                )
+            })?;
+        }
         let result = write_frame(&mut *stdin, body.as_bytes(), Duration::from_secs(15)).await;
         match result {
             Ok(()) => {
@@ -831,6 +1301,70 @@ impl Manager {
 struct RuntimeSettings {
     path: PathBuf,
     session_id: String,
+}
+
+fn configure_session_settings(opts: &mut SpawnOptions, version: &str) -> Result<()> {
+    let mut settings: Value = opts
+        .settings_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let object = settings
+        .as_object_mut()
+        .ok_or_else(|| Error::Other("runtime settings must be an object".into()))?;
+    // This process option is set after env_remove and never delegated to the
+    // settings.env layer, which Claude can apply after child-process startup.
+    if let Some(env) = object.get_mut("env").and_then(Value::as_object_mut) {
+        env.remove("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING");
+    }
+    let mut patch = Map::new();
+    if let Some(ultracode) = opts.ultracode {
+        patch.insert("ultracode".into(), json!(ultracode));
+    }
+    if let Some(fast) = opts.fast_mode {
+        patch.insert("fastMode".into(), json!(fast));
+    }
+    if let Some(models) = &opts.model_settings {
+        patch.insert("modelSettings".into(), models.clone());
+    }
+    runtime_controls::validate_settings(&Value::Object(patch.clone()), version)?;
+    for (key, value) in patch {
+        if key == "modelSettings" {
+            let existing = object
+                .entry(key)
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or_else(|| Error::Other("modelSettings must be object".into()))?;
+            for (model, preferences) in value.as_object().unwrap() {
+                let model = existing
+                    .entry(model.clone())
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Other("model preferences must be object".into()))?;
+                model.extend(preferences.as_object().unwrap().clone());
+            }
+        } else {
+            if object.get(&key).is_some_and(|existing| existing != &value) {
+                return Err(Error::Other(format!(
+                    "runtime settings {key} conflicts with explicit session selection"
+                )));
+            }
+            object.insert(key, value);
+        }
+    }
+    if capabilities::version_at_least(version, (2, 1, 205)) == Support::Supported {
+        object.entry("fastMode").or_insert(json!(false));
+    }
+    if opts.ultracode.is_some() && opts.effort.as_deref() == Some("ultracode") {
+        return Err(Error::Other(
+            "legacy ultracode effort must be migrated to independent flag and xhigh effort".into(),
+        ));
+    }
+    opts.settings_json = (!object.is_empty())
+        .then(|| serde_json::to_string(&settings))
+        .transpose()?;
+    Ok(())
 }
 impl Drop for RuntimeSettings {
     fn drop(&mut self) {
@@ -1021,8 +1555,59 @@ async fn claude_version(claude: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_runtime_settings_file, parse_effort_levels, write_runtime_claude_settings_file,
+        cleanup_runtime_settings_file, configure_session_settings, parse_effort_levels,
+        write_runtime_claude_settings_file, SpawnOptions,
     };
+    use serde_json::json;
+
+    #[test]
+    fn startup_settings_keep_independent_ultra_model_prefs_and_manual_fields() {
+        let mut options = SpawnOptions {
+            effort:Some("low".into()), ultracode:Some(true), fast_mode:Some(false),
+            model_settings:Some(json!({"claude-opus-5-5":{"effortLevel":"low","autoCompactWindow":"auto"}})),
+            settings_json:Some(json!({"hooks":{},"env":{"CUSTOM":"kept"},"modelSettings":{"claude-opus-5-5":{"maxEffortLevel":"max"},"other":{"effortLevel":"medium"}}}).to_string()),
+            ..SpawnOptions::default()
+        };
+        configure_session_settings(&mut options, "2.1.296").unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(options.settings_json.as_deref().unwrap()).unwrap();
+        assert_eq!(settings["ultracode"], true);
+        assert_eq!(settings["fastMode"], false);
+        assert_eq!(settings["env"]["CUSTOM"], "kept");
+        assert_eq!(
+            settings["modelSettings"]["claude-opus-5-5"]["maxEffortLevel"],
+            "max"
+        );
+        assert_eq!(settings["modelSettings"]["other"]["effortLevel"], "medium");
+        assert_eq!(options.effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn fast_defaults_off_and_explicit_manual_conflicts_fail_without_launching() {
+        let mut options = SpawnOptions::default();
+        configure_session_settings(&mut options, "2.1.296").unwrap();
+        assert_eq!(
+            options.settings_json.as_deref(),
+            Some("{\"fastMode\":false}")
+        );
+        let mut old = SpawnOptions::default();
+        configure_session_settings(&mut old, "2.1.204").unwrap();
+        assert!(old.settings_json.is_none());
+        let mut manual = SpawnOptions {
+            settings_json: Some("{\"fastMode\":true}".into()),
+            ..SpawnOptions::default()
+        };
+        configure_session_settings(&mut manual, "2.1.296").unwrap();
+        assert_eq!(manual.settings_json.as_deref(), Some("{\"fastMode\":true}"));
+        manual.fast_mode = Some(false);
+        assert!(configure_session_settings(&mut manual, "2.1.296").is_err());
+        let mut legacy = SpawnOptions {
+            effort: Some("ultracode".into()),
+            ultracode: Some(true),
+            ..SpawnOptions::default()
+        };
+        assert!(configure_session_settings(&mut legacy, "2.1.296").is_err());
+    }
 
     #[test]
     fn parse_standard_multiline_help() {

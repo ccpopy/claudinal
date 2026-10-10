@@ -8,6 +8,7 @@ mod commands;
 mod error;
 mod fs_atomic;
 mod keychain;
+mod local_daemon;
 mod network_proxy;
 mod oauth_reset;
 mod oauth_reset_ledger;
@@ -15,6 +16,7 @@ mod oauth_usage;
 mod permission_mcp;
 mod plugins;
 mod proc;
+mod review_snapshot;
 mod session;
 mod startup;
 
@@ -136,14 +138,23 @@ pub fn run() {
             commands::claude_installations,
             commands::select_claude_installation,
             commands::claude_runtime_diagnostics,
+            local_daemon::local_daemon_status,
+            local_daemon::read_local_daemon_tasks,
+            local_daemon::read_local_daemon_logs,
             commands::resolve_permission_request,
             commands::send_user_message,
             commands::send_skill_invocation,
             commands::stop_session,
             commands::interrupt_session,
             commands::detect_effort_levels,
+            commands::get_session_runtime_settings,
+            commands::apply_session_runtime_settings,
+            commands::get_session_context_usage,
+            commands::preview_session_rewind,
+            commands::rewind_session_files,
             commands::create_dir,
             commands::path_exists,
+            commands::resolve_local_path,
             commands::default_workspace_root,
             commands::list_dir,
             commands::list_project_sessions,
@@ -151,7 +162,9 @@ pub fn run() {
             commands::git_worktree_status,
             commands::worktree_diff,
             commands::review_snapshot_start,
+            commands::review_snapshot_freeze,
             commands::review_snapshot_finish,
+            commands::review_snapshot_cancel,
             commands::git_branch_list,
             commands::git_checkout_branch,
             commands::git_worktree_list,

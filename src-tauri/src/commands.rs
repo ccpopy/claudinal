@@ -10,6 +10,10 @@ use crate::permission_mcp::{
     render_default_mcp_config, PermissionMcpBridge, DEFAULT_PERMISSION_MCP_TOOL,
 };
 use crate::proc::{Manager, SpawnOptions};
+use crate::review_snapshot::{
+    Control as ReviewControl, ReviewCurrentFile, ReviewSnapshotChange, ReviewSnapshotFile,
+};
+pub use crate::review_snapshot::{ReviewSnapshotFinish, ReviewSnapshotStart};
 use crate::session::{
     delete_session_jsonl as delete_jsonl_inner, list_project_sessions as list_sessions_inner,
     list_recent_sessions_all as list_all_inner, patch_session_sidecar as patch_sidecar_inner,
@@ -698,6 +702,12 @@ pub async fn spawn_session(
     collab_mcp_enabled: Option<bool>,
     collab_provider_paths: Option<std::collections::HashMap<String, String>>,
     collab_enabled_providers: Option<Vec<String>>,
+    file_checkpointing: Option<bool>,
+    forward_subagent_text: Option<bool>,
+    prompt_suggestions: Option<bool>,
+    ultracode: Option<bool>,
+    fast_mode: Option<bool>,
+    model_settings: Option<Value>,
 ) -> Result<String> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(Error::Other(format!("cwd not a directory: {cwd}")));
@@ -802,6 +812,12 @@ pub async fn spawn_session(
         permission_prompt_tool,
         mcp_config,
         settings_json,
+        file_checkpointing,
+        forward_subagent_text,
+        prompt_suggestions,
+        ultracode,
+        fast_mode,
+        model_settings,
     };
     let session_id = manager.spawn(app.clone(), opts).await?;
     // CLI 在 stream-json 模式下对 429/5xx 静默退避重试，本地代理的状态事件是 GUI
@@ -921,6 +937,7 @@ const RUNTIME_CLAUDE_SETTINGS_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ATTRIBUTION_HEADER",
     "DISABLE_TELEMETRY",
@@ -1280,14 +1297,112 @@ pub async fn detect_effort_levels(manager: State<'_, Manager>) -> Result<Vec<Str
 }
 
 #[tauri::command]
+pub async fn get_session_runtime_settings(
+    manager: State<'_, Manager>,
+    session_id: String,
+) -> Result<Value> {
+    manager.runtime_settings(&session_id).await
+}
+
+#[tauri::command]
+pub async fn apply_session_runtime_settings(
+    manager: State<'_, Manager>,
+    session_id: String,
+    settings: Value,
+) -> Result<Value> {
+    manager.apply_runtime_settings(&session_id, settings).await
+}
+
+#[tauri::command]
+pub async fn get_session_context_usage(
+    manager: State<'_, Manager>,
+    session_id: String,
+) -> Result<Value> {
+    manager.context_usage(&session_id).await
+}
+
+#[tauri::command]
+pub async fn preview_session_rewind(
+    manager: State<'_, Manager>,
+    session_id: String,
+    user_message_id: String,
+) -> Result<Value> {
+    manager.preview_rewind(&session_id, user_message_id).await
+}
+
+#[tauri::command]
+pub async fn rewind_session_files(
+    manager: State<'_, Manager>,
+    session_id: String,
+    user_message_id: String,
+    preview_id: String,
+) -> Result<Value> {
+    manager
+        .rewind_files(&session_id, user_message_id, preview_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn create_dir(path: String) -> Result<()> {
     let p = std::path::PathBuf::from(&path);
     std::fs::create_dir_all(&p).map_err(Error::from)
 }
 
 #[tauri::command]
-pub async fn path_exists(path: String) -> Result<bool> {
-    Ok(std::path::Path::new(&path).exists())
+pub async fn path_exists(path: String, details: Option<bool>) -> Result<Value> {
+    tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::metadata(&path);
+        if !details.unwrap_or(false) {
+            return Ok(serde_json::json!(metadata.is_ok()));
+        }
+        let kind = match metadata {
+            Ok(metadata) if metadata.is_file() => "file",
+            Ok(metadata) if metadata.is_dir() => "directory",
+            Ok(_) => "other",
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing",
+            Err(error) => return Err(Error::from(error)),
+        };
+        Ok(serde_json::json!({ "path": path, "exists": kind != "missing", "kind": kind }))
+    })
+    .await
+    .map_err(|error| Error::Other(format!("检查本地路径失败: {error}")))?
+}
+
+fn resolve_local_path_with_home(
+    path: &str,
+    cwd: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf> {
+    let path = path.trim();
+    if path.is_empty() || path.contains('\0') {
+        return Err(Error::Other("path is empty or invalid".into()));
+    }
+    if path == "~" || path.starts_with("~/") || path.starts_with("~\\") {
+        let home = home.ok_or_else(|| Error::Other("cannot resolve home directory".into()))?;
+        return Ok(if path == "~" {
+            home.to_path_buf()
+        } else {
+            home.join(&path[2..])
+        });
+    }
+    let path = std::path::PathBuf::from(path);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let cwd = cwd
+        .filter(|value| std::path::Path::new(value).is_absolute())
+        .ok_or_else(|| Error::Other("relative path requires an absolute cwd".into()))?;
+    Ok(std::path::Path::new(cwd).join(path))
+}
+
+#[tauri::command]
+pub async fn resolve_local_path(path: String, cwd: Option<String>) -> Result<String> {
+    let home = dirs::home_dir();
+    Ok(
+        resolve_local_path_with_home(&path, cwd.as_deref(), home.as_deref())?
+            .display()
+            .to_string(),
+    )
 }
 
 #[tauri::command]
@@ -1399,50 +1514,10 @@ pub struct WorktreeDiff {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewSnapshotStart {
-    pub id: String,
-    pub cwd: String,
-    pub file_count: usize,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct OpenPathResult {
     pub action: String,
     pub path: String,
     pub fallback_path: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReviewSnapshotManifest {
-    cwd: String,
-    files: Vec<ReviewSnapshotFile>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ReviewSnapshotFile {
-    path: String,
-    size: u64,
-    modified_ms: u128,
-    hash: u64,
-    binary: bool,
-    baseline_path: Option<String>,
-}
-
-struct ReviewCurrentFile {
-    size: u64,
-    hash: u64,
-    binary: bool,
-    content: Option<String>,
-}
-
-struct ReviewSnapshotChange {
-    path: String,
-    status: String,
-    before: Option<ReviewSnapshotFile>,
-    after: Option<ReviewCurrentFile>,
 }
 
 #[derive(Serialize)]
@@ -1743,66 +1818,29 @@ pub async fn worktree_diff(cwd: String) -> Result<WorktreeDiff> {
 }
 
 #[tauri::command]
-pub async fn review_snapshot_start(cwd: String) -> Result<ReviewSnapshotStart> {
-    let root = std::path::PathBuf::from(&cwd);
-    if !root.is_dir() {
-        return Err(Error::Other(format!("cwd not a directory: {cwd}")));
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    let dir = review_snapshot_dir(&id)?;
-    std::fs::create_dir_all(dir.join("files")).map_err(Error::from)?;
-    let mut records = Vec::new();
-    scan_review_baseline(&root, &root, &dir, &mut records)?;
-    records.sort_by(|a, b| a.path.cmp(&b.path));
-    let manifest = ReviewSnapshotManifest {
-        cwd: root.display().to_string(),
-        files: records,
-    };
-    let manifest_text = serde_json::to_string_pretty(&manifest)?;
-    atomic_write_str(&dir.join("manifest.json"), &manifest_text)?;
-    Ok(ReviewSnapshotStart {
-        id,
-        cwd: manifest.cwd,
-        file_count: manifest.files.len(),
-    })
+pub async fn review_snapshot_start(cwd: String, id: Option<String>) -> Result<ReviewSnapshotStart> {
+    crate::review_snapshot::start(cwd, id).await
+}
+
+/// Freeze this turn before allowing any next-turn workspace writes.
+#[tauri::command]
+pub async fn review_snapshot_freeze(id: String) -> Result<ReviewSnapshotStart> {
+    crate::review_snapshot::freeze(id).await
+}
+
+/// Compute only from the frozen boundary; never fall back to scanning live files.
+#[tauri::command]
+pub async fn review_snapshot_finish(id: String) -> Result<ReviewSnapshotFinish> {
+    crate::review_snapshot::finish(id).await
 }
 
 #[tauri::command]
-pub async fn review_snapshot_finish(id: String) -> Result<WorktreeDiff> {
-    let dir = review_snapshot_dir(&id)?;
-    let manifest_path = dir.join("manifest.json");
-    if !manifest_path.is_file() {
-        return Err(Error::Other(format!("review snapshot not found: {id}")));
-    }
-    let raw = std::fs::read_to_string(&manifest_path).map_err(Error::from)?;
-    let manifest: ReviewSnapshotManifest = serde_json::from_str(&raw)?;
-    let root = std::path::PathBuf::from(&manifest.cwd);
-    if !root.is_dir() {
-        return Err(Error::Other(format!(
-            "snapshot cwd no longer exists: {}",
-            manifest.cwd
-        )));
-    }
-
-    let mut current = std::collections::HashMap::new();
-    scan_review_current(&root, &root, &mut current)?;
-    let changes = classify_review_snapshot_changes(manifest.files, current);
-    let (files, mut patch_error) = review_snapshot_changes_to_diff(&dir, &changes);
-    if let Err(e) = std::fs::remove_dir_all(&dir) {
-        record_patch_error(
-            &mut patch_error,
-            format!("清理审查快照临时目录失败: {}: {e}", dir.display()),
-        );
-    }
-    Ok(WorktreeDiff {
-        is_repo: false,
-        files,
-        patch_error,
-    })
+pub async fn review_snapshot_cancel(id: String) -> Result<()> {
+    crate::review_snapshot::cancel(id).await
 }
 
 fn review_snapshot_root() -> std::path::PathBuf {
-    std::env::temp_dir().join("claudinal-review-snapshots")
+    crate::review_snapshot::root()
 }
 
 /// 启动期回收历史残留的审查快照目录。
@@ -1844,203 +1882,7 @@ fn cleanup_review_snapshots_in(root: &std::path::Path, max_age: std::time::Durat
     removed
 }
 
-fn review_snapshot_dir(id: &str) -> Result<std::path::PathBuf> {
-    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') {
-        return Err(Error::Other(format!("invalid review snapshot id: {id}")));
-    }
-    Ok(review_snapshot_root().join(id))
-}
-
-fn scan_review_baseline(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    snapshot_dir: &std::path::Path,
-    records: &mut Vec<ReviewSnapshotFile>,
-) -> Result<()> {
-    if same_path(root, dir) {
-        if let Some(paths) = review_git_candidate_paths(root)? {
-            for path in paths {
-                scan_review_baseline_file(root, &path, snapshot_dir, records)?;
-            }
-            return Ok(());
-        }
-    }
-    for entry in std::fs::read_dir(dir).map_err(Error::from)? {
-        let entry = entry.map_err(Error::from)?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        if should_skip_review_path(&file_name.to_string_lossy()) {
-            continue;
-        }
-        let meta = entry.metadata().map_err(Error::from)?;
-        if meta.is_dir() {
-            scan_review_baseline(root, &path, snapshot_dir, records)?;
-            continue;
-        }
-        if !meta.is_file() {
-            continue;
-        }
-        scan_review_baseline_file(root, &path, snapshot_dir, records)?;
-    }
-    Ok(())
-}
-
-fn scan_review_baseline_file(
-    root: &std::path::Path,
-    path: &std::path::Path,
-    snapshot_dir: &std::path::Path,
-    records: &mut Vec<ReviewSnapshotFile>,
-) -> Result<()> {
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(Error::from(err)),
-    };
-    if !meta.is_file() {
-        return Ok(());
-    }
-    let rel = review_rel_path(root, path)?;
-    let bytes = std::fs::read(path).map_err(Error::from)?;
-    let binary = review_is_binary(&bytes);
-    let hash = review_hash(&bytes);
-    let baseline_path = if binary {
-        None
-    } else {
-        let rel_baseline = format!("files/{}.txt", records.len());
-        let target = snapshot_dir.join(&rel_baseline);
-        std::fs::write(&target, &bytes).map_err(Error::from)?;
-        Some(rel_baseline)
-    };
-    records.push(ReviewSnapshotFile {
-        path: rel,
-        size: meta.len(),
-        modified_ms: review_modified_ms(&meta)?,
-        hash,
-        binary,
-        baseline_path,
-    });
-    Ok(())
-}
-
-fn scan_review_current(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    out: &mut std::collections::HashMap<String, ReviewCurrentFile>,
-) -> Result<()> {
-    if same_path(root, dir) {
-        if let Some(paths) = review_git_candidate_paths(root)? {
-            for path in paths {
-                scan_review_current_file(root, &path, out)?;
-            }
-            return Ok(());
-        }
-    }
-    for entry in std::fs::read_dir(dir).map_err(Error::from)? {
-        let entry = entry.map_err(Error::from)?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        if should_skip_review_path(&file_name.to_string_lossy()) {
-            continue;
-        }
-        let meta = entry.metadata().map_err(Error::from)?;
-        if meta.is_dir() {
-            scan_review_current(root, &path, out)?;
-            continue;
-        }
-        if !meta.is_file() {
-            continue;
-        }
-        scan_review_current_file(root, &path, out)?;
-    }
-    Ok(())
-}
-
-fn scan_review_current_file(
-    root: &std::path::Path,
-    path: &std::path::Path,
-    out: &mut std::collections::HashMap<String, ReviewCurrentFile>,
-) -> Result<()> {
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(Error::from(err)),
-    };
-    if !meta.is_file() {
-        return Ok(());
-    }
-    let bytes = std::fs::read(path).map_err(Error::from)?;
-    let binary = review_is_binary(&bytes);
-    let content = if binary {
-        None
-    } else {
-        Some(String::from_utf8(bytes.clone()).map_err(|e| {
-            Error::Other(format!(
-                "current file utf-8 decode failed: {}: {e}",
-                path.display()
-            ))
-        })?)
-    };
-    out.insert(
-        review_rel_path(root, path)?,
-        ReviewCurrentFile {
-            size: meta.len(),
-            hash: review_hash(&bytes),
-            binary,
-            content,
-        },
-    );
-    Ok(())
-}
-
-fn review_git_candidate_paths(root: &std::path::Path) -> Result<Option<Vec<std::path::PathBuf>>> {
-    if which::which("git").is_err() {
-        return Ok(None);
-    }
-    let mut cmd = std::process::Command::new("git");
-    cmd.arg("-C")
-        .arg(root)
-        .args(["ls-files", "-co", "--exclude-standard", "-z", "--", "."])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    hide_std_window(&mut cmd);
-    let output = cmd.output().map_err(Error::from)?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let mut paths = Vec::new();
-    for raw in output.stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let rel = std::path::PathBuf::from(String::from_utf8_lossy(raw).to_string());
-        if !review_is_safe_relative_path(&rel) {
-            continue;
-        }
-        if rel.components().any(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .is_some_and(should_skip_review_path)
-        }) {
-            continue;
-        }
-        paths.push(root.join(rel));
-    }
-    Ok(Some(paths))
-}
-
-fn review_is_safe_relative_path(path: &std::path::Path) -> bool {
-    path.components().all(|component| {
-        matches!(
-            component,
-            std::path::Component::Normal(_) | std::path::Component::CurDir
-        )
-    })
-}
-
-fn classify_review_snapshot_changes(
+pub(crate) fn classify_review_snapshot_changes(
     before: Vec<ReviewSnapshotFile>,
     mut after: std::collections::HashMap<String, ReviewCurrentFile>,
 ) -> Vec<ReviewSnapshotChange> {
@@ -2077,9 +1919,10 @@ fn classify_review_snapshot_changes(
     changes
 }
 
-fn review_snapshot_changes_to_diff(
+pub(crate) fn review_snapshot_changes_to_diff(
     snapshot_dir: &std::path::Path,
     changes: &[ReviewSnapshotChange],
+    control: &ReviewControl,
 ) -> (Vec<WorktreeFileDiff>, Option<String>) {
     if changes.is_empty() {
         return (Vec::new(), None);
@@ -2109,6 +1952,15 @@ fn review_snapshot_changes_to_diff(
 
     let mut files = Vec::new();
     for change in changes {
+        if let Err(reason) = control.check() {
+            record_patch_error(&mut patch_error, reason);
+            files.extend(changes[files.len()..].iter().map(|change| {
+                let binary = change.before.as_ref().is_some_and(|f| f.binary)
+                    || change.after.as_ref().is_some_and(|f| f.binary);
+                review_file_list_only_diff(change, binary)
+            }));
+            break;
+        }
         let binary = change.before.as_ref().is_some_and(|f| f.binary)
             || change.after.as_ref().is_some_and(|f| f.binary);
         if binary || !can_use_git_diff {
@@ -2137,7 +1989,7 @@ fn review_snapshot_changes_to_diff(
                     continue;
                 }
             };
-        match command_git_no_index_diff(&old_path, &new_path) {
+        match crate::review_snapshot::git_diff(&old_path, &new_path, control) {
             Ok(raw) => {
                 let mut parsed = parse_git_patch(&raw);
                 if let Some(mut file) = parsed.pop() {
@@ -2282,6 +2134,30 @@ fn review_full_file_hunks(
     snapshot_dir: &std::path::Path,
     change: &ReviewSnapshotChange,
 ) -> std::result::Result<(u32, u32, Vec<DiffHunk>), String> {
+    // A replacement fallback can otherwise allocate one String per tiny line.
+    // Keep the file list when the frozen text is too dense for a bounded patch.
+    const MAX_FALLBACK_LINES: usize = 20_000;
+    if change
+        .after
+        .as_ref()
+        .and_then(|file| file.content.as_ref())
+        .is_some_and(|content| {
+            content.lines().take(MAX_FALLBACK_LINES + 1).count() > MAX_FALLBACK_LINES
+        })
+    {
+        return Err("审查 diff 超过行数预算，保留文件列表".into());
+    }
+    if let Some(path) = change
+        .before
+        .as_ref()
+        .and_then(|file| file.baseline_path.as_ref())
+    {
+        let content = std::fs::read_to_string(snapshot_dir.join(path))
+            .map_err(|error| format!("读取审查基线文本失败: {error}"))?;
+        if content.lines().take(MAX_FALLBACK_LINES + 1).count() > MAX_FALLBACK_LINES {
+            return Err("审查 diff 超过行数预算，保留文件列表".into());
+        }
+    }
     match (&change.before, &change.after) {
         (None, Some(after)) => {
             let Some(content) = after.content.as_ref() else {
@@ -2360,65 +2236,16 @@ fn review_full_file_hunks(
     }
 }
 
+#[cfg(test)]
 fn command_git_no_index_diff(
     old_path: &std::path::Path,
     new_path: &std::path::Path,
 ) -> std::result::Result<String, String> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.args([
-        "diff",
-        "--no-index",
-        "--patch",
-        "--no-color",
-        "--unified=80",
-    ]);
-    cmd.arg(old_path);
-    cmd.arg(new_path);
-    hide_std_window(&mut cmd);
-    let out = cmd.output().map_err(|e| e.to_string())?;
-    let code = out.status.code().unwrap_or(2);
-    if code == 0 || code == 1 {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}
-
-fn review_rel_path(root: &std::path::Path, path: &std::path::Path) -> Result<String> {
-    let rel = path
-        .strip_prefix(root)
-        .map_err(|e| Error::Other(format!("path outside review root: {}: {e}", path.display())))?;
-    Ok(rel.to_string_lossy().replace('\\', "/"))
-}
-
-fn review_modified_ms(meta: &std::fs::Metadata) -> Result<u128> {
-    let modified = meta.modified().map_err(Error::from)?;
-    let duration = modified
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| {
-            Error::Other(format!(
-                "file modified time is before unix epoch and cannot be snapshotted: {e}"
-            ))
-        })?;
-    Ok(duration.as_millis())
-}
-
-fn review_hash(bytes: &[u8]) -> u64 {
-    use std::hash::Hasher;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write(bytes);
-    hasher.finish()
-}
-
-fn review_is_binary(bytes: &[u8]) -> bool {
-    bytes.iter().any(|b| *b == 0) || std::str::from_utf8(bytes).is_err()
-}
-
-fn should_skip_review_path(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | "node_modules" | "dist" | "target" | ".cache" | ".next" | "coverage" | "release"
-    )
+    let control = ReviewControl::new(
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        std::time::Duration::from_secs(3),
+    );
+    crate::review_snapshot::git_diff(old_path, new_path, &control)
 }
 
 #[tauri::command]
@@ -3310,6 +3137,70 @@ mod tests {
                 PathOpenTarget::Wsl
             ]
         );
+    }
+
+    #[test]
+    fn local_path_home_is_native_and_independent_of_workspace() {
+        let home = std::env::temp_dir().join("claudinal-native-home");
+        let cwd = std::env::temp_dir().join("claudinal-project");
+        let cwd_text = cwd.display().to_string();
+        assert_eq!(
+            resolve_local_path_with_home("~/src/main.ts", Some(&cwd_text), Some(&home)).unwrap(),
+            home.join("src/main.ts")
+        );
+        assert_eq!(
+            resolve_local_path_with_home("main.ts", Some(&cwd_text), Some(&home)).unwrap(),
+            cwd.join("main.ts")
+        );
+        assert!(resolve_local_path_with_home("~/main.ts", Some(&cwd_text), None).is_err());
+        assert!(resolve_local_path_with_home("main.ts", None, Some(&home)).is_err());
+        assert!(resolve_local_path_with_home("bad\0path", Some(&cwd_text), Some(&home)).is_err());
+    }
+
+    #[test]
+    fn vscode_location_uses_separate_arguments_and_preserves_spaces_unicode() {
+        let path = std::env::temp_dir().join("项目 设计稿 A.md");
+        let args = vscode_path_arguments(&path, Some(42), Some(7)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                std::ffi::OsString::from("--goto"),
+                std::ffi::OsString::from(format!("{}:42:7", path.display()))
+            ]
+        );
+        assert_eq!(
+            vscode_path_arguments(&path, Some(42), None).unwrap()[1],
+            std::ffi::OsString::from(format!("{}:42:1", path.display()))
+        );
+        assert_eq!(
+            vscode_path_arguments(&path, None, None).unwrap(),
+            vec![path.as_os_str().to_os_string()]
+        );
+        assert_eq!(
+            vscode_path_arguments(&std::env::temp_dir(), Some(42), Some(7)).unwrap(),
+            vec![std::env::temp_dir().as_os_str().to_os_string()]
+        );
+        assert!(vscode_path_arguments(&path, None, Some(7)).is_err());
+        assert!(vscode_path_arguments(&path, Some(0), None).is_err());
+    }
+
+    #[tokio::test]
+    async fn path_exists_details_preserve_boolean_contract_and_distinguish_directory() {
+        let directory = std::env::temp_dir();
+        let path = directory.display().to_string();
+        assert_eq!(
+            path_exists(path.clone(), None).await.unwrap(),
+            serde_json::json!(true)
+        );
+        let details = path_exists(path.clone(), Some(true)).await.unwrap();
+        assert_eq!(details["path"], path);
+        assert_eq!(details["kind"], "directory");
+        let missing = directory.join(format!("claudinal-deleted-{}", uuid::Uuid::new_v4()));
+        let missing = path_exists(missing.display().to_string(), Some(true))
+            .await
+            .unwrap();
+        assert_eq!(missing["exists"], false);
+        assert_eq!(missing["kind"], "missing");
     }
 
     #[test]
@@ -5301,10 +5192,7 @@ async fn fetch_provider_models_from_url(
 
 #[tauri::command]
 pub async fn open_path(path: String) -> Result<OpenPathResult> {
-    let p = std::path::PathBuf::from(&path);
-    if !p.exists() {
-        return Err(Error::Other(format!("path not found: {path}")));
-    }
+    let p = existing_path(&path)?;
     let fallback = if p.is_file() {
         p.parent().map(std::path::Path::to_path_buf)
     } else {
@@ -5643,13 +5531,33 @@ fn windows_vscode_executable() -> Option<std::path::PathBuf> {
     None
 }
 
-fn open_with_vscode(path: &std::path::Path) -> Result<()> {
+fn vscode_path_arguments(
+    path: &std::path::Path,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> Result<Vec<std::ffi::OsString>> {
+    if line == Some(0) || column == Some(0) || (column.is_some() && line.is_none()) {
+        return Err(Error::Other(
+            "editor location requires positive line and column".into(),
+        ));
+    }
+    if let Some(line) = line.filter(|_| !path.is_dir()) {
+        let mut target = path.as_os_str().to_os_string();
+        target.push(format!(":{line}:{}", column.unwrap_or(1)));
+        Ok(vec!["--goto".into(), target])
+    } else {
+        Ok(vec![path.as_os_str().to_os_string()])
+    }
+}
+
+fn open_with_vscode(path: &std::path::Path, line: Option<u32>, column: Option<u32>) -> Result<()> {
+    let arguments = vscode_path_arguments(path, line, column)?;
     #[cfg(target_os = "windows")]
     {
         let executable = windows_vscode_executable()
             .ok_or_else(|| Error::Other("未找到 VS Code，请先安装或将 code 加入 PATH".into()))?;
         let mut command = std::process::Command::new(executable);
-        command.arg(path);
+        command.args(&arguments);
         hide_std_window(&mut command);
         command.spawn().map_err(Error::from)?;
         Ok(())
@@ -5658,7 +5566,7 @@ fn open_with_vscode(path: &std::path::Path) -> Result<()> {
     {
         if let Ok(executable) = which::which("code") {
             std::process::Command::new(executable)
-                .arg(path)
+                .args(&arguments)
                 .spawn()
                 .map_err(Error::from)?;
             return Ok(());
@@ -5666,11 +5574,14 @@ fn open_with_vscode(path: &std::path::Path) -> Result<()> {
         if !macos_application_available("Visual Studio Code") {
             return Err(Error::Other("未找到 VS Code".into()));
         }
-        std::process::Command::new("open")
-            .args(["-a", "Visual Studio Code"])
-            .arg(path)
-            .spawn()
-            .map_err(Error::from)?;
+        let mut command = std::process::Command::new("open");
+        command.args(["-a", "Visual Studio Code"]);
+        if line.is_some() && !path.is_dir() {
+            command.arg("--args").args(&arguments);
+        } else {
+            command.arg(path);
+        }
+        command.spawn().map_err(Error::from)?;
         Ok(())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -5678,7 +5589,7 @@ fn open_with_vscode(path: &std::path::Path) -> Result<()> {
         let executable = which::which("code")
             .map_err(|_| Error::Other("未找到 VS Code，请先安装或将 code 加入 PATH".into()))?;
         std::process::Command::new(executable)
-            .arg(path)
+            .args(&arguments)
             .spawn()
             .map_err(Error::from)?;
         Ok(())
@@ -6080,10 +5991,15 @@ pub async fn available_path_open_targets() -> Result<Vec<PathOpenTarget>> {
 }
 
 #[tauri::command]
-pub async fn open_path_with(path: String, opener: PathOpenTarget) -> Result<()> {
+pub async fn open_path_with(
+    path: String,
+    opener: PathOpenTarget,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> Result<()> {
     let path = existing_path(&path)?;
     match opener {
-        PathOpenTarget::Vscode => open_with_vscode(&path),
+        PathOpenTarget::Vscode => open_with_vscode(&path, line, column),
         PathOpenTarget::VisualStudio => open_with_visual_studio(&path),
         PathOpenTarget::Antigravity => open_with_antigravity(&path),
         PathOpenTarget::GithubDesktop => open_with_github_desktop(&path),
