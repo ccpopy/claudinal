@@ -64,6 +64,12 @@
 - **结构化消息卡片**：告别杂乱的终端输出，思考过程 (Thinking)、工具调用 (Bash/Edit/Read) 均采用独立、优雅的折叠卡片与 Diff 视图展示。
 - **原生能力加持**：无缝支持系统文件拖拽粘贴、本地代理设置及深浅色主题自由切换。
 
+### 0.6.1 Ultra / Fast 调整
+
+- 根据实际选中 CLI 的隔离元数据检测控制能力，版本仅作兼容提示；新会话、历史会话和断连视图均可预选 Ultra / Fast。
+- Ultra 提供会话级 Dynamic workflows 开关，保留当前 Effort；热更新按顺序确认，避免迟到响应覆盖新选择。
+- Fast 分别显示已选择、实际状态和拒绝原因；Anthropic 兼容提供商可显式透传，最终生效仍取决于上游及账号资格。
+
 ### 0.6.0 能力范围
 
 - 本地文件引用保留来源及行列信息；斜杠指令区分本地操作、终端入口与会话指令，未确认的命令保留原文。
@@ -136,11 +142,11 @@ zip 脚本使用 Cargo metadata 返回的有效 target 目录。安装器必须�
 
 ### 自动发布
 
-0.6.0 的本地构建和 zip 打包只准备产物。完成质量检查、版本一致性及产物校验后，推送和版本号一致的 tag 才会触发公开 GitHub Release：
+本地构建和 zip 打包只准备产物。完成质量检查、版本一致性及产物校验后，推送和版本号一致的 tag 才会触发公开 GitHub Release：
 
 ```bash
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 Workflow 会校验 `package.json` 与 `src-tauri/tauri.conf.json` 的版本号，然后在 Windows、macOS 和 Linux runner 上分别构建安装包，并上传源码包与 `SHA256SUMS.txt`。
