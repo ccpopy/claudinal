@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ChevronDown, ChevronUp, RefreshCw, Sparkles } from "lucide-react"
+import { ChevronRight, ChevronUp, RefreshCw, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { buildCompactCommand, type CompactBoundary, type ContextUsageSummary, type PromptSuggestion } from "@/lib/agentFeatures"
@@ -36,7 +36,7 @@ export function AgentFeaturesPanel({
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [instructions, setInstructions] = useState("")
   return <div className="space-y-2 text-xs">
-    {suggestion && <div className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2">
+    {suggestion && <div className="flex items-start gap-2 rounded-xl border bg-card/95 px-3 py-2 shadow-xs">
       <Sparkles className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <div className="mb-1 text-muted-foreground">后续输入建议</div>
@@ -48,15 +48,15 @@ export function AgentFeaturesPanel({
       </div>
       {onDismissSuggestion && <button type="button" onClick={onDismissSuggestion} className="shrink-0 text-muted-foreground hover:text-foreground">关闭建议</button>}
     </div>}
-    <div className="rounded-md border bg-muted/20">
-      <div className="flex items-center justify-between gap-3 px-3 py-2">
-        <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex items-center gap-1.5">
-          {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+    <div className="rounded-xl border bg-card/95 shadow-xs backdrop-blur-sm">
+      <div className="flex h-8 items-center justify-between gap-3 px-3">
+        <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex min-w-0 items-center gap-1.5 text-muted-foreground hover:text-foreground">
+          {expanded ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
           上下文与压缩
           {context && <span className="text-muted-foreground">· {count(context.usedTokens)} tokens{context.percentage !== undefined ? ` · ${context.percentage}%` : ""}</span>}
           {compacting && <span role="status" className="text-muted-foreground">压缩中</span>}
         </button>
-        <Button type="button" variant="ghost" size="sm" className="h-6 text-xs" disabled={contextCapability !== "supported" || contextLoading || busy || !onRefreshContext}
+        <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground" disabled={contextCapability !== "supported" || contextLoading || busy || !onRefreshContext}
           onClick={() => { setExpanded(true); onRefreshContext?.() }}>
           <RefreshCw className={`size-3 ${contextLoading ? "animate-spin" : ""}`} />
           {contextLoading ? "查询中" : "查询上下文"}

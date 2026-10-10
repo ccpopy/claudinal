@@ -107,6 +107,8 @@ export class SubmissionCoordinator<C> {
   private resumedInputs = new Set<string>()
   private drafts = new Map<string, string>()
   private settling = new Map<string, Promise<void>>()
+  /** Running total of archived attempts, kept in step with archivedInputs. */
+  private archivedAttemptCount = 0
   constructor(private adapter: SubmissionAdapter<C>, private defer: (fn: () => void) => void = (fn) => {
     // Yield a paint opportunity before persistence, compilation and other expensive work.
     if (typeof requestAnimationFrame === "function" && document.visibilityState === "visible") requestAnimationFrame(() => setTimeout(fn, 0))
@@ -138,6 +140,10 @@ export class SubmissionCoordinator<C> {
   submit(input: { conversationKey: string; sourceDraftRevision: number; payload: InputPayload; profileRevision: string; context: C; draftKey?: string; mode?: "guide" | "followup" }): SubmitOutcome {
     const draftId = input.draftKey ? `${input.draftKey}:${input.sourceDraftRevision}` : undefined
     if (draftId && this.drafts.has(draftId)) return { kind: "registered_in_ui", messageId: this.drafts.get(draftId)! }
+    // A needs_decision pause protects inputs awaiting a decision. Once none
+    // remain, a newly typed input must send instead of waiting on nothing.
+    // An explicit user stop stays until the user continues the queue.
+    if (this.paused.get(input.conversationKey)?.reason !== "user_stop" && ![...this.tasks.values()].some((task) => task.conversationKey === input.conversationKey && (isPendingInput(task) || task.deliveryState === "failed" || task.deliveryState === "delivery_unknown"))) this.paused.delete(input.conversationKey)
     const messageId = crypto.randomUUID(), attemptId = crypto.randomUUID()
     const task: SubmittedInput<C> = {
       ...input, mode: input.mode ?? "followup", messageId, inputRevision: 1, payloadRef: input.payload, localState: "saving",
@@ -419,9 +425,12 @@ export class SubmissionCoordinator<C> {
     const receipt: ArchivedInput = { messageId: task.messageId, conversationKey: task.conversationKey, attemptId: task.attemptId,
       attempts: kept.map((attempt) => ({ ...attempt })), createdAt: task.createdAt, deliveryState: task.deliveryState, runState: task.runState }
     this.tasks.delete(task.messageId); this.archivedInputs.set(task.messageId, receipt)
-    while (this.archivedInputs.size > this.retention.archivedInputs || [...this.archivedInputs.values()].reduce((total, item) => total + item.attempts.length, 0) > attemptLimit) {
+    this.archivedAttemptCount += receipt.attempts.length
+    while (this.archivedInputs.size > this.retention.archivedInputs || this.archivedAttemptCount > attemptLimit) {
       const oldest = this.archivedInputs.keys().next().value!
-      for (const attempt of this.archivedInputs.get(oldest)!.attempts) this.attemptOwners.delete(attempt.id)
+      const evicted = this.archivedInputs.get(oldest)!
+      for (const attempt of evicted.attempts) this.attemptOwners.delete(attempt.id)
+      this.archivedAttemptCount -= evicted.attempts.length
       this.archivedInputs.delete(oldest)
     }
     this.adapter.archived?.(receipt)
@@ -437,7 +446,7 @@ export class SubmissionCoordinator<C> {
   }
   retentionStats() {
     return { payloads: this.tasks.size, archivedInputs: this.archivedInputs.size,
-      archivedAttempts: [...this.archivedInputs.values()].reduce((total, item) => total + item.attempts.length, 0),
+      archivedAttempts: this.archivedAttemptCount,
       attemptIndices: this.attemptOwners.size, draftReceipts: this.drafts.size }
   }
 }

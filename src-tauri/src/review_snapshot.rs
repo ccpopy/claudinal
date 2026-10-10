@@ -17,6 +17,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 const CAPTURE_TIME: Duration = Duration::from_millis(250);
+/// The worker stops scanning at its deadline and then publishes a partial
+/// manifest; the outer wait must outlast that write or partial is never kept.
+const PUBLISH_GRACE: Duration = Duration::from_millis(200);
 const DIFF_TIME: Duration = Duration::from_secs(3);
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -367,7 +370,7 @@ async fn start_with_budget(
         }
         result
     });
-    match tokio::time::timeout(time_budget, task).await {
+    match tokio::time::timeout(time_budget + PUBLISH_GRACE, task).await {
         Ok(Ok(Ok(capture))) if !cancelled.load(Ordering::Acquire) => {
             let mut response = capture.response(id);
             response.timings.total_ms = started.elapsed().as_millis() as u64;
@@ -470,7 +473,7 @@ async fn freeze_with_budget(id: String, time_budget: Duration) -> Result<ReviewS
         }
         result
     });
-    match tokio::time::timeout(time_budget, task).await {
+    match tokio::time::timeout(time_budget + PUBLISH_GRACE, task).await {
         Ok(Ok(Ok(capture))) if !cancelled.load(Ordering::Acquire) => {
             let mut response = capture.response(id);
             response.timings.freeze_ms = started.elapsed().as_millis() as u64;

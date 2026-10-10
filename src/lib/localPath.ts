@@ -124,7 +124,8 @@ function trimPathReference(value: string): string {
 }
 
 function platformFor(value: string, options: Pick<ReferenceOptions, "cwd" | "platform">): PathPlatform {
-  return options.platform ?? (/^[a-z]:[\\/]|^\\\\/i.test(options.cwd ?? value) ? "windows" : "posix")
+  // file:///C:/… is a Windows path too; without a cwd only the reference itself can tell.
+  return options.platform ?? (/^[a-z]:[\\/]|^\\\\|^file:\/\/\/[a-z]:\//i.test(options.cwd ?? value) ? "windows" : "posix")
 }
 
 export function fileUrlToPath(value: string, platform?: PathPlatform): string | null {

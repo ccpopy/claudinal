@@ -42,6 +42,17 @@ export function filterComposerRuntimePatch(patch: SessionSettingsPatch, capabili
   return result
 }
 
+/**
+ * The CLI accepts an effort change only together with an explicit ultracode
+ * state. When filtering removed ultracode (OpenAI-compatible provider, or a CLI
+ * without independent Ultracode), the change must go through a relaunch instead.
+ */
+export function canApplyRuntimePatch(patch: SessionSettingsPatch): boolean {
+  const changesEffort = patch.effortLevel !== undefined
+    || Object.values(patch.modelSettings ?? {}).some((settings) => settings.effortLevel !== undefined)
+  return !changesEffort || typeof patch.ultracode === "boolean"
+}
+
 const FAST_REASONS: Readonly<Record<string, string>> = {
   not_first_party: "当前提供商或账号路径未获 Fast 授权；请确认网关与上游支持",
   model_not_allowed: "当前模型不支持 Fast；请选择 CLI 支持的 Opus 模型",
@@ -52,14 +63,21 @@ const FAST_REASONS: Readonly<Record<string, string>> = {
   pending: "Fast 资格仍在检查中", free: "当前免费账号不满足 Fast 条件",
   preference: "CLI 当前偏好未启用 Fast", unknown: "CLI 未说明具体禁用原因"
 }
-export function fastModeStatusText(actual?: ComposerRuntimeConfig | null, pending = false): string {
-  if (pending) return "待应用并回读确认"
-  const state = actual?.fastModeState
-  const label = state === "on" ? "CLI 已开启" : state === "cooldown" ? "冷却中，CLI 暂用标准速度" : state === "off" ? "CLI 已关闭" : "尚未确认"
-  return actual?.fastModeDisabledReason ? `${label}；${FAST_REASONS[actual.fastModeDisabledReason] ?? FAST_REASONS.unknown}` : label
+/** 开关下方的简短状态；正常生效或未开启时返回 null，不额外占位。 */
+export function fastModeStatusText(selected: boolean, actual?: ComposerRuntimeConfig | null, pending = false): string | null {
+  if (pending) return "待应用"
+  if (!selected) return actual?.fastModeState === "on" || actual?.fastModeState === "cooldown" ? "CLI 仍开启，关闭待确认" : null
+  if (actual?.fastModeDisabledReason) return FAST_REASONS[actual.fastModeDisabledReason] ?? FAST_REASONS.unknown
+  if (actual?.fastModeState === "cooldown") return "冷却中，暂用标准速度"
+  if (actual?.fastModeState === "off") return "CLI 未开启"
+  if (!actual?.fastModeState) return "待 CLI 确认"
+  return null
 }
 
-export function ultracodeStatusText(actual?: ComposerRuntimeConfig | null, pending = false): string {
-  const flag = (value: boolean | undefined) => value === true ? "是" : value === false ? "否" : "待确认"
-  return `${pending ? "待应用；" : ""}CLI 请求：${flag(actual?.ultracodeRequested)} · 可用：${flag(actual?.ultracodeAvailable)} · 生效：${flag(actual?.ultracode)}`
+export function ultracodeStatusText(selected: boolean, actual?: ComposerRuntimeConfig | null, pending = false): string | null {
+  if (pending) return "待应用"
+  if (!selected) return actual?.ultracode === true ? "CLI 仍开启，关闭待确认" : null
+  if (actual?.ultracode === true) return null
+  if (actual?.ultracodeRequested && actual.ultracodeAvailable === false) return "CLI 判定不可用：需开启 Dynamic workflows，或受模型/组织策略限制"
+  return actual?.ultracode === false ? "CLI 未生效" : "待 CLI 确认"
 }

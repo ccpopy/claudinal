@@ -1,4 +1,5 @@
 import { RunStatusStrip } from "@/components/RunReviewCard"
+import { BackgroundConversationsBar, type BackgroundConversationItem } from "@/components/BackgroundConversationsBar"
 import { MessageStream } from "@/components/MessageStream"
 import { MarkdownCommandsContext } from "@/components/AssistantMarkdown"
 import { QueuedComposerBar } from "@/components/QueuedComposerBar"
@@ -7,7 +8,7 @@ import { SubmissionCoordinator, isActiveInput, isAwaitingDefinitiveResult, type 
 import { retryInputFromTranscript } from "@/lib/retryInput"
 import { cn } from "@/lib/utils"
 import { useInstalledCliCapabilities } from "@/hooks/useInstalledCliCapabilities"
-import { capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch } from "@/lib/composerCapabilities"
+import { canApplyRuntimePatch, capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch } from "@/lib/composerCapabilities"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
 import { inputMetadataPatch, restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
 import { isAuthoredUserMessage, markAuthoredEvent } from "@/lib/messageOrigin"
@@ -629,14 +630,18 @@ function sameComposerPrefs(a: ComposerPrefs, b: ComposerPrefs): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
-function applyFastModeReport(actual: ComposerRuntimeConfig, report: { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown }): void {
+/** Returns whether the reported Fast state changed, so callers rerender only then. */
+function applyFastModeReport(actual: ComposerRuntimeConfig, report: { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown }): boolean {
   const state = report.fast_mode_state
-  if (state !== "off" && state !== "on" && state !== "cooldown") return
+  if (state !== "off" && state !== "on" && state !== "cooldown") return false
+  const raw = report.fast_mode_disabled_reason
+  const reason = typeof raw === "string" && ["not_first_party", "model_not_allowed", "extra_usage_disabled",
+    "network_error", "sdk_opt_in_required", "disabled_by_env", "pending", "free", "preference", "unknown"].includes(raw)
+    ? raw : undefined
+  if (actual.fastModeState === state && actual.fastModeDisabledReason === reason) return false
   actual.fastModeState = state
-  const reason = report.fast_mode_disabled_reason
-  actual.fastModeDisabledReason = typeof reason === "string" && ["not_first_party", "model_not_allowed", "extra_usage_disabled",
-    "network_error", "sdk_opt_in_required", "disabled_by_env", "pending", "free", "preference", "unknown"].includes(reason)
-    ? reason : undefined
+  actual.fastModeDisabledReason = reason
+  return true
 }
 
 function runtimeSettingsPatch(prefs: ComposerPrefs, canonicalModels: Record<string, string>, actual?: ComposerRuntimeConfig): SessionSettingsPatch {
@@ -1400,7 +1405,10 @@ export default function App() {
 
       pendingApiRuntimeRefreshRef.current = false
       pendingComposerRuntimeRefreshRef.current = false
-      if (run && run.capabilities.runtimeSettingsControl === "supported"
+      const profile = loadThirdPartyApiConfig()
+      const patch = run ? filterComposerRuntimePatch(runtimeSettingsPatch(run.composerPrefs, run.canonicalModels, run.actualConfig), run.capabilities,
+        profile.enabled && profile.inputFormat === "openai-chat-completions") : null
+      if (run && patch && canApplyRuntimePatch(patch) && run.capabilities.runtimeSettingsControl === "supported"
         && run.composerPrefs.model === run.launchComposerPrefs.model
         && run.permissionMode === run.launchPermissionMode
         && run.composerPrefs.effort !== "max"
@@ -1408,9 +1416,6 @@ export default function App() {
         && (run.composerPrefs.effort === run.launchComposerPrefs.effort || run.composerPrefs.ultracode !== undefined
           || run.actualConfig.ultracodeRequested !== undefined || run.actualConfig.ultracode !== undefined)) {
         const selected = cloneComposerPrefs(run.composerPrefs)
-        const profile = loadThirdPartyApiConfig()
-        const patch = filterComposerRuntimePatch(runtimeSettingsPatch(selected, run.canonicalModels, run.actualConfig), run.capabilities,
-          profile.enabled && profile.inputFormat === "openai-chat-completions")
         const work = (async () => {
           await coordinatorRef.current.waitForSettlement(run.owner.key)
           if (runningSessionsRef.current.get(runtimeId) !== run
@@ -2136,8 +2141,7 @@ export default function App() {
         const t = (event as { type?: string }).type
         if (t === "notification" || t === "system" || t === "result") {
           // Native fields only; do not infer Fast from preferences or message text.
-          applyFastModeReport(run.actualConfig, ev as { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown })
-          setRunningTick((tick) => tick + 1)
+          if (applyFastModeReport(run.actualConfig, ev as { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown })) setRunningTick((tick) => tick + 1)
         }
         if (t === "assistant" || t === "stream_event") coordinatorRef.current.response(owner.key, eventInputIds(event))
         const evSessionId = (event as { parent_tool_use_id?: string }).parent_tool_use_id ? undefined : (event as { session_id?: string }).session_id
@@ -3613,6 +3617,49 @@ export default function App() {
     unreadCompletionsRef.current.clear()
     syncUnreadBadge()
   }), [syncUnreadBadge])
+  // 其他仍在运行、排队或等待处理的会话；正在回复的会话没有未完成输入，也要算在内
+  const backgroundConversations: BackgroundConversationItem[] = [...new Map([
+    ...ownersRef.current.values(),
+    ...[...runningSessionsRef.current.values()].map((run) => run.owner)
+  ].map((owner) => [owner.key, owner])).values()].flatMap((owner) => {
+    if (owner.key === activeConversationKey) return []
+    const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+    const tasks = [...coordinatorRef.current.tasks.values()].filter((task) => task.conversationKey === owner.key && task.deliveryState !== "responded")
+    const attention = (run?.pendingPermissionRequestIds.size ?? 0) > 0
+      || tasks.some((task) => ["paused", "failed", "delivery_unknown", "needs_confirmation", "cancelled"].includes(task.deliveryState)
+        || task.runState === "failed" || task.runState === "cancelled")
+    const running = !!run?.streaming || tasks.some((task) => task.runState === "running")
+    if (!attention && !running && tasks.length === 0) return []
+    const sessionId = owner.sessionId ?? findInitSessionId(owner.state)
+    const firstInput = owner.state.entries.flatMap((e) => isAuthoredUserMessage(e) ? [e.rawText || "附件消息"] : [])[0]
+    const title = sessionId ? chatTitle(owner.state, owner.project, sessionId, owner.selectedSessionMeta) : firstInput?.slice(0, 40) || "新对话"
+    return [{ key: owner.key, title, projectName: owner.project.id !== project?.id ? owner.project.name : undefined,
+      status: attention ? "attention" as const : running ? "running" as const : "queued" as const }]
+  })
+  const openBackgroundConversation = async (key: string) => {
+    const owner = ownersRef.current.get(key) ?? [...runningSessionsRef.current.values()].find((run) => run.owner.key === key)?.owner
+    if (!owner) return
+    const token = ++switchTokenRef.current
+    await detachActiveSession()
+    if (token !== switchTokenRef.current) return
+    viewOwnerRef.current = { token, projectId: owner.project.id, key: owner.key }
+    // This in-memory switch supersedes any pending transcript read.
+    setLoadingSession(false)
+    setCollaborationMode(false)
+    setProject(owner.project); setSelectedSessionId(owner.sessionId); selectedSessionIdRef.current = owner.sessionId
+    setSelectedSessionMeta(owner.selectedSessionMeta); setReviewDiffs(owner.reviewDiffs)
+    applyPermissionModeState(owner.permissionMode, owner.permissionModeSource)
+    const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+    if (run) activateRunningSession(run)
+    else {
+      const canUseOwnerLaunchPrefs = canUseApiProfileLaunchPrefs(owner.profileRevision, currentApiLaunchProfileKey())
+      const restoredComposer = canUseOwnerLaunchPrefs ? owner.sessionComposer : null
+      const restoredPrefs = canUseOwnerLaunchPrefs ? owner.composerPrefs : fallbackComposerPrefsForApiProfile(currentApiProfileKey(), globalDefault)
+      sessionComposerRef.current = restoredComposer
+      setComposerPrefs(restoredPrefs); setSessionComposer(restoredComposer)
+      stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state })
+    }
+  }
   const streamingJsonlId = streaming ? jsonlSessionId : null
   const streamingSessionRefs = useMemo(() => {
     const refs: Array<{ projectId: string; sessionId: string }> = []
@@ -3971,21 +4018,7 @@ export default function App() {
               </Suspense>
             )}
 
-            {[...ownersRef.current.values()].some((owner) => owner.key !== activeConversationKey && [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === owner.key && task.deliveryState !== "responded")) && <nav aria-label="本地待处理对话" className="flex flex-wrap gap-2 border-b px-6 py-2 text-xs">
-              {[...ownersRef.current.values()].filter((owner) => owner.key !== activeConversationKey && [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === owner.key && task.deliveryState !== "responded")).map((owner) => <button key={owner.key} className="rounded-md border px-2 py-1 text-muted-foreground hover:text-foreground" onClick={async () => {
-                const token = ++switchTokenRef.current
-                await detachActiveSession()
-                if (token !== switchTokenRef.current) return
-                viewOwnerRef.current = { token, projectId: owner.project.id, key: owner.key }
-                setProject(owner.project); setSelectedSessionId(owner.sessionId); selectedSessionIdRef.current = owner.sessionId
-                setSelectedSessionMeta(owner.selectedSessionMeta); setReviewDiffs(owner.reviewDiffs)
-                setComposerPrefs(owner.composerPrefs); setSessionComposer(owner.sessionComposer)
-                applyPermissionModeState(owner.permissionMode, owner.permissionModeSource)
-                const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
-                if (run) activateRunningSession(run)
-                else { stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state }) }
-              }}>{owner.project.name} · {owner.state.entries.flatMap((e) => isAuthoredUserMessage(e) ? [e.rawText || "附件消息"] : [])[0]?.slice(0, 28) || "待处理消息"}</button>)}
-            </nav>}
+            <BackgroundConversationsBar items={backgroundConversations} onOpen={(key) => { void openBackgroundConversation(key) }} />
             <div className="flex min-h-0 flex-1 flex-col">
               {loadingSession ? (
                 <div className="flex-1 min-h-0 grid place-items-center"><BuddyLoader /></div>
@@ -4054,7 +4087,7 @@ export default function App() {
                   </div>
                 )}
                 <div className="shrink-0 bg-background px-6 pt-2 empty:hidden">
-                  {activeRuntimeSummary && <RuntimeStatus summary={activeRuntimeSummary} />}
+                  {activeRuntimeSummary && <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl"><RuntimeStatus summary={activeRuntimeSummary} /></div>}
                   <Suspense fallback={null}>
                     <RunStatusStrip
                       entries={state.entries}
@@ -4067,7 +4100,9 @@ export default function App() {
                 </div>
                 <div className={cn(empty && "px-6 pb-6 pt-2")}>
                   <div className={cn(empty && "mx-auto max-w-3xl space-y-2 xl:max-w-4xl 2xl:max-w-5xl")}>
-                {activeRun && <AgentFeaturesPanel
+                {activeRun && <div className={cn(!empty && "shrink-0 bg-background px-6 pt-2")}>
+                  <div className={cn(!empty && "mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl")}>
+                <AgentFeaturesPanel
                   suggestion={activeRun.suggestionTracker.current}
                   onInsertSuggestion={(text) => {
                     if (activeRuntimeIdRef.current !== activeRun.runtimeId || viewOwnerRef.current.key !== activeRun.owner.key
@@ -4086,7 +4121,9 @@ export default function App() {
                     if (boundary.sessionId !== jsonlSessionId || !project) return
                     setHistoryPreview({ id: crypto.randomUUID(), cwd: project.cwd, sessionId: boundary.sessionId, target: compactHistoryTarget(boundary) })
                   }}
-                />}
+                />
+                  </div>
+                </div>}
                 <InputRecovery centered={empty} cwd={project?.cwd} liveMessageIds={[...coordinatorRef.current.tasks.keys()]} activeRuntimeIds={[...runningSessionsRef.current.keys()]}
                   canRestore={() => recoveryViewToken === switchTokenRef.current && activeConversationKey === viewOwnerRef.current.key} onRestore={(input) => {
                   const current = activeComposerDraft

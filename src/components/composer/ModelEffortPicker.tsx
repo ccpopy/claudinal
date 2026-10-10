@@ -65,6 +65,36 @@ const MENU_ITEM_CLASS =
   "h-8 rounded-lg px-2 text-[13px] font-normal leading-5 text-popover-foreground hover:bg-primary/10 hover:text-foreground data-[highlighted]:bg-primary/10 data-[highlighted]:text-foreground"
 const MENU_META_CLASS = "text-[10px] leading-none text-muted-foreground"
 const MENU_CHECK_CLASS = "size-3.5 text-primary"
+const MENU_HINT_CLASS = "px-2 pb-1 text-[11px] leading-snug text-muted-foreground"
+
+/** 菜单内的开关行：点击切换且不关闭菜单；hint 仅在需要用户注意时显示。 */
+function FeatureToggle({ label, meta, checked, disabled, title, hint, onToggle }: {
+  label: string
+  meta?: string
+  checked: boolean
+  disabled?: boolean
+  title?: string
+  hint?: string | null
+  onToggle: () => void
+}) {
+  return <>
+    <DropdownMenuItem
+      className={MENU_ITEM_CLASS}
+      disabled={disabled}
+      title={title}
+      role="menuitemcheckbox"
+      aria-checked={checked}
+      onSelect={(event) => { event.preventDefault(); onToggle() }}
+    >
+      <span className="flex-1">{label}</span>
+      {meta && <span className={MENU_META_CLASS}>{meta}</span>}
+      <span aria-hidden className={cn("inline-flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors", checked ? "bg-primary" : "bg-input")}>
+        <span className={cn("block size-3 rounded-full bg-background shadow-sm transition-transform", checked && "translate-x-3")} />
+      </span>
+    </DropdownMenuItem>
+    {hint && <div className={MENU_HINT_CLASS}>{hint}</div>}
+  </>
+}
 
 export function ModelEffortPicker({
   model,
@@ -122,6 +152,10 @@ export function ModelEffortPicker({
   const actualLabel = actualConfig?.model
     ? `${modelDisplayLabel(actualConfig.model)} · ${effortLabel(actualConfig.effort ?? "")}${actualConfig.ultracode ? " · Ultracode" : ""}${actualConfig.fastModeState === "on" ? " · Fast" : actualConfig.fastModeState === "cooldown" ? " · Fast 冷却中" : ""}`
     : "尚未确认"
+  const actualProcessLabel = `当前进程${actualProviderLabel ? `（${actualProviderLabel}）` : ""}：${actualLabel}`
+  const actualFlag = (value: boolean | undefined) => value === true ? "是" : value === false ? "否" : "待确认"
+  const ultraDetails = `CLI 请求：${actualFlag(actualConfig?.ultracodeRequested)} · 可用：${actualFlag(actualConfig?.ultracodeAvailable)} · 生效：${actualFlag(actualConfig?.ultracode)}`
+  const fastDetails = `CLI 实际：${actualConfig?.fastModeState === "on" ? "已开启" : actualConfig?.fastModeState === "off" ? "已关闭" : actualConfig?.fastModeState === "cooldown" ? "冷却中" : "待确认"}`
   const explicitOptions = modelOptions
     ? Array.from(
         new Map(
@@ -184,7 +218,7 @@ export function ModelEffortPicker({
           type="button"
           disabled={disabled}
           aria-label={`模型与思考强度（当前 ${triggerLabel}，${sourceLabel}）`}
-          title={`已选择：${triggerLabel} · ${sourceLabel}\n当前进程：${actualLabel}\n${configurationPending ? "配置待应用" : "修改用于下一次请求；运行中的请求保持原配置"}`}
+          title={`已选择：${triggerLabel} · ${sourceLabel}\n${actualProcessLabel}\n${configurationPending ? "配置待应用" : "修改用于下一次请求；运行中的请求保持原配置"}`}
           className={cn(
             "inline-flex h-7 max-w-[18rem] items-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
             "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
@@ -209,11 +243,15 @@ export function ModelEffortPicker({
         collisionPadding={12}
         className="max-h-[var(--radix-dropdown-menu-content-available-height)] w-72 overflow-y-auto rounded-2xl p-1.5 scrollbar-thin"
       >
-        <div className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
-          <div>已选择：{triggerLabel}</div>
-          <div>当前进程{actualProviderLabel ? `（${actualProviderLabel}）` : ""}：{actualLabel}</div>
-          <div>{configurationPending ? "配置待应用；当前请求保持原配置" : "修改用于下一次请求；当前请求保持原配置"}</div>
-        </div>
+        {/* 仅在配置待应用时提示；完整的所选/实际配置见触发按钮的悬停说明 */}
+        {configurationPending && (
+          <div
+            className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground"
+            title="修改从下一次请求生效，进行中的请求保持原配置"
+          >
+            配置待应用 · {actualProcessLabel}
+          </div>
+        )}
         <DropdownMenuLabel className={MENU_LABEL_CLASS}>
           模型
         </DropdownMenuLabel>
@@ -245,7 +283,7 @@ export function ModelEffortPicker({
             {sourceLabel}
           </span>
         </DropdownMenuLabel>
-        {effortUnconfirmed && <div className="px-2 py-1 text-[11px] text-muted-foreground">模型支持待 CLI 确认{availableEffortLevels?.length ? "；档位来自当前 CLI 帮助。" : "；使用兼容档位，实际以 CLI 应用结果为准。"}</div>}
+        {effortUnconfirmed && <div className={MENU_HINT_CLASS}>档位待 CLI 确认</div>}
         {!supportsEffort ? (
           <div className="px-3 py-2 text-xs text-muted-foreground">
             {modelCapability?.supportsEffort === false ? "CLI 确认该模型不支持思考强度" : "该模型的思考强度能力尚未确认；保持 CLI 默认"}
@@ -290,38 +328,49 @@ export function ModelEffortPicker({
         )}
 
         {supportsEffort && openaiCompatibleProvider && (
-          <div className="mt-1 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
-            OpenAI 兼容使用 reasoning_effort 档位（none / minimal / low / medium /
-            high / xhigh）；具体支持取决于模型，端点不支持的档位会被忽略或回退。历史会话中的
-            max 会按 xhigh 发送。
+          <div className={MENU_HINT_CLASS} title="端点不支持的档位会被忽略或回退；历史会话中的 max 按 xhigh 发送">
+            OpenAI 兼容：使用 reasoning_effort 档位
           </div>
         )}
 
         {supportsEffort && isMaxSelected && (
           <div className="mt-1 flex items-start gap-1.5 rounded-lg border border-warn/40 bg-warn/5 px-2.5 py-1.5 text-[11px] leading-snug text-warn">
             <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-            <span>
-              max 仅对此会话生效，可随本会话恢复，不写入永久默认或其他新会话。
-            </span>
+            <span>max 仅对本会话生效，不写入默认</span>
           </div>
         )}
 
         {!openaiCompatibleProvider && <>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={!featureCapabilities.independentUltracode} onSelect={() => onChange({ ultracode: !ultracode })}>
-            <span className="flex-1">Ultracode</span><span className={MENU_META_CLASS}>{ultracode ? "已选择开启" : "关闭"}</span>{ultracode && <Check className={MENU_CHECK_CLASS} />}
-          </DropdownMenuItem>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">独立开关，保留当前思考强度。{!featureCapabilities.independentUltracode ? featureCapabilities.ultracodeReason ?? "当前 CLI 能力尚未确认" : "须启用 Dynamic workflows，且模型及组织策略允许。Pro 可使用下方本会话开关。"}</div>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">{ultracodeStatusText(actualConfig, configurationPending || (!!ultracode && actualConfig?.ultracodeRequested === undefined))}</div>
-          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={!featureCapabilities.independentUltracode} onSelect={() => onChange({ enableWorkflows: enableWorkflows !== true })}>
-            <span className="flex-1">Dynamic workflows</span><span className={MENU_META_CLASS}>{enableWorkflows === true ? "本会话开启" : enableWorkflows === false ? "本会话关闭" : "跟随 CLI"}</span>{enableWorkflows === true && <Check className={MENU_CHECK_CLASS} />}
-          </DropdownMenuItem>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">仅授权当前会话，随该会话恢复；不修改永久设置或思考强度，组织限制仍以 CLI 回读为准。</div>
-          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={!featureCapabilities.fastMode} onSelect={() => onChange({ fastMode: !fastMode })}>
-            <span className="flex-1">Fast mode</span><span className={MENU_META_CLASS}>{fastMode ? "已选择开启" : "关闭"}</span>{fastMode && <Check className={MENU_CHECK_CLASS} />}
-          </DropdownMenuItem>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">默认关闭；可能使用更高单价或 Usage credits，且需支持的 Opus、账号和上游授权。第三方网关须实际支持，不自动绕过检查。实际：{fastModeStatusText(actualConfig, configurationPending || (!!fastMode && !actualConfig?.fastModeState))}。{!featureCapabilities.fastMode && (featureCapabilities.fastModeReason ?? "当前运行环境尚未确认支持")}</div>
-          <DropdownMenuLabel className={MENU_LABEL_CLASS}>此模型自动压缩窗口</DropdownMenuLabel>
+          <FeatureToggle
+            label="Ultracode"
+            checked={ultracode}
+            disabled={!featureCapabilities.independentUltracode}
+            title={`独立于思考强度的开关；需 Dynamic workflows，并受模型与组织策略限制\n${ultraDetails}`}
+            hint={featureCapabilities.independentUltracode
+              ? ultracodeStatusText(ultracode, actualConfig, configurationPending || (ultracode && actualConfig?.ultracodeRequested === undefined))
+              : featureCapabilities.ultracodeReason ?? "当前 CLI 尚未确认支持"}
+            onToggle={() => onChange({ ultracode: !ultracode })}
+          />
+          <FeatureToggle
+            label="Dynamic workflows"
+            meta={enableWorkflows === undefined ? "跟随 CLI" : undefined}
+            checked={enableWorkflows === true}
+            disabled={!featureCapabilities.independentUltracode}
+            title="仅对本会话生效并随会话恢复，不修改永久设置"
+            onToggle={() => onChange({ enableWorkflows: enableWorkflows !== true })}
+          />
+          <FeatureToggle
+            label="Fast mode"
+            checked={fastMode}
+            disabled={!featureCapabilities.fastMode}
+            title={`可能按更高单价计费或消耗 Usage credits；需支持的模型、账号与上游授权\n${fastDetails}`}
+            hint={featureCapabilities.fastMode
+              ? fastModeStatusText(fastMode, actualConfig, configurationPending || (fastMode && !actualConfig?.fastModeState))
+              : featureCapabilities.fastModeReason ?? "当前运行环境尚未确认支持"}
+            onToggle={() => onChange({ fastMode: !fastMode })}
+          />
+          <DropdownMenuLabel className={MENU_LABEL_CLASS} title="auto 跟随模型默认；窗口大小不代表当前上下文用量">此模型自动压缩窗口</DropdownMenuLabel>
           <div className="flex items-center gap-2 px-2 py-1">
             <input aria-label="此模型自动压缩窗口（token）" className="h-7 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs" disabled={!featureCapabilities.autoCompactWindow} key={`${model}:${autoCompactWindow ?? "auto"}`} defaultValue={autoCompactWindow ?? "auto"} placeholder="auto 或 100000–1000000" onKeyDown={(event) => {
               event.stopPropagation()
@@ -334,7 +383,7 @@ export function ModelEffortPicker({
             }} />
             <span className={MENU_META_CLASS}>token</span>
           </div>
-          <div className="px-2 py-1 text-[11px] leading-snug text-muted-foreground">{featureCapabilities.autoCompactWindow ? "auto 跟随模型默认；更高优先级设置可能覆盖。" : featureCapabilities.autoCompactWindowReason ?? "当前 CLI 尚未确认支持按模型设置。"}窗口大小不表示当前上下文用量。</div>
+          {!featureCapabilities.autoCompactWindow && <div className={MENU_HINT_CLASS}>{featureCapabilities.autoCompactWindowReason ?? "当前 CLI 尚未确认支持按模型设置"}</div>}
         </>}
 
         {supportsEffort && canPersistGlobal && (

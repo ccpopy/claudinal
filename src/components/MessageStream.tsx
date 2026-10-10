@@ -76,6 +76,15 @@ function visibleMessage(message: UIMessage, blocks: UIBlock[]): UIMessage {
   return visible
 }
 
+/**
+ * A finished text block with only whitespace renders nothing, yet as its own
+ * group it still adds a list gap and a timeline marker. Live stream-json sends
+ * content blocks as separate events, so these accumulate into blank space.
+ */
+function hasVisibleContent(block: UIBlock): boolean {
+  return block.type !== "text" || !!block.partial || !!block.text?.trim()
+}
+
 function isProgressAssistantMessage(message: UIMessage): boolean {
   return (
     message.backgroundActivity === true ||
@@ -98,6 +107,27 @@ function resultFinalText(
   }
   const text = entry.result?.trim()
   return text || null
+}
+
+/**
+ * MessageCard renders nothing for these entries; giving them a group would still
+ * add a flex gap each, and a long turn's status events stack into blank space.
+ * Repeated init metadata (CLI re-reports mid-turn) adds no information and would
+ * otherwise land below the running turn. Preserve changes visible in its card.
+ */
+function rendersStandaloneEntry(entry: UIEntry, entries: UIEntry[], index: number): boolean {
+  if (entry.kind === "rate_limit" || entry.kind === "unknown") return false
+  if (entry.kind === "system_status") return entry.status.startsWith("CLI 正在恢复")
+  if (entry.kind === "system_init") {
+    for (let i = index - 1; i >= 0; i--) {
+      const previous = entries[i]
+      if (previous.kind !== "system_init") continue
+      const cardMetadata = (init: typeof entry) => [init.sessionId, init.model, init.requestedModel,
+        init.cwd, init.permissionMode, init.outputStyle, init.fastModeState, init.version, init.mcpServers]
+      return JSON.stringify(cardMetadata(previous)) !== JSON.stringify(cardMetadata(entry))
+    }
+  }
+  return true
 }
 
 export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[] {
@@ -170,7 +200,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
         for (const b of m.blocks) {
           if (!b) continue
           if (b.type === "tool_result") toolResults.push(b)
-          else userVisible.push(b)
+          else if (hasVisibleContent(b)) userVisible.push(b)
         }
         if (toolResults.length > 0) {
           const run = ensureRun(undefined, m.id)
@@ -210,7 +240,8 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
         const visibleBlocks: UIBlock[] = []
         const progressMessage = isProgressAssistantMessage(m)
         for (const b of m.blocks) {
-          if (!b) continue
+          // Empty API error text still renders an explicit fallback diagnostic.
+          if (!b || (!m.apiError && !hasVisibleContent(b))) continue
           if (
             b.type === "thinking" ||
             b.type === "tool_use" ||
@@ -272,8 +303,8 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
       groups.push({ kind: "entry", key: `result-${i}`, entry: e })
       state.current = null
       state.hasFinalAssistantText = false
-    } else {
-      // 其它 entry（system_init / stderr / raw / unknown）只渲染，不拉宽 endTs
+    } else if (rendersStandaloneEntry(e, entries, i)) {
+      // 其它 entry（system_init / stderr / raw / hook）只渲染，不拉宽 endTs
       groups.push({ kind: "entry", key: `entry-${i}-${e.kind}`, entry: e })
     }
   }
