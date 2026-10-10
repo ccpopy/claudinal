@@ -22,7 +22,7 @@
 </p>
 
 **核心理念：不重新发明 Agent，只打造一个比 TUI 更好用的桌面外壳。**
-本项目通过 Tauri 2 封装本地 `claude` CLI 的 headless stream-json 接口，底层的 Prompt 处理、工具调度与 Hook 执行完全交由原生 Claude CLI 负责。CLI 一经升级，桌面端即刻自动获得新能力。
+本项目通过 Tauri 2 封装本地 `claude` CLI 的 headless stream-json 接口，底层的 Prompt 处理、工具调度与 Hook 执行交由原生 Claude CLI 负责。桌面功能同时取决于所选 CLI 的公开协议、模型及账号支持；升级 CLI 后，可在运行环境诊断中检查能力依据和待确认状态。
 
 ## 特别感谢
 
@@ -63,6 +63,14 @@
 - **参数可视化控制**：在 Composer 中调节 Model / Effort / Permission Mode，并按会话保存偏好。
 - **结构化消息卡片**：告别杂乱的终端输出，思考过程 (Thinking)、工具调用 (Bash/Edit/Read) 均采用独立、优雅的折叠卡片与 Diff 视图展示。
 - **原生能力加持**：无缝支持系统文件拖拽粘贴、本地代理设置及深浅色主题自由切换。
+
+### 0.6.0 能力范围
+
+- 本地文件引用保留来源及行列信息；斜杠指令区分本地操作、终端入口与会话指令，未确认的命令保留原文。
+- 提交尝试保存当次配置，提供显式的当前配置重试；权限由 CLI 判定，审查准备具有独立的限额、取消与降级状态。长历史的折叠内容按需挂载，保留展开和滚动位置。
+- 检查点回退、完整子智能体事件、Fast、提示建议及上下文摘要仅按已确认的公开合约接入。Fast 和提示建议默认关闭；缺少账号或真实会话认证时会标明待验证，上下文窗口未知时不显示推算比例。
+- 外部后台任务查询保持禁用：公开任务列表无法证明提供商、凭据及代理生命周期隔离。诊断提供 `claude agents --json --all` 和 `claude logs <id>` 供手动检查；`--bg` 与 `-p/--print` 不兼容。
+- Agent Teams 保留既有实验开关，尚未认证完整的 headless 任务板与队友控制；resume/rewind 不会恢复进程内队友。Remote Control、官方听写及官方云执行不在本版范围内。
 
 ## 🛠️ 技术栈
 
@@ -115,19 +123,24 @@ pnpm package:rpm          # RedHat/Fedora (.rpm)
 pnpm package:appimage     # AppImage 便携包
 pnpm package:linux        # 同时打包 deb + rpm + AppImage
 
-# 打包为便携版 zip (跨平台)
-pnpm package:zip          # 全平台 zip
-pnpm package:zip-installer  # 仅安装版 zip
-pnpm package:zip-portable   # 仅便携版 zip
+# 从当前平台的 Tauri 构建产物生成 zip
+pnpm package:portable      # 构建当前平台便携程序，再生成 zip
+pnpm package:zip           # Windows：已有 NSIS 安装器 + 主程序生成两个 zip
+pnpm package:zip-installer # Windows：仅已有 NSIS 安装器生成 zip
+pnpm package:zip-portable  # 仅已有当前平台主程序生成便携 zip
 ```
+
+zip 脚本使用 Cargo metadata 返回的有效 target 目录。安装器必须匹配当前 `productName`、版本和 Tauri 架构文件名；没有匹配或存在多个架构时会失败，不会选用共享缓存中的旧版或其他产品。便携程序须由 `tauri build` 产出，裸 `cargo build --release` 不能替代。交付前需校验 zip 内程序与本次构建程序的大小及 SHA-256；便携包只含程序和说明，仍需安装并配置官方 Claude CLI。
+
+便携程序的 Claudinal 配置与缓存保存在同级 `.claudinal/`；Claude CLI 的配置仍由 CLI 管理，会话 JSONL 和 Claudinal sidecar 位于用户目录的 `~/.claude/projects/`。移动程序及其 `.claudinal/` 不会同时搬移会话文件。
 
 ### 自动发布
 
-推送和版本号一致的 tag 会自动触发 GitHub Release 打包：
+0.6.0 的本地构建和 zip 打包只准备产物。完成质量检查、版本一致性及产物校验后，推送和版本号一致的 tag 才会触发公开 GitHub Release：
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 Workflow 会校验 `package.json` 与 `src-tauri/tauri.conf.json` 的版本号，然后在 Windows、macOS 和 Linux runner 上分别构建安装包，并上传源码包与 `SHA256SUMS.txt`。
