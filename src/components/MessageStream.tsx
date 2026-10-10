@@ -1,14 +1,14 @@
 import type { SubmissionActions } from "./SubmittedInputActions"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, MessageSquareDashed } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import {
   chatTimelinePreview,
   chatTimelineRoleLabel,
-  formatTimelineTime,
-  timelineTargetIntersectsViewport
+  formatTimelineTime
 } from "@/lib/chatTimeline"
+import { restoreTimelineAnchor, timelineScrollAnchor, timelineWindow, type TimelineGeometry } from "@/lib/timelineGeometry"
 import type { ReviewRunDiff } from "@/lib/diff"
 import { matchReviewsToResults } from "@/lib/diff"
 import type { SubagentTask } from "@/lib/subagents"
@@ -21,6 +21,7 @@ import { RunReviewCard } from "./RunReviewCard"
 interface Props {
   submissionActions?: SubmissionActions
   onOpenPermissions?: () => void
+  onRewindMessage?: (message: UIMessage) => void
   entries: UIEntry[]
   streaming: boolean
   cwd?: string | null
@@ -58,6 +59,18 @@ interface EntryGroup {
   entry: UIEntry
 }
 type Group = MsgGroup | RunPlaceholder | EntryGroup
+const MemoMessageCard = memo(MessageCard)
+const visibleMessageCache = new WeakMap<UIMessage, UIMessage>()
+
+function visibleMessage(message: UIMessage, blocks: UIBlock[]): UIMessage {
+  if (blocks.length === message.blocks.length && blocks.every((block, i) => block === message.blocks[i])) return message
+  let visible = visibleMessageCache.get(message)
+  if (!visible) {
+    visible = { ...message, blocks }
+    visibleMessageCache.set(message, visible)
+  }
+  return visible
+}
 
 function isProgressAssistantMessage(message: UIMessage): boolean {
   return (
@@ -95,14 +108,14 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
     hasFinalAssistantText: false
   }
 
-  const ensureRun = (startTs?: number): RunPlaceholder => {
+  const ensureRun = (startTs?: number, sourceId?: string): RunPlaceholder => {
     if (state.current) {
       if (startTs && !state.current.startTs) state.current.startTs = startTs
       return state.current
     }
     const r: RunPlaceholder = {
       kind: "run",
-      key: `run-${state.counter++}`,
+      key: sourceId ? `run-${sourceId}` : `run-${state.counter++}`,
       steps: [],
       running: true,
       startTs
@@ -157,7 +170,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
           else userVisible.push(b)
         }
         if (toolResults.length > 0) {
-          const run = ensureRun()
+          const run = ensureRun(undefined, m.id)
           for (let k = 0; k < toolResults.length; k++) {
             appendStep(run, {
               key: `${m.id}-tr-${k}`,
@@ -172,22 +185,22 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
             groups.push({
               kind: "msg",
               key: `msg-${m.id}`,
-              msg: { ...m, blocks: userVisible }
+              msg: visibleMessage(m, userVisible)
             })
             continue
           }
           if (m.deliveryState && ["preparing", "needs_confirmation", "queued", "paused", "cancelled", "failed", "delivery_unknown"].includes(m.deliveryState)) {
-            groups.push({ kind: "msg", key: `msg-${m.id}`, msg: { ...m, blocks: userVisible } }); continue
+            groups.push({ kind: "msg", key: `msg-${m.id}`, msg: visibleMessage(m, userVisible) }); continue
           }
           if (state.current) state.current.running = false
           state.current = null
           groups.push({
             kind: "msg",
             key: `msg-${m.id}`,
-            msg: { ...m, blocks: userVisible }
+            msg: visibleMessage(m, userVisible)
           })
           // 立即开一个新的 run，给"处理中…"占位让用户可见秒表
-          ensureRun(m.ts)
+          ensureRun(m.ts, m.id)
         }
       } else {
         const stepBlocks: UIBlock[] = []
@@ -204,7 +217,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
           } else visibleBlocks.push(b)
         }
         if (stepBlocks.length > 0) {
-          const run = ensureRun()
+          const run = ensureRun(undefined, m.id)
           for (let k = 0; k < stepBlocks.length; k++) {
             appendStep(run, {
               key: `${m.id}-st-${k}`,
@@ -226,7 +239,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
           groups.push({
             kind: "msg",
             key: `msg-${m.id}`,
-            msg: { ...m, blocks: visibleBlocks }
+            msg: visibleMessage(m, visibleBlocks)
           })
         }
       }
@@ -273,6 +286,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
 export function MessageStream({
   submissionActions,
   onOpenPermissions,
+  onRewindMessage,
   entries,
   streaming,
   cwd,
@@ -288,6 +302,15 @@ export function MessageStream({
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const timelineTargetRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const timelineRefCallbacks = useRef(new Map<string, (node: HTMLDivElement | null) => void>())
+  const geometryRef = useRef<TimelineGeometry[]>([])
+  const geometryDirtyRef = useRef(true)
+  const geometryIdsKeyRef = useRef("")
+  const observerRef = useRef<ResizeObserver | null>(null)
+  const trackingFrameRef = useRef<number | null>(null)
+  const trackingGenerationRef = useRef(0)
+  const updateTimelineStateRef = useRef<() => void>(() => {})
+  const pinnedToBottomRef = useRef(true)
   const activeTimelineIdRef = useRef<string | null>(null)
   const visibleTimelineIdsKeyRef = useRef("")
   const [pinnedToBottom, setPinnedToBottom] = useState(true)
@@ -296,6 +319,15 @@ export function MessageStream({
     () => new Set()
   )
   const [timelineVisible, setTimelineVisible] = useState(false)
+  const scheduleTimelineUpdate = useCallback(() => {
+    if (trackingFrameRef.current !== null) return
+    const generation = trackingGenerationRef.current
+    trackingFrameRef.current = requestAnimationFrame(() => {
+      if (generation !== trackingGenerationRef.current) return
+      trackingFrameRef.current = null
+      updateTimelineStateRef.current()
+    })
+  }, [])
 
   const groups = useMemo(() => buildGroups(entries, streaming), [entries, streaming])
 
@@ -335,6 +367,9 @@ export function MessageStream({
     for (const id of timelineTargetRefs.current.keys()) {
       if (!validIds.has(id)) timelineTargetRefs.current.delete(id)
     }
+    for (const id of timelineRefCallbacks.current.keys()) {
+      if (!validIds.has(id)) timelineRefCallbacks.current.delete(id)
+    }
     if (!activeTimelineIdRef.current || !validIds.has(activeTimelineIdRef.current)) {
       const next = timelineItems[0]?.id ?? null
       activeTimelineIdRef.current = next
@@ -342,13 +377,23 @@ export function MessageStream({
     }
   }, [timelineItems])
 
-  const setTimelineTargetRef = useCallback(
-    (id: string, node: HTMLDivElement | null) => {
-      if (node) {
-        timelineTargetRefs.current.set(id, node)
-      } else {
-        timelineTargetRefs.current.delete(id)
+  const getTimelineTargetRef = useCallback(
+    (id: string) => {
+      let callback = timelineRefCallbacks.current.get(id)
+      if (!callback) {
+        callback = (node) => {
+          const previous = timelineTargetRefs.current.get(id)
+          if (previous === node) return
+          if (previous) observerRef.current?.unobserve(previous)
+          if (node) {
+            timelineTargetRefs.current.set(id, node)
+            observerRef.current?.observe(node)
+          } else timelineTargetRefs.current.delete(id)
+          geometryDirtyRef.current = true
+        }
+        timelineRefCallbacks.current.set(id, callback)
       }
+      return callback
     },
     []
   )
@@ -358,32 +403,27 @@ export function MessageStream({
     const viewport = el?.querySelector(
       "[data-slot='scroll-area-viewport']"
     ) as HTMLElement | null
-    if (!viewport || timelineItems.length === 0) return
-    const viewportTop = viewport.scrollTop
+    if (!viewport) return
     const viewportHeight = viewport.clientHeight
-    const anchorTop = viewportTop + viewportHeight * 0.32
-    const nextVisibleIds: string[] = []
-    let next = timelineItems[0].id
-    let passedAnchor = false
-    for (const item of timelineItems) {
-      const target = timelineTargetRefs.current.get(item.id)
-      if (!target) continue
-      if (
-        timelineTargetIntersectsViewport(
-          target.offsetTop,
-          target.offsetHeight,
-          viewportTop,
-          viewportHeight
-        )
-      ) {
-        nextVisibleIds.push(item.id)
-      }
-      if (!passedAnchor && target.offsetTop <= anchorTop) {
-        next = item.id
-      } else {
-        passedAnchor = true
+    if (geometryDirtyRef.current) {
+      const anchor = timelineScrollAnchor(geometryRef.current, viewport.scrollTop)
+      const viewportRect = viewport.getBoundingClientRect()
+      const top = viewport.scrollTop
+      geometryRef.current = timelineItems.flatMap((item) => {
+        const target = timelineTargetRefs.current.get(item.id)
+        if (!target) return []
+        const rect = target.getBoundingClientRect()
+        return [{ id: item.id, top: rect.top - viewportRect.top + top, height: rect.height }]
+      })
+      geometryDirtyRef.current = false
+      if (autoScroll && pinnedToBottomRef.current) viewport.scrollTop = viewport.scrollHeight
+      else {
+        const restored = restoreTimelineAnchor(geometryRef.current, anchor)
+        if (restored !== null) viewport.scrollTop = restored
       }
     }
+    const { activeId: next, visibleIds: nextVisibleIds } = timelineWindow(geometryRef.current, viewport.scrollTop, viewportHeight)
+    setTimelineVisible(viewport.scrollHeight > viewportHeight)
     const nextVisibleKey = nextVisibleIds.join("\u0000")
     if (nextVisibleKey !== visibleTimelineIdsKeyRef.current) {
       visibleTimelineIdsKeyRef.current = nextVisibleKey
@@ -392,7 +432,18 @@ export function MessageStream({
     if (next === activeTimelineIdRef.current) return
     activeTimelineIdRef.current = next
     setActiveTimelineId(next)
-  }, [timelineItems])
+  }, [timelineItems, autoScroll])
+
+  useLayoutEffect(() => {
+    updateTimelineStateRef.current = updateTimelineState
+    const idsKey = timelineItems.map((item) => item.id).join("\u0000")
+    if (idsKey !== geometryIdsKeyRef.current) {
+      geometryIdsKeyRef.current = idsKey
+      geometryDirtyRef.current = true
+    }
+    // Preserve the reader's anchor before painting a changed transcript.
+    updateTimelineState()
+  }, [updateTimelineState])
 
   useEffect(() => {
     const el = ref.current
@@ -404,14 +455,35 @@ export function MessageStream({
     const onScroll = () => {
       const distance =
         viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
-      setTimelineVisible(viewport.scrollHeight > viewport.clientHeight)
-      if (autoScroll) setPinnedToBottom(distance < 32)
-      updateTimelineState()
+      if (autoScroll) {
+        pinnedToBottomRef.current = distance < 32
+        setPinnedToBottom(pinnedToBottomRef.current)
+      }
+      scheduleTimelineUpdate()
     }
     viewport.addEventListener("scroll", onScroll, { passive: true })
-    onScroll()
-    return () => viewport.removeEventListener("scroll", onScroll)
-  }, [autoScroll, updateTimelineState])
+    const content = el.querySelector<HTMLElement>("[data-message-stream-content]")
+    const invalidate = () => {
+      geometryDirtyRef.current = true
+      scheduleTimelineUpdate()
+    }
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(invalidate)
+    observerRef.current = observer
+    observer?.observe(viewport)
+    if (content) observer?.observe(content)
+    for (const target of timelineTargetRefs.current.values()) observer?.observe(target)
+    window.addEventListener("resize", invalidate)
+    scheduleTimelineUpdate()
+    return () => {
+      viewport.removeEventListener("scroll", onScroll)
+      window.removeEventListener("resize", invalidate)
+      observer?.disconnect()
+      observerRef.current = null
+      trackingGenerationRef.current++
+      if (trackingFrameRef.current !== null) cancelAnimationFrame(trackingFrameRef.current)
+      trackingFrameRef.current = null
+    }
+  }, [autoScroll, scheduleTimelineUpdate, entries.length === 0])
 
   const scrollToBottom = () => {
     const el = ref.current
@@ -420,8 +492,9 @@ export function MessageStream({
     ) as HTMLElement | null
     if (!viewport) return
     viewport.scrollTop = viewport.scrollHeight
+    pinnedToBottomRef.current = true
     setPinnedToBottom(true)
-    updateTimelineState()
+    scheduleTimelineUpdate()
   }
 
   useEffect(() => {
@@ -437,7 +510,7 @@ export function MessageStream({
     const target = timelineTargetRefs.current.get(id)
     if (!viewport || !target) return
     viewport.scrollTo({
-      top: Math.max(target.offsetTop - 24, 0),
+      top: Math.max(target.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop - 24, 0),
       behavior: "smooth"
     })
     activeTimelineIdRef.current = id
@@ -460,7 +533,7 @@ export function MessageStream({
 
   let reviewIndex = 0
   return (
-    <ScrollArea ref={ref} className="relative flex-1 min-h-0 overflow-hidden">
+    <ScrollArea ref={ref} className="relative flex-1 min-h-0 overflow-hidden" viewportClassName="[overflow-anchor:none]">
       <div
         data-message-stream-content
         className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 py-6 xl:max-w-4xl 2xl:max-w-5xl"
@@ -470,11 +543,11 @@ export function MessageStream({
             return (
               <div
                 key={g.key}
-                ref={(node) => setTimelineTargetRef(g.key, node)}
+                ref={getTimelineTargetRef(g.key)}
                 data-timeline-target={g.key}
                 className="scroll-mt-6"
               >
-                <MessageCard
+                <MemoMessageCard
                   submissionActions={submissionActions}
                   entry={g.msg}
                   cwd={cwd}
@@ -482,6 +555,7 @@ export function MessageStream({
                   slashCommands={slashCommands}
                   onRetryMessage={onRetryMessage}
                   onOpenPermissions={onOpenPermissions}
+                  onRewindMessage={onRewindMessage}
                 />
               </div>
             )
@@ -506,7 +580,7 @@ export function MessageStream({
             const review = matchedReviews[reviewIndex++]
             return (
               <div key={g.key}>
-                <MessageCard
+                <MemoMessageCard
                   submissionActions={submissionActions}
                   entry={g.entry}
                   cwd={cwd}
@@ -514,6 +588,7 @@ export function MessageStream({
                   slashCommands={slashCommands}
                   onRetryMessage={onRetryMessage}
                   onOpenPermissions={onOpenPermissions}
+                  onRewindMessage={onRewindMessage}
                 />
                 {review && (
                   <RunReviewCard
@@ -526,7 +601,7 @@ export function MessageStream({
             )
           }
           return (
-            <MessageCard
+            <MemoMessageCard
                   submissionActions={submissionActions}
               key={g.key}
               entry={g.entry}
@@ -535,6 +610,7 @@ export function MessageStream({
               slashCommands={slashCommands}
               onRetryMessage={onRetryMessage}
                   onOpenPermissions={onOpenPermissions}
+              onRewindMessage={onRewindMessage}
             />
           )
         })}

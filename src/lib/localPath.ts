@@ -90,92 +90,169 @@ function isKnownDotfileName(name: string): boolean {
   )
 }
 
-function trimPathReference(value: string): string {
-  return value.trim().replace(/^<|>$/g, "")
+export type ReferenceSource = "inline_code" | "markdown_link" | "code_block" | "tool" | "git" | "attachment" | "explicit"
+export type PathPlatform = "windows" | "posix"
+
+export interface LocalFileReference {
+  path: string
+  line?: number
+  column?: number
+  kind: "file" | "directory" | "unknown"
+  source: ReferenceSource
+  original: string
+  /** A bare POSIX root name needs user-initiated filesystem confirmation. */
+  needsConfirmation?: boolean
 }
 
-export function fileUrlToPath(value: string): string | null {
-  if (!value.toLowerCase().startsWith("file://")) return null
+export interface ReferenceOptions {
+  source: ReferenceSource
+  cwd?: string | null
+  platform?: PathPlatform
+  home?: string | null
+  commands?: readonly string[]
+}
+
+export type ReferenceClassification =
+  | { kind: "local"; reference: LocalFileReference }
+  | { kind: "command" | "external" | "code"; original: string; source: ReferenceSource }
+
+const BUILTIN_COMMANDS = new Set("compact model clear reset permissions help cost context config status login logout resume fork rewind rename memory review init doctor agents skills plugin plugins mcp hooks tasks fast effort plan output-style terminal-setup theme vim export copy add-dir insights usage ultrathink ultracode".split(" "))
+
+function trimPathReference(value: string): string {
+  const trimmed = value.trim()
+  return trimmed.startsWith("<") && trimmed.endsWith(">") ? trimmed.slice(1, -1) : trimmed
+}
+
+function platformFor(value: string, options: Pick<ReferenceOptions, "cwd" | "platform">): PathPlatform {
+  return options.platform ?? (/^[a-z]:[\\/]|^\\\\/i.test(options.cwd ?? value) ? "windows" : "posix")
+}
+
+export function fileUrlToPath(value: string, platform?: PathPlatform): string | null {
+  if (!/^file:\/\//i.test(value)) return null
   try {
     const url = new URL(value)
+    if (url.username || url.password || url.port || url.search) return null
     let path = decodeURIComponent(url.pathname)
-    if (/^\/[a-zA-Z]:\//.test(path)) path = path.slice(1)
-    if (/^[a-zA-Z]:\//.test(path)) return path.replace(/\//g, "\\")
-    return path
+    const windows = platform === "windows" || (!platform && /^\/[a-z]:\//i.test(path))
+    if (url.hostname && url.hostname !== "localhost") {
+      return windows ? `\\\\${url.hostname}${path.replace(/\//g, "\\")}` : `//${url.hostname}${path}`
+    }
+    if (windows && /^\/[a-z]:\//i.test(path)) path = path.slice(1)
+    return windows ? path.replace(/\//g, "\\") : path
   } catch {
     return null
   }
 }
 
+function isAbsolutePath(value: string): boolean {
+  return /^[a-z]:[\\/]|^\\\\[^\\]+\\[^\\]+|^\//i.test(value)
+}
+
+/** Lexical normalization: does not query disk or decode ordinary filenames. */
+function normalizePath(value: string, platform: PathPlatform): string {
+  const windows = platform === "windows"
+  const separator = windows ? "\\" : "/"
+  const path = windows ? value.replace(/\//g, "\\") : value
+  const rootMatch = windows ? /^(?:[a-z]:\\|\\\\[^\\]+\\[^\\]+\\?)/i.exec(path) : /^(?:\/\/[^/]+\/[^/]+\/?|\/)/.exec(path)
+  const root = rootMatch?.[0] ?? ""
+  const parts: string[] = []
+  for (const part of path.slice(root.length).split(separator)) {
+    if (!part || part === ".") continue
+    if (part === ".." && parts.length && parts.at(-1) !== "..") parts.pop()
+    else if (part !== ".." || !root) parts.push(part)
+  }
+  return root + (root && !root.endsWith(separator) && parts.length ? separator : "") + parts.join(separator)
+}
+
+function fileShaped(value: string): boolean {
+  const name = basename(value).toLowerCase()
+  if (name.startsWith(".")) return isKnownDotfileName(name)
+  if (EXTENSIONLESS_FILE_NAMES.has(name)) return true
+  return BARE_FILE_EXTENSIONS.has(name.split(".").pop() ?? "")
+}
+
+function splitLocation(value: string): { path: string; line?: number; column?: number } {
+  const fragment = /#L([1-9]\d*)(?:C([1-9]\d*))?$/.exec(value)
+  const suffix = fragment ?? /:([1-9]\d*)(?::([1-9]\d*))?$/.exec(value)
+  if (!suffix) return { path: value }
+  const line = Number(suffix[1])
+  const column = suffix[2] ? Number(suffix[2]) : undefined
+  if (!Number.isSafeInteger(line) || (column !== undefined && !Number.isSafeInteger(column))) return { path: value }
+  return { path: value.slice(0, suffix.index), line, column }
+}
+
+export function classifyReference(value: string, options: ReferenceOptions): ReferenceClassification {
+  const ordinary = (kind: "command" | "external" | "code"): ReferenceClassification => ({ kind, original: value, source: options.source })
+  if (options.source === "code_block") return ordinary("code")
+  const raw = trimPathReference(value)
+  if (!raw || /[\0\r\n]/.test(raw)) {
+    return ordinary(/^\/[\w.:-]+(?:\s|$)/.test(raw) ? "command" : "code")
+  }
+  const guaranteed = ["tool", "git", "attachment", "explicit"].includes(options.source)
+  if (!guaranteed && /^(?:[a-z][a-z\d+.-]*:(?![\\/])|https?:\/\/|\/\/)/i.test(raw) && !/^file:\/\//i.test(raw)) {
+    return ordinary("external")
+  }
+  const location = options.source === "git" || options.source === "attachment" ? { path: raw } : splitLocation(raw)
+  let pathValue = location.path
+  // Markdown destinations are URLs. Decode their path once, after splitting the
+  // explicit location fragment, while preserving percent signs in inline filenames.
+  if (options.source === "markdown_link" && !/^file:\/\//i.test(pathValue)) {
+    try { pathValue = decodeURIComponent(pathValue) } catch { return ordinary("code") }
+  }
+  const token = /^\/([\w.:-]+)(?=\s|$)/.exec(pathValue)
+  if (!guaranteed && token) {
+    const name = token[1]
+    const known = BUILTIN_COMMANDS.has(name) || options.commands?.some((command) => command.replace(/^\//, "") === name)
+    if (known || name.includes(":") || pathValue.slice(token[0].length).trim()) return ordinary("command")
+    // An unknown dotted slash command stays ordinary unless its basename is file-shaped.
+    if (name.includes(".") && !fileShaped(pathValue)) return ordinary("code")
+  }
+  if (!guaranteed && /\s(?:--?\w|&&|\|\||[|;])|^(?:npm|pnpm|yarn|git|node|python|bash|sh|cmd|powershell|cargo|rg|echo|cd)\s|^\S+\.(?:sh|bash|cmd|bat|ps1|exe)\s+\S/.test(pathValue)) return ordinary("code")
+  if (/^[#?]/.test(pathValue) || /^[a-z][a-z\d+.-]*:/i.test(pathValue) && !/^[a-z]:[\\/]|^file:\/\//i.test(pathValue) && (!guaranteed || /^[a-z][a-z\d+.-]*:\/\//i.test(pathValue))) return ordinary("external")
+  const platform = platformFor(pathValue, options)
+  const filePath = /^file:\/\//i.test(pathValue) ? fileUrlToPath(pathValue, platform) : pathValue
+  if (!filePath || /[\0\r\n]/.test(filePath)) return ordinary("code")
+  const home = /^~[\\/]/.test(filePath)
+  const explicit = isAbsolutePath(filePath) || /^\.{1,2}[\\/]/.test(filePath) || home
+  if (!guaranteed && !explicit && !fileShaped(filePath)) return ordinary("code")
+  let path = filePath
+  if (home) {
+    if (options.home) path = `${options.home.replace(/[\\/]+$/, "")}/${filePath.slice(2)}`
+    // Native runtime resolves ~ on user intent; it must never join the project cwd.
+  } else if (!isAbsolutePath(path)) {
+    if (!options.cwd || !isAbsolutePath(options.cwd)) return ordinary("code")
+    path = `${options.cwd.replace(/[\\/]+$/, "")}/${path}`
+  }
+  path = normalizePath(path, platform)
+  const needsConfirmation = !guaranteed && /^\/[^/]+$/.test(filePath) && !fileShaped(filePath)
+  return { kind: "local", reference: { path, ...("line" in location ? { line: location.line, column: location.column } : {}), kind: /[\\/]$/.test(filePath) || filePath === "/" ? "directory" : fileShaped(filePath) ? "file" : "unknown", source: options.source, original: value, ...(needsConfirmation ? { needsConfirmation: true } : {}) } }
+}
+
+export function parseLocalFileReference(value: string, options: ReferenceOptions): LocalFileReference | null {
+  const result = classifyReference(value, options)
+  return result.kind === "local" ? result.reference : null
+}
+
 export function isLikelyLocalPath(value: string): boolean {
-  const trimmed = value.trim()
-  if (!trimmed) return false
-  if (fileUrlToPath(trimmed)) return true
-  if (/^[a-zA-Z]:[\\/][^:*?"<>|]+/.test(trimmed)) return true
-  if (/^\\\\[^\\]+\\[^\\]+/.test(trimmed)) return true
-  if (/^\/(?:[^/\0]+\/)*[^/\0]+$/.test(trimmed)) return true
-  return false
+  return !!normalizeOpenablePath(value)
 }
 
 export function normalizeOpenablePath(value: string): string | null {
-  const trimmed = trimPathReference(value)
-  return fileUrlToPath(trimmed) ?? (isLikelyLocalPath(trimmed) ? trimmed : null)
+  const path = trimPathReference(value)
+  if (!isAbsolutePath(path) && !/^file:\/\//i.test(path)) return null
+  return parseLocalFileReference(path, { source: "explicit" })?.path ?? null
 }
 
-export function resolveOpenablePath(
-  value: string,
-  cwd?: string | null
-): string | null {
-  const direct = normalizeOpenablePath(value)
-  if (direct) return direct
-  const root = cwd ? normalizeOpenablePath(cwd) : null
-  const relative = trimPathReference(value)
-  const isPathLikeRelative =
-    /^\.{1,2}[\\/]/.test(relative) ||
-    /[\\/]/.test(relative) ||
-    /^\.[a-zA-Z\d][a-zA-Z\d._-]*$/.test(relative) ||
-    /^[^<>:"|?*\r\n]+\.[a-zA-Z\d]{1,12}$/.test(relative)
-  if (
-    !root ||
-    !relative ||
-    /^[#?]/.test(relative) ||
-    /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(relative) ||
-    !isPathLikeRelative
-  ) {
-    return null
-  }
-  const separator = root.includes("\\") ? "\\" : "/"
-  const cleanRoot = root.replace(/[\\/]+$/, "")
-  const cleanRelative = relative
-    .replace(/^\.([\\/])/, "")
-    .replace(/^[\\/]+/, "")
-    .replace(/[\\/]+/g, separator)
-  return cleanRelative ? `${cleanRoot}${separator}${cleanRelative}` : cleanRoot
+export function resolveOpenablePath(value: string, cwd?: string | null): string | null {
+  return parseLocalFileReference(value, { source: "explicit", cwd })?.path ?? null
 }
 
 export function isLikelyMarkdownFileReference(value: string): boolean {
-  const reference = trimPathReference(value)
-  if (!reference || /^[#?]/.test(reference)) return false
-  // `/compact`、`/plugin:skill` 是 slash 命令；无扩展名的单段根路径在正文里几乎不会指文件
-  if (/^\/[\w:-]+$/.test(reference)) return false
-  if (fileUrlToPath(reference) || isLikelyLocalPath(reference)) return true
-  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(reference)) return false
-  if (/^\.{1,2}[\\/]/.test(reference)) return true
-
-  const name = basename(reference).toLowerCase()
-  if (!name) return false
-  if (name.startsWith(".")) return isKnownDotfileName(name)
-  if (EXTENSIONLESS_FILE_NAMES.has(name)) return true
-  const extension = name.includes(".") ? name.split(".").pop() ?? "" : ""
-  return BARE_FILE_EXTENSIONS.has(extension)
+  return !!parseLocalFileReference(value, { source: "inline_code", cwd: "/" })
 }
 
-export function resolveMarkdownFilePath(
-  value: string,
-  cwd?: string | null
-): string | null {
-  if (!isLikelyMarkdownFileReference(value)) return null
-  return resolveOpenablePath(value, cwd)
+export function resolveMarkdownFilePath(value: string, cwd?: string | null): string | null {
+  return parseLocalFileReference(value, { source: "inline_code", cwd })?.path ?? null
 }
 
 export function basename(path: string): string {

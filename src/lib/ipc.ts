@@ -29,6 +29,12 @@ export type SpawnArgs = {
   collabMcpEnabled?: boolean | null
   collabProviderPaths?: Record<string, string> | null
   collabEnabledProviders?: string[] | null
+  fileCheckpointing?: boolean
+  forwardSubagentText?: boolean
+  promptSuggestions?: boolean
+  ultracode?: boolean
+  fastMode?: boolean
+  modelSettings?: Record<string, SessionModelSettings>
 }
 
 export interface DirEntry {
@@ -90,16 +96,58 @@ export interface WorktreeDiff {
   patchError?: string | null
 }
 
+export type ReviewPreparationState = "pending" | "ready" | "partial" | "unavailable"
+
+export interface ReviewTimings {
+  enumerationMs: number
+  readMs: number
+  hashMs: number
+  writeMs: number
+  totalMs: number
+  freezeMs: number
+  diffMs: number
+}
+
+export interface ReviewStats {
+  capturedFiles: number
+  skippedFiles: number
+  capturedBytes: number
+  enumeratedEntries: number
+}
+
 export interface ReviewSnapshotStart {
   id: string
   cwd: string
   fileCount: number
+  state: Exclude<ReviewPreparationState, "pending">
+  reason: string | null
+  coverageComplete: boolean
+  timings: ReviewTimings
+  stats: ReviewStats
+}
+
+export interface ReviewSnapshotFinish extends WorktreeDiff {
+  reviewState: Exclude<ReviewPreparationState, "pending">
+  reviewReason: string | null
+  timings: ReviewTimings
+  stats: ReviewStats
 }
 
 export interface OpenPathResult {
   action: "opened" | "revealed_parent"
   path: string
   fallbackPath?: string | null
+}
+
+export interface LocalPathInfo {
+  path: string
+  exists: boolean
+  kind: "file" | "directory" | "missing" | "other"
+}
+
+export interface FileLocation {
+  line?: number
+  column?: number
 }
 
 export type PathOpenTarget =
@@ -348,8 +396,14 @@ export async function createDir(path: string): Promise<void> {
   return invoke("create_dir", { path })
 }
 
-export async function pathExists(path: string): Promise<boolean> {
-  return invoke<boolean>("path_exists", { path })
+export function pathExists(path: string): Promise<boolean>
+export function pathExists(path: string, details: true): Promise<LocalPathInfo>
+export function pathExists(path: string, details?: true): Promise<boolean | LocalPathInfo> {
+  return invoke<boolean | LocalPathInfo>("path_exists", { path, details: details ?? null })
+}
+
+export async function resolveLocalPath(path: string, cwd?: string | null): Promise<string> {
+  return invoke<string>("resolve_local_path", { path, cwd: cwd ?? null })
 }
 
 export async function defaultWorkspaceRoot(): Promise<string> {
@@ -386,13 +440,22 @@ export async function worktreeDiff(cwd: string): Promise<WorktreeDiff> {
 }
 
 export async function reviewSnapshotStart(
-  cwd: string
+  cwd: string,
+  id?: string
 ): Promise<ReviewSnapshotStart> {
-  return invoke<ReviewSnapshotStart>("review_snapshot_start", { cwd })
+  return invoke<ReviewSnapshotStart>("review_snapshot_start", { cwd, id: id ?? null })
 }
 
-export async function reviewSnapshotFinish(id: string): Promise<WorktreeDiff> {
-  return invoke<WorktreeDiff>("review_snapshot_finish", { id })
+export async function reviewSnapshotFreeze(id: string): Promise<ReviewSnapshotStart> {
+  return invoke<ReviewSnapshotStart>("review_snapshot_freeze", { id })
+}
+
+export async function reviewSnapshotFinish(id: string): Promise<ReviewSnapshotFinish> {
+  return invoke<ReviewSnapshotFinish>("review_snapshot_finish", { id })
+}
+
+export async function reviewSnapshotCancel(id: string): Promise<void> {
+  return invoke<void>("review_snapshot_cancel", { id })
 }
 
 export async function gitBranchList(cwd: string): Promise<GitBranchList> {
@@ -555,9 +618,10 @@ export async function listAvailablePathOpenTargets(): Promise<PathOpenTarget[]> 
 
 export async function openPathWith(
   path: string,
-  opener: PathOpenTarget
+  opener: PathOpenTarget,
+  location?: FileLocation
 ): Promise<void> {
-  return invoke("open_path_with", { path, opener })
+  return invoke("open_path_with", { path, opener, line: location?.line ?? null, column: location?.column ?? null })
 }
 
 export async function readTextFile(path: string): Promise<string> {
@@ -1204,8 +1268,82 @@ export interface CliCapabilities {
   evidence: Record<string, string>
   interrupt: "supported" | "unsupported" | "unknown"
   subagentTextForwarding: "supported" | "unsupported" | "unknown"
+  fileCheckpoints: "supported" | "unsupported" | "unknown"
+  runtimeSettingsControl: "supported" | "unsupported" | "unknown"
+  independentUltracode: "supported" | "unsupported" | "unknown"
+  modelSettings: "supported" | "unsupported" | "unknown"
+  autoCompactWindow: "supported" | "unsupported" | "unknown"
+  headlessFastMode: "supported" | "unsupported" | "unknown"
+  promptSuggestions: "supported" | "unsupported" | "unknown"
+  contextUsageSummary: "supported" | "unsupported" | "unknown"
 }
 export function claudeCapabilities(sessionId?: string): Promise<CliCapabilities> { return invoke("claude_capabilities", { sessionId }) }
+
+export type PersistedEffort = "low" | "medium" | "high" | "xhigh"
+export interface SessionModelSettings {
+  effortLevel?: PersistedEffort
+  maxEffortLevel?: PersistedEffort | "max"
+  autoCompactWindow?: "auto" | number
+}
+export interface SessionSettingsPatch {
+  effortLevel?: PersistedEffort
+  ultracode?: boolean
+  fastMode?: boolean
+  modelSettings?: Record<string, SessionModelSettings>
+}
+export interface SessionRuntimeSettings {
+  effective: SessionSettingsPatch & { fastModePerSessionOptIn?: boolean; maxEffortLevel?: PersistedEffort | "max"; autoCompactWindow?: number }
+  /** Composer fields only; native env/auth/hooks and provider endpoints are excluded. */
+  sources: { source: string; settings: SessionRuntimeSettings["effective"] }[]
+  applied: {
+    model?: string
+    effort?: string
+    ultracode?: boolean
+    ultracodeRequested?: boolean
+    ultracodeAvailable?: boolean
+  }
+  fastModeState: "off" | "on" | "cooldown" | null
+  fastModeDisabledReason: string | null
+  certification: string
+}
+export interface SessionContextUsage {
+  detail: "summary"
+  source: string
+  model?: string
+  totalTokens?: number
+  maxTokens?: number
+  rawMaxTokens?: number
+  percentage?: number
+  autoCompactThreshold?: number
+  isAutoCompactEnabled?: boolean
+  categories: { name: string; tokens: number; kind: "used" | "free" | "buffer" | "deferred" }[]
+}
+export interface SessionRewindResult {
+  canRewind: boolean
+  error?: string
+  filesChanged?: string[]
+  insertions?: number
+  deletions?: number
+  skippedLinks?: number
+  /** Single-use, captured-runtime token; expires after 5 minutes or another input. */
+  previewId?: string
+}
+export function getSessionRuntimeSettings(sessionId: string): Promise<SessionRuntimeSettings> {
+  return invoke("get_session_runtime_settings", { sessionId })
+}
+export function applySessionRuntimeSettings(sessionId: string, settings: SessionSettingsPatch): Promise<SessionRuntimeSettings> {
+  return invoke("apply_session_runtime_settings", { sessionId, settings })
+}
+/** Explicit summary never invokes the default/full per-category token-count API. */
+export function getSessionContextUsage(sessionId: string): Promise<SessionContextUsage> {
+  return invoke("get_session_context_usage", { sessionId })
+}
+export function previewSessionRewind(sessionId: string, userMessageId: string): Promise<SessionRewindResult> {
+  return invoke("preview_session_rewind", { sessionId, userMessageId })
+}
+export function rewindSessionFiles(sessionId: string, userMessageId: string, previewId: string): Promise<SessionRewindResult> {
+  return invoke("rewind_session_files", { sessionId, userMessageId, previewId })
+}
 
 export interface CliInstallations {
   selectedPath: string | null

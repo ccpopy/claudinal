@@ -66,6 +66,8 @@ export interface ThirdPartyApiConfig {
 
 export interface ThirdPartyApiProvider extends ThirdPartyApiConfig {
   id: string
+  /** Opaque non-secret generation: attempts must never adopt a replacement key. */
+  credentialRevision?: string
   /** apiKey 仍以明文形式存放在 localStorage（旧版或 keychain 不可用时的降级路径）。
    * keychain 写入成功后该标记会被清理；UI 可据此显示明文存储警告。 */
   legacyApiKey?: boolean
@@ -131,6 +133,7 @@ const MANAGED_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_SONNET_MODEL",
   "ANTHROPIC_DEFAULT_OPUS_MODEL",
   "CLAUDE_CODE_SUBAGENT_MODEL",
+  "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
   "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
   "CLAUDE_CODE_ATTRIBUTION_HEADER",
   "DISABLE_TELEMETRY",
@@ -318,13 +321,14 @@ export function thirdPartyApiConnectionProfileKey(
 }
 
 export function thirdPartyApiRuntimeProfileKey(
-  config: ThirdPartyApiConfig & { id?: string }
+  config: ThirdPartyApiConfig & { id?: string; credentialRevision?: string }
 ): string {
   if (!config.enabled) return "official"
   const providerId = providerProfileId(config)
   const profile = {
-    version: 7,
+    version: 8,
     providerId,
+    credentialRevision: config.credentialRevision ?? "",
     requestUrl: trimApiUrl(config.requestUrl),
     inputFormat: config.inputFormat,
     authField: config.authField,
@@ -588,6 +592,7 @@ export function createThirdPartyApiProvider(
     })
   }
   if (patch.legacyApiKey) provider.legacyApiKey = true
+  if (typeof patch.credentialRevision === "string") provider.credentialRevision = patch.credentialRevision
   return provider
 }
 
@@ -687,6 +692,7 @@ interface PersistResult {
 export async function saveThirdPartyApiStoreAsync(
   store: ThirdPartyApiStore
 ): Promise<PersistResult> {
+  const previous = await loadThirdPartyApiStoreAsync()
   let kcOk = false
   try {
     kcOk = await keychainAvailable()
@@ -699,6 +705,10 @@ export async function saveThirdPartyApiStoreAsync(
   for (const provider of store.providers) {
     const sanitized: ThirdPartyApiProvider = { ...provider, legacyApiKey: false }
     const secret = provider.apiKey.trim()
+    const earlier = previous.providers.find((item) => item.id === provider.id)
+    sanitized.credentialRevision = earlier?.apiKey.trim() === secret
+      ? earlier.credentialRevision ?? provider.credentialRevision
+      : providerId()
     if (kcOk) {
       try {
         if (secret) {
@@ -770,9 +780,10 @@ export function saveThirdPartyApiStore(store: ThirdPartyApiStore) {
   }
 }
 
-export function loadThirdPartyApiConfig(): ThirdPartyApiConfig {
+export function loadThirdPartyApiConfig(providerId?: string): ThirdPartyApiConfig {
   const store = loadThirdPartyApiStore()
-  if (store.activeProviderId === OFFICIAL_PROVIDER_ID) {
+  const selectedId = providerId ?? store.activeProviderId
+  if (selectedId === OFFICIAL_PROVIDER_ID) {
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
@@ -780,8 +791,9 @@ export function loadThirdPartyApiConfig(): ThirdPartyApiConfig {
       modelSupports1m: { ...DEFAULT_THIRD_PARTY_API.modelSupports1m }
     }
   }
-  const active = store.providers.find((p) => p.id === store.activeProviderId)
+  const active = store.providers.find((p) => p.id === selectedId)
   if (!active) {
+    if (providerId) throw new Error("提交时选择的提供商已不存在，请按当前配置重试")
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
@@ -792,9 +804,10 @@ export function loadThirdPartyApiConfig(): ThirdPartyApiConfig {
   return { ...normalizeThirdPartyApiConfig(active), enabled: true }
 }
 
-export async function loadThirdPartyApiConfigAsync(): Promise<ThirdPartyApiConfig> {
+export async function loadThirdPartyApiConfigAsync(providerId?: string): Promise<ThirdPartyApiConfig> {
   const store = loadThirdPartyApiStore()
-  if (store.activeProviderId === OFFICIAL_PROVIDER_ID) {
+  const selectedId = providerId ?? store.activeProviderId
+  if (selectedId === OFFICIAL_PROVIDER_ID) {
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
@@ -802,8 +815,9 @@ export async function loadThirdPartyApiConfigAsync(): Promise<ThirdPartyApiConfi
       modelSupports1m: { ...DEFAULT_THIRD_PARTY_API.modelSupports1m }
     }
   }
-  const active = store.providers.find((p) => p.id === store.activeProviderId)
+  const active = store.providers.find((p) => p.id === selectedId)
   if (!active) {
+    if (providerId) throw new Error("提交时选择的提供商已不存在，请按当前配置重试")
     return {
       ...DEFAULT_THIRD_PARTY_API,
       enabled: false,
@@ -850,7 +864,7 @@ export async function migrateLegacyThirdPartyApiKeys(): Promise<void> {
   for (const provider of store.providers) {
     const secret = provider.apiKey?.trim()
     if (!secret) {
-      persisted.push({ ...provider, apiKey: "", legacyApiKey: false })
+      persisted.push({ ...provider, apiKey: "", legacyApiKey: false, credentialRevision: provider.credentialRevision ?? providerId() })
       continue
     }
     try {

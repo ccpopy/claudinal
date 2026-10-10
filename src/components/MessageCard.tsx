@@ -1,6 +1,7 @@
 import { MessageInlineEditor, SubmissionFooter, canEditSubmission, hasSubmissionFooter, type SubmissionActions } from "./SubmittedInputActions"
 import { deliveryLabel, type DeliveryState } from "@/lib/submission"
 import { parseCommand } from "@/lib/commandRegistry"
+import { checkpointMessageId } from "@/lib/checkpoints"
 import { RetryButton } from "./RetryButton"
 import { CommandChip } from "./CommandChip"
 import { useEffect, useState } from "react"
@@ -17,6 +18,8 @@ import {
   FileWarning,
   Gauge,
   Loader2,
+  MoreHorizontal,
+  RotateCcw,
   ShieldAlert,
   Timer,
   Webhook,
@@ -27,10 +30,13 @@ import { cn, formatRunDuration } from "@/lib/utils"
 import type { UIEntry, UIMessage } from "@/types/ui"
 import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
 import { CopyButton } from "./CopyButton"
+import { Button } from "./ui/button"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu"
 
 interface Props {
   submissionActions?: SubmissionActions
   onOpenPermissions?: () => void
+  onRewindMessage?: (message: UIMessage) => void
   entry: UIEntry
   cwd?: string | null
   onRetryMessage?: (messageId: string) => void | Promise<void>
@@ -43,6 +49,7 @@ export function MessageCard({
   submissionActions,
   entry,
   onOpenPermissions,
+  onRewindMessage,
   cwd,
   onRetryMessage,
   retryableMessageIds,
@@ -52,6 +59,7 @@ export function MessageCard({
     return (
       <MessageView
         submissionActions={submissionActions}
+        onRewindMessage={onRewindMessage}
         msg={entry}
         cwd={cwd}
         slashCommands={slashCommands}
@@ -78,6 +86,7 @@ export function MessageCard({
 
 function MessageView({
   submissionActions,
+  onRewindMessage,
   msg,
   cwd,
   slashCommands,
@@ -85,6 +94,7 @@ function MessageView({
   retryableMessageIds
 }: {
   submissionActions?: SubmissionActions
+  onRewindMessage?: (message: UIMessage) => void
   msg: UIMessage
   cwd?: string | null
   slashCommands?: readonly string[]
@@ -103,6 +113,7 @@ function MessageView({
     return (
       <UserMessageView
         submissionActions={submissionActions}
+        onRewindMessage={onRewindMessage}
         msg={msg}
         cwd={cwd}
         slashCommands={slashCommands}
@@ -135,8 +146,9 @@ function MessageView({
  * 开头的 slash 命令渲染成与输入框一致的行内 chip；
  * 投递状态只在「未完成 / 异常」时以气泡下方小字出现，正常送达不打扰。
  */
-function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }: {
+function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions, onRewindMessage }: {
   submissionActions?: SubmissionActions
+  onRewindMessage?: (message: UIMessage) => void
   msg: UIMessage
   cwd?: string | null
   slashCommands?: readonly string[]
@@ -202,6 +214,10 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions }
     <div className="flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
       {onRetry && (!submissionActions?.payload(msg.id) || msg.deliveryState === "responded" || msg.deliveryState === "acknowledged") && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}
       {original && <CopyButton text={original} ariaLabel="复制原始输入" label="原始输入已复制" />}
+      {onRewindMessage && checkpointMessageId(msg) && <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label="消息文件操作"><MoreHorizontal className="size-3.5" /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => onRewindMessage(msg)}><RotateCcw className="size-4" />回退本次及之后的受支持文件修改</DropdownMenuItem></DropdownMenuContent>
+      </DropdownMenu>}
     </div>
   </div>
 }

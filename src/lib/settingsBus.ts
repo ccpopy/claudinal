@@ -17,6 +17,7 @@ export type SettingsBusTopic =
   | "usage"
   | "oauthUsage"
   | "pricing"
+  | "plugins"
 
 const subs = new Map<SettingsBusTopic, Set<() => void>>()
 

@@ -98,6 +98,7 @@ interface Props {
   cwd?: string | null
   onBack: () => void
   onSkillsChanged?: (skills: Skill[]) => void
+  sessionPlugins?: string[]
 }
 
 const SCOPE_OPTIONS: Array<{ value: PluginScope; label: string }> = [
@@ -128,7 +129,7 @@ const BUILTIN_SKILL_INSTALLERS: BuiltinSkillInstaller[] = [
   }
 ]
 
-export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
+export function PluginsView({ cwd, onBack, onSkillsChanged, sessionPlugins }: Props) {
   const [tab, setTab] = useState<TopTab>("plugins")
   const [pluginsTab, setPluginsTab] = useState<PluginsTab>("installed")
 
@@ -568,6 +569,7 @@ export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
                 <TabsContent value="installed" className="mt-0">
                   <InstalledList
                     rows={installedFiltered}
+                    sessionPlugins={sessionPlugins}
                     busy={busy}
                     onToggleEnabled={onToggleEnabled}
                     onUninstall={(p) => setPendingUninstall(p)}
@@ -681,11 +683,13 @@ export function PluginsView({ cwd, onBack, onSkillsChanged }: Props) {
 
 function InstalledList({
   rows,
+  sessionPlugins,
   busy,
   onToggleEnabled,
   onUninstall
 }: {
   rows: InstalledPlugin[]
+  sessionPlugins?: string[]
   busy: boolean
   onToggleEnabled: (p: InstalledPlugin, enabled: boolean) => void
   onUninstall: (p: InstalledPlugin) => void
@@ -712,6 +716,8 @@ function InstalledList({
                 <Badge variant="outline" className="font-sans">
                   {scopeLabel(p.scope)}
                 </Badge>
+                <Badge variant="outline">已安装 · {p.enabled ? "已启用" : "已停用"}</Badge>
+                <Badge variant="secondary">{sessionPlugins?.includes(p.name) || sessionPlugins?.includes(p.id) ? "本会话已加载" : sessionPlugins ? "本会话未列出" : "本会话加载状态未确认"}</Badge>
                 {p.version && p.version !== "unknown" && (
                   <Badge variant="secondary" className="font-mono">
                     v{p.version}

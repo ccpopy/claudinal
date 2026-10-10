@@ -609,6 +609,17 @@ export function General() {
             </div>
             <Separator />
             <CliDiagnostics />
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label className="text-sm" htmlFor="prompt-suggestions-enabled">后续输入建议</Label>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  默认关闭。CLI 可能在回答结束后增加建议请求与用量；点击仅追加到草稿，由你确认发送。更改在下次启动会话进程时生效。
+                </div>
+              </div>
+              <Switch id="prompt-suggestions-enabled" checked={cfg.promptSuggestionsEnabled === true}
+                onCheckedChange={(v) => update({ promptSuggestionsEnabled: v })} />
+            </div>
+            <Separator />
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-4">
                 <div>

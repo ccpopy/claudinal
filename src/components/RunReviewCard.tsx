@@ -18,6 +18,7 @@ import {
   type ReviewRunDiff
 } from "@/lib/diff"
 import type { WorktreeFileDiff } from "@/lib/ipc"
+import { createFoldStateStore, FoldBody, FoldStateScope } from "@/lib/foldState"
 import { cn } from "@/lib/utils"
 import type { UIEntry } from "@/types/ui"
 
@@ -88,13 +89,7 @@ export function RunStatusStrip({
           </Button>
         )}
       </div>
-      <div
-        className={cn(
-          "grid transition-[grid-template-rows] duration-200",
-          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-        )}
-      >
-        <div className="overflow-hidden">
+      <FoldBody open={open}>
           <div className="space-y-0.5 border-t px-2 py-2">
             {changes.map((change) => (
               <FileChangeRow
@@ -105,8 +100,7 @@ export function RunStatusStrip({
               />
             ))}
           </div>
-        </div>
-      </div>
+      </FoldBody>
     </div>
   )
 }
@@ -127,7 +121,7 @@ function FileChangeRow({
         ? FilePlus
         : FileEdit
   return (
-    <LocalFileContextMenu path={change.path} cwd={cwd}>
+    <LocalFileContextMenu path={change.path} cwd={cwd} source={change.source === "git" ? "git" : "tool"}>
       <button
         type="button"
         onClick={onClick}
@@ -179,6 +173,7 @@ export function RunReviewCard({
   onShowDiff?: (path?: string) => void
 }) {
   const [open, setOpen] = useState(true)
+  const [foldState] = useState(createFoldStateStore)
   const [expandedFileKey, setExpandedFileKey] = useState<string | null>(null)
   const [filesExpanded, setFilesExpanded] = useState(false)
   const files = review.diff.files
@@ -230,20 +225,14 @@ export function RunReviewCard({
           审核
         </Button>
       </div>
-      <div
-        className={cn(
-          "grid transition-[grid-template-rows] duration-200",
-          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-        )}
-      >
-        <div className="overflow-hidden">
+      <FoldBody open={open}>
           <div className="space-y-1 border-t px-2 py-2">
             {visibleFiles.map((file, index) => {
               const change = visibleChanges[index]
               const fileKey = `${file.path}:${file.status}:${index}`
               return (
+                <FoldStateScope key={fileKey} store={foldState} scope={fileKey}>
                 <ReviewFileRow
-                  key={fileKey}
                   file={file}
                   change={change}
                   cwd={cwd}
@@ -256,6 +245,7 @@ export function RunReviewCard({
                   }
                   onOpenDiff={() => onShowDiff?.(file.path)}
                 />
+                </FoldStateScope>
               )
             })}
             {canCollapseFiles && (
@@ -281,8 +271,7 @@ export function RunReviewCard({
               </button>
             )}
           </div>
-        </div>
-      </div>
+      </FoldBody>
     </div>
   )
 }
@@ -311,7 +300,7 @@ function ReviewFileRow({
         ? FilePlus
         : FileEdit
   return (
-    <LocalFileContextMenu path={file.path} cwd={cwd}>
+    <LocalFileContextMenu path={file.path} cwd={cwd} source="git">
       <div
         className={cn(
           "overflow-hidden rounded-md border transition-colors",
@@ -367,23 +356,14 @@ function ReviewFileRow({
             <GitCompareArrows className="size-3.5" />
           </Button>
         </div>
-        <div
-          className={cn(
-            "grid transition-[grid-template-rows] duration-200",
-            expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-          )}
-        >
-          <div className="overflow-hidden">
-            <div className="border-t px-2 py-2">
+        <FoldBody open={expanded} className="border-t px-2 py-2">
               <FileDiffPreview
                 change={change}
                 compact
                 bounded
                 maxHeightClassName="max-h-72"
               />
-            </div>
-          </div>
-        </div>
+        </FoldBody>
       </div>
     </LocalFileContextMenu>
   )

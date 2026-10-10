@@ -1,7 +1,10 @@
 import type {
   GitWorktreeStatus,
   WorktreeDiff,
-  WorktreeFileDiff
+  WorktreeFileDiff,
+  ReviewPreparationState,
+  ReviewTimings,
+  ReviewStats
 } from "@/lib/ipc"
 import { basename } from "@/lib/localPath"
 import type { UIEntry, UIMessage } from "@/types/ui"
@@ -30,7 +33,7 @@ export interface FileChange {
 export interface ReviewRunDiff {
   id: string
   createdAt: number
-  diff: WorktreeDiff
+  diff: WorktreeDiff & { reviewState?: ReviewPreparationState; reviewReason?: string | null; timings?: ReviewTimings; stats?: ReviewStats }
 }
 
 export function normalizePath(p: string): string {

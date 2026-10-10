@@ -78,7 +78,8 @@ export interface UIMessage {
   inputRevision?: number
   attemptId?: string
   attemptIds?: string[]
-  attemptDetails?: Array<{ id: string; revision: number; state: DeliveryState; error?: string }>
+  attemptDetails?: Array<{ id: string; revision: number; state: DeliveryState; error?: string; createdAt?: number; acknowledgedAt?: number;
+    configuration?: { readonly conversationKey: string; readonly profileRevision: string; readonly context: unknown } }>
   submissionError?: string
   submissionPendingNames?: string[]
   submissionTimings?: { registered: number; saved?: number; writeStarted?: number; written?: number; firstResponse?: number }
@@ -102,6 +103,7 @@ export interface UISystemInit {
   skills: string[]
   slashCommands: string[]
   agents: string[]
+  plugins?: string[]
   version?: string
   outputStyle?: string
   apiKeySource?: string

@@ -7,7 +7,9 @@ import {
   CheckCircle2,
   CircleStop,
   Clock3,
+  Copy,
   Loader2,
+  Search,
   Waypoints,
   X,
   type LucideIcon
@@ -15,18 +17,22 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Input } from "@/components/ui/input"
+import { toast } from "sonner"
 import { MessageStream } from "@/components/MessageStream"
 import { AssistantMarkdown } from "@/components/AssistantMarkdown"
 import { readSubagentTranscriptChunk } from "@/lib/ipc"
 import { init as reducerInit, reduce } from "@/lib/reducer"
 import {
   revealSubagentTranscriptEvents,
+  mergeSubagentTranscriptEvents,
   runningSubagentCount,
   type SubagentStatus,
   type SubagentTask
 } from "@/lib/subagents"
 import { cn, formatRunDuration } from "@/lib/utils"
 import type { ClaudeEvent } from "@/types/events"
+import type { UIEntry } from "@/types/ui"
 
 interface Props {
   open: boolean
@@ -64,6 +70,11 @@ const STATUS_PRESENTATION: Record<SubagentStatus, StatusPresentation> = {
     label: "已取消",
     Icon: CircleStop,
     className: "text-muted-foreground"
+  },
+  unknown: {
+    label: "状态未知",
+    Icon: Clock3,
+    className: "text-muted-foreground"
   }
 }
 
@@ -83,14 +94,16 @@ function hashAgentId(value: string): number {
 export function partitionSubagents(agents: SubagentTask[]): {
   running: SubagentTask[]
   finished: SubagentTask[]
+  unknown: SubagentTask[]
 } {
   return {
     running: agents
       .filter((agent) => agent.status === "running")
       .sort((a, b) => a.startedAt - b.startedAt),
     finished: agents
-      .filter((agent) => agent.status !== "running")
-      .sort((a, b) => (b.endedAt ?? b.updatedAt) - (a.endedAt ?? a.updatedAt))
+      .filter((agent) => agent.status !== "running" && agent.status !== "unknown")
+      .sort((a, b) => (b.endedAt ?? b.updatedAt) - (a.endedAt ?? a.updatedAt)),
+    unknown: agents.filter((agent) => agent.status === "unknown").sort((a, b) => b.updatedAt - a.updatedAt)
   }
 }
 
@@ -132,15 +145,18 @@ function AgentStatus({ status }: { status: SubagentStatus }) {
 
 function AgentRow({
   agent,
+  allAgents,
   now,
   onSelect
 }: {
   agent: SubagentTask
+  allAgents: SubagentTask[]
   now: number
   onSelect: () => void
 }) {
   const end = agent.status === "running" ? now : (agent.endedAt ?? agent.updatedAt)
   const duration = Math.max(0, end - agent.startedAt)
+  const parent = allAgents.find((item) => item.id === agent.parentTaskId)
   return (
     <button
       type="button"
@@ -156,6 +172,12 @@ function AgentRow({
           <AgentStatus status={agent.status} />
           {agent.model && <span className="truncate font-mono">{agent.model}</span>}
         </span>
+        {(agent.parentTaskId || agent.spawnDepth !== undefined) && (
+          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground" title={agent.parentTaskId}>
+            {agent.spawnDepth !== undefined && `层级 ${agent.spawnDepth}`}
+            {agent.parentTaskId && ` · 父任务：${parent?.description ?? `${agent.parentTaskId}（未关联）`}`}
+          </span>
+        )}
       </span>
       <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/75">
         {formatRunDuration(duration, agent.status === "running")}
@@ -167,11 +189,13 @@ function AgentRow({
 function AgentSection({
   title,
   agents,
+  allAgents,
   now,
   onSelect
 }: {
   title: string
   agents: SubagentTask[]
+  allAgents: SubagentTask[]
   now: number
   onSelect: (agentId: string) => void
 }) {
@@ -185,6 +209,7 @@ function AgentSection({
         <AgentRow
           key={agent.id}
           agent={agent}
+          allAgents={allAgents}
           now={now}
           onSelect={() => onSelect(agent.id)}
         />
@@ -209,20 +234,44 @@ function removeAssignmentPrompt(entries: ReturnType<typeof reducerInit>["entries
   })
 }
 
+export function subagentResponseText(entries: UIEntry[], fallback?: string): string {
+  const messages = entries.filter((entry) => entry.kind === "message" && entry.role === "assistant")
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const entry = messages[index]
+    if (entry.kind !== "message" || entry.blocks.some((block) => block.type === "tool_use")) continue
+    const text = entry.blocks.filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n\n").trim()
+    if (text) return text
+  }
+  return fallback ?? ""
+}
+
+export function searchSubagentEntries(entries: UIEntry[], query: string): UIEntry[] {
+  const needle = query.trim().toLocaleLowerCase()
+  if (!needle) return entries
+  return entries.filter((entry) => (entry.kind === "message"
+    ? entry.blocks.map((block) => [block.text, block.toolName,
+      block.toolInput === undefined ? "" : JSON.stringify(block.toolInput),
+      block.toolResultContent === undefined ? "" : JSON.stringify(block.toolResultContent)].filter(Boolean).join("\n")).join("\n")
+    : JSON.stringify(entry)).toLocaleLowerCase().includes(needle))
+}
+
 function SubagentTranscript({
   agent,
   cwd,
-  sessionId
+  sessionId,
+  onOpenSubagent
 }: {
   agent: SubagentTask
   cwd: string | null
   sessionId: string | null
+  onOpenSubagent: (agentId: string) => void
 }) {
   const [events, setEvents] = useState<ClaudeEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [available, setAvailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const offsetRef = useRef(0)
+  const [query, setQuery] = useState("")
 
   useEffect(() => {
     offsetRef.current = 0
@@ -230,10 +279,11 @@ function SubagentTranscript({
     setLoading(true)
     setAvailable(false)
     setError(null)
+    setQuery("")
   }, [agent.id, cwd, sessionId])
 
   useEffect(() => {
-    if (!cwd || !sessionId) {
+    if (!cwd || !sessionId || !/^[a-zA-Z0-9_-]{1,128}$/.test(agent.id)) {
       setLoading(false)
       return
     }
@@ -259,7 +309,7 @@ function SubagentTranscript({
           offsetRef.current = chunk.nextOffset
           if (chunk.events.length > 0 || chunk.reset) {
             setEvents((current) =>
-              chunk.reset ? chunk.events : [...current, ...chunk.events]
+              chunk.reset ? chunk.events : mergeSubagentTranscriptEvents(current, chunk.events)
             )
           }
           more = chunk.truncated
@@ -275,7 +325,7 @@ function SubagentTranscript({
 
     void load()
     const interval =
-      agent.status === "running" ? window.setInterval(() => void load(), 1200) : null
+      agent.status === "running" || agent.status === "unknown" ? window.setInterval(() => void load(), 1200) : null
     return () => {
       cancelled = true
       if (interval !== null) window.clearInterval(interval)
@@ -286,15 +336,30 @@ function SubagentTranscript({
     () =>
       reduce(reducerInit(), {
         kind: "load_transcript",
-        events: revealSubagentTranscriptEvents(events)
+        events: revealSubagentTranscriptEvents(mergeSubagentTranscriptEvents(events, agent.forwardedEvents ?? []), agent)
       }),
-    [events]
+    [events, agent.forwardedEvents, agent.id, agent.toolUseId]
   )
   const entries = useMemo(
     () => removeAssignmentPrompt(transcriptState.entries),
     [transcriptState.entries]
   )
   const nestedRunning = runningSubagentCount(transcriptState.subagents)
+  const visibleEntries = useMemo(() => searchSubagentEntries(entries, query), [entries, query])
+  const responseText = subagentResponseText(entries, agent.result)
+
+  const toolbar = (
+    <div className="flex items-center gap-2 border-b px-4 py-2">
+      <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索该智能体的过程和回答"
+        aria-label="搜索子智能体转录" className="h-8 min-w-0 flex-1 text-xs" />
+      {query.trim() && <span className="shrink-0 text-[11px] text-muted-foreground">{visibleEntries.length} 条</span>}
+      <Button type="button" variant="ghost" size="sm" disabled={!responseText} aria-label="复制子智能体回答"
+        onClick={() => { void navigator.clipboard.writeText(responseText).then(() => toast.success("已复制智能体回答"), (reason) => toast.error(`复制回答失败：${String(reason)}`)) }}>
+        <Copy className="size-3.5" />复制回答
+      </Button>
+    </div>
+  )
 
   if (error && entries.length === 0) {
     return (
@@ -308,23 +373,30 @@ function SubagentTranscript({
 
   if (entries.length > 0) {
     return (
-      <MessageStream
-        entries={entries}
-        streaming={agent.status === "running"}
-        autoScroll={shouldAutoScrollSubagentTranscript(agent.status)}
-        cwd={cwd}
-        pendingSubagentCount={nestedRunning}
-      />
+      <>
+        {toolbar}
+        {agent.forwardedTruncated && !available && <p className="px-4 py-2 text-xs text-muted-foreground">转发缓存已达到上限，较早记录需从完整会话转录读取。</p>}
+        {query.trim() && visibleEntries.length === 0 ? <div className="grid flex-1 place-items-center text-sm text-muted-foreground">没有匹配的记录</div> : <MessageStream
+          entries={visibleEntries}
+          streaming={!query.trim() && agent.status === "running"}
+          autoScroll={!query.trim() && shouldAutoScrollSubagentTranscript(agent.status)}
+          cwd={cwd}
+          pendingSubagentCount={nestedRunning}
+          subagents={transcriptState.subagents.agents}
+          onOpenSubagent={onOpenSubagent}
+        />}
+      </>
     )
   }
 
   if (agent.result) {
     return (
-      <ScrollArea className="min-h-0 flex-1">
+      <>{toolbar}<ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto max-w-3xl px-6 py-6">
-          <AssistantMarkdown text={agent.result} cwd={cwd} />
+          {!query.trim() || agent.result.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+            ? <AssistantMarkdown text={agent.result} cwd={cwd} /> : <p className="text-sm text-muted-foreground">没有匹配的记录</p>}
         </div>
-      </ScrollArea>
+      </ScrollArea></>
     )
   }
 
@@ -341,7 +413,8 @@ function SubagentTranscript({
             ? "正在读取智能体过程…"
             : !available && agent.status === "running"
               ? "智能体已启动，等待首条过程记录…"
-              : "该智能体没有可读取的过程记录"}
+              : agent.status === "unknown" ? "已收到智能体消息，生命周期尚未确认"
+                : "该智能体没有可读取的过程记录"}
         </span>
       </div>
     </div>
@@ -358,7 +431,8 @@ export function SubagentsPanel({
   onSelectedAgentChange
 }: Props) {
   const [now, setNow] = useState(() => Date.now())
-  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null
+  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId || agent.aliases?.includes(selectedAgentId ?? "")) ?? null
+  const selectedParent = agents.find((agent) => agent.id === selectedAgent?.parentTaskId)
   const groups = useMemo(() => partitionSubagents(agents), [agents])
 
   useEffect(() => {
@@ -406,6 +480,15 @@ export function SubagentsPanel({
                       <span className="truncate">{selectedAgent.summary}</span>
                     )}
                   </div>
+                  {(selectedAgent.parentTaskId || selectedAgent.runId || selectedAgent.spawnDepth !== undefined) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                      {selectedAgent.spawnDepth !== undefined && <span>层级 {selectedAgent.spawnDepth}</span>}
+                      {selectedParent ? <button type="button" className="max-w-64 truncate underline underline-offset-2" onClick={() => onSelectedAgentChange(selectedParent.id)}>父任务：{selectedParent.description}</button>
+                        : selectedAgent.parentTaskId && <span title={selectedAgent.parentTaskId}>父任务未关联</span>}
+                      {selectedAgent.runId && <span className="max-w-32 truncate font-mono" title={selectedAgent.runId}>运行 {selectedAgent.runId}</span>}
+                      {selectedAgent.rawStatus && selectedAgent.status === "unknown" && <span title={selectedAgent.rawStatus}>{selectedAgent.rawStatus}</span>}
+                    </div>
+                  )}
                 </div>
                 <DialogPrimitive.Close asChild>
                   <Button variant="ghost" size="icon" className="size-8" aria-label="关闭">
@@ -417,6 +500,7 @@ export function SubagentsPanel({
                 agent={selectedAgent}
                 cwd={cwd}
                 sessionId={sessionId}
+                onOpenSubagent={onSelectedAgentChange}
               />
             </>
           ) : (
@@ -452,12 +536,21 @@ export function SubagentsPanel({
                     <AgentSection
                       title="运行中"
                       agents={groups.running}
+                      allAgents={agents}
                       now={now}
                       onSelect={onSelectedAgentChange}
                     />
                     <AgentSection
-                      title="已完成"
+                      title="已结束"
                       agents={groups.finished}
+                      allAgents={agents}
+                      now={now}
+                      onSelect={onSelectedAgentChange}
+                    />
+                    <AgentSection
+                      title="状态未知"
+                      agents={groups.unknown}
+                      allAgents={agents}
                       now={now}
                       onSelect={onSelectedAgentChange}
                     />

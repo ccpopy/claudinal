@@ -37,7 +37,7 @@ export function inputMetadataPatch(state: State): Record<string, unknown> {
   const patch: Record<string, unknown> = { inputMetadataVersion: 1 }
   for (const entry of [...state.entries, ...(state.pendingInputs ?? [])]) {
     if (entry.kind !== "message" || entry.role !== "user" || !entry.deliveryState) continue
-    const metadata = { visualId: entry.id, inputRevision: entry.inputRevision, attemptId: entry.attemptId, attemptIds: entry.attemptIds, intent: entry.delivery, deliveryState: entry.deliveryState, rawText: entry.rawText, ts: entry.ts }
+    const metadata = { visualId: entry.id, inputRevision: entry.inputRevision, attemptId: entry.attemptId, attemptIds: entry.attemptIds, attemptDetails: entry.attemptDetails, intent: entry.delivery, deliveryState: entry.deliveryState, rawText: entry.rawText, ts: entry.ts }
     patch[`input:${entry.id}`] = metadata
     if (entry.attemptId) patch[`input:${entry.attemptId}`] = metadata
   }
@@ -64,6 +64,11 @@ export function restoreInputMetadata(state: State, sidecar: unknown): State {
       inputRevision: typeof meta.inputRevision === "number" ? meta.inputRevision : undefined,
       attemptId: typeof meta.attemptId === "string" ? meta.attemptId : undefined,
       attemptIds: Array.isArray(meta.attemptIds) ? meta.attemptIds.filter((id): id is string => typeof id === "string") : undefined,
+      attemptDetails: Array.isArray(meta.attemptDetails) ? meta.attemptDetails.filter((attempt): attempt is NonNullable<UIMessage["attemptDetails"]>[number] => {
+        if (!attempt || typeof attempt !== "object") return false
+        const record = attempt as Record<string, unknown>
+        return typeof record.id === "string" && typeof record.revision === "number" && typeof record.state === "string" && Object.hasOwn(deliveryLabel, record.state)
+      }) : undefined,
       blocks: restoredBlocks, delivery: meta.intent === "guide" ? "guide" as const : undefined,
       deliveryState: confirmedInTranscript ? (deliveryState === "responded" ? "responded" as const : "acknowledged" as const)
         : deliveryState === "writing" || deliveryState === "awaiting_ack" ? "delivery_unknown" as const : deliveryState,

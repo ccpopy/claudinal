@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
+import { invalidateSlashCommandsCache } from "./slashCommands"
+import { emitSettingsBus } from "./settingsBus"
 
 export interface InstalledPlugin {
   id: string
@@ -140,7 +142,7 @@ interface RunPluginCommandArgs {
 export async function runPluginCommand(
   args: RunPluginCommandArgs
 ): Promise<PluginCommandResult> {
-  return invoke<PluginCommandResult>("run_plugin_command", {
+  const result = await invoke<PluginCommandResult>("run_plugin_command", {
     args: {
       action: args.action,
       kind: args.kind,
@@ -149,6 +151,9 @@ export async function runPluginCommand(
       cwd: args.cwd ?? null
     }
   })
+  invalidateSlashCommandsCache()
+  emitSettingsBus("plugins")
+  return result
 }
 
 export async function addMarketplace(

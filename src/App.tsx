@@ -1,8 +1,9 @@
 import { RunStatusStrip } from "@/components/RunReviewCard"
 import { MessageStream } from "@/components/MessageStream"
+import { MarkdownCommandsContext } from "@/components/AssistantMarkdown"
 import { QueuedComposerBar } from "@/components/QueuedComposerBar"
 import type { SubmissionActions } from "@/components/SubmittedInputActions"
-import { SubmissionCoordinator, isActiveInput, type InputPayload, type SubmittedInput, type SubmissionAdapter } from "@/lib/submissionCoordinator"
+import { SubmissionCoordinator, isActiveInput, isAwaitingDefinitiveResult, type InputPayload, type SubmittedInput, type SubmissionAdapter } from "@/lib/submissionCoordinator"
 import { retryInputFromTranscript } from "@/lib/retryInput"
 import { cn } from "@/lib/utils"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
@@ -32,7 +33,16 @@ import {
   worktreeDiff,
   type WorktreeDiff,
   reviewSnapshotStart,
+  reviewSnapshotFreeze,
   reviewSnapshotFinish,
+  reviewSnapshotCancel,
+  getSessionRuntimeSettings,
+  applySessionRuntimeSettings,
+  type SessionSettingsPatch,
+  type CliCapabilities,
+  getSessionContextUsage,
+  previewSessionRewind,
+  rewindSessionFiles,
   spawnSession,
   claudeWorkspaceTrustInfo,
   trustClaudeWorkspace,
@@ -56,11 +66,22 @@ import {
   type SessionMeta
 } from "@/lib/ipc"
 import type { ReviewRunDiff } from "@/lib/diff"
+import { RunReviewLifecycle, crossesWrittenInputBoundary, type ReviewStatus } from "@/lib/runReviewLifecycle"
+import { FramePublication, isDeferredTextEvent } from "@/lib/framePublication"
+import { publishLiveRuntimeSummaries, reduceRuntimePhase, type RuntimePhase, type LiveRuntimeSummary } from "@/lib/runtimeStatus"
+import { RuntimeStatus } from "@/components/RuntimeStatus"
+import { CheckpointRewindController, checkpointMessageId } from "@/lib/checkpoints"
+import { CheckpointRewindDialog } from "@/components/CheckpointRewindDialog"
+import { PromptSuggestionTracker, appendPromptSuggestionToDraft, normalizeContextUsageSummary, parseCompactBoundary,
+  type CompactBoundary, type ContextUsageSummary } from "@/lib/agentFeatures"
+import { AgentFeaturesPanel } from "@/components/AgentFeaturesPanel"
 import {
   parseStoredReviewDiffs,
+  stampReviewResult,
   shouldSyncRunReviewToConversation
 } from "@/lib/reviewDiffs"
 import { findPermissionMemoryMatch } from "@/lib/permissionMemory"
+import { PermissionRequestReceipts } from "@/lib/permissionRequestReceipts"
 import {
   buildProxyEnv,
   loadProxyAsync,
@@ -82,6 +103,8 @@ import {
   isComposerModelAllowed,
   loadGlobalDefault,
   mergeComposerPrefs,
+  patchComposerPrefs,
+  type ComposerRuntimeConfig,
   pickComposerFromSidecar,
   pickComposerFromTranscript,
   type ComposerPrefs
@@ -98,10 +121,11 @@ import {
 import { getProjectEnv, loadProjectEnvStore } from "@/lib/projectEnv"
 import { saveMcpStatusCache } from "@/lib/mcp"
 import {
-  loadSlashCommandsCache,
   mergeSlashCommands,
   saveSlashCommandsCache,
-  slashCommandsFromSkills
+  slashCommandGeneration,
+  slashCommandsFromSkills,
+  type SlashCommandScope
 } from "@/lib/slashCommands"
 import {
   listSkills,
@@ -134,6 +158,7 @@ import {
 } from "@/lib/reducer"
 import {
   reduceSubagentRegistry,
+  isForwardedSubagentEvent,
   runningSubagentCount,
   settleSubagentRegistryForResume,
   subagentRegistryBusy,
@@ -144,7 +169,7 @@ import {
   removeProject as removeProjectStore,
   type Project
 } from "@/lib/projects"
-import type { DocumentPayload, ImagePayload } from "@/types/ui"
+import type { DocumentPayload, ImagePayload, UIMessage } from "@/types/ui"
 import type { ClaudeEvent } from "@/types/events"
 import { Welcome } from "@/components/Welcome"
 import { BuddyLoader } from "@/components/BuddyLoader"
@@ -311,7 +336,7 @@ type QueuedInput = {
   cliBlocks: Array<Record<string, unknown>>
   skillInvocation?: SkillInvocation | null
 }
-type SentInput = {
+type RetryInput = {
   localId: string
   text: string
   images: ImagePayload[]
@@ -320,6 +345,8 @@ type SentInput = {
   skillInvocation?: SkillInvocation | null
   ts: number
 }
+/** A receipt locates durable input; attachment base64 is not retained here. */
+type SentInput = { localId: string; attemptId: string; cwd: string; conversationKey: string; sessionId: string | null; ts: number }
 type SendOptions = {
   mode?: QueuedInputMode
   localId?: string
@@ -360,16 +387,32 @@ type ConversationOwner = {
   profileRevision: string
   fork: { sourceId: string; resumeAt: string } | null
 }
-type InputContext = { approvedCommand?: string; authorizationRevision: string; composerPrefs: ComposerPrefs; sessionComposer: ComposerPrefs | null; permissionMode: AppSettings["defaultPermissionMode"]; owner: ConversationOwner; options: SendOptions; collaborationMode: boolean; cliBlocks?: Array<Record<string, unknown>> }
+type InputContext = { providerId: string; allowOriginalConfiguration?: boolean; approvedCommand?: string; authorizationRevision: string; composerPrefs: ComposerPrefs; sessionComposer: ComposerPrefs | null; permissionMode: AppSettings["defaultPermissionMode"]; owner: ConversationOwner; options: SendOptions; collaborationMode: boolean; cliBlocks?: Array<Record<string, unknown>> }
 
 type RunningSession = {
+  commandScope: SlashCommandScope
   midTurnInput: boolean
   owner: ConversationOwner
   runtimeId: string
   project: Project
   jsonlSessionId: string | null
   launchModel: string | null
+  launchComposerPrefs: ComposerPrefs
+  launchPermissionMode: AppSettings["defaultPermissionMode"]
+  actualConfig: ComposerRuntimeConfig
+  capabilities: CliCapabilities
+  canonicalModels: Record<string, string>
+  configurationUpdate: Promise<void> | null
+  suggestionTracker: PromptSuggestionTracker
+  suggestionTurnId: string | null
+  contextSummary: ContextUsageSummary | null
+  contextLoading: boolean
+  contextError: string | null
+  contextGeneration: number
+  compactBoundary: CompactBoundary | null
+  compacting: boolean
   apiProfileKey: string
+  providerLabel: string
   apiLaunchProfileKey: string
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
@@ -386,7 +429,10 @@ type RunningSession = {
   /** 软中断超时强杀兜底定时器 id（清理点：result、兜底触发、closeRunningSession） */
   interruptTimer: number | null
   pendingPermissionRequestIds: Set<string>
-  pendingActions: ReducerAction[]
+  publication: FramePublication | null
+  phase: RuntimePhase
+  permissionSince: number | null
+  timings: Record<string, number | undefined>
   queuedInputs: QueuedInput[]
   unlisten: UnlistenFn[]
   permissionMode: AppSettings["defaultPermissionMode"]
@@ -394,7 +440,9 @@ type RunningSession = {
   composerPrefs: ComposerPrefs
   sessionComposer: ComposerPrefs | null
   collabMcpEnabled: boolean
-  reviewSnapshotId: string | null
+  reviewLifecycle: RunReviewLifecycle | null
+  reviewStatus: ReviewStatus
+  reviewUnreliableReason: string | null
   reviewDiffs: ReviewRunDiff[]
   upstreamStatus: UpstreamStatusState | null
 }
@@ -462,23 +510,38 @@ function buildCollaborationPrompt(text: string, cfg: ReturnType<typeof loadColla
 
 function currentAuthorizationRevision(): string {
   const cfg = loadSettings()
-  return JSON.stringify([cfg.defaultPermissionMode, cfg.permissionMcpEnabled, cfg.permissionPromptTool, cfg.permissionMcpConfig])
+  const raw = JSON.stringify([cfg.permissionMcpEnabled, cfg.permissionPromptTool, cfg.permissionMcpConfig])
+  let hash = 2166136261
+  for (let i = 0; i < raw.length; i++) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619)
+  return `permission-transport:${(hash >>> 0).toString(16)}`
 }
 
-function currentApiProfileKey(): string {
+function currentApiProfileKey(providerId?: string): string {
   const store = loadThirdPartyApiStore()
-  if (store.activeProviderId === OFFICIAL_PROVIDER_ID) return "official"
-  const provider = store.providers.find((p) => p.id === store.activeProviderId)
-  if (!provider) return "official"
+  const selectedId = providerId ?? store.activeProviderId
+  if (selectedId === OFFICIAL_PROVIDER_ID) return "official"
+  const provider = store.providers.find((p) => p.id === selectedId)
+  if (!provider) return `missing:${selectedId}`
   return thirdPartyApiConnectionProfileKey({ ...provider, enabled: true })
 }
 
-function currentApiLaunchProfileKey(): string {
+function currentApiLaunchProfileKey(providerId?: string): string {
   const store = loadThirdPartyApiStore()
-  if (store.activeProviderId === OFFICIAL_PROVIDER_ID) return "official"
-  const provider = store.providers.find((p) => p.id === store.activeProviderId)
-  if (!provider) return "official"
+  const selectedId = providerId ?? store.activeProviderId
+  if (selectedId === OFFICIAL_PROVIDER_ID) return "official"
+  const provider = store.providers.find((p) => p.id === selectedId)
+  if (!provider) return `missing:${selectedId}`
   return thirdPartyApiRuntimeProfileKey({ ...provider, enabled: true })
+}
+
+function submissionTargetLabel(context: InputContext): string {
+  const provider = loadThirdPartyApiStore().providers.find((item) => item.id === context.providerId)
+  let endpoint = "官方 Claude"
+  if (context.providerId !== OFFICIAL_PROVIDER_ID) {
+    try { const url = new URL(provider?.requestUrl ?? ""); endpoint = `${url.origin}${url.pathname}` }
+    catch { endpoint = "提供商地址不可用" }
+  }
+  return `${provider?.providerName || "官方 Claude"} · ${endpoint}\n模型：${context.composerPrefs.model || "默认"}，思考强度：${context.composerPrefs.effort || "默认"}，权限：${context.permissionMode}`
 }
 
 function currentComposerDefault(globalDefault: ComposerPrefs): ComposerPrefs {
@@ -547,26 +610,42 @@ function findSlashCommands(
     const entry = state.entries[i]
     if (entry.kind === "system_init") return mergeSlashCommands(entry.slashCommands, entry.skills)
   }
-  // 尚无 system_init：沿用上次 CLI 上报的命令（含内置命令），再补本地扫描到的技能
-  return mergeSlashCommands(["clear", "reset", "permissions"], loadSlashCommandsCache(), installedSkillCommands)
+  // A different cwd/CLI/plugin generation must not become session authority.
+  return mergeSlashCommands(["clear", "reset", "permissions"], installedSkillCommands)
 }
 
-function applyComposerPatch(
-  current: ComposerPrefs,
-  patch: Partial<ComposerPrefs>
-): ComposerPrefs {
-  return {
-    model: patch.model !== undefined ? patch.model : current.model,
-    effort: patch.effort !== undefined ? patch.effort : current.effort
-  }
-}
+function cloneComposerPrefs(prefs: ComposerPrefs): ComposerPrefs { return structuredClone(prefs) }
 
 function nullableComposerPrefs(prefs: ComposerPrefs): ComposerPrefs | null {
-  return prefs.model || prefs.effort ? prefs : null
+  return prefs.model || prefs.effort || prefs.ultracode !== undefined || prefs.fastMode !== undefined
+    || prefs.autoCompactWindow !== undefined || prefs.modelEfforts || prefs.modelAutoCompactWindows ? prefs : null
 }
 
 function sameComposerPrefs(a: ComposerPrefs, b: ComposerPrefs): boolean {
-  return a.model === b.model && a.effort === b.effort
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function applyFastModeReport(actual: ComposerRuntimeConfig, report: { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown }): void {
+  const state = report.fast_mode_state
+  if (state !== "off" && state !== "on" && state !== "cooldown") return
+  actual.fastModeState = state
+  const reason = report.fast_mode_disabled_reason
+  actual.fastModeDisabledReason = typeof reason === "string" && ["not_first_party", "model_not_allowed", "extra_usage_disabled",
+    "network_error", "sdk_opt_in_required", "disabled_by_env", "pending", "free", "preference", "unknown"].includes(reason)
+    ? reason : undefined
+}
+
+function runtimeSettingsPatch(prefs: ComposerPrefs, canonicalModels: Record<string, string>, actual?: ComposerRuntimeConfig): SessionSettingsPatch {
+  const settings: SessionSettingsPatch = {}
+  if (["low", "medium", "high", "xhigh"].includes(prefs.effort)) settings.effortLevel = prefs.effort as SessionSettingsPatch["effortLevel"]
+  const ultracode = prefs.ultracode ?? actual?.ultracodeRequested ?? actual?.ultracode
+  if (ultracode !== undefined) settings.ultracode = ultracode
+  if (prefs.fastMode !== undefined) settings.fastMode = prefs.fastMode
+  const canonical = canonicalModels[prefs.model] ?? prefs.model.replace(/\[1m\]$/i, "")
+  if (/^claude-[^\s]+$/.test(canonical) && prefs.autoCompactWindow !== undefined) {
+    settings.modelSettings = { [canonical]: { autoCompactWindow: prefs.autoCompactWindow } }
+  }
+  return settings
 }
 
 const SEND_STEP_WARN_MS = 1_000
@@ -641,7 +720,11 @@ function collectFailedRetryableMessageIds(
         entry.terminalReason !== "interrupted"
     )
   ) {
-    const firstTurnId = findFirstTurnFailedMessageId(entries, sentInputs)
+    const firstTurnId = findFirstTurnFailedMessageId(entries, { get: (id) => {
+      if (!sentInputs.has(id)) return undefined
+      const message = entries.find((entry) => entry.kind === "message" && entry.id === id)
+      return message?.kind === "message" ? { text: message.rawText ?? message.blocks.filter((block) => block.type === "text").map((block) => block.type === "text" ? block.text : "").join("\n") } : undefined
+    } })
     if (firstTurnId) ids.add(firstTurnId)
   }
   return ids
@@ -780,6 +863,9 @@ export default function App() {
   const installedSkillCommandsRef = useRef<string[]>([])
   const switchTokenRef = useRef(0)
   const ownersRef = useRef(new Map<string, ConversationOwner>())
+  const permissionReceiptsRef = useRef(new PermissionRequestReceipts())
+  const checkpointControllerRef = useRef<CheckpointRewindController | null>(null)
+  const checkpointBranchPreparingRef = useRef(false)
   const viewOwnerRef = useRef({ token: -1, projectId: "", key: "" })
   if (viewOwnerRef.current.token !== switchTokenRef.current || viewOwnerRef.current.projectId !== (project?.id ?? "")) {
     const known = [...ownersRef.current.values()].find((owner) => owner.project.id === project?.id && selectedSessionId && owner.sessionId === selectedSessionId)
@@ -791,12 +877,22 @@ export default function App() {
   const submissionAdapterRef = useRef<SubmissionAdapter<InputContext>>(null!)
   const coordinatorRef = useRef<SubmissionCoordinator<InputContext>>(null!)
   if (!coordinatorRef.current) coordinatorRef.current = new SubmissionCoordinator<InputContext>({
+    captureAttemptContext: (context) => submissionAdapterRef.current.captureAttemptContext?.(context),
     changed: (task) => submissionAdapterRef.current.changed(task),
     persist: (task) => submissionAdapterRef.current.persist(task),
     prepare: (task) => submissionAdapterRef.current.prepare(task),
     write: (task) => submissionAdapterRef.current.write(task),
-    settled: (task) => submissionAdapterRef.current.settled(task)
+    settled: (task) => submissionAdapterRef.current.settled(task),
+    archived: (receipt) => submissionAdapterRef.current.archived?.(receipt),
+    restorePayload: (id) => submissionAdapterRef.current.restorePayload?.(id) ?? Promise.resolve(undefined)
   })
+  const pruneClosedConversationOwners = useCallback(() => {
+    const reusable = [...ownersRef.current.values()].filter((owner) => owner.key !== viewOwnerRef.current.key
+      && !owner.runtimeId && coordinatorRef.current.canReleaseConversation(owner.key))
+    for (const owner of reusable.slice(0, Math.max(0, reusable.length - 16))) {
+      if (coordinatorRef.current.releaseConversation(owner.key)) ownersRef.current.delete(owner.key)
+    }
+  }, [])
   const pendingApiRuntimeRefreshRef = useRef(false)
   const pendingComposerRuntimeRefreshRef = useRef(false)
   const streamingRefsCacheRef = useRef<{
@@ -946,39 +1042,28 @@ export default function App() {
     void refreshInstalledSkills()
   }, [refreshInstalledSkills])
 
+  useEffect(() => subscribeSettingsBus("plugins", () => { void refreshInstalledSkills() }), [refreshInstalledSkills])
+
   useEffect(() => {
     sessionComposerRef.current = sessionComposer
   }, [sessionComposer])
 
-  const flushRunningActions = useCallback((run: RunningSession) => {
-    if (run.pendingActions.length === 0) return
-    let next = run.state
-    for (const action of run.pendingActions) {
-      next = reduce(next, action)
+  const flushRunningActions = useCallback((run: RunningSession) => { run.publication?.flush() }, [])
+  const applyRunningAction = useCallback((run: RunningSession, action: ReducerAction) => {
+    // Reduce the authoritative domain exactly once. React receives only snapshots.
+    run.state = reduce(run.state, action)
+    run.owner.state = run.state
+    if (activeRuntimeIdRef.current === run.runtimeId) stateRef.current = run.state
+    if (action.kind === "event") {
+      const phase = reduceRuntimePhase(run.phase, action.event)
+      if (phase !== run.phase) { run.phase = phase; setRunningTick((tick) => tick + 1) }
     }
-    run.pendingActions = []
-    run.state = next
-    run.owner.state = next
-    if (activeRuntimeIdRef.current === run.runtimeId) {
-      dispatch({ kind: "replace_state", state: next })
-      stateRef.current = next
+    if (action.kind === "event" && isDeferredTextEvent(action.event)) run.publication?.defer()
+    else run.publication?.immediate()
+    if (run.jsonlSessionId && (action.kind === "submitted_input" || action.kind === "user_local" || action.kind === "delivery_changed" || action.kind === "runtime_exited" || (action.kind === "event" && action.event.type === "user"))) {
+      void patchSessionSidecar(run.project.cwd, run.jsonlSessionId, inputMetadataPatch(run.state)).catch((error) => console.warn("input metadata persistence failed", error))
     }
   }, [])
-
-  const applyRunningAction = useCallback(
-    (run: RunningSession, action: ReducerAction) => {
-      run.state = reduce(run.state, action)
-      run.owner.state = run.state
-      if (activeRuntimeIdRef.current === run.runtimeId) {
-        stateRef.current = run.state
-        dispatch(action)
-      }
-      if (run.jsonlSessionId && (action.kind === "submitted_input" || action.kind === "user_local" || action.kind === "delivery_changed" || action.kind === "runtime_exited" || (action.kind === "event" && action.event.type === "user"))) {
-        void patchSessionSidecar(run.project.cwd, run.jsonlSessionId, inputMetadataPatch(run.state)).catch((error) => console.warn("input metadata persistence failed", error))
-      }
-    },
-    []
-  )
 
   const syncRunningSessionStreaming = useCallback((run: RunningSession) => {
     const next = run.turnActive || subagentRegistryBusy(run.subagents)
@@ -1046,93 +1131,48 @@ export default function App() {
     []
   )
 
+  const reviewPersistenceRef = useRef(new Map<string, Promise<void>>())
   const persistReviewDiffs = useCallback((run: RunningSession) => {
     const sid = run.jsonlSessionId
     if (!sid) return
-    patchSessionSidecar(run.project.cwd, sid, { reviewDiffs: run.reviewDiffs })
-      .then(() => setSidebarRefreshKey((tick) => tick + 1))
-      .catch((error) => {
-        toast.error(`保存文件 diff 记录失败: ${String(error)}`)
-      })
+    const key = `${run.project.cwd}::${sid}`
+    const pending = (reviewPersistenceRef.current.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      await patchSessionSidecar(run.project.cwd, sid, { reviewDiffs: run.owner.reviewDiffs })
+      setSidebarRefreshKey((tick) => tick + 1)
+    })
+    reviewPersistenceRef.current.set(key, pending)
+    void pending.catch((error) => toast.error(`保存文件 diff 记录失败: ${String(error)}`)).finally(() => {
+      if (reviewPersistenceRef.current.get(key) === pending) reviewPersistenceRef.current.delete(key)
+    })
   }, [])
 
-  /**
-   * 为当前回合建立审查基线。返回是否新建了快照。
-   * 守卫：run 上已有未结算的基线时直接复用（返回 false）——
-   * result→finishRunReview 的间隙里用户手动开新回合、随后排队跟进经
-   * sendQueuedFollowup 并入该回合时会带着活基线再次进来，此时覆盖
-   * reviewSnapshotId 会让旧快照永远无人 finish/discard（Rust 侧临时目录泄漏）；
-   * 复用更早的基线还能让 diff 覆盖两次输入的全部改动。
-   */
-  const beginRunReview = useCallback(
-    async (run: RunningSession | null): Promise<boolean> => {
-      if (!run) return false
-      if (run.reviewSnapshotId) return false
-      try {
-        const snapshot = await reviewSnapshotStart(run.project.cwd)
-        run.reviewSnapshotId = snapshot.id
-        return true
-      } catch (e) {
-        run.reviewSnapshotId = null
-        toast.error(`建立文件审查基线失败: ${String(e)}`)
-        throw e
-      }
-    },
-    []
-  )
-
-  const finishRunReview = useCallback(async (run: RunningSession) => {
-    const snapshotId = run.reviewSnapshotId
-    run.reviewSnapshotId = null
-    const appendReview = (review: ReviewRunDiff) => {
-      run.reviewDiffs = [...run.reviewDiffs, review]
-      run.owner.reviewDiffs = run.reviewDiffs
-      const runSessionId = run.jsonlSessionId
-      if (shouldSyncRunReviewToConversation(
-        activeRuntimeIdRef.current,
-        run.runtimeId,
-        selectedSessionIdRef.current,
-        runSessionId
-      )) {
-        setReviewDiffs(run.reviewDiffs)
-      }
+  const createRunReview = useCallback((run: RunningSession) => new RunReviewLifecycle(run.project.cwd, {
+    start: reviewSnapshotStart, freeze: reviewSnapshotFreeze, finish: reviewSnapshotFinish, cancel: reviewSnapshotCancel,
+    changed: (status) => { run.reviewStatus = status; setRunningTick((tick) => tick + 1) },
+    publish: (review) => {
+      // The owner is canonical across runtime restarts. Reserve at the result
+      // boundary, then replace by immutable round ID regardless of finish order.
+      const history = run.owner.reviewDiffs
+      run.owner.reviewDiffs = history.some((item) => item.id === review.id)
+        ? history.map((item) => item.id === review.id ? review : item)
+        : [...history, review]
+      run.reviewDiffs = run.owner.reviewDiffs
+      const currentRun = run.owner.runtimeId ? runningSessionsRef.current.get(run.owner.runtimeId) : undefined
+      if (currentRun) currentRun.reviewDiffs = run.owner.reviewDiffs
+      if (shouldSyncRunReviewToConversation(activeRuntimeIdRef.current, run.runtimeId,
+        selectedSessionIdRef.current, run.jsonlSessionId)) setReviewDiffs(run.owner.reviewDiffs)
       persistReviewDiffs(run)
       setRunningTick((tick) => tick + 1)
     }
-    if (!snapshotId) {
-      appendReview({
-        id: `empty-${Date.now()}`,
-        createdAt: Date.now(),
-        diff: { isRepo: false, files: [], patchError: null }
-      })
-      return
-    }
-    try {
-      const diff = await reviewSnapshotFinish(snapshotId)
-      appendReview({
-        id: snapshotId,
-        createdAt: Date.now(),
-        diff
-      })
-    } catch (e) {
-      toast.error(`生成文件审查 diff 失败: ${String(e)}`)
-      appendReview({
-        id: snapshotId,
-        createdAt: Date.now(),
-        diff: { isRepo: false, files: [], patchError: String(e) }
-      })
-    }
-  }, [persistReviewDiffs])
+  }), [persistReviewDiffs])
 
-  const discardRunReview = useCallback(async (run: RunningSession | null) => {
-    const snapshotId = run?.reviewSnapshotId
-    if (!run || !snapshotId) return
-    run.reviewSnapshotId = null
-    try {
-      await reviewSnapshotFinish(snapshotId)
-    } catch (e) {
-      toast.error(`清理文件审查基线失败: ${String(e)}`)
-    }
+  const beginRunReview = useCallback(async (run: RunningSession | null): Promise<void> => {
+    if (run && !run.reviewUnreliableReason) await run.reviewLifecycle?.begin()
+  }, [])
+  const finishRunReview = useCallback((run: RunningSession): Promise<void> =>
+    run.reviewLifecycle?.freeze() ?? Promise.resolve(), [])
+  const discardRunReview = useCallback(async (run: RunningSession | null, archive = false, all = false) => {
+    await run?.reviewLifecycle?.discard("本轮文件审查已取消，覆盖范围未确认", archive, all)
   }, [])
 
   const restoreQueuedInputsToDraft = useCallback((
@@ -1214,6 +1254,7 @@ export default function App() {
       } = {}
     ) => {
       const run = runningSessionsRef.current.get(runtimeId)
+      permissionReceiptsRef.current.forgetRuntime(runtimeId)
       if (!run) {
         setPermissionRequests((cur) =>
           cur.filter((request) => request.session_id !== runtimeId)
@@ -1232,18 +1273,23 @@ export default function App() {
         return
       }
 
+      if (!checkpointBranchPreparingRef.current && checkpointControllerRef.current?.getSnapshot().target?.runtimeId === runtimeId) checkpointControllerRef.current.invalidate("原会话进程已关闭，请重新预览")
+      run.suggestionTracker.dismiss()
       const isActive = activeRuntimeIdRef.current === runtimeId
       // 关闭即强杀：清掉软中断兜底定时器，避免定时器在 run 移除后再触发误杀
       clearInterruptState(run)
+      flushRunningActions(run)
       applyRunningAction(run, { kind: "runtime_exited" })
       if (opts.dropQueued !== false && run.queuedInputs.length > 0) {
         run.queuedInputs = []
       }
+      run.publication?.cancel()
       run.unlisten.forEach((unlisten) => unlisten())
       run.unlisten = []
-      void finishRunReview(run)
+      await discardRunReview(run, true, true)
       run.owner.runtimeId = null
       runningSessionsRef.current.delete(runtimeId)
+      pruneClosedConversationOwners()
       networkToastTimestampsRef.current.delete(runtimeId)
       setPermissionRequests((cur) =>
         cur.filter((request) => request.session_id !== runtimeId)
@@ -1261,7 +1307,7 @@ export default function App() {
       }
       setRunningTick((tick) => tick + 1)
     },
-    [applyRunningAction, clearInterruptState, finishRunReview]
+    [applyRunningAction, clearInterruptState, discardRunReview, flushRunningActions, pruneClosedConversationOwners]
   )
 
   const deleteSessionRecord = useCallback(async (p: Project, sid: string) => {
@@ -1330,6 +1376,40 @@ export default function App() {
 
       pendingApiRuntimeRefreshRef.current = false
       pendingComposerRuntimeRefreshRef.current = false
+      if (run && run.capabilities.runtimeSettingsControl === "supported"
+        && run.composerPrefs.model === run.launchComposerPrefs.model
+        && run.permissionMode === run.launchPermissionMode
+        && run.composerPrefs.effort !== "max"
+        && (run.composerPrefs.effort || !run.launchComposerPrefs.effort)
+        && (run.composerPrefs.effort === run.launchComposerPrefs.effort || run.composerPrefs.ultracode !== undefined
+          || run.actualConfig.ultracodeRequested !== undefined || run.actualConfig.ultracode !== undefined)) {
+        const selected = cloneComposerPrefs(run.composerPrefs)
+        const patch = runtimeSettingsPatch(selected, run.canonicalModels, run.actualConfig)
+        if (run.apiProfileKey !== "official") delete patch.fastMode
+        if (run.capabilities.independentUltracode !== "supported") delete patch.ultracode
+        if (run.capabilities.autoCompactWindow !== "supported") delete patch.modelSettings
+        const work = (async () => {
+          await coordinatorRef.current.waitForSettlement(run.owner.key)
+          const observed = await applySessionRuntimeSettings(runtimeId, patch)
+          if (runningSessionsRef.current.get(runtimeId) !== run) return
+          run.actualConfig = { ...run.actualConfig, ...observed.applied,
+            fastModeState: observed.fastModeState ?? undefined,
+            fastModeDisabledReason: observed.fastModeDisabledReason ?? undefined }
+          run.launchComposerPrefs = selected
+          setRunningTick((tick) => tick + 1)
+        })()
+        const update = work.catch(async (error) => {
+          // apply may have succeeded before confirmation failed. Retire this
+          // captured process so an unconfirmed config cannot be reused.
+          await closeRunningSession(runtimeId, { dropQueued: false, preserveConversationState: true })
+          toast.error(`更新会话配置未确认，已关闭原进程；下一次发送将重新连接: ${String(error)}`)
+          throw error
+        })
+        run.configurationUpdate = update
+        void update.catch(() => {}).finally(() => { if (run.configurationUpdate === update) run.configurationUpdate = null; setRunningTick((tick) => tick + 1) })
+        setRunningTick((tick) => tick + 1)
+        return
+      }
       const sid = run?.jsonlSessionId ?? (run ? findInitSessionId(run.state) : null)
       if (sid) {
         setSelectedSessionId((cur) => {
@@ -1368,7 +1448,10 @@ export default function App() {
   )
 
   const detachActiveSession = useCallback(async () => {
+    checkpointControllerRef.current?.invalidate("正在切换对话，请重新预览")
     const runtimeId = activeRuntimeIdRef.current
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : undefined
+    if (run) flushRunningActions(run)
     activeRuntimeIdRef.current = null
     sessionIdRef.current = null
     setSessionId(null)
@@ -1376,7 +1459,6 @@ export default function App() {
     setReviewDiffs([])
     collabMcpEnabledRef.current = false
     if (!runtimeId) return
-    const run = runningSessionsRef.current.get(runtimeId)
     if (
       run &&
       !run.streaming &&
@@ -1385,7 +1467,7 @@ export default function App() {
     ) {
       void closeRunningSession(runtimeId, { dropQueued: false })
     }
-  }, [closeRunningSession])
+  }, [closeRunningSession, flushRunningActions])
 
   const stopActiveSession = useCallback(async () => {
     const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
@@ -1492,15 +1574,13 @@ export default function App() {
   }, [applyPermissionModeState, flushRunningActions])
 
   const settlePermissionRequest = useCallback(
-    (requestId: string) => {
-      let changed = false
-      for (const run of runningSessionsRef.current.values()) {
-        if (run.pendingPermissionRequestIds.delete(requestId)) {
-          changed = true
-        }
-      }
+    (runtimeId: string, requestId: string) => {
+      permissionReceiptsRef.current.settle(runtimeId, requestId)
+      const run = runningSessionsRef.current.get(runtimeId)
+      const changed = !!run?.pendingPermissionRequestIds.delete(requestId)
+      if (run && !run.pendingPermissionRequestIds.size) run.permissionSince = null
       setPermissionRequests((cur) =>
-        cur.filter((request) => request.request_id !== requestId)
+        cur.filter((request) => request.session_id !== runtimeId || request.request_id !== requestId)
       )
       if (changed) {
         setSidebarRefreshKey((k) => k + 1)
@@ -1546,23 +1626,24 @@ export default function App() {
     setProjects(list)
     if (list.length > 0) setProject((cur) => cur ?? list[0])
     listenPermissionRequests((payload) => {
+      const run = runningSessionsRef.current.get(payload.session_id)
+      if (!run || !permissionReceiptsRef.current.claim(payload.session_id, payload.request_id)) return
       const enqueue = () => {
-        const run = runningSessionsRef.current.get(payload.session_id)
-        if (run) {
-          run.pendingPermissionRequestIds.add(payload.request_id)
-        }
+        if (runningSessionsRef.current.get(payload.session_id) !== run
+          || !permissionReceiptsRef.current.isPending(payload.session_id, payload.request_id)) return
+        run.publication?.immediate()
+        run.permissionSince ??= Date.now()
+        run.pendingPermissionRequestIds.add(payload.request_id)
         setPermissionRequests((cur) =>
-          cur.some((p) => p.request_id === payload.request_id)
+          cur.some((p) => p.session_id === payload.session_id && p.request_id === payload.request_id)
             ? cur
             : [...cur, payload]
         )
         setSidebarRefreshKey((k) => k + 1)
         setRunningTick((k) => k + 1)
       }
-      const run = runningSessionsRef.current.get(payload.session_id)
-      if (!run) return
       const permissionMode =
-        run?.permissionMode ?? loadSettings().defaultPermissionMode
+        run?.launchPermissionMode ?? loadSettings().defaultPermissionMode
       const autoApproval = autoApprovePermissionRequest(payload, permissionMode)
       if (autoApproval) {
         resolvePermissionRequest({
@@ -1570,7 +1651,7 @@ export default function App() {
           requestId: payload.request_id,
           transport: payload.transport ?? null,
           response: autoApproval.response
-        }).catch((e) => {
+        }).then(() => settlePermissionRequest(payload.session_id, payload.request_id)).catch((e) => {
           toast.error(`自动处理权限请求失败: ${String(e)}`)
           if (runningSessionsRef.current.has(payload.session_id)) enqueue()
         })
@@ -1589,6 +1670,7 @@ export default function App() {
           response
         })
           .then(() => {
+            settlePermissionRequest(payload.session_id, payload.request_id)
             toast.success(`已按权限记忆允许: ${remembered.label}`)
           })
           .catch((e) => {
@@ -1605,7 +1687,8 @@ export default function App() {
       .catch((e) => toast.error(`权限监听启动失败: ${String(e)}`))
     return () => {
       for (const run of runningSessionsRef.current.values()) {
-        run.unlisten.forEach((u) => u())
+        run.publication?.cancel()
+      run.unlisten.forEach((u) => u())
         stopSession(run.runtimeId).catch((e) => console.error(e))
       }
       runningSessionsRef.current.clear()
@@ -1663,7 +1746,7 @@ export default function App() {
     }
     const refreshComposerDefaults = () => {
       const seq = ++refreshSeq
-      loadGlobalDefault()
+      loadGlobalDefault(project?.cwd)
         .then((next) => {
           if (seq === refreshSeq) applyDefaultComposer(next)
         })
@@ -1758,9 +1841,11 @@ export default function App() {
     const off1 = subscribeSettingsBus("settings", refreshSettings)
     const off2 = subscribeSettingsBus("composerPrefs", refreshComposerDefaults)
     const off3 = subscribeSettingsBus("thirdPartyApi", refreshThirdPartyApi)
-    const off4 = subscribeSettingsBus("settings", () =>
+    const off4 = subscribeSettingsBus("settings", () => {
       setCollabSettingsTick((t) => t + 1)
-    )
+      if (!loadSettings().promptSuggestionsEnabled) for (const run of runningSessionsRef.current.values()) run.suggestionTracker.setEnabled(false)
+      setRunningTick((tick) => tick + 1)
+    })
     const off5 = subscribeSettingsBus("oauthUsage", () => {
       setOauthUsage(null)
       if (isOfficialApi()) {
@@ -1788,14 +1873,75 @@ export default function App() {
   }, [stopActiveSession])
 
   const pendingForkRef = useRef<{ sourceId: string; resumeAt: string } | null>(null)
+  if (!checkpointControllerRef.current) checkpointControllerRef.current = new CheckpointRewindController({
+    preview: previewSessionRewind, rewind: rewindSessionFiles,
+    isCurrent: (target) => {
+      const run = runningSessionsRef.current.get(target.runtimeId)
+      return target.generation === switchTokenRef.current && viewOwnerRef.current.key === target.conversationKey
+        && activeRuntimeIdRef.current === target.runtimeId && !!run && run.owner.key === target.conversationKey
+        && !run.streaming && !run.interrupting && !run.configurationUpdate && !run.pendingPermissionRequestIds.size
+        && ![...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === target.conversationKey && isActiveInput(task))
+        && run.apiLaunchProfileKey === currentApiLaunchProfileKey()
+        && run.state.entries.some((entry) => entry.kind === "message" && checkpointMessageId(entry) === target.userMessageId)
+    },
+    canFork: (target) => runningSessionsRef.current.get(target.runtimeId)?.capabilities.forkSession === "supported",
+    fork: async (target) => {
+      const run = runningSessionsRef.current.get(target.runtimeId)
+      if (!run?.jsonlSessionId || run.capabilities.forkSession !== "supported") throw new Error("原会话尚未确认支持分支")
+      const events = await readSessionTranscript(target.cwd, run.jsonlSessionId) as Array<ClaudeEvent & { uuid?: string }>
+      if (target.generation !== switchTokenRef.current || activeRuntimeIdRef.current !== target.runtimeId) throw new Error("原会话已变化")
+      const index = events.findIndex((event) => event.type === "user" && event.uuid === target.userMessageId)
+      const anchor = events.slice(0, Math.max(index, 0)).reverse().find((event) => event.type === "assistant" && event.uuid)
+      if (index < 0 || !anchor?.uuid) throw new Error("无法确认该输入之前的分支位置")
+      const fork = { sourceId: run.jsonlSessionId, resumeAt: anchor.uuid }
+      const sourceState = run.state
+      const input = sourceState.entries.find((entry) => entry.kind === "message" && entry.transcriptUuid === target.userMessageId)
+      if (input?.kind !== "message") throw new Error("原用户消息已不在当前记录中")
+      checkpointBranchPreparingRef.current = true
+      try {
+      await closeRunningSession(target.runtimeId, { preserveConversationState: true })
+      if (target.generation !== switchTokenRef.current || viewOwnerRef.current.key !== target.conversationKey) throw new Error("会话已变化，未准备新分支")
+      const token = ++switchTokenRef.current
+      const key = crypto.randomUUID()
+      viewOwnerRef.current = { token, projectId: run.project.id, key }
+      pendingForkRef.current = fork
+      const restored = reduce(sourceState, { kind: "truncate_after_message", messageId: input.id })
+      const next = { ...restored, entries: restored.entries.filter((entry) => entry.kind !== "system_init"), pendingInputs: [] }
+      const owner: ConversationOwner = { ...run.owner, key, sessionId: null, runtimeId: null, state: next, selectedSessionMeta: null,
+        reviewDiffs: [], composerPrefs: cloneComposerPrefs(run.owner.composerPrefs), sessionComposer: run.owner.sessionComposer ? cloneComposerPrefs(run.owner.sessionComposer) : null, fork }
+      ownersRef.current.set(key, owner)
+      selectedSessionIdRef.current = null; setSelectedSessionId(null); setSelectedSessionMeta(null)
+      stateRef.current = next; dispatch({ kind: "replace_state", state: next }); setReviewDiffs([])
+      setRunningTick((tick) => tick + 1)
+      } finally { checkpointBranchPreparingRef.current = false }
+    }
+  })
+  useEffect(() => { if (!checkpointBranchPreparingRef.current) checkpointControllerRef.current?.invalidate("已切换对话，请重新预览") }, [activeConversationKey, sessionId])
+  useEffect(() => {
+    const token = switchTokenRef.current
+    void loadGlobalDefault(project?.cwd).then((defaults) => {
+      if (token !== switchTokenRef.current) return
+      setGlobalDefault(defaults)
+      if (!sessionComposerRef.current) setComposerPrefs(currentComposerDefault(defaults))
+    }).catch((error) => console.warn("读取项目模型默认配置失败:", error))
+  }, [project?.cwd])
   const startSession = useCallback(async (owner: ConversationOwner, task: SubmittedInput<InputContext>): Promise<string | null> => {
     const project = owner.project
-    if (owner.runtimeId && runningSessionsRef.current.has(owner.runtimeId)) return owner.runtimeId
+    let existing = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+    await existing?.configurationUpdate?.catch(() => {})
+    existing = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+    if (existing) {
+      const matching = existing.apiLaunchProfileKey === task.profileRevision && existing.launchPermissionMode === task.context.permissionMode
+        && sameComposerPrefs(existing.launchComposerPrefs, task.context.composerPrefs)
+      if (matching) return existing.runtimeId
+      if (existing.streaming || existing.pendingPermissionRequestIds.size) throw new Error("当前轮次仍使用原配置，请结束后按选定配置重试")
+      await closeRunningSession(existing.runtimeId, { preserveConversationState: true, dropQueued: false })
+    }
     const foreground = () => viewOwnerRef.current.key === owner.key
     const guard = () => {
       coordinatorRef.current.assertCurrent(task)
       if (currentAuthorizationRevision() !== task.context.authorizationRevision) throw new Error("授权配置已改变，请恢复原配置后重试")
-      if (currentApiLaunchProfileKey() !== task.profileRevision) throw new Error("提供商配置已改变，请恢复原配置后重试")
+      if (currentApiLaunchProfileKey(task.context.providerId) !== task.profileRevision) throw new Error("此提供商配置已改变，请按当前配置重试")
     }
     guard()
     let createdRuntimeId: string | null = null
@@ -1803,17 +1949,18 @@ export default function App() {
       const proxyEnv = buildProxyEnv(await loadProxyAsync())
       const cfg = loadSettings()
       const collabCfg = loadCollabSettings()
-      const thirdPartyApi = await loadThirdPartyApiConfigAsync()
+      const thirdPartyApi = await loadThirdPartyApiConfigAsync(task.context.providerId)
       const thirdPartyReady =
         thirdPartyApi.enabled &&
         !!trimApiUrl(thirdPartyApi.requestUrl) &&
         !!thirdPartyApi.apiKey.trim()
+      if (task.context.providerId !== OFFICIAL_PROVIDER_ID && !thirdPartyReady) throw new Error("选定提供商的地址或密钥不可用，尚未发送")
       const thirdPartyEnv = thirdPartyReady
         ? buildClaudeLaunchEnv(thirdPartyApi)
         : {}
       const env = { ...thirdPartyEnv, ...proxyEnv }
-      const apiProfileKey = currentApiProfileKey()
-      const apiLaunchProfileKey = currentApiLaunchProfileKey()
+      const apiProfileKey = currentApiProfileKey(task.context.providerId)
+      const apiLaunchProfileKey = currentApiLaunchProfileKey(task.context.providerId)
       const fork = owner.fork
       let resumeSessionId = fork?.sourceId ?? owner.sessionId
       if (
@@ -1844,6 +1991,7 @@ export default function App() {
       const model =
         (thirdPartyReady ? thirdPartyLaunchModel : uiModel) || null
       const launchPermissionMode = task.context.permissionMode
+      const launchCapabilities = await claudeCapabilities()
       guard()
       const id = crypto.randomUUID()
       createdRuntimeId = id
@@ -1856,12 +2004,20 @@ export default function App() {
           ? baseRunState
           : { ...baseRunState, subagents: resumedSubagents }
       const run: RunningSession = {
+        commandScope: { cwd: project.cwd, cliFingerprint: launchCapabilities.fingerprint, configuration: apiLaunchProfileKey, generation: slashCommandGeneration() },
         owner,
         runtimeId: id,
         project,
         jsonlSessionId: fork ? null : resumeSessionId,
         launchModel: model,
+        launchComposerPrefs: cloneComposerPrefs(launchComposerPrefs),
+        launchPermissionMode,
+        actualConfig: {}, capabilities: launchCapabilities, canonicalModels: {}, configurationUpdate: null,
+        suggestionTracker: new PromptSuggestionTracker({ conversationKey: owner.key, runtimeId: id, generation: id }, cfg.promptSuggestionsEnabled),
+        suggestionTurnId: task.attemptId, contextSummary: null, contextLoading: false, contextError: null, contextGeneration: 0,
+        compactBoundary: null, compacting: false,
         apiProfileKey,
+        providerLabel: thirdPartyReady ? thirdPartyApi.providerName || "第三方 API" : "官方 Claude",
         apiLaunchProfileKey,
         selectedSessionMeta: resumeSessionId ? owner.selectedSessionMeta : null,
         state: runState,
@@ -1874,7 +2030,10 @@ export default function App() {
         interrupting: false,
         interruptTimer: null,
         pendingPermissionRequestIds: new Set(),
-        pendingActions: [],
+        publication: null,
+        phase: { kind: "starting", since: Date.now() },
+        permissionSince: null,
+        timings: {},
         queuedInputs: [],
         unlisten: [],
         permissionMode: launchPermissionMode,
@@ -1882,10 +2041,17 @@ export default function App() {
         composerPrefs: launchComposerPrefs,
         sessionComposer: launchSessionComposer,
         collabMcpEnabled: collabCfg.enabled,
-        reviewSnapshotId: null,
+        reviewLifecycle: null,
+        reviewStatus: { id: null, state: "unavailable", reason: "尚未建立本轮文件审查" },
+        reviewUnreliableReason: null,
         reviewDiffs: launchReviewDiffs,
         upstreamStatus: null
       }
+      run.suggestionTracker.beginTurn(task.attemptId)
+      run.publication = new FramePublication(() => {
+        if (activeRuntimeIdRef.current === run.runtimeId) dispatch({ kind: "replace_state", state: run.state })
+      })
+      run.reviewLifecycle = createRunReview(run)
       owner.runtimeId = id
       runningSessionsRef.current.set(id, run)
       if (foreground()) {
@@ -1898,12 +2064,24 @@ export default function App() {
       }
       setRunningTick((tick) => tick + 1)
       const u1 = await listenSessionEvents(id, (ev) => {
-        let event = markInterruptedResult(
+        if (runningSessionsRef.current.get(id) !== run) return
+        let event = stampReviewResult(markInterruptedResult(
           eventWithLaunchModelIntent(run, ev),
           run.interrupting
-        )
+        ))
+        if ((ev as { type?: string }).type === "control_cancel_request") {
+          const requestId = (ev as { request_id?: unknown }).request_id
+          if (typeof requestId === "string") settlePermissionRequest(run.runtimeId, requestId)
+          run.publication?.immediate()
+          return
+        }
+        if ((event as { type?: string }).type === "prompt_suggestion") {
+          if (run.suggestionTracker.accept(event, run.suggestionTracker.owner)) setRunningTick((tick) => tick + 1)
+          run.publication?.immediate()
+          return
+        }
         const acknowledgedId = (event as { type?: string; uuid?: string }).type === "user" ? (event as { uuid?: string }).uuid : undefined
-        const localEcho = acknowledgedId && !(event as { parent_tool_use_id?: string }).parent_tool_use_id
+        const localEcho = acknowledgedId && !isForwardedSubagentEvent(event)
           ? coordinatorRef.current.acknowledge(acknowledgedId) : false
         event = markAuthoredEvent(localEcho ? { ...event, claudinalAuthored: true } : event, run.state.entries)
         const subagentTransition = reduceSubagentRegistry(run.subagents, event)
@@ -1911,8 +2089,8 @@ export default function App() {
           run.subagents = subagentTransition.registry
           syncRunningSessionStreaming(run)
         }
-        if (!localEcho) applyRunningAction(run, { kind: "event", event })
-        if ((event as { parent_tool_use_id?: string }).parent_tool_use_id) return
+        applyRunningAction(run, { kind: "event", event, subagentTransition })
+        if (isForwardedSubagentEvent(event)) return
         const t = (event as { type?: string }).type
         if (t === "assistant" || t === "stream_event") coordinatorRef.current.response(owner.key, eventInputIds(event))
         const evSessionId = (event as { parent_tool_use_id?: string }).parent_tool_use_id ? undefined : (event as { session_id?: string }).session_id
@@ -1920,6 +2098,7 @@ export default function App() {
         if (knownSessionId && run.jsonlSessionId !== knownSessionId) {
           run.jsonlSessionId = knownSessionId
           owner.sessionId = knownSessionId
+          for (const receipt of sentInputsRef.current.values()) if (receipt.conversationKey === owner.key) receipt.sessionId = knownSessionId
           void patchSessionSidecar(run.project.cwd, knownSessionId, inputMetadataPatch(run.state)).catch(console.warn)
           void ensureSidecarApiProfile(
             run.project,
@@ -1938,11 +2117,12 @@ export default function App() {
         }
         const composerPatch = composerPrefsPatchFromCommandEvent(event)
         if (composerPatch) {
-          const updated = applyComposerPatch(run.composerPrefs, composerPatch)
+          const updated = patchComposerPrefs(run.composerPrefs, composerPatch, globalDefault, run.canonicalModels)
           const updatedSession = nullableComposerPrefs(
-            applyComposerPatch(run.sessionComposer ?? EMPTY_COMPOSER_PREFS, composerPatch)
+            patchComposerPrefs(run.sessionComposer ?? EMPTY_COMPOSER_PREFS, composerPatch, globalDefault, run.canonicalModels)
           )
           run.composerPrefs = updated
+          run.launchComposerPrefs = cloneComposerPrefs(updated)
           owner.composerPrefs = updated
           run.sessionComposer = updatedSession
           owner.sessionComposer = updatedSession
@@ -1964,6 +2144,18 @@ export default function App() {
           setRunningSessionTurnActive(run, true)
         }
         if (t === "system") {
+          const boundary = parseCompactBoundary(event)
+          if (boundary && boundary.sessionId === run.jsonlSessionId) { run.compactBoundary = boundary; run.compacting = false; setRunningTick((tick) => tick + 1) }
+          if ((event as { subtype?: string; status?: unknown }).subtype === "status" && (event as { status?: unknown }).status === "compacting") { run.compacting = true; setRunningTick((tick) => tick + 1) }
+          if ((event as { subtype?: string }).subtype === "init") {
+            const init = ev as { model?: unknown; fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown }
+            if (typeof init.model === "string") {
+              run.actualConfig.model = init.model
+              if (/^claude-[^\s]+$/.test(init.model)) run.canonicalModels[run.launchComposerPrefs.model] = init.model
+            }
+            applyFastModeReport(run.actualConfig, init)
+            setRunningTick((tick) => tick + 1)
+          }
           const apiKeySource = (event as { apiKeySource?: string }).apiKeySource
           if (apiKeySource) {
             try {
@@ -1985,7 +2177,7 @@ export default function App() {
               )
             : []
           if (Array.isArray(slash) || Array.isArray(skills)) {
-            saveSlashCommandsCache(mergeSlashCommands(eventSlashCommands, eventSkillCommands))
+            saveSlashCommandsCache(mergeSlashCommands(eventSlashCommands, eventSkillCommands), run.commandScope)
           }
           const mcpServers = (event as { mcp_servers?: unknown }).mcp_servers
           if (Array.isArray(mcpServers)) {
@@ -2001,6 +2193,19 @@ export default function App() {
           }
         }
         if (t === "result") {
+          const fastReport = ev as { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown }
+          applyFastModeReport(run.actualConfig, fastReport)
+          // Set the file boundary synchronously before exposing an idle turn.
+          const resultIds = eventInputIds(event)
+          const written = [...coordinatorRef.current.tasks.values()].filter((task) => task.conversationKey === owner.key
+            && isAwaitingDefinitiveResult(task))
+          const crossedGuide = crossesWrittenInputBoundary(written, resultIds)
+          if (crossedGuide) run.reviewUnreliableReason = resultIds?.length === 0
+            ? "CLI 结果输入关联无效，本轮文件边界无法可靠归属"
+            : "仍有已写入引导或输入未被本次结果确认，文件边界无法单独归属本轮"
+          const reviewBoundary = subagentTransition.resultDisposition === "intermediate" ? undefined
+            : run.reviewUnreliableReason ? run.reviewLifecycle?.rejectBoundary(run.reviewUnreliableReason) : finishRunReview(run)
+          const completedAttemptId = run.activeInputId ? coordinatorRef.current.tasks.get(run.activeInputId)?.attemptId : eventInputIds(event)?.[0]
           run.activeInputId = null
           // 软中断在此收尾：result 到达即回合已终止，清掉 interrupting 态与强杀兜底定时器
           clearInterruptState(run)
@@ -2025,7 +2230,9 @@ export default function App() {
             run.jsonlSessionId
           // 回合结束：上游状态条不再有意义（成功则已 recovered，失败则 result 错误已落地）
           run.upstreamStatus = null
+          run.phase = { kind: subagentTransition.resultDisposition === "intermediate" ? "background" : "completed", since: Date.now() }
           setRunningSessionTurnActive(run, false)
+          setRunningTick((tick) => tick + 1)
           recordResultUsage(
             event as {
               total_cost_usd?: number
@@ -2038,18 +2245,23 @@ export default function App() {
             setSidebarRefreshKey((k) => k + 1)
             return
           }
-          coordinatorRef.current.complete(owner.key, isError || interrupted, eventInputIds(event), () => finishRunReview(run))
+          run.compacting = false
+          if (completedAttemptId && resultSessionId) run.suggestionTracker.completeTurn(completedAttemptId, resultSessionId, !isError && !interrupted)
+          coordinatorRef.current.complete(owner.key, isError || interrupted, eventInputIds(event), () => reviewBoundary ?? Promise.resolve())
           if (!interrupted) noteCompletion(sidebarSessionKey(run.project.id, resultSessionId ?? owner.key), run.project.name, isError, (event as { result?: unknown }).result)
           // A guide sent at the boundary may already be waiting in the CLI for
           // the next turn. Keep it active; this result must not settle that input.
-          setRunningSessionTurnActive(run, coordinatorRef.current.hasRunning(owner.key))
+          const stillRunning = coordinatorRef.current.hasRunning(owner.key)
+          if (stillRunning) run.phase = { kind: "starting", since: Date.now(), detail: "仍有已写入输入等待 CLI 后续回合确认" }
+          if (!stillRunning) run.reviewUnreliableReason = null
+          setRunningSessionTurnActive(run, stillRunning)
           setSidebarRefreshKey((k) => k + 1)
           if (activeRuntimeIdRef.current === run.runtimeId) {
             gitWorktreeStatus(run.project.cwd)
               .then(setGitStatus)
               .catch(() => setGitStatus(null))
           }
-          if (isOfficialApi()) {
+          if (run.apiProfileKey === "official") {
             fetchOauthUsage()
               .then((u) => setOauthUsage(u))
               .catch(() => {
@@ -2067,7 +2279,6 @@ export default function App() {
               apiConnectionProfileKey: run.apiProfileKey,
               apiLaunchProfileKey: run.apiLaunchProfileKey
             }
-            if (run.reviewDiffs.length > 0) patch.reviewDiffs = run.reviewDiffs
             if (run.permissionModeSource === "session") {
               patch.permissionMode = run.permissionMode
             }
@@ -2095,12 +2306,14 @@ export default function App() {
       })
       run.unlisten.push(u1)
       const u2 = await listenSessionErrors(id, (line) => {
+        if (runningSessionsRef.current.get(id) !== run) return
         const ev = { type: "stderr", line } as unknown as ClaudeEvent
         applyRunningAction(run, { kind: "event", event: ev })
         reportNetworkError(run.runtimeId, "stderr", line)
       })
       run.unlisten.push(u2)
       const u3 = await listenSessionProxyStatus(id, (ev) => {
+        if (runningSessionsRef.current.get(id) !== run) return
         if (!shouldTrackProxyStatus(run.streaming, run.interrupting)) return
         run.upstreamStatus = reduceProxyStatus(run.upstreamStatus, ev, Date.now())
         setRunningTick((tick) => tick + 1)
@@ -2127,10 +2340,16 @@ export default function App() {
       await spawnSession({
         runtimeId: id,
         forkSession: !!fork,
+        fileCheckpointing: launchCapabilities.fileCheckpoints === "supported",
+        forwardSubagentText: launchCapabilities.subagentTextForwarding === "supported",
+        promptSuggestions: cfg.promptSuggestionsEnabled && launchCapabilities.promptSuggestions === "supported",
         resumeSessionAt: fork?.resumeAt,
         cwd: project.cwd,
         model,
         effort: launchEffort || null,
+        ultracode: launchCapabilities.independentUltracode === "supported" ? launchComposerPrefs.ultracode : undefined,
+        fastMode: !thirdPartyReady && launchCapabilities.headlessFastMode === "supported" ? launchComposerPrefs.fastMode : undefined,
+        modelSettings: launchCapabilities.modelSettings === "supported" ? runtimeSettingsPatch(launchComposerPrefs, {}).modelSettings : undefined,
         permissionMode: launchPermissionMode,
         resumeSessionId,
         env: Object.keys(env).length > 0 ? env : null,
@@ -2142,7 +2361,30 @@ export default function App() {
         collabEnabledProviders: enabledProviderList(collabCfg)
       })
       owner.fork = null
-      run.midTurnInput = (await claudeCapabilities(id).catch(() => null))?.midTurnInput === "supported"
+      const runtimeCapabilities = await claudeCapabilities(id).catch(() => null)
+      if (runtimeCapabilities) run.capabilities = runtimeCapabilities
+      run.midTurnInput = run.capabilities.midTurnInput === "supported"
+      if (run.capabilities.runtimeSettingsControl === "supported") {
+        let mutationStarted = false
+        try {
+          const observed = await getSessionRuntimeSettings(id)
+          if (foreground()) setGlobalDefault(await loadGlobalDefault(project.cwd, observed))
+          if (runningSessionsRef.current.get(id) === run) {
+            run.actualConfig = { ...run.actualConfig, ...observed.applied,
+              fastModeState: observed.fastModeState ?? undefined,
+              fastModeDisabledReason: observed.fastModeDisabledReason ?? undefined }
+            if (observed.applied.model && /^claude-[^\s]+$/.test(observed.applied.model)) run.canonicalModels[launchComposerPrefs.model] = observed.applied.model
+            const compactPatch = runtimeSettingsPatch(launchComposerPrefs, run.canonicalModels).modelSettings
+            if (compactPatch && run.capabilities.autoCompactWindow === "supported") {
+              mutationStarted = true
+              await applySessionRuntimeSettings(id, { modelSettings: compactPatch })
+            }
+          }
+        } catch (error) {
+          if (mutationStarted) throw error
+          console.warn("读取会话实际配置失败:", error)
+        }
+      }
       setRunningTick((tick) => tick + 1)
       if (foreground()) pendingForkRef.current = null
       if (task.controller.signal.aborted) {
@@ -2175,6 +2417,8 @@ export default function App() {
     syncRunningSessionStreaming,
     clearInterruptState,
     finishRunReview,
+    createRunReview,
+    settlePermissionRequest,
     noteCompletion,
     closeRunningSession,
     ensureSidecarApiProfile,
@@ -2308,12 +2552,23 @@ export default function App() {
       rawText: payload.text, ts: existing?.ts ?? task.createdAt, localState: task.localState, deliveryState: task.deliveryState,
       delivery: task.mode === "guide" ? "guide" as const : undefined,
       runState: task.runState, attemptId: task.attemptId, attemptIds: task.attempts.map((a) => a.id), attemptDetails: task.attempts.map((a) => ({ ...a })), inputRevision: task.inputRevision,
-      transcriptUuid: task.deliveryState === "acknowledged" || task.deliveryState === "responded" ? task.attemptId : undefined,
+      transcriptUuid: existing?.kind === "message" && existing.attemptId === task.attemptId ? existing.transcriptUuid : undefined,
       submissionTimings: { registered: task.timings.registered, saved: task.timings.saved, writeStarted: task.timings.writeStarted, written: task.timings.written, firstResponse: task.timings.firstResponse },
       submissionError: task.error, submissionPendingNames: payload.pendingNames
     }
     const pending = task.queuedBehindTurn && task.timings.writeStarted === undefined
-    if (run) applyRunningAction(run, { kind: "submitted_input", message, pending })
+    if (run) {
+      if (run.suggestionTurnId !== task.attemptId && task.timings.writeStarted === undefined) {
+        run.suggestionTurnId = task.attemptId
+        run.suggestionTracker.beginTurn(task.attemptId)
+        run.contextGeneration++
+        run.contextSummary = null; run.contextLoading = false
+        checkpointControllerRef.current?.invalidate("已登记新输入，请在完成后重新预览")
+      }
+      const times = task.timings
+      run.timings = Object.fromEntries(Object.entries(times).map(([key, value]) => [key, key === "registered" ? 0 : value === undefined ? undefined : Math.max(0, value - times.registered)]))
+      applyRunningAction(run, { kind: "submitted_input", message, pending })
+    }
     else {
       owner.state = reduce(owner.state, { kind: "submitted_input", message, pending })
       if (viewOwnerRef.current.key === owner.key) { stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state }) }
@@ -2330,12 +2585,22 @@ export default function App() {
     coordinatorRef.current.assertCurrent(task)
     if (currentAuthorizationRevision() !== task.context.authorizationRevision) throw new Error("授权配置已改变，请恢复原配置后重试")
     const owner = task.context.owner
-    if (currentApiLaunchProfileKey() !== task.profileRevision) throw new Error("提供商配置已改变，请恢复原配置后重试")
-    if (currentUiIntentRef.current.key === owner.key && (task.context.permissionMode !== currentUiIntentRef.current.permissionMode || !sameComposerPrefs(task.context.composerPrefs, currentUiIntentRef.current.composerPrefs))) throw new Error("模型或权限已改变，请恢复提交时的配置后重试")
-    const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
-    if (run && run.permissionMode !== task.context.permissionMode) throw new Error("此请求的权限已改变，尚未发送")
+    if (currentApiLaunchProfileKey(task.context.providerId) !== task.profileRevision) throw new Error("此提供商配置已改变，请按当前配置重试")
+    if (!task.context.allowOriginalConfiguration && currentUiIntentRef.current.key === owner.key) {
+      if (loadThirdPartyApiStore().activeProviderId !== task.context.providerId) throw new Error("提供商选择已改变，尚未发送；可按当前配置重试")
+      if (task.context.permissionMode !== currentUiIntentRef.current.permissionMode || !sameComposerPrefs(task.context.composerPrefs, currentUiIntentRef.current.composerPrefs)) throw new Error("模型或权限已改变，尚未发送；可按当前配置重试")
+    }
   }
   submissionAdapterRef.current = {
+    captureAttemptContext: (context) => ({
+      providerId: context.providerId, target: submissionTargetLabel(context), cwd: context.owner.project.cwd,
+      sessionId: context.owner.sessionId, composerPrefs: cloneComposerPrefs(context.composerPrefs),
+      sessionComposer: context.sessionComposer ? cloneComposerPrefs(context.sessionComposer) : null,
+      permissionMode: context.permissionMode, authorizationRevision: context.authorizationRevision,
+      collaborationMode: context.collaborationMode, allowOriginalConfiguration: !!context.allowOriginalConfiguration,
+      options: { mode: context.options.mode, bypassPreprocess: !!context.options.bypassPreprocess,
+        skillName: context.options.skillInvocation?.name }
+    }),
     changed: updateSubmittedMessage,
     persist: persistSubmittedInput,
     prepare: async (task) => {
@@ -2344,20 +2609,13 @@ export default function App() {
       let text = task.payloadRef.text
       const { images, documents } = task.payloadRef
       if (!options.bypassPreprocess) {
-        // 新会话尚未收到 system_init 时，CLI 上次上报或本地扫描到的命令直接交给 CLI 解析；
-        // 只有两边都不认识的命令才需要确认，避免每个新会话首条命令都弹窗。
-        let route = routeCommand(text, findSlashCommands(owner.state, installedSkillCommandsRef.current))
-        if (/^\s*\/model(?:\s|$)/.test(text)) route = (await claudeCapabilities()).headlessModelCommand === "supported" ? "cli" : "confirm_text"
+        const route = routeCommand(text, findSlashCommands(owner.state, viewOwnerRef.current.key === owner.key ? installedSkillCommandsRef.current : []))
         checkInputTarget(task)
-        if (route === "confirm_text" && task.context.approvedCommand !== text) {
-          coordinatorRef.current.status(task, "needs_confirmation")
-          if (viewOwnerRef.current.key !== owner.key) throw new Error("请回到此对话确认命令后重试")
-          const accepted = await confirmInputAction("此命令尚未确认可执行", "完整原文和附件已保留。CLI 与本地均未发现该命令，确认后将作为普通文本发送。", "作为文本发送")
-          checkInputTarget(task)
-          if (!accepted) { coordinatorRef.current.cancel(task.messageId); throw new DOMException("已取消", "AbortError") }
+        if (route === "terminal") throw new Error("此命令需要交互式终端，请在项目目录运行 Claude CLI；原文已保留，尚未发送")
+        if (route === "unconfirmed_cli" && task.context.approvedCommand !== text) {
           task.context.approvedCommand = text
+          toast.info("命令将原样交给 CLI", { description: "当前会话尚未列出该命令；部分 CLI 版本可能按普通模型请求处理并产生用量。" })
         }
-        if (route === "confirm_text") text = `用户提供的普通文本：\n${text}`
         if (task.context.collaborationMode) {
           const cfg = loadCollabSettings()
           if (!cfg.enabled) throw new Error("请先启用协同配置后重试")
@@ -2395,19 +2653,28 @@ export default function App() {
       const owner = task.context.owner
       const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
       if (!run) throw Object.assign(new Error("会话已结束"), { deliveryCertainty: "not_sent" })
+      if (run.apiLaunchProfileKey !== task.profileRevision || run.launchPermissionMode !== task.context.permissionMode
+        || !sameComposerPrefs(run.launchComposerPrefs, task.context.composerPrefs)) throw Object.assign(new Error("运行会话配置与本次尝试不一致，尚未发送"), { deliveryCertainty: "not_sent" })
+      await run.configurationUpdate?.catch(() => {})
       // A result can arrive while prepare/persist is awaiting. Re-establish a
       // baseline after that result's review settles before writing the next turn.
       try {
         await coordinatorRef.current.waitForSettlement(owner.key)
         await beginRunReview(run)
         checkInputTarget(task)
+        if (runningSessionsRef.current.get(run.runtimeId) !== run || run.launchPermissionMode !== task.context.permissionMode
+          || !sameComposerPrefs(run.launchComposerPrefs, task.context.composerPrefs)) throw new Error("运行会话配置已变化，尚未发送")
         if (run.interrupting) throw new Error("正在停止，尚未发送")
       } catch (error) { throw Object.assign(new Error(String(error)), { deliveryCertainty: "not_sent" }) }
       const guiding = task.mode === "guide" && run.streaming
       if (guiding && !run.midTurnInput) throw Object.assign(new Error("当前会话不支持引导"), { deliveryCertainty: "not_sent" })
       const blocks = task.context.cliBlocks!
-      rememberSentInput({ localId: task.messageId, ...task.payloadRef, cliBlocks: blocks, ts: task.createdAt })
-      if (!guiding) run.activeInputId = task.messageId
+      rememberSentInput({ localId: task.messageId, attemptId: task.attemptId, cwd: owner.project.cwd,
+        conversationKey: owner.key, sessionId: owner.sessionId, ts: task.createdAt })
+      run.contextGeneration++; run.contextSummary = null; run.contextLoading = false
+      checkpointControllerRef.current?.invalidate("新的回合已开始，请重新预览")
+      if (/^\s*\/compact(?:\s|$)/.test(task.payloadRef.text)) run.compacting = true
+      if (!guiding) { run.activeInputId = task.messageId; run.phase = { kind: "starting", since: Date.now() } }
       setRunningSessionTurnActive(run, true)
       try { await sendCliInput(run.runtimeId, blocks, undefined, task.attemptId, guiding) }
       catch (error) {
@@ -2416,7 +2683,7 @@ export default function App() {
           run.activeInputId = null; setRunningSessionTurnActive(run, false)
           // Uncertain writes may have side effects; preserve and settle their baseline.
           if ((error as { deliveryCertainty?: string })?.deliveryCertainty === "not_sent") await discardRunReview(run)
-          else await finishRunReview(run)
+          else await discardRunReview(run, true)
         }
         throw error
       }
@@ -2424,6 +2691,18 @@ export default function App() {
     settled: (task) => {
       if (task.deliveryState === "acknowledged" || task.deliveryState === "responded") void removeOutbox(task.messageId).catch(console.warn)
       else void updateOutboxState(task.messageId, task.deliveryState, task.attemptId).catch(console.warn)
+    },
+    archived: () => pruneClosedConversationOwners(),
+    restorePayload: async (id) => {
+      const receipt = sentInputsRef.current.get(id)
+      const archive = coordinatorRef.current.archivedInputs.get(id)
+      const owner = ownersRef.current.get(receipt?.conversationKey ?? archive?.conversationKey ?? "")
+      const entry = (owner?.state ?? stateRef.current).entries.find((item) => item.kind === "message" && item.id === id)
+      const sid = receipt?.sessionId ?? owner?.sessionId ?? selectedSessionIdRef.current
+      const cwd = receipt?.cwd ?? owner?.project.cwd ?? project?.cwd
+      if (!cwd || !sid || entry?.kind !== "message") return undefined
+      const events = await readSessionTranscript(cwd, sid)
+      return retryInputFromTranscript(events.find((event) => (event as { uuid?: string }).uuid === (entry.transcriptUuid ?? receipt?.attemptId ?? archive?.attemptId ?? id)), entry) ?? undefined
     }
   }
 
@@ -2467,7 +2746,7 @@ export default function App() {
       const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
       if (run?.streaming && (!run.midTurnInput || run.interrupting)) { toast.info("当前会话暂不能引导，请使用排队发送"); return { kind: "rejected", reason: "引导不可用" } }
     }
-    return coordinatorRef.current.submit({ conversationKey: key, mode: options.mode, context: { owner, options, collaborationMode, authorizationRevision: currentAuthorizationRevision(), composerPrefs: { ...composerPrefs }, sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
+    return coordinatorRef.current.submit({ conversationKey: key, mode: options.mode, context: { providerId: loadThirdPartyApiStore().activeProviderId, owner, options: { ...options }, collaborationMode, authorizationRevision: currentAuthorizationRevision(), composerPrefs: cloneComposerPrefs(composerPrefs), sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
       profileRevision: currentApiLaunchProfileKey(), sourceDraftRevision: options.sourceDraftRevision ?? 0, draftKey: options.draftKey })
   }, [project, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer, planMode, sessionPermissionMode, collaborationMode, applyDefaultPermissionModeState, closeRunningSession])
 
@@ -2477,43 +2756,80 @@ export default function App() {
     const index = entries.findIndex((e) => e.kind === "message" && e.id === task.messageId)
     return entries.slice(index + 1).some((e) => e.kind === "message" && (e.role === "assistant" || e.role === "user" && ["acknowledged", "responded", "awaiting_ack", "writing", "delivery_unknown"].includes(e.deliveryState ?? "")))
   }
+  const selectedRetryContext = (task: SubmittedInput<InputContext>, selection: "current" | "original"): InputContext | undefined => {
+    if (selection === "current" && viewOwnerRef.current.key !== task.conversationKey) {
+      toast.warning("请回到此对话后选择发送配置")
+      return undefined
+    }
+    if (selection === "original" && (currentApiLaunchProfileKey(task.context.providerId) !== task.profileRevision
+      || currentAuthorizationRevision() !== task.context.authorizationRevision)) {
+      toast.warning("原提供商或授权配置已更改，无法恢复；请按当前配置重试")
+      return undefined
+    }
+    return {
+      ...task.context, approvedCommand: undefined, cliBlocks: undefined,
+      options: { ...task.context.options, cliBlocks: undefined, payload: undefined },
+      providerId: selection === "current" ? loadThirdPartyApiStore().activeProviderId : task.context.providerId,
+      composerPrefs: cloneComposerPrefs(selection === "current" ? currentUiIntentRef.current.composerPrefs : task.context.composerPrefs),
+      sessionComposer: selection === "current" ? sessionComposerRef.current : task.context.sessionComposer,
+      permissionMode: selection === "current" ? currentUiIntentRef.current.permissionMode : task.context.permissionMode,
+      authorizationRevision: currentAuthorizationRevision(), allowOriginalConfiguration: selection === "original"
+    }
+  }
+  const retrySubmittedInput = async (task: SubmittedInput<InputContext>, selection: "current" | "original", payload?: InputPayload) => {
+    const context = selectedRetryContext(task, selection)
+    if (!context) return
+    const profileRevision = currentApiLaunchProfileKey(context.providerId)
+    const targetChanged = context.providerId !== task.context.providerId || profileRevision !== task.profileRevision
+      || context.permissionMode !== task.context.permissionMode
+    if (targetChanged && !(await confirmInputAction("按当前配置重试", `尚未发送的原文与附件将发送到：\n${submissionTargetLabel(context)}`, "按此配置重试"))) return
+    // The choice must remain the same across the optional target confirmation.
+    if (viewOwnerRef.current.key !== task.conversationKey || currentApiLaunchProfileKey(context.providerId) !== profileRevision) return
+    coordinatorRef.current.retryWithContext(task.messageId, { context, profileRevision, payload })
+  }
   const editSubmittedMessage = async (id: string, payload: InputPayload) => {
     const task = coordinatorRef.current.tasks.get(id)
     if (!task) return
     const edited = { text: payload.text, images: payload.images, documents: payload.documents }
     if (hasLaterExecution(task)) {
       if (!(await confirmInputAction("编辑内容作为新请求", "后续执行历史保持不变，编辑后的内容将追加为新消息；已执行的操作不会回滚。", "发送新请求"))) return
-      coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: edited, profileRevision: task.profileRevision, context: { ...task.context, options: {} } })
+      const context = selectedRetryContext(task, "current")
+      if (!context) return
+      coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: edited, profileRevision: currentApiLaunchProfileKey(context.providerId), context: { ...context, options: {} } })
       coordinatorRef.current.resume(task.conversationKey)
-    } else { task.context.options = {}; coordinatorRef.current.retry(id, edited) }
+    } else await retrySubmittedInput(task, "current", edited)
   }
 
-  const retryUserMessage = useCallback(async (messageId: string) => {
+  const retryUserMessage = useCallback(async (messageId: string, selection: "current" | "original" = "current") => {
     const task = coordinatorRef.current.tasks.get(messageId)
     if (task && hasLaterExecution(task)) {
       if (await confirmInputAction("作为新请求重新发送", "此消息之后已有执行记录。重新发送会保留原历史和文件变更，并追加一条新请求。", "发送新请求")) {
-        coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: task.payloadRef, profileRevision: task.profileRevision, context: { ...task.context } })
+        const context = selectedRetryContext(task, selection)
+        if (!context) return
+        coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: task.payloadRef, profileRevision: currentApiLaunchProfileKey(context.providerId), context })
         coordinatorRef.current.resume(task.conversationKey)
       }
       return
     }
-    if (task && ["failed", "cancelled", "paused", "queued"].includes(task.deliveryState)) { coordinatorRef.current.retry(messageId); return }
+    if (task && ["failed", "cancelled", "paused", "queued"].includes(task.deliveryState)) { await retrySubmittedInput(task, selection); return }
     if (task?.deliveryState === "delivery_unknown") {
-      if (await confirmInputAction("再次发送可能重复执行", "无法确定原请求是否已被接收。请先检查现有记录；再次发送会作为一条新请求保留原消息。", "再次发送")) {
-        const { payloadRef, context } = task
-        coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: payloadRef, profileRevision: task.profileRevision, context: { ...context } })
+      const context = selectedRetryContext(task, selection)
+      if (!context) return
+      if (await confirmInputAction("再次发送可能重复执行", `无法确定原请求是否已被接收。请先检查现有记录；再次发送会作为新请求保留原消息。\n发送到：${submissionTargetLabel(context)}`, "再次发送")) {
+        coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: task.payloadRef, profileRevision: currentApiLaunchProfileKey(context.providerId), context })
         coordinatorRef.current.resume(task.conversationKey)
       }
       return
     }
     const retryOwner = switchTokenRef.current
-    let item = sentInputsRef.current.get(messageId)
+    const receipt = sentInputsRef.current.get(messageId)
+    let item: RetryInput | undefined
     if (!project) return
     if (streaming) { toast.warning("请先停止当前轮次"); return }
     const sourceState = stateRef.current
     const sourceId = selectedSessionIdRef.current ?? findInitSessionId(sourceState)
     const entry = sourceState.entries.find((entry) => entry.kind === "message" && entry.id === messageId)
-    const transcriptMessageId = entry?.kind === "message" ? entry.transcriptUuid ?? messageId : messageId
+    const transcriptMessageId = entry?.kind === "message" ? entry.transcriptUuid ?? receipt?.attemptId ?? messageId : receipt?.attemptId ?? messageId
     if (!item && entry?.kind === "message" && sourceId) {
       try {
         const events = await readSessionTranscript(project.cwd, sourceId)
@@ -2652,6 +2968,8 @@ export default function App() {
       if (activeRun) {
         activeRun.permissionMode = mode
         activeRun.permissionModeSource = "session"
+        activeRun.owner.permissionMode = mode
+        activeRun.owner.permissionModeSource = "session"
       }
       writeCurrentPermissionModeSidecar(mode)
       if (changed) {
@@ -3267,6 +3585,7 @@ export default function App() {
     diffPatch?.files.length ?? 0
   )
   const slashCommands = findSlashCommands(state, installedSkillCommands)
+  const sessionInit = [...state.entries].reverse().find((entry) => entry.kind === "system_init")
   const runtimeCommandsKnown = state.entries.some((entry) => entry.kind === "system_init")
   const commandDescriptions = Object.fromEntries(slashCommands.map((command) => {
     const sources = skillPreview.filter((skill) => skill.name === command)
@@ -3274,11 +3593,52 @@ export default function App() {
     return [command, [runtimeCommandsKnown ? "当前 CLI 会话" : skillPreviewStale ? "缓存预览 · 读取失败" : "本地预览 · 待 CLI 确认", detail].filter(Boolean).join(" · ")]
   }))
   const activeRun = sessionId ? runningSessionsRef.current.get(sessionId) : undefined
+  const runtimeSummaries = useMemo<LiveRuntimeSummary[]>(() => [...runningSessionsRef.current.values()].map((run) => ({
+    runtimeId: run.runtimeId, cwd: run.project.cwd, cliFingerprint: run.commandScope.cliFingerprint,
+    provider: run.providerLabel, model: run.actualConfig.model ?? run.launchModel ?? "", effort: run.actualConfig.effort ?? run.launchComposerPrefs.effort,
+    permissionMode: run.launchPermissionMode, launchMode: "headless stream-json",
+    phase: run.pendingPermissionRequestIds.size ? { kind: "permission", since: run.permissionSince ?? run.phase.since } : run.phase,
+    reviewState: run.reviewStatus.state, reviewReason: run.reviewStatus.reason, fastModeState: run.actualConfig.fastModeState,
+    ultracode: run.actualConfig.ultracode, timings: run.timings,
+    selected: { provider: run.providerLabel, model: run.composerPrefs.model, effort: run.composerPrefs.effort,
+      permissionMode: run.permissionMode, ultracode: run.composerPrefs.ultracode, fastMode: run.composerPrefs.fastMode }
+  })), [runningTick])
+  useEffect(() => { publishLiveRuntimeSummaries(runtimeSummaries) }, [runtimeSummaries])
+  const activeRuntimeSummary = runtimeSummaries.find((summary) => summary.runtimeId === sessionId)
+  const handleRewindMessage = useCallback((message: UIMessage) => {
+    const runtimeId = activeRuntimeIdRef.current
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : undefined
+    const userMessageId = checkpointMessageId(message)
+    if (!run || !userMessageId || run.capabilities.fileCheckpoints !== "supported") return
+    void checkpointControllerRef.current?.open({ runtimeId: run.runtimeId, conversationKey: run.owner.key,
+      generation: switchTokenRef.current, userMessageId, cwd: run.project.cwd,
+      messageLabel: (message.rawText ?? message.blocks.filter((block) => block.type === "text").map((block) => block.type === "text" ? block.text : "").join("\n")).slice(0, 160) || "附件输入" })
+  }, [])
+  const refreshContextSummary = useCallback(async () => {
+    const runtimeId = activeRuntimeIdRef.current
+    const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : undefined
+    if (!run || run.streaming || run.configurationUpdate || run.pendingPermissionRequestIds.size || run.capabilities.contextUsageSummary !== "supported") return
+    const generation = ++run.contextGeneration
+    const conversationKey = viewOwnerRef.current.key
+    run.contextLoading = true; run.contextError = null; setRunningTick((tick) => tick + 1)
+    try {
+      const result = await getSessionContextUsage(run.runtimeId)
+      if (runningSessionsRef.current.get(run.runtimeId) !== run || run.contextGeneration !== generation || viewOwnerRef.current.key !== conversationKey) return
+      run.contextSummary = normalizeContextUsageSummary(result, { contextWindowKnown: run.apiProfileKey === "official" && !!result.model && /^claude-[^\s]+$/.test(result.model) })
+    } catch (error) {
+      if (runningSessionsRef.current.get(run.runtimeId) === run && run.contextGeneration === generation) run.contextError = String(error)
+    } finally {
+      if (run.contextGeneration === generation) run.contextLoading = false
+      setRunningTick((tick) => tick + 1)
+    }
+  }, [])
   const activeUpstreamStatus = activeRun?.upstreamStatus ?? null
   const activeInterrupting = activeRun?.interrupting ?? false
   const submissionActions: SubmissionActions = {
     payload: (id) => coordinatorRef.current.tasks.get(id)?.payloadRef,
     retry: retryUserMessage,
+    retryCurrent: (id) => retryUserMessage(id, "current"),
+    retryOriginal: (id) => retryUserMessage(id, "original"),
     edit: (id, payload) => { void editSubmittedMessage(id, payload) },
     cancel: (id) => coordinatorRef.current.cancel(id),
     canGuide: (id) => {
@@ -3291,7 +3651,10 @@ export default function App() {
       const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
       if (run?.midTurnInput && run.streaming && !run.interrupting) coordinatorRef.current.promote(id)
     },
-    resume: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resume(task.conversationKey) }
+    queueState: (id) => { const task = coordinatorRef.current.tasks.get(id); return task ? coordinatorRef.current.queueState(task.conversationKey) : undefined },
+    resume: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resumeQueue(task.conversationKey) },
+    resumeQueue: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resumeQueue(task.conversationKey) },
+    resumeInput: (id) => { coordinatorRef.current.resumeInput(id) }
   }
   const retryableMessageIds = useMemo(
     () => new Set([...collectFailedRetryableMessageIds(state.entries, sentInputsRef.current), ...state.entries.filter((entry) => isAuthoredUserMessage(entry) && entry.blocks.some((block) => block.type === "text" || block.type === "image" || block.type === "attachment")).map((entry) => (entry.kind === "message" ? entry.id : ""))]),
@@ -3311,12 +3674,11 @@ export default function App() {
   void titleTick
 
   const handleModelEffortChange = useCallback(
-    (next: { model?: string; effort?: string }) => {
+    (next: Partial<ComposerPrefs>) => {
       setComposerPrefs((cur) => {
-        const updated: ComposerPrefs = {
-          model: next.model !== undefined ? next.model : cur.model,
-          effort: next.effort !== undefined ? next.effort : cur.effort
-        }
+        const runtimeId = activeRuntimeIdRef.current
+        const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : undefined
+        const updated = patchComposerPrefs(cur, next, globalDefault, run?.canonicalModels)
         if (sameComposerPrefs(cur, updated)) return cur
         // 用户已显式覆盖：标记到 sessionComposer，并尝试写入当前会话的 sidecar。
         // sid 优先级：select 的会话 → reducer init 拿到的 jsonl id（spawn 后第一时间可用）。
@@ -3329,7 +3691,11 @@ export default function App() {
         if (activeRun) {
           activeRun.sessionComposer = updated
           activeRun.composerPrefs = updated
+          activeRun.owner.sessionComposer = cloneComposerPrefs(updated)
+          activeRun.owner.composerPrefs = cloneComposerPrefs(updated)
         }
+        const owner = ownersRef.current.get(viewOwnerRef.current.key)
+        if (owner) { owner.composerPrefs = cloneComposerPrefs(updated); owner.sessionComposer = cloneComposerPrefs(updated) }
         const sid = selectedSessionId ?? findInitSessionId(state)
         if (project && sid) {
           patchSessionSidecar(project.cwd, sid, { composer: updated })
@@ -3339,7 +3705,7 @@ export default function App() {
         return updated
       })
     },
-    [project, selectedSessionId, state, refreshActiveComposerRuntime]
+    [project, selectedSessionId, state, refreshActiveComposerRuntime, globalDefault]
   )
 
   const thirdPartyApiConfig = useMemo(
@@ -3466,6 +3832,7 @@ export default function App() {
               <Suspense fallback={<PaneLoader label="正在加载插件…" />}>
                 <PluginsView
                   cwd={project?.cwd ?? null}
+                  sessionPlugins={sessionInit?.plugins}
                   onBack={returnToChat}
                   onSkillsChanged={applyInstalledSkills}
                 />
@@ -3555,6 +3922,7 @@ export default function App() {
                 </div>
               ) : (
                 <Suspense fallback={<PaneLoader label="正在加载会话…" />}>
+                  <MarkdownCommandsContext.Provider value={slashCommands}>
                   <MessageStream
                     onOpenPermissions={() => openSettings("config")}
                     key={`stream-${activeConversationKey}`}
@@ -3565,12 +3933,14 @@ export default function App() {
                     onShowDiff={openReviewDiff}
                     retryableMessageIds={retryableMessageIds}
                     onRetryMessage={retryUserMessage}
+                    onRewindMessage={activeRun?.capabilities.fileCheckpoints === "supported" && !streaming && !activeRun.configurationUpdate ? handleRewindMessage : undefined}
                     submissionActions={submissionActions}
                     slashCommands={slashCommands}
                     pendingSubagentCount={activeRunningSubagentCount}
                     subagents={activeSubagents}
                     onOpenSubagent={(agentId) => openSubagents(agentId)}
                   />
+                  </MarkdownCommandsContext.Provider>
                 </Suspense>
               )}
               {/* Keep one Composer mounted when the first event replaces the welcome view. */}
@@ -3596,6 +3966,7 @@ export default function App() {
                   </div>
                 )}
                 <div className="shrink-0 bg-background px-6 pt-2 empty:hidden">
+                  {activeRuntimeSummary && <RuntimeStatus summary={activeRuntimeSummary} />}
                   <Suspense fallback={null}>
                     <RunStatusStrip
                       entries={state.entries}
@@ -3608,6 +3979,23 @@ export default function App() {
                 </div>
                 <div className={cn(empty && "px-6 pb-6 pt-2")}>
                   <div className={cn(empty && "mx-auto max-w-3xl space-y-2 xl:max-w-4xl 2xl:max-w-5xl")}>
+                {activeRun && <AgentFeaturesPanel
+                  suggestion={activeRun.suggestionTracker.current}
+                  onInsertSuggestion={(text) => {
+                    if (activeRuntimeIdRef.current !== activeRun.runtimeId || viewOwnerRef.current.key !== activeRun.owner.key
+                      || activeRun.suggestionTracker.current?.text !== text) return
+                    const current = activeComposerDraftKey ? composerDraftsRef.current.get(activeComposerDraftKey) : undefined
+                    setDraft(appendPromptSuggestionToDraft(current?.text ?? "", text))
+                    activeRun.suggestionTracker.dismiss(); setRunningTick((tick) => tick + 1)
+                  }}
+                  onDismissSuggestion={() => { activeRun.suggestionTracker.dismiss(); setRunningTick((tick) => tick + 1) }}
+                  context={activeRun.contextSummary} contextCapability={activeRun.capabilities.contextUsageSummary}
+                  contextLoading={activeRun.contextLoading} contextError={activeRun.contextError} onRefreshContext={() => { void refreshContextSummary() }}
+                  compactBoundary={activeRun.compactBoundary} compactSupported={runtimeCommandsKnown && slashCommands.includes("compact")}
+                  compacting={activeRun.compacting} busy={streaming || !!activeRun.configurationUpdate || !!activeRun.pendingPermissionRequestIds.size
+                    || [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === activeConversationKey && isActiveInput(task))}
+                  onCompact={(raw) => { void send(raw, [], []) }} onOpenHistory={() => { setShowHistory(true) }}
+                />}
                 <InputRecovery centered={empty} cwd={project?.cwd} liveMessageIds={[...coordinatorRef.current.tasks.keys()]} activeRuntimeIds={[...runningSessionsRef.current.keys()]} onRestore={(input) => {
                   const current = activeComposerDraft
                   setDraft([current?.text, input.text].filter(Boolean).join("\n\n"))
@@ -3650,13 +4038,26 @@ export default function App() {
                     oauthUsage={oauthUsage}
                     model={composerPrefs.model}
                     effort={composerPrefs.effort}
+                    ultracode={composerPrefs.ultracode}
+                    fastMode={composerPrefs.fastMode}
+                    autoCompactWindow={composerPrefs.autoCompactWindow}
+                    modelEfforts={composerPrefs.modelEfforts}
+                    canonicalModels={activeRun?.canonicalModels}
+                    actualConfig={activeRun?.actualConfig}
+                    configurationPending={!!activeRun && (!!activeRun.configurationUpdate || !sameComposerPrefs(composerPrefs, activeRun.launchComposerPrefs))}
+                    featureCapabilities={{
+                      independentUltracode: activeRun?.capabilities.independentUltracode === "supported",
+                      fastMode: !thirdPartyApiConfig.enabled && activeRun?.capabilities.headlessFastMode === "supported",
+                      autoCompactWindow: activeRun?.capabilities.autoCompactWindow === "supported",
+                      reason: thirdPartyApiConfig.enabled ? "第三方提供商未认证 Fast" : "需要当前 CLI 的已确认能力"
+                    }}
                     onModelEffortChange={handleModelEffortChange}
                     modelOptions={modelOptions}
                     restrictModelOptions={thirdPartyApiConfig.enabled}
                     availableEffortLevels={effortLevels}
                     openaiCompatibleProvider={openaiCompatibleProvider}
                     globalDefault={globalDefault}
-                    sessionPrefs={sessionComposer}
+                    sessionPrefs={composerPrefs}
                   />
                 </Suspense>
                     {empty && project && (
@@ -3831,7 +4232,8 @@ export default function App() {
           <Suspense fallback={null}>
             <UserInputDialog
               request={activeUserInputRequest}
-              onSettled={settlePermissionRequest}
+              canSettle={() => !!activeUserInputRequest && permissionReceiptsRef.current.isPending(activeUserInputRequest.session_id, activeUserInputRequest.request_id)}
+              onSettled={(id) => activeUserInputRequest && settlePermissionRequest(activeUserInputRequest.session_id, id)}
             />
           </Suspense>
         )}
@@ -3846,10 +4248,12 @@ export default function App() {
           <Suspense fallback={null}>
             <PermissionDialog
               request={activeToolPermissionRequest}
-              onSettled={settlePermissionRequest}
+              canSettle={() => !!activeToolPermissionRequest && permissionReceiptsRef.current.isPending(activeToolPermissionRequest.session_id, activeToolPermissionRequest.request_id)}
+              onSettled={(id) => activeToolPermissionRequest && settlePermissionRequest(activeToolPermissionRequest.session_id, id)}
             />
           </Suspense>
         )}
+        <CheckpointRewindDialog controller={checkpointControllerRef.current} />
         <Toaster />
       </>
     </TooltipProvider>

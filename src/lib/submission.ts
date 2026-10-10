@@ -12,8 +12,17 @@ export type RunState = "idle" | "running" | "cancelling" | "cancelled" | "done" 
 export function eventInputIds(event: unknown): string[] | undefined {
   if (!event || typeof event !== "object") return undefined
   const value = event as { user_message_uuids?: unknown; user_message_uuid?: unknown }
-  if (Array.isArray(value.user_message_uuids)) return value.user_message_uuids.filter((id): id is string => typeof id === "string")
-  return typeof value.user_message_uuid === "string" ? [value.user_message_uuid] : undefined
+  const valid = (id: unknown): id is string => typeof id === "string" && id.length > 0
+    && new TextEncoder().encode(id).length <= 256
+  // The array is authoritative when present. Partial validation could settle
+  // an input that the backend's conservative activity tracker keeps unresolved.
+  // [] means no trusted attribution; undefined alone permits legacy FIFO fallback.
+  if (Object.hasOwn(value, "user_message_uuids")) {
+    const ids = value.user_message_uuids
+    return Array.isArray(ids) && ids.length <= 64 && ids.every(valid) ? ids : []
+  }
+  if (Object.hasOwn(value, "user_message_uuid")) return valid(value.user_message_uuid) ? [value.user_message_uuid] : []
+  return undefined
 }
 export type DeliveryState = "preparing" | "needs_confirmation" | "paused" | "cancelled" | "queued" | "writing" | "awaiting_ack" | "acknowledged" | "responded" | "failed" | "delivery_unknown"
 

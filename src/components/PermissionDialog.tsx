@@ -27,10 +27,14 @@ import {
 interface Props {
   request: PermissionRequestPayload | null
   onSettled: (requestId: string) => void
+  canSettle?: () => boolean
 }
 
-export function PermissionDialog({ request, onSettled }: Props) {
+export function PermissionDialog({ request, onSettled, canSettle }: Props) {
   const [busy, setBusy] = useState(false)
+  const replyingRef = useRef(false)
+  const activeRequestRef = useRef(request)
+  activeRequestRef.current = request
   const contentRef = useRef<HTMLDivElement | null>(null)
   const addRulesSuggestion = useMemo(
     () => firstAddRulesSuggestion(request),
@@ -51,10 +55,12 @@ export function PermissionDialog({ request, onSettled }: Props) {
 
   useEffect(() => {
     setBusy(false)
-  }, [request?.request_id])
+    replyingRef.current = false
+  }, [request?.session_id, request?.request_id])
 
   const settle = async (response: Record<string, unknown>) => {
-    if (!request || busy) return
+    if (!request || busy || replyingRef.current || canSettle?.() === false) return
+    replyingRef.current = true
     setBusy(true)
     try {
       await resolvePermissionRequest({
@@ -66,7 +72,10 @@ export function PermissionDialog({ request, onSettled }: Props) {
       onSettled(request.request_id)
     } catch (e) {
       toast.error(`权限响应失败: ${String(e)}`)
-      setBusy(false)
+      if (activeRequestRef.current?.session_id === request.session_id && activeRequestRef.current?.request_id === request.request_id) {
+        replyingRef.current = false
+        setBusy(false)
+      }
     }
   }
 
@@ -238,7 +247,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  if (!request) return
+                  if (!request || busy || replyingRef.current || canSettle?.() === false) return
                   try {
                     const rule = rememberCategoryPermissionRequest(request)
                     toast.success(`已记住此项目下的分类规则: ${rule.label}`)
@@ -257,7 +266,7 @@ export function PermissionDialog({ request, onSettled }: Props) {
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  if (!request) return
+                  if (!request || busy || replyingRef.current || canSettle?.() === false) return
                   try {
                     rememberExactPermissionRequest(request)
                     toast.success("已记录此项目下该命令")

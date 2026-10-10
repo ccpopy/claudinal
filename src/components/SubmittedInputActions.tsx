@@ -27,7 +27,7 @@ import {
 } from "@/lib/inputAttachments"
 import { formatBytes, SUPPORTED_ATTACHMENT_ACCEPT } from "@/lib/fileAttachments"
 import type { UIMessage } from "@/types/ui"
-import type { InputPayload } from "@/lib/submissionCoordinator"
+import type { InputPayload, SubmissionQueueState } from "@/lib/submissionCoordinator"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -41,9 +41,14 @@ import { AttachmentChip } from "./composer/AttachmentChip"
 export interface SubmissionActions {
   payload(id: string): InputPayload | undefined
   retry(id: string): void | Promise<void>
+  retryCurrent?(id: string): void | Promise<void>
+  retryOriginal?(id: string): void | Promise<void>
   edit(id: string, payload: InputPayload): void
   cancel(id: string): void
   resume(id: string): void
+  resumeQueue?(id: string): void
+  resumeInput?(id: string): void
+  queueState?(id: string): SubmissionQueueState | undefined
   canGuide?(id: string): boolean
   guide?(id: string): void
 }
@@ -57,7 +62,7 @@ interface SubmissionStatus {
 }
 
 /** 需要用户处理的投递状态才出现操作行；正常送达不打扰。 */
-function submissionStatus(message: UIMessage): SubmissionStatus | null {
+function submissionStatus(message: UIMessage, queue?: SubmissionQueueState): SubmissionStatus | null {
   const state = message.deliveryState
   if (message.localState === "save_failed") {
     return {
@@ -70,7 +75,13 @@ function submissionStatus(message: UIMessage): SubmissionStatus | null {
   if (state === "failed") return { icon: CircleAlert, tone: "error", text: "未能发送" }
   if (state === "cancelled") return { icon: CircleStop, tone: "muted", text: "已取消，尚未发送" }
   if (state === "queued") return { icon: Clock, tone: "muted", text: message.delivery === "guide" ? "引导准备中，即将提交" : "排队中，本轮结束后发送" }
-  if (state === "paused") return { icon: Clock, tone: "muted", text: "等待处理上一条" }
+  if (state === "paused") return { icon: Clock, tone: "muted", text: ({
+    not_sent: "上一条尚未发送，队列暂停",
+    needs_decision: "等待处理阻塞项，队列暂停",
+    delivery_unknown: "上一条接收状态未知，队列暂停",
+    connection_lost: "CLI 连接已结束，队列暂停",
+    user_stop: "用户已停止，队列暂停"
+  })[queue?.reason ?? "needs_decision"] }
   if (message.submissionError) return { icon: CircleAlert, tone: "error", text: "未能发送" }
   return null
 }
@@ -87,6 +98,11 @@ export function canEditSubmission(message: UIMessage): boolean {
 
 const actionClass = "h-7 gap-1 rounded-md px-2 text-xs font-normal text-muted-foreground hover:text-foreground has-[>svg]:px-2"
 
+function attemptTarget(attempt: NonNullable<UIMessage["attemptDetails"]>[number]): string {
+  const context = attempt.configuration?.context
+  return context && typeof context === "object" && "target" in context && typeof context.target === "string" ? ` · ${context.target}` : ""
+}
+
 /**
  * 气泡下方的一行：状态说明 + 就地操作。按规范这一行始终可见，
  * 不依赖悬停；次要操作收进「更多」菜单。
@@ -102,7 +118,8 @@ export function SubmissionFooter({
 }) {
   const [details, setDetails] = useState(false)
   const payload = actions.payload(message.id)
-  const status = submissionStatus(message)
+  const queue = actions.queueState?.(message.id)
+  const status = submissionStatus(message, queue)
   if (!payload || !status) return null
   const state = message.deliveryState
   const unknown = state === "delivery_unknown"
@@ -126,10 +143,10 @@ export function SubmissionFooter({
         variant="outline"
         size="sm"
         className={cn(actionClass, "bg-background text-foreground shadow-xs")}
-        onClick={() => void actions.retry(message.id)}
+        onClick={() => void (unknown ? actions.retry(message.id) : (actions.retryCurrent ?? actions.retry)(message.id))}
       >
         <RotateCcw className="size-3.5" />
-        {unknown ? "再次发送" : "重试"}
+        {unknown ? "再次发送" : actions.retryCurrent ? "按当前配置重试" : "重试"}
       </Button>}
       {canEditSubmission(message) && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={onEdit}>
         <Pencil className="size-3.5" />
@@ -143,9 +160,13 @@ export function SubmissionFooter({
         title="改为引导，不打断正在执行的动作" onClick={() => actions.guide?.(message.id)}>
         <CornerDownRight className="size-3.5" />立即引导
       </Button>}
-      {state === "paused" && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={() => actions.resume(message.id)}>
+      {state === "paused" && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={() => (actions.resumeQueue ?? actions.resume)(message.id)}>
         <SkipForward className="size-3.5" />
-        跳过上一条
+        {queue ? `继续队列，共 ${queue.pendingCount} 条` : "继续队列"}
+      </Button>}
+      {state === "paused" && actions.resumeInput && <Button type="button" variant="ghost" size="sm" className={actionClass}
+        title="此输入将先于前面的暂停输入发送；其他输入保持暂停" onClick={() => actions.resumeInput?.(message.id)}>
+        <SkipForward className="size-3.5" />仅发送这一条
       </Button>}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -154,6 +175,9 @@ export function SubmissionFooter({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-40">
+          {retryable && !unknown && actions.retryOriginal && <DropdownMenuItem onSelect={() => void actions.retryOriginal?.(message.id)}>
+            <RotateCcw className="size-4" />按原配置重试
+          </DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => setDetails((value) => !value)}>
             <ScrollText className="size-4" />
             {details ? "收起详情" : unknown ? "查看记录" : "查看详情"}
@@ -177,8 +201,10 @@ export function SubmissionFooter({
     {details && <div className="max-h-48 w-full overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/40 px-3 py-2 text-left text-xs leading-relaxed text-muted-foreground">
       {unknown ? "管道可能已接收部分或全部请求。请检查本会话回复、工具结果及文件差异；再次发送可能重复操作。\n" : ""}
       {message.submissionError || "原文和附件由此对话保留。"}
+      {queue?.blockerId ? `\n阻塞输入：${queue.blockerId}` : ""}
+      {queue ? `\n待发送顺序：第 ${queue.pendingIds.indexOf(message.id) + 1} 条，共 ${queue.pendingCount} 条` : ""}
       {message.submissionTimings && Object.entries(message.submissionTimings).filter(([key]) => key !== "registered").map(([key, value]) => `\n${({ saved: "保存完成", writeStarted: "开始投递", written: "管道写入完成", firstResponse: "首个响应" } as Record<string, string>)[key]}：${Math.round(value - message.submissionTimings!.registered)} ms`)}
-      {`\n输入版本：${message.inputRevision ?? 1}\n尝试记录：${message.attemptDetails?.map((attempt) => `v${attempt.revision} · ${attempt.state} · ${attempt.id}${attempt.error ? ` · ${attempt.error}` : ""}`).join("\n") ?? message.attemptIds?.join("\n") ?? "历史记录"}`}
+      {`\n输入版本：${message.inputRevision ?? 1}\n尝试记录：${message.attemptDetails?.map((attempt) => `v${attempt.revision} · ${attempt.state} · ${attempt.id}${attemptTarget(attempt)}${attempt.error ? ` · ${attempt.error}` : ""}`).join("\n") ?? message.attemptIds?.join("\n") ?? "历史记录"}`}
     </div>}
   </div>
 }

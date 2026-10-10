@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactElement } from "react"
+import { useCallback, useState, type ReactElement } from "react"
 import {
   AppWindow,
   ClipboardCopy,
@@ -28,12 +28,16 @@ import {
   openPathWith,
   readTextFile,
   revealPath,
+  type LocalPathInfo,
   type PathOpenTarget
 } from "@/lib/ipc"
-import { resolveOpenablePath } from "@/lib/localPath"
+import { parseLocalFileReference, type LocalFileReference, type ReferenceSource } from "@/lib/localPath"
+import { loadLocalFileStatus, localFileUnavailableReason } from "@/lib/localFileStatus"
 
 interface Props {
-  path: string
+  path?: string
+  reference?: LocalFileReference
+  source?: ReferenceSource
   cwd?: string | null
   children: ReactElement
 }
@@ -96,7 +100,7 @@ const OPEN_TARGET_CACHE_MS = 30_000
 let openTargetCache: { targets: PathOpenTarget[]; loadedAt: number } | null = null
 let openTargetRequest: Promise<PathOpenTarget[]> | null = null
 
-function loadAvailableOpenTargets(): Promise<PathOpenTarget[]> {
+export function loadAvailableOpenTargets(): Promise<PathOpenTarget[]> {
   if (
     openTargetCache &&
     Date.now() - openTargetCache.loadedAt < OPEN_TARGET_CACHE_MS
@@ -134,29 +138,35 @@ async function runOpenAction(label: string, action: () => Promise<unknown>) {
   }
 }
 
-export function LocalFileContextMenu({ path, cwd, children }: Props) {
-  const target = resolveOpenablePath(path, cwd)
+export function LocalFileContextMenu({ path, reference, source = "explicit", cwd, children }: Props) {
+  const resolved = reference ?? (path ? parseLocalFileReference(path, { source, cwd }) : null)
+  const [status, setStatus] = useState<{ key: string; info: LocalPathInfo | null; error: string | null } | null>(null)
+  const info = status && status.key === resolved?.path ? status.info : null
+  const statusError = status && status.key === resolved?.path ? status.error : null
+  const target = info?.path ?? resolved?.path
   const [availableOpeners, setAvailableOpeners] = useState<PathOpenTarget[]>(
     () => openTargetCache?.targets ?? []
   )
   const refreshAvailableOpeners = useCallback(() => {
     void loadAvailableOpenTargets().then(setAvailableOpeners)
   }, [])
+  const refreshStatus = () => {
+    if (!resolved) return
+    const key = resolved.path
+    setStatus({ key, info: null, error: null })
+    void loadLocalFileStatus(resolved).then(
+      (info) => setStatus({ key, info, error: null }),
+      (error: unknown) => setStatus({ key, info: null, error: String(error) })
+    )
+  }
 
-  useEffect(() => {
-    let cancelled = false
-    void loadAvailableOpenTargets().then((targets) => {
-      if (!cancelled) setAvailableOpeners(targets)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  if (!target) return children
+  if (!target || !resolved) return children
 
   const openWith = (opener: PathOpenTarget, label: string) =>
-    runOpenAction(label, () => openPathWith(target, opener))
+    runOpenAction(label, () => openPathWith(target, opener, opener === "vscode" ? resolved : undefined))
+  const unavailableReason = localFileUnavailableReason(info, statusError)
+  const isDirectory = info?.kind === "directory"
+  const isAvailable = !unavailableReason
   const canOpenDefault = availableOpeners.includes("default_app")
   const canReveal = availableOpeners.includes("file_explorer")
   const openWithOptions = availableOpeners.flatMap((opener) => {
@@ -168,13 +178,18 @@ export function LocalFileContextMenu({ path, cwd, children }: Props) {
   return (
     <ContextMenu
       onOpenChange={(open) => {
-        if (open) refreshAvailableOpeners()
+        if (open) {
+          refreshAvailableOpeners()
+          refreshStatus()
+        }
       }}
     >
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent className="min-w-[220px]">
+        {unavailableReason && <div className="max-w-[280px] px-2 py-1.5 text-xs text-muted-foreground" role="status">{unavailableReason}</div>}
         {canOpenDefault && (
           <ContextMenuItem
+            disabled={!isAvailable}
             onSelect={() =>
               void runOpenAction("打开文件", async () => {
                 const result = await openPath(target)
@@ -185,22 +200,23 @@ export function LocalFileContextMenu({ path, cwd, children }: Props) {
             }
           >
             <MousePointerClick />
-            <span>打开文件</span>
+            <span>{isDirectory ? "打开目录" : "打开文件"}</span>
           </ContextMenuItem>
         )}
         {canReveal && (
           <ContextMenuItem
+            disabled={!isAvailable}
             onSelect={() =>
               void runOpenAction("在文件管理器中显示", () => revealPath(target))
             }
           >
             <FolderSearch />
-            <span>在文件管理器中显示</span>
+            <span>{isDirectory ? "在文件管理器中打开目录" : "在文件管理器中显示"}</span>
           </ContextMenuItem>
         )}
         {openWithOptions.length > 0 && (
           <ContextMenuSub>
-            <ContextMenuSubTrigger>
+            <ContextMenuSubTrigger disabled={!isAvailable}>
               <AppWindow />
               <span>打开方式</span>
             </ContextMenuSubTrigger>
@@ -223,6 +239,7 @@ export function LocalFileContextMenu({ path, cwd, children }: Props) {
           <span>复制路径</span>
         </ContextMenuItem>
         <ContextMenuItem
+          disabled={!isAvailable || isDirectory || info?.kind !== "file"}
           onSelect={() =>
             void runOpenAction("复制文件内容", async () => {
               const content = await readTextFile(target)
@@ -231,7 +248,7 @@ export function LocalFileContextMenu({ path, cwd, children }: Props) {
           }
         >
           <FileText />
-          <span>复制文件内容</span>
+          <span>{isDirectory ? "目录不支持复制文件内容" : "复制文件内容"}</span>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

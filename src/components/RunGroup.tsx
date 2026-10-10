@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, Loader2 } from "lucide-react"
 import type { SubagentTask } from "@/lib/subagents"
 import { cn, formatRunDuration } from "@/lib/utils"
 import type { UIBlock } from "@/types/ui"
+import { createFoldStateStore, FoldBody, FoldStateScope } from "@/lib/foldState"
 import { BlockView } from "./MessageBlocks"
 
 export interface RunStep {
@@ -45,6 +46,7 @@ export function RunGroup({
   onOpenSubagent
 }: Props) {
   const [open, setOpen] = useState<boolean>(running)
+  const [foldState] = useState(createFoldStateStore)
   const wasRunning = useRef<boolean>(running)
   const [, setTick] = useState(0)
 
@@ -60,23 +62,23 @@ export function RunGroup({
     return () => window.clearInterval(id)
   }, [running])
 
-  const subagentByToolUseId = new Map(
+  const subagentByToolUseId = useMemo(() => new Map(
     subagents.flatMap((agent) =>
       agent.toolUseId ? ([[agent.toolUseId, agent]] as const) : []
     )
-  )
+  ), [subagents])
   // Agent launch metadata is emitted as a tool_result immediately after the
   // Agent tool_use. Once the lifecycle is known, the named Agent link is the
   // useful representation; showing the internal metadata as another generic
   // "工具完成" row only adds noise.
-  const visibleSteps = steps.filter(
+  const visibleSteps = useMemo(() => steps.filter(
     (step) =>
       !(
         step.block.type === "tool_result" &&
         step.block.toolUseId &&
         subagentByToolUseId.has(step.block.toolUseId)
       )
-  )
+  ), [steps, subagentByToolUseId])
   const hasSteps = visibleSteps.length > 0
   if (!hasSteps && !running) return null
 
@@ -104,13 +106,7 @@ export function RunGroup({
   return (
     <div className="self-stretch flex flex-col">
       {hasSteps && (
-        <div
-          className={cn(
-            "grid transition-[grid-template-rows] duration-200 ease-out",
-            open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-          )}
-        >
-          <div className="overflow-hidden">
+        <FoldBody open={open}>
             <div
               className={cn(
                 "border-l-2 border-border/70 pl-3 ml-1 space-y-2",
@@ -122,8 +118,8 @@ export function RunGroup({
                   ? subagentByToolUseId.get(s.block.toolUseId)
                   : undefined
                 return (
+                  <FoldStateScope key={s.key} store={foldState} scope={s.key}>
                   <BlockView
-                    key={s.key}
                     role="assistant"
                     block={s.block}
                     variant="activity"
@@ -131,11 +127,11 @@ export function RunGroup({
                     subagent={subagent}
                     onOpenSubagent={onOpenSubagent}
                   />
+                  </FoldStateScope>
                 )
               })}
             </div>
-          </div>
-        </div>
+        </FoldBody>
       )}
       <div
         className={cn(

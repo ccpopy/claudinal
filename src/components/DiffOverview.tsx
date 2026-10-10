@@ -397,6 +397,7 @@ export function DiffOverview({
                     <LocalFileContextMenu
                       key={`${c.source}:${c.path}`}
                       path={c.path}
+                      source={c.source === "git" ? "git" : "tool"}
                       cwd={cwd}
                     >
                       <button
@@ -457,7 +458,7 @@ export function DiffOverview({
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2">
-                    <LocalFileContextMenu path={active.path} cwd={cwd}>
+                    <LocalFileContextMenu path={active.path} cwd={cwd} source={active.source === "git" ? "git" : "tool"}>
                       <div className="min-w-0 text-xs font-mono text-muted-foreground break-all">
                         {active.path}
                         {active.oldPath && active.oldPath !== active.path && (

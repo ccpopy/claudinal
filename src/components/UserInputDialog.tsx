@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Check, ChevronLeft, ChevronRight, CircleHelp, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -28,10 +28,14 @@ import { cn } from "@/lib/utils"
 interface Props {
   request: PermissionRequestPayload | null
   onSettled: (requestId: string) => void
+  canSettle?: () => boolean
 }
 
-export function UserInputDialog({ request, onSettled }: Props) {
+export function UserInputDialog({ request, onSettled, canSettle }: Props) {
   const [busy, setBusy] = useState(false)
+  const replyingRef = useRef(false)
+  const activeRequestRef = useRef(request)
+  activeRequestRef.current = request
   const parsed = useMemo(() => {
     if (!request) return { input: null, error: null }
     try {
@@ -52,10 +56,11 @@ export function UserInputDialog({ request, onSettled }: Props) {
 
   useEffect(() => {
     setBusy(false)
+    replyingRef.current = false
     setPage(0)
     setDirection("forward")
     setDraft(parsed.input ? initialAskUserQuestionDraft(parsed.input) : {})
-  }, [request?.request_id, parsed.input])
+  }, [request?.session_id, request?.request_id, parsed.input])
 
   const questions = parsed.input?.questions ?? []
   const total = questions.length
@@ -81,7 +86,8 @@ export function UserInputDialog({ request, onSettled }: Props) {
   }
 
   const settle = async (response: Record<string, unknown>) => {
-    if (!request || busy) return
+    if (!request || busy || replyingRef.current || canSettle?.() === false) return
+    replyingRef.current = true
     setBusy(true)
     try {
       await resolvePermissionRequest({
@@ -93,7 +99,10 @@ export function UserInputDialog({ request, onSettled }: Props) {
       onSettled(request.request_id)
     } catch (error) {
       toast.error(`用户输入响应失败: ${String(error)}`)
-      setBusy(false)
+      if (activeRequestRef.current?.session_id === request.session_id && activeRequestRef.current?.request_id === request.request_id) {
+        replyingRef.current = false
+        setBusy(false)
+      }
     }
   }
 

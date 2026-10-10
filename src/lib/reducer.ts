@@ -5,11 +5,14 @@ import { parseSkillContent, skillLoadFromEvent, SKILL_META_PROMPT_PREFIX } from 
 import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, userActivityCategory } from "./messageOrigin"
 import {
   initSubagentRegistry,
+  isForwardedSubagentEvent,
+  isSubagentLifecycleEvent,
   settleSubagentRegistryForResume,
   reduceSubagentRegistry,
   subagentCycleReadyForFinal,
   truncateSubagentRegistry,
   type SubagentRegistry,
+  type SubagentTransition,
   type SubagentResultDisposition
 } from "./subagents"
 
@@ -25,7 +28,7 @@ export interface State {
 
 export type Action =
   | { kind: "submitted_input"; message: UIMessage; pending?: boolean }
-  | { kind: "event"; event: ClaudeEvent }
+  | { kind: "event"; event: ClaudeEvent; subagentTransition?: SubagentTransition }
   | {
       kind: "user_local"
       blocks: UIBlock[]
@@ -149,7 +152,7 @@ export function reduce(state: State, action: Action): State {
       )
     }
   }
-  return reduceEvent(state, action.event)
+  return reduceEvent(state, action.event, action.subagentTransition)
 }
 
 function parseTs(ev: unknown): number {
@@ -166,16 +169,16 @@ function parseTs(ev: unknown): number {
   return Date.now()
 }
 
-function reduceEvent(state: State, ev: ClaudeEvent): State {
+function reduceEvent(state: State, ev: ClaudeEvent, transition?: SubagentTransition): State {
   if (!ev || typeof ev !== "object") return state
-  ev = markAuthoredEvent(ev, state.entries)
+  if (!isForwardedSubagentEvent(ev)) ev = markAuthoredEvent(ev, state.entries)
   const ts = parseTs(ev)
   const t = (ev as { type?: string }).type
-  const subagentTransition = reduceSubagentRegistry(state.subagents, ev)
+  const subagentTransition = transition ?? reduceSubagentRegistry(state.subagents, ev)
   if (subagentTransition.changed) {
     state = { ...state, subagents: subagentTransition.registry }
   }
-  if ((ev as Record<string, unknown>).parent_tool_use_id) return state
+  if (isForwardedSubagentEvent(ev) || isSubagentLifecycleEvent(ev)) return state
   if (t === "queue-operation") return state
   if ((ev as Record<string, unknown>).isSidechain === true) return state
   const skill = skillLoadFromEvent(ev as Record<string, unknown>, state.entries, ts)
@@ -201,7 +204,7 @@ function reduceEvent(state: State, ev: ClaudeEvent): State {
   if (isInternalGeneratedEvent(ev)) return state
   // GUI 软中断写入的 interrupt control_request 会让 CLI 在 stdout 回一条
   // control_response 回执：纯协议事件，显式忽略，避免落进 unknown 渲染脏行
-  if (t === "control_response") return state
+  if (t === "control_response" || t === "control_cancel_request") return state
 
   if (t === "system") return reduceSystem(state, ev as Record<string, unknown>, ts)
   if (t === "stream_event")
@@ -271,6 +274,7 @@ function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): St
           skills: eventStrings(ev.skills),
           slashCommands: eventStrings(ev.slash_commands),
           agents: eventStrings(ev.agents),
+          plugins: Array.isArray(ev.plugins) ? ev.plugins.flatMap((plugin: unknown) => typeof plugin === "string" ? [plugin] : plugin && typeof plugin === "object" && typeof (plugin as { name?: unknown }).name === "string" ? [(plugin as { name: string }).name] : []) : undefined,
           version: ev.claude_code_version as string | undefined,
           outputStyle: ev.output_style as string | undefined,
           apiKeySource: ev.apiKeySource as string | undefined,
@@ -530,6 +534,7 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
     kind: "message",
     id,
     role: "user",
+    transcriptUuid: uuid,
     rawText: typeof ev.claudinalAuthoredText === "string" ? ev.claudinalAuthoredText
       : typeof msg.content === "string" ? msg.content : undefined,
     blocks: messageBlocks,

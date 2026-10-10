@@ -22,6 +22,7 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { formatAttachmentType, formatBytes } from "@/lib/fileAttachments"
+import { FoldBody, FoldStateScope, useFoldOpen } from "@/lib/foldState"
 import type { SubagentTask } from "@/lib/subagents"
 import { cn } from "@/lib/utils"
 import { parseTaskNotification } from "@/lib/userMessageText"
@@ -92,7 +93,7 @@ export function BlockView({
 }
 
 function ActivityBlock({ block, cwd }: { block: UIBlock; cwd?: string | null }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useFoldOpen("activity")
   const activity = block.activity
   if (!activity) return null
   const text = activity.blocks.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n")
@@ -105,7 +106,7 @@ function ActivityBlock({ block, cwd }: { block: UIBlock; cwd?: string | null }) 
   return <ExpandableRow open={open} onToggle={() => setOpen(!open)} icon={icon}
     label={activity.label} tone={note?.outcome === "failed" ? "error" : undefined}
     meta={note?.exitCode !== undefined ? `退出码 ${note.exitCode}` : undefined}>
-    {open && <div className="max-h-80 min-w-0 space-y-2 overflow-auto rounded-md border bg-muted/40 p-3 scrollbar-thin" data-cli-activity={activity.category}>
+    <div className="max-h-80 min-w-0 space-y-2 overflow-auto rounded-md border bg-muted/40 p-3 scrollbar-thin" data-cli-activity={activity.category}>
       {note?.outputFile && <div className="flex items-start gap-2 text-muted-foreground">
         <span className="shrink-0">输出文件</span>
         <span className="min-w-0 flex-1 break-all font-mono">{note.outputFile}</span>
@@ -113,8 +114,8 @@ function ActivityBlock({ block, cwd }: { block: UIBlock; cwd?: string | null }) 
       </div>}
       {activity.blocks.map((part, i) => part.type === "text"
         ? <div key={i} className="whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">{part.text}</div>
-        : <BlockView key={i} role="assistant" block={part} imageGallery={activity.blocks} cwd={cwd} />)}
-    </div>}
+        : <FoldStateScope key={i} scope={`part-${i}`}><BlockView role="assistant" block={part} imageGallery={activity.blocks} cwd={cwd} /></FoldStateScope>)}
+    </div>
   </ExpandableRow>
 }
 
@@ -212,19 +213,19 @@ function TextBlock({
 }
 
 function SkillLoadBlock({ block }: { block: UIBlock }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useFoldOpen("skill")
   const skill = block.skill
   if (!skill) return null
   return <ExpandableRow open={open} onToggle={() => setOpen(!open)} icon={BookOpen} label={`加载 ${skill.name} Skill`}>
-    {open && <div className="max-h-80 min-w-0 overflow-auto rounded-lg border bg-muted/30 p-3 scrollbar-thin">
+    <div className="max-h-80 min-w-0 overflow-auto rounded-lg border bg-muted/30 p-3 scrollbar-thin">
       <div className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{skill.directory}</div>
       <AssistantMarkdown text={skill.content} cwd={skill.directory} variant="activity" />
-    </div>}
+    </div>
   </ExpandableRow>
 }
 
 function ThinkingBlock({ block }: { block: UIBlock }) {
-  const [open, setOpen] = useState(!!block.partial)
+  const [open, setOpen] = useFoldOpen("thinking", !!block.partial)
   if (!block.text && !block.partial) return null
   return (
     <ExpandableRow
@@ -431,7 +432,7 @@ function ToolUseBlock({
   subagent?: SubagentTask
   onOpenSubagent?: (agentId: string) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useFoldOpen("tool-use")
   const input = (block.toolInput as Record<string, unknown>) ?? {}
   const Icon = toolIcon(block.toolName)
   const label = toolLabel(block.toolName, input, block.partial)
@@ -598,7 +599,7 @@ interface ToolUseResult {
 }
 
 function ToolResultBlock({ block }: { block: UIBlock }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useFoldOpen("tool-result")
   const tur = block.toolUseResult as ToolUseResult | undefined
   const isError = !!block.isError
   const turType = tur?.type
@@ -698,16 +699,7 @@ export function ExpandableRow({
         {meta && <span className="text-[10px] tabular-nums opacity-70">· {meta}</span>}
         {trailing}
       </button>
-      <div
-        className={cn(
-          "grid transition-[grid-template-rows] duration-200 ease-out",
-          open ? "grid-rows-[1fr] mt-1.5" : "grid-rows-[0fr]"
-        )}
-      >
-        <div className="overflow-hidden">
-          <div className="ml-5">{children}</div>
-        </div>
-      </div>
+      <FoldBody open={open} className="mt-1.5 ml-5">{children}</FoldBody>
     </div>
   )
 }
@@ -819,7 +811,7 @@ function TerminalBlock({
 }
 
 function CollapsedOutput({ text }: { text: string }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useFoldOpen("output")
   const lines = text.split("\n")
   const PREVIEW = 8
   const truncated = lines.length > PREVIEW

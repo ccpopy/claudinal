@@ -26,6 +26,8 @@ export interface AppSettings {
   pinnedSlash: string[]
   // 会话完成通知：未在查看的会话完成时发系统通知，并在任务栏图标显示未读数
   completionNotify: boolean
+  // CLI 后续输入建议可能增加请求/用量；默认关闭，仅影响后续进程启动。
+  promptSuggestionsEnabled?: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -35,7 +37,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   permissionPromptTool: DEFAULT_PERMISSION_MCP_TOOL,
   permissionMcpConfig: DEFAULT_PERMISSION_MCP_CONFIG,
   pinnedSlash: [],
-  completionNotify: false
+  completionNotify: false,
+  promptSuggestionsEnabled: false
 }
 
 export function loadSettings(): AppSettings {
@@ -48,6 +51,7 @@ export function loadSettings(): AppSettings {
       // 字段类型护栏：旧版本 / 手改 localStorage 时可能写错
       if (!Array.isArray(merged.pinnedSlash)) merged.pinnedSlash = []
       else merged.pinnedSlash = merged.pinnedSlash.filter((s) => typeof s === "string")
+      merged.promptSuggestionsEnabled = merged.promptSuggestionsEnabled === true
       return merged
     }
   } catch {

@@ -1,5 +1,15 @@
 import type { ReviewRunDiff } from "@/lib/diff"
-import type { WorktreeDiff, WorktreeFileDiff } from "@/lib/ipc"
+import type { WorktreeFileDiff } from "@/lib/ipc"
+import type { ClaudeEvent } from "@/types/events"
+
+/** Persist the observed GUI boundary when CLI results omit wire timestamps. */
+export function stampReviewResult(event: ClaudeEvent, observedAt = Date.now()): ClaudeEvent {
+  const record = event as Record<string, unknown>
+  if (event.type !== "result") return event
+  const raw = record.timestamp ?? record.ts
+  const valid = typeof raw === "number" ? Number.isFinite(raw) : typeof raw === "string" && Number.isFinite(Date.parse(raw))
+  return valid ? event : { ...event, timestamp: new Date(observedAt).toISOString() } as ClaudeEvent
+}
 
 export function shouldSyncRunReviewToConversation(
   activeRuntimeId: string | null,
@@ -104,7 +114,7 @@ function parseReviewFileDiff(value: unknown, label: string): WorktreeFileDiff {
   }
 }
 
-function parseReviewDiff(value: unknown, label: string): WorktreeDiff {
+function parseReviewDiff(value: unknown, label: string): ReviewRunDiff["diff"] {
   const record = recordFromUnknown(value, label)
   const files = record.files
   if (!Array.isArray(files)) throw new Error(`${label}.files 必须是数组`)
@@ -112,12 +122,25 @@ function parseReviewDiff(value: unknown, label: string): WorktreeDiff {
   if (patchError != null && typeof patchError !== "string") {
     throw new Error(`${label}.patchError 必须是字符串或 null`)
   }
+  const state = ["pending", "ready", "partial", "unavailable"].includes(String(record.reviewState)) ? record.reviewState as ReviewRunDiff["diff"]["reviewState"] : undefined
+  const interrupted = state === "pending"
+  const reason = interrupted ? "上次文件审查未完成，轮次位置已保留" : optionalStringField(record, "reviewReason", label)
+  const metrics = <T,>(value: unknown, keys: string[]): T | undefined => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+    const data = value as Record<string, unknown>
+    if (!keys.every((key) => typeof data[key] === "number" && Number.isFinite(data[key]) && (data[key] as number) >= 0)) return undefined
+    return Object.fromEntries(keys.map((key) => [key, data[key]])) as T
+  }
   return {
     isRepo: booleanField(record, "isRepo", label),
     files: files.map((file, index) =>
       parseReviewFileDiff(file, `${label}.files[${index}]`)
     ),
-    patchError: patchError ?? null
+    patchError: interrupted ? reason : patchError ?? null,
+    reviewState: interrupted ? "unavailable" : state,
+    reviewReason: reason,
+    timings: metrics(record.timings, ["enumerationMs", "readMs", "hashMs", "writeMs", "totalMs", "freezeMs", "diffMs"]),
+    stats: metrics(record.stats, ["capturedFiles", "skippedFiles", "capturedBytes", "enumeratedEntries"])
   }
 }
 

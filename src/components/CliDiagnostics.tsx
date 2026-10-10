@@ -1,4 +1,7 @@
-import { useState } from "react"
+import { useState, useSyncExternalStore } from "react"
+import { liveRuntimeSnapshot, subscribeLiveRuntimeSummaries } from "@/lib/runtimeStatus"
+import { invalidateSlashCommandsCache } from "@/lib/slashCommands"
+import { AGENT_TEAMS_DIAGNOSTIC, localDaemonStatus, UNVERIFIED_LOCAL_DAEMON_STATUS, type LocalDaemonStatus } from "@/lib/localDaemon"
 import {
   claudeCapabilities, claudeInstallations, claudeRuntimeDiagnostics,
   selectClaudeInstallation, writeTextFile,
@@ -10,6 +13,7 @@ import { Button } from "./ui/button"
 import { CopyButton } from "./CopyButton"
 
 export function CliDiagnostics() {
+  const sessions = useSyncExternalStore(subscribeLiveRuntimeSummaries, liveRuntimeSnapshot, liveRuntimeSnapshot)
   const [info, setInfo] = useState<CliCapabilities | null>(null)
   const [installations, setInstallations] = useState<CliInstallations | null>(null)
   const [selectedPath, setSelectedPath] = useState("")
@@ -17,19 +21,21 @@ export function CliDiagnostics() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [previewExport, setPreviewExport] = useState(false)
+  const [daemon, setDaemon] = useState<Readonly<LocalDaemonStatus>>(UNVERIFIED_LOCAL_DAEMON_STATUS)
 
   const probe = async () => {
     setBusy(true)
     setError("")
     setPreviewExport(false)
-    const [capabilities, choices, diagnostics] = await Promise.allSettled([
-      claudeCapabilities(), claudeInstallations(), claudeRuntimeDiagnostics(),
+    const [capabilities, choices, diagnostics, daemonGate] = await Promise.allSettled([
+      claudeCapabilities(), claudeInstallations(), claudeRuntimeDiagnostics(), localDaemonStatus(),
     ])
     setInfo(capabilities.status === "fulfilled" ? capabilities.value : null)
     setTimeline(diagnostics.status === "fulfilled" ? diagnostics.value : null)
     setInstallations(choices.status === "fulfilled" ? choices.value : null)
+    setDaemon(daemonGate.status === "fulfilled" ? daemonGate.value : UNVERIFIED_LOCAL_DAEMON_STATUS)
     if (choices.status === "fulfilled") setSelectedPath(choices.value.selectedPath ?? "")
-    setError([capabilities, choices, diagnostics]
+    setError([capabilities, choices, diagnostics, daemonGate]
       .filter((result) => result.status === "rejected")
       .map((result) => String(result.reason)).join("；"))
     setBusy(false)
@@ -40,6 +46,7 @@ export function CliDiagnostics() {
     setError("")
     try {
       await selectClaudeInstallation(path)
+      invalidateSlashCommandsCache()
       window.dispatchEvent(new Event("claudinal:cli-installation-changed"))
       toast.success("CLI 选择已保存，下次启动进程时生效")
       await probe()
@@ -51,7 +58,7 @@ export function CliDiagnostics() {
   }
 
   const labels = { supported: "支持", unsupported: "不支持", unknown: "待确认" }
-  const exportText = JSON.stringify({ capabilities: info, runtime: timeline }, null, 2)
+  const exportText = JSON.stringify({ capabilities: info, runtime: timeline, sessions, localDaemon: daemon, agentTeams: AGENT_TEAMS_DIAGNOSTIC }, null, 2)
   const exportSummary = async () => {
     try {
       const path = await save({ defaultPath: "claudinal-diagnostics.json", filters: [{ name: "JSON", extensions: ["json"] }] })
@@ -69,7 +76,23 @@ export function CliDiagnostics() {
     <div className="mt-3 space-y-2">
       <Button variant="outline" size="sm" disabled={busy} onClick={() => void probe()}>{busy ? "检测中…" : "检测实际 CLI"}</Button>
       <p className="text-xs text-muted-foreground">仅读取版本和帮助信息。诊断包含安装路径及本次应用运行的最近 500 条状态记录，不包含消息、凭据或 stderr 原文。</p>
+      <div className="space-y-2 rounded border p-2 text-xs" data-local-daemon-isolation={daemon.isolation}>
+        <p>外部后台任务：隔离待验证，未启用查询</p>
+        <p className="text-muted-foreground">{daemon.reason}</p>
+        <div className="flex items-center gap-2"><code className="min-w-0 flex-1 break-all">{daemon.officialTasksCommand}</code>
+          <CopyButton text={daemon.officialTasksCommand} ariaLabel="复制官方任务查询命令" label="命令已复制" /></div>
+        <div className="flex items-center gap-2"><code className="min-w-0 flex-1 break-all">{daemon.officialLogsCommand}</code>
+          <CopyButton text={daemon.officialLogsCommand} ariaLabel="复制官方日志查询命令" label="命令已复制" /></div>
+        <p className="text-muted-foreground">以上命令需在已确认配置的官方 CLI 中手动运行。--bg 与 -p/--print 不兼容，不能附加到应用现有的 headless 会话。</p>
+      </div>
+      <p className="text-xs text-muted-foreground" data-agent-teams-diagnostic>{AGENT_TEAMS_DIAGNOSTIC}</p>
       {error && <p role="alert" className="text-destructive">{error}</p>}
+      {sessions.map((session) => <div key={session.runtimeId} className="rounded border p-2 text-xs">
+        <p className="break-all">{session.cwd} · {session.launchMode}</p>
+        <p>当前进程：{session.provider} · {session.model || "CLI 默认"} · effort {session.effort || "待确认"} · {session.permissionMode}</p>
+        {session.selected && <p>后续输入选择：{session.selected.provider} · {session.selected.model || "CLI 默认"} · effort {session.selected.effort || "自动"} · {session.selected.permissionMode}</p>}
+        <p>审查：{session.reviewState}；CLI 指纹：{session.cliFingerprint}</p>
+      </div>)}
       {installations && <div className="space-y-2">
         <label className="block text-xs" htmlFor="cli-installation">CLI 安装项</label>
         <select id="cli-installation" className="w-full min-w-0 rounded border bg-background p-2 text-xs" value={selectedPath}

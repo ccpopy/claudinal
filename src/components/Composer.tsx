@@ -76,7 +76,7 @@ import {
   type OauthUsage,
   type OauthUsageWindow
 } from "@/lib/ipc"
-import type { ComposerPrefs } from "@/lib/composerPrefs"
+import type { AutoCompactWindow, ComposerFeatureCapabilities, ComposerModelCapabilities, ComposerPrefs, ComposerRuntimeConfig } from "@/lib/composerPrefs"
 import type { AppSettings } from "@/lib/settings"
 import { listInstalledPlugins, type InstalledPlugin } from "@/lib/plugins"
 import { loadSettings } from "@/lib/settings"
@@ -139,7 +139,16 @@ interface Props {
   oauthUsage?: OauthUsage | null
   model?: string
   effort?: string
-  onModelEffortChange?: (next: { model?: string; effort?: string }) => void
+  ultracode?: boolean
+  fastMode?: boolean
+  autoCompactWindow?: AutoCompactWindow
+  modelEfforts?: Record<string, string>
+  canonicalModels?: Readonly<Record<string, string>>
+  modelCapabilities?: Readonly<Record<string, ComposerModelCapabilities>>
+  actualConfig?: ComposerRuntimeConfig | null
+  featureCapabilities?: ComposerFeatureCapabilities
+  configurationPending?: boolean
+  onModelEffortChange?: (next: Partial<ComposerPrefs>) => void
   modelOptions?: Array<{ value: string; label?: string }>
   restrictModelOptions?: boolean
   availableEffortLevels?: string[]
@@ -192,6 +201,15 @@ function ComposerEditor({
   oauthUsage,
   model = "",
   effort = "",
+  ultracode = false,
+  fastMode = false,
+  autoCompactWindow,
+  modelEfforts,
+  canonicalModels,
+  modelCapabilities,
+  actualConfig,
+  featureCapabilities,
+  configurationPending,
   onModelEffortChange,
   modelOptions,
   restrictModelOptions = false,
@@ -990,6 +1008,15 @@ function ComposerEditor({
                 <ModelEffortPicker
                   model={model}
                   effort={effort}
+                  ultracode={ultracode}
+                  fastMode={fastMode}
+                  autoCompactWindow={autoCompactWindow}
+                  modelEfforts={modelEfforts}
+                  canonicalModels={canonicalModels}
+                  modelCapabilities={modelCapabilities}
+                  actualConfig={actualConfig}
+                  featureCapabilities={featureCapabilities}
+                  configurationPending={configurationPending}
                   onChange={onModelEffortChange}
                   modelOptions={modelOptions}
                   restrictModelOptions={restrictModelOptions}
