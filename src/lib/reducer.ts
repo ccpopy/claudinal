@@ -1,5 +1,6 @@
 import type { ClaudeEvent, ContentBlock } from "../types/events"
 import type { UIBlock, UIEntry, UIMessage } from "../types/ui"
+import { decodeCliCommandEnvelope } from "./commandRegistry"
 import { splitUploadedFileText } from "./fileAttachments"
 import { parseSkillContent, skillLoadFromEvent, SKILL_META_PROMPT_PREFIX } from "./skillContent"
 import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, userActivityCategory } from "./messageOrigin"
@@ -483,6 +484,11 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
   return { ...state, entries: [...state.entries, entry] }
 }
 
+function commandEnvelopeText(blocks: UIBlock[]): string | null {
+  const texts = blocks.filter((block) => block.type === "text")
+  return texts.length === 1 ? decodeCliCommandEnvelope(texts[0].text ?? "") : null
+}
+
 // user 事件常携带顶级 tool_use_result（结构化 file/structuredPatch/originalFile/type 等）
 // 把它附着到对应 tool_result block 上，供 UI 做 diff 渲染。
 // 同时把结束时间写回上游 assistant 消息中对应 toolUseId 的 tool_use 块（用于显示耗时）。
@@ -500,7 +506,13 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
   }
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const category = userActivityCategory(ev, state.entries, state.subagents.agents.map((agent) => agent.id))
-  const rawBlocks = convertContentBlocks(msg.content)
+  const authoredText = typeof ev.claudinalAuthoredText === "string" ? ev.claudinalAuthoredText : undefined
+  const originalBlocks = convertContentBlocks(msg.content)
+  // Decode before uploaded-file presentation can split the single CLI text block.
+  const envelope = category || authoredText !== undefined ? null : commandEnvelopeText(originalBlocks)
+  const restoredText = authoredText ?? envelope
+  const rawBlocks: UIBlock[] = restoredText == null ? originalBlocks
+    : [{ type: "text", text: restoredText }, ...originalBlocks.filter((block) => block.type !== "text")]
   const blocks = category ? rawBlocks : normalizeUserBlocks(rawBlocks)
   if (blocks.length === 0) return state
   bindImagePlaceholders(blocks)
@@ -536,8 +548,7 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
     id,
     role: "user",
     transcriptUuid: uuid,
-    rawText: typeof ev.claudinalAuthoredText === "string" ? ev.claudinalAuthoredText
-      : typeof msg.content === "string" ? msg.content : undefined,
+    rawText: restoredText ?? (typeof msg.content === "string" ? msg.content : undefined),
     blocks: messageBlocks,
     streaming: false,
     ts

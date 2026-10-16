@@ -145,8 +145,8 @@ zip 脚本使用 Cargo metadata 返回的有效 target 目录。安装器必须�
 本地构建和 zip 打包只准备产物。完成质量检查、版本一致性及产物校验后，推送和版本号一致的 tag 才会触发公开 GitHub Release：
 
 ```bash
-git tag v0.6.2
-git push origin v0.6.2
+git tag v0.6.3
+git push origin v0.6.3
 ```
 
 Workflow 会校验 `package.json` 与 `src-tauri/tauri.conf.json` 的版本号，然后在 Windows、macOS 和 Linux runner 上分别构建安装包，并上传源码包与 `SHA256SUMS.txt`。

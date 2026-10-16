@@ -268,20 +268,75 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 }
 
 fn title_candidate(s: &str, max_chars: usize) -> Option<String> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
+    // Decode before truncating: a serialized command may be longer than the
+    // title limit even when its human-readable arguments are short.
+    let decoded = decode_cli_command_envelope(s.trim());
+    plain_title_candidate(decoded.as_deref().unwrap_or(s), max_chars)
+}
+
+fn plain_title_candidate(s: &str, max_chars: usize) -> Option<String> {
+    let raw = s.trim();
+    if raw.is_empty() {
         return None;
     }
     // CLI 在 stream-json 会话里不写 ai-title，标题回落到首条用户消息；
     // 以 slash 命令开头的消息（"/frontend-design 帮我…"）剥离命令 token，让标题说人话。
     // 整条消息只有命令（"/effort"）时保留原文，避免标题变空。
-    let without_command = strip_leading_slash_command(trimmed);
+    let without_command = strip_leading_slash_command(raw);
     let candidate = if without_command.is_empty() {
-        trimmed
+        raw
     } else {
         without_command
     };
     Some(truncate_chars(candidate, max_chars))
+}
+
+/// 与前端 commandRegistry.ts::decodeCliCommandEnvelope 同一规则：只有整条消息恰为
+/// CLI 命令序列化结构（两种标签顺序、名称一致、参数可选）才解码，正文中提到标签不改写。
+fn decode_cli_command_envelope(text: &str) -> Option<String> {
+    fn tag<'a>(s: &'a str, name: &str) -> Option<(&'a str, &'a str)> {
+        let rest = s.trim_start().strip_prefix(&format!("<{name}>"))?;
+        let close = format!("</{name}>");
+        let end = rest.find(&close)?;
+        Some((&rest[..end], &rest[end + close.len()..]))
+    }
+    let (message, name, rest) = match tag(text, "command-message") {
+        Some((message, rest)) => {
+            let (name, rest) = tag(rest, "command-name")?;
+            (message, name, rest)
+        }
+        None => {
+            let (name, rest) = tag(text, "command-name")?;
+            let (message, rest) = tag(rest, "command-message")?;
+            (message, name, rest)
+        }
+    };
+    let name = name.strip_prefix('/').unwrap_or(name);
+    if message.contains(['<', '\n'])
+        || name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+    {
+        return None;
+    }
+    let message = message.trim();
+    if message.is_empty() || (message != name && !name.ends_with(&format!(":{message}"))) {
+        return None;
+    }
+    let rest = rest.trim();
+    let args = if rest.is_empty() {
+        ""
+    } else {
+        rest.strip_prefix("<command-args>")?
+            .strip_suffix("</command-args>")?
+            .trim()
+    };
+    Some(if args.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{name} {args}")
+    })
 }
 
 /// 剥离前导 slash 命令 token（"/frontend-design 帮我…" → "帮我…"）。
@@ -494,10 +549,26 @@ pub(crate) fn scan_jsonl(path: &Path) -> (usize, Option<String>, Option<String>)
         if first_user_text.is_none() && t == "user" && !internal {
             if let Some(content) = v.pointer("/message/content") {
                 if let Some(arr) = content.as_array() {
+                    // Only one original text block can be a complete command
+                    // envelope. A tag example followed by a prose block stays
+                    // literal, just like replay and retry in the frontend.
+                    let decode_command = arr
+                        .iter()
+                        .filter(|c| {
+                            c.get("type").and_then(|x| x.as_str()) == Some("text")
+                                && c.get("text").and_then(|x| x.as_str()).is_some()
+                        })
+                        .count()
+                        == 1;
                     for c in arr {
                         if c.get("type").and_then(|x| x.as_str()) == Some("text") {
                             if let Some(text) = c.get("text").and_then(|x| x.as_str()) {
-                                if let Some(title) = title_candidate(text, 120) {
+                                let title = if decode_command {
+                                    title_candidate(text, 120)
+                                } else {
+                                    plain_title_candidate(text, 120)
+                                };
+                                if let Some(title) = title {
                                     first_user_text = Some(title);
                                     break;
                                 }
@@ -1034,20 +1105,156 @@ mod tests {
     }
 
     #[test]
-    fn title_candidate_keeps_literal_command_examples() {
-        let raw = "<command-name>/effort</command-name>\n\
-            <command-message>effort</command-message>\n\
-            <command-args>max</command-args>";
+    fn title_candidate_decodes_whole_command_envelope_and_keeps_other_tags() {
+        let envelope = "<command-message>frontend-design:frontend-design</command-message>\n\
+            <command-name>/frontend-design:frontend-design</command-name>\n\
+            <command-args>帮我调整下页面样式</command-args>";
+        assert_eq!(
+            title_candidate(envelope, 120),
+            Some("帮我调整下页面样式".to_string())
+        );
+        let reversed = "<command-name>/effort</command-name>\n\
+            <command-message>effort</command-message>";
+        assert_eq!(title_candidate(reversed, 120), Some("/effort".to_string()));
+        // Prose mentioning the tags, or inconsistent names, stays literal.
+        let prose = format!("说明格式：{envelope}");
+        assert_eq!(
+            title_candidate(&prose, 120),
+            Some(truncate_chars(&prose, 120))
+        );
+        let mismatch =
+            "<command-message>model</command-message><command-name>/effort</command-name>";
+        assert_eq!(title_candidate(mismatch, 120), Some(mismatch.to_string()));
+
         let stdout = "<local-command-stdout>Set effort level to max</local-command-stdout>";
         let task = "<task-notification><summary>done</summary></task-notification>";
-
-        assert_eq!(title_candidate(raw, 120), Some(truncate_chars(raw, 120)));
         assert_eq!(title_candidate(stdout, 120), Some(stdout.to_string()));
         assert_eq!(title_candidate(task, 120), Some(task.to_string()));
         assert_eq!(
             title_candidate(" 更新 plan.md 和项目事件 ", 120),
             Some("更新 plan.md 和项目事件".to_string())
         );
+    }
+
+    #[test]
+    fn command_envelope_decoder_preserves_exact_message_boundaries() {
+        let cases = [
+            (
+                " \n<command-message>skill</command-message>\n<command-name>/plugin:skill</command-name>\n<command-args>  first\nsecond <example>value</example>  </command-args>\n",
+                Some("/plugin:skill first\nsecond <example>value</example>"),
+            ),
+            (
+                "<command-name>plugin:skill</command-name><command-message>plugin:skill</command-message><command-args> </command-args>",
+                Some("/plugin:skill"),
+            ),
+            (
+                "<command-message>effort</command-message><command-name>/effort</command-name>",
+                Some("/effort"),
+            ),
+            (
+                "<command-message></command-message><command-name>/plugin:</command-name>",
+                None,
+            ),
+            (
+                "<command-message>skill</command-message><command-name>/path/to/skill</command-name>",
+                None,
+            ),
+            (
+                "<command-message>skill</command-message><command-name>/plugin:skill!</command-name>",
+                None,
+            ),
+            (
+                "<command-message>skill</command-message><command-name>/plugin:other</command-name>",
+                None,
+            ),
+            (
+                "<command-message>skill\n</command-message><command-name>/skill</command-name>",
+                None,
+            ),
+            (
+                "<command-message>skill</command-message><command-name>/skill</command-name><command-args>unfinished",
+                None,
+            ),
+            (
+                "Example: <command-message>skill</command-message><command-name>/skill</command-name>",
+                None,
+            ),
+            (
+                "<command-message>skill</command-message><command-name>/skill</command-name> is an example",
+                None,
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                decode_cli_command_envelope(input).as_deref(),
+                expected,
+                "input: {input}"
+            );
+        }
+        // Arguments are raw CLI input, not XML: preserve tag examples in them.
+        let raw_args = "show </command-args> as an example";
+        let input = format!(
+            "<command-message>skill</command-message><command-name>/plugin:skill</command-name><command-args>{raw_args}</command-args>"
+        );
+        assert_eq!(
+            decode_cli_command_envelope(&input),
+            Some(format!("/plugin:skill {raw_args}"))
+        );
+    }
+
+    #[test]
+    fn scan_jsonl_decodes_only_a_complete_single_text_command() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-reader-command-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("command.jsonl");
+        let envelope = "<command-message>frontend-design</command-message>\n<command-name>/frontend-design:frontend-design</command-name>\n<command-args>帮我调整下页面样式</command-args>";
+        let cases = [
+            (
+                serde_json::json!(envelope),
+                "帮我调整下页面样式".to_string(),
+            ),
+            (
+                serde_json::json!([
+                    {"type": "text", "text": envelope},
+                    {"type": "image", "source": {"type": "base64", "data": "AA=="}}
+                ]),
+                "帮我调整下页面样式".to_string(),
+            ),
+            (
+                serde_json::json!([
+                    {"type": "text", "text": envelope},
+                    {"type": "text", "text": "这是标签示例，保留原文"}
+                ]),
+                truncate_chars(envelope, 120),
+            ),
+            (
+                serde_json::json!([
+                    {"type": "text", "text": ""},
+                    {"type": "text", "text": envelope}
+                ]),
+                truncate_chars(envelope, 120),
+            ),
+            (
+                serde_json::json!([
+                    {"type": "text", "text": "<command-message>effort</command-message>"},
+                    {"type": "text", "text": "<command-name>/effort</command-name>"}
+                ]),
+                "<command-message>effort</command-message>".to_string(),
+            ),
+        ];
+        for (content, expected) in cases {
+            let event = serde_json::json!({"type": "user", "message": {"content": content}});
+            std::fs::write(&path, format!("{event}\n"))?;
+            let (count, _, first_user_text) = scan_jsonl(&path);
+            assert_eq!(count, 1);
+            assert_eq!(first_user_text, Some(expected), "content: {content}");
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        Ok(())
     }
 
     #[test]

@@ -430,6 +430,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn upgraded_command_title_refreshes_without_changing_the_transcript() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-index-command-title-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("command-session.jsonl");
+        let cwd = dir.to_string_lossy().to_string();
+        let envelope = "<command-message>frontend-design</command-message>\n<command-name>/frontend-design:frontend-design</command-name>\n<command-args>调整页面</command-args>";
+        let body = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "user", "cwd": cwd, "message": {"content": envelope}}),
+            serde_json::json!({"type": "ai-title", "aiTitle": "已有自定义标题"})
+        );
+        std::fs::write(&path, &body)?;
+        let file = session_file_meta(&path)?.expect("transcript metadata");
+        let mut conn = store::test_connection()?;
+        conn.execute(
+            "INSERT INTO session_index (cwd, session_id, file_path, modified_ts, modified_millis, size_bytes, msg_count, ai_title, first_user_text) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, '已有自定义标题', ?7)",
+            params![
+                &cwd,
+                &file.id,
+                &file.file_path,
+                as_i64(file.modified_ts, "modified_ts")?,
+                as_i64(file.modified_millis, "modified_millis")?,
+                as_i64(file.size_bytes, "size_bytes")?,
+                envelope.chars().take(120).collect::<String>(),
+            ],
+        )?;
+        conn.pragma_update(None, "user_version", 6)?;
+        store::test_migrate_schema(&mut conn)?;
+        sync_global_index(
+            &mut conn,
+            &[(super::super::reader::encode_cwd(&cwd), file.clone())],
+        )?;
+        let (title, first_user_text): (String, String) = conn.query_row(
+            "SELECT ai_title, first_user_text FROM session_index WHERE session_id = ?1",
+            [&file.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(title, "已有自定义标题");
+        assert_eq!(first_user_text, "调整页面");
+        let unchanged_file = session_file_meta(&path)?.expect("unchanged transcript metadata");
+        assert_eq!(unchanged_file.modified_millis, file.modified_millis);
+        assert_eq!(unchanged_file.size_bytes, file.size_bytes);
+        assert_eq!(std::fs::read_to_string(&path)?, body);
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
     fn collect_files_filters_jsonl_by_embedded_cwd() -> Result<()> {
         let dir =
             std::env::temp_dir().join(format!("claudinal-index-cwd-filter-{}", std::process::id()));

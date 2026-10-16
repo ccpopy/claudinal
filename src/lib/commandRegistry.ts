@@ -17,3 +17,21 @@ export function routeCommand(text: string, knownCommands: readonly string[]): Co
   if (TERMINAL_COMMANDS.has(command.name)) return "terminal"
   return knownCommands.includes(command.name) ? "cli" : "unconfirmed_cli"
 }
+
+// Either tag order; groups: 1 message, 2 name | 3 name, 4 message; 5 args.
+const CLI_COMMAND_ENVELOPE = /^\s*(?:<command-message>([^<\n]*)<\/command-message>\s*<command-name>\/?([\w.:-]+)<\/command-name>|<command-name>\/?([\w.:-]+)<\/command-name>\s*<command-message>([^<\n]*)<\/command-message>)(?:\s*<command-args>([\s\S]*)<\/command-args>)?\s*$/
+
+/**
+ * The CLI persists a slash input as a command envelope. Decode only when the
+ * whole message is exactly that serialization and its name fields agree, so
+ * prose that merely mentions these tags stays literal.
+ */
+export function decodeCliCommandEnvelope(text: string): string | null {
+  const match = CLI_COMMAND_ENVELOPE.exec(text)
+  if (!match) return null
+  const message = (match[1] ?? match[4]).trim()
+  const name = match[2] ?? match[3]
+  if (!message || (message !== name && !name.endsWith(`:${message}`))) return null
+  const args = match[5]?.trim() ?? ""
+  return args ? `/${name} ${args}` : `/${name}`
+}

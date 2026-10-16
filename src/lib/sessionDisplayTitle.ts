@@ -10,6 +10,8 @@ export function cleanSessionTitleText(
 ): string | null {
   const trimmed = text?.trim() ?? ""
   if (!trimmed) return null
+  // Native indexing decodes command envelopes with full message context;
+  // a title string alone cannot distinguish a literal example from an envelope.
   // CLI 在 stream-json 会话里不写 ai-title，标题回落到首条用户消息；
   // 以 slash 命令开头的消息（"/frontend-design 帮我…"）剥离命令 token，让标题说人话。
   // 与 Rust 侧 reader.rs::title_candidate 保持一致。

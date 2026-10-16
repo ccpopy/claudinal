@@ -20,7 +20,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::app_paths::claudinal_dir;
 use crate::error::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 pub fn db_path() -> Result<PathBuf> {
     Ok(claudinal_dir()?.join("session-index-v1.sqlite3"))
@@ -275,6 +275,23 @@ fn create_or_migrate_schema(conn: &mut Connection) -> Result<()> {
         )?;
     }
 
+    if from_version < 7 {
+        // Old title candidates truncated the serialized command before it
+        // could be decoded. Refresh affected metadata even if its JSONL has
+        // not changed; a frontend-only decoder cannot repair a partial tag.
+        // This is a one-time cache invalidation, including literal examples,
+        // rather than a condition that would rescan those examples forever.
+        conn.execute_batch(
+            r#"
+            DELETE FROM session_index
+            WHERE first_user_text LIKE '<command-message>%'
+               OR first_user_text LIKE '<command-name>%'
+               OR ai_title LIKE '<command-message>%'
+               OR ai_title LIKE '<command-name>%';
+            "#,
+        )?;
+    }
+
     if from_version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -287,6 +304,11 @@ pub(super) fn test_connection() -> Result<Connection> {
     let mut conn = Connection::open_in_memory()?;
     create_or_migrate_schema(&mut conn)?;
     Ok(conn)
+}
+
+#[cfg(test)]
+pub(super) fn test_migrate_schema(conn: &mut Connection) -> Result<()> {
+    create_or_migrate_schema(conn)
 }
 
 fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
@@ -602,6 +624,68 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         assert_eq!(locator, ("uuid".into(), 7));
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(version, SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[test]
+    fn v6_migration_refreshes_only_command_title_metadata_once() -> Result<()> {
+        let mut conn = test_connection()?;
+        conn.execute_batch(
+            r#"
+            INSERT INTO session_index
+              (cwd, session_id, file_path, modified_ts, modified_millis, size_bytes, msg_count, ai_title, first_user_text)
+            VALUES
+              ('cwd', 'command', 'command.jsonl', 1, 1, 200, 1, NULL, '<command-message>skill</command-message><command-name>/plugin:skill'),
+              ('cwd', 'command-ai', 'command-ai.jsonl', 1, 1, 200, 1, '<command-name>/skill</command-name>', 'ordinary'),
+              ('cwd', 'ordinary', 'ordinary.jsonl', 1, 1, 100, 1, 'Custom title', 'ordinary text');
+            INSERT INTO session_usage
+              (session_id, sidecar_path, sidecar_mtime_millis, sidecar_size, cost_usd)
+            VALUES ('command', 'sidecar', 1, 1, 2.5);
+            INSERT INTO session_text (session_id, cwd, role, body, message_uuid, transcript_index, file_path)
+            VALUES ('command', 'cwd', 'user', 'cachedneedle', 'uuid', 2, 'command.jsonl');
+            INSERT INTO fts_progress (file_path, last_size, last_mtime_millis, record_count)
+            VALUES ('command.jsonl', 200, 1, 3);
+            INSERT INTO activity_bucket (date, hour, count) VALUES ('2026-10-16', 12, 2);
+            INSERT INTO heatmap_progress (file_path, last_size, last_mtime_millis)
+            VALUES ('command.jsonl', 200, 1);
+            PRAGMA user_version = 6;
+            "#,
+        )?;
+        create_or_migrate_schema(&mut conn)?;
+        let retained: (String, String) = conn.query_row(
+            "SELECT session_id, ai_title FROM session_index",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(retained, ("ordinary".into(), "Custom title".into()));
+        let metadata_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM session_index", [], |row| row.get(0))?;
+        assert_eq!(metadata_count, 1);
+        for table in [
+            "session_usage",
+            "session_text",
+            "fts_progress",
+            "activity_bucket",
+            "heatmap_progress",
+        ] {
+            let count: i64 =
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(count, 1, "{table} must remain intact");
+        }
+        // The new parser can legitimately retain a literal tag example. A
+        // later open must preserve it rather than repeatedly invalidate it.
+        conn.execute(
+            "INSERT INTO session_index (cwd, session_id, file_path, modified_ts, modified_millis, size_bytes, msg_count, first_user_text) VALUES ('cwd', 'literal', 'literal.jsonl', 1, 1, 100, 1, '<command-message>example</command-message> is literal prose')",
+            [],
+        )?;
+        create_or_migrate_schema(&mut conn)?;
+        let metadata_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM session_index", [], |row| row.get(0))?;
+        assert_eq!(metadata_count, 2);
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         assert_eq!(version, SCHEMA_VERSION);
         Ok(())
