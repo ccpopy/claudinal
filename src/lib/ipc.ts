@@ -326,6 +326,7 @@ export interface ComputerUseRuntimeStatus {
 }
 export interface ComputerUseStatus {
   revision: number
+  foregroundKeys: boolean
   driver: {
     supported: boolean
     platform: string
@@ -344,6 +345,7 @@ export const computerUseInstallDriver = () => invoke<ComputerUseStatus>("compute
 export const computerUseSetDriverPath = (path: string) => invoke<ComputerUseStatus>("computer_use_set_driver_path", { path })
 export const computerUseListApps = (runtimeId: string) => invoke<ComputerUseApp[]>("computer_use_list_apps", { runtimeId })
 export const computerUseSetEnabled = (runtimeId: string, enabled: boolean) => invoke<ComputerUseStatus>("computer_use_set_enabled", { runtimeId, enabled })
+export const computerUseSetForegroundKeys = (enabled: boolean) => invoke<ComputerUseStatus>("computer_use_set_foreground_keys", { enabled })
 export const computerUseRequestApp = (runtimeId: string, appId: string) => invoke<ComputerUsePermissionRequest>("computer_use_request_app", { runtimeId, appId })
 export const computerUseRespond = (runtimeId: string, requestId: string, allow: boolean) => invoke<ComputerUseStatus>("computer_use_respond", { runtimeId, requestId, allow })
 export const computerUseRevokeApp = (runtimeId: string, appId: string) => invoke<ComputerUseStatus>("computer_use_revoke_app", { runtimeId, appId })

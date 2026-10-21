@@ -12,6 +12,42 @@ pub fn computer_use_status(computer: State<'_, ComputerUse>, runtime_id: Option<
     computer.0.status(runtime_id.as_deref())
 }
 
+pub(crate) fn set_foreground_keys(core: &Arc<Core>, enabled: bool) -> Result<Status> {
+    let cleanup = {
+        let mut state = core.lock();
+        std::fs::create_dir_all(&core.data_dir)?;
+        crate::fs_atomic::atomic_write_str(
+            &core.data_dir.join("foreground-keys.json"),
+            if enabled { "true" } else { "false" },
+        )?;
+        state.foreground_keys = enabled;
+        // Disabling also cancels a worker that already captured the old setting.
+        // A later enable can never resurrect that runtime generation.
+        let owner = state.owner.clone();
+        if !enabled {
+            owner.and_then(|id| state.revoke(&id, "user_take_back", false))
+        } else {
+            None
+        }
+    };
+    core.schedule_cleanup(cleanup);
+    core.emit(None);
+    Ok(core.status(None))
+}
+
+#[tauri::command]
+pub fn computer_use_set_foreground_keys(
+    computer: State<'_, ComputerUse>,
+    enabled: bool,
+) -> Result<Status> {
+    if !cfg!(windows) {
+        return Err(Error::Other(
+            "Foreground shortcuts are available on Windows only.".into(),
+        ));
+    }
+    set_foreground_keys(&computer.0, enabled)
+}
+
 #[tauri::command]
 pub async fn computer_use_install_driver(computer: State<'_, ComputerUse>) -> Result<Status> {
     computer.0.replace_driver(None).await
@@ -419,6 +455,43 @@ mod tests {
                 std::env::current_exe()?
             )?))
             .is_err());
+    }
+    #[test]
+    fn foreground_preference_defaults_off_persists_and_revokes_on_disable() {
+        let mut core = core();
+        let directory = std::env::temp_dir().join(format!(
+            "claudinal-foreground-setting-{}",
+            uuid::Uuid::new_v4()
+        ));
+        Arc::get_mut(&mut core).unwrap().data_dir = directory.clone();
+        assert!(!core.status(None).foreground_keys);
+        assert!(set_foreground_keys(&core, true).unwrap().foreground_keys);
+        assert_eq!(
+            std::fs::read_to_string(directory.join("foreground-keys.json")).unwrap(),
+            "true"
+        );
+        {
+            let mut state = core.lock();
+            state.owner = Some("a".into());
+            state
+                .runtimes
+                .get_mut("a")
+                .unwrap()
+                .grants
+                .insert("fixture".into(), app());
+        }
+        let generation = core.lock().runtimes["a"].generation;
+        assert!(!set_foreground_keys(&core, false).unwrap().foreground_keys);
+        let state = core.lock();
+        assert!(state.authorize("a", generation, "fixture").is_err());
+        assert!(state.runtimes["a"].grants.is_empty());
+        assert!(state.runtimes["a"].generation > generation);
+        assert_eq!(
+            std::fs::read_to_string(directory.join("foreground-keys.json")).unwrap(),
+            "false"
+        );
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
     }
     #[test]
     fn global_take_back_revokes_owner_and_other_pending_consent() {

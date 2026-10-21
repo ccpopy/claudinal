@@ -105,6 +105,7 @@ impl Default for CleanupStatus {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub revision: u64,
+    pub foreground_keys: bool,
     pub driver: DriverStatus,
     pub runtime: Option<RuntimeStatus>,
     pub controller: Option<Controller>,

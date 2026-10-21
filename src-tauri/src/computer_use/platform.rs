@@ -4,6 +4,9 @@ use std::{fs::File, path::PathBuf};
 use super::types::{AppInfo, Tier};
 use crate::error::{Error, Result};
 
+#[cfg(all(test, windows))]
+pub(super) static DESKTOP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn data_dir() -> Result<PathBuf> {
     let root = dirs::data_local_dir()
         .ok_or_else(|| Error::Other("Local application data directory is unavailable.".into()))?;
@@ -110,6 +113,12 @@ pub fn tier(path: &str) -> Tier {
         "moomoo.exe",
         "dzh.exe",
         "hexin.exe",
+        "taskmgr.exe",
+        "systemsettings.exe",
+        "applicationframehost.exe",
+        "control.exe",
+        "mmc.exe",
+        "regedit.exe",
     ]
     .contains(&name.as_str())
     {
@@ -162,6 +171,7 @@ pub fn tier(path: &str) -> Tier {
         "notepad++.exe",
         "sublime_text.exe",
         "antigravity.exe",
+        "antigravity ide.exe",
     ]
     .contains(&name.as_str())
     {
@@ -196,13 +206,95 @@ unsafe extern "system" fn enumerate_window(
     hwnd: windows_sys::Win32::Foundation::HWND,
     data: isize,
 ) -> i32 {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, IsWindowVisible};
-    if IsWindowVisible(hwnd) != 0 && GetWindowTextLengthW(hwnd) > 0 {
+    if discoverable_window(hwnd) {
         if let Some(app) = window_info(hwnd) {
-            (&mut *(data as *mut Vec<AppInfo>)).push(app);
+            if !helper_executable(&app.path) {
+                (&mut *(data as *mut Vec<AppInfo>)).push(app);
+            }
         }
     }
     1
+}
+
+/// Enumerate user-facing task windows, not every HWND carrying WS_VISIBLE.
+/// Apply this only to discovery: a minimized/temporarily hidden approved app
+/// retains its identity, and actions keep their own geometry/lifetime checks.
+#[cfg(windows)]
+pub(super) unsafe fn discoverable_window(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    if !task_surface(hwnd) {
+        return false;
+    }
+    if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_APPWINDOW != 0 {
+        return true;
+    }
+    let mut candidate = GetAncestor(hwnd, GA_ROOTOWNER);
+    for _ in 0..32 {
+        let popup = GetLastActivePopup(candidate);
+        if popup == candidate || popup.is_null() || !task_surface(popup) {
+            return candidate == hwnd;
+        }
+        candidate = popup;
+    }
+    false
+}
+
+#[cfg(windows)]
+unsafe fn task_surface(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED},
+        UI::WindowsAndMessaging::*,
+    };
+    let mut rect: RECT = std::mem::zeroed();
+    let mut cloaked: u32 = 0;
+    let mut class = [0u16; 256];
+    let length = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+    if IsWindowVisible(hwnd) == 0
+        || GetWindowTextLengthW(hwnd) <= 0
+        || GetWindowRect(hwnd, &mut rect) == 0
+        || rect.right <= rect.left
+        || rect.bottom <= rect.top
+        || length <= 0
+        || DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED as u32,
+            &mut cloaked as *mut _ as _,
+            std::mem::size_of_val(&cloaked) as u32,
+        ) < 0
+        || cloaked != 0
+        || shell_window_class(&String::from_utf16_lossy(&class[..length as usize]))
+    {
+        return false;
+    }
+    let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+    style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) == 0
+}
+
+fn shell_window_class(class: &str) -> bool {
+    [
+        "Progman",
+        "WorkerW",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "IME",
+        "MSCTFIME UI",
+        "Windows.UI.Core.CoreWindow.IME",
+    ]
+    .iter()
+    .any(|candidate| class.eq_ignore_ascii_case(candidate))
+}
+
+fn helper_executable(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    [
+        "TextInputHost.exe",
+        "InputApp.exe",
+        "NVIDIA Overlay.exe",
+        "NVIDIA Share.exe",
+    ]
+    .iter()
+    .any(|helper| name.eq_ignore_ascii_case(helper))
 }
 
 #[cfg(windows)]
@@ -605,6 +697,107 @@ mod tests {
         assert_eq!(tier("C:\\Apps\\Vivaldi\\vivaldi.exe"), Tier::View);
         assert_eq!(tier("C:\\Apps\\WezTerm\\wezterm-gui.exe"), Tier::Click);
         assert_eq!(tier("C:\\Apps\\Zed\\Zed.exe"), Tier::Click);
+        for name in [
+            "Antigravity.exe",
+            "Antigravity IDE.exe",
+            "ANTIGRAVITY IDE.EXE",
+        ] {
+            assert_eq!(tier(&format!(r"C:\Apps\{name}")), Tier::Click);
+        }
+        for name in [
+            "Taskmgr.exe",
+            "SystemSettings.exe",
+            "control.exe",
+            "mmc.exe",
+            "regedit.exe",
+            "ApplicationFrameHost.exe",
+        ] {
+            assert_eq!(tier(&format!(r"C:\Windows\{name}")), Tier::View);
+        }
+        assert_eq!(tier(r"C:\Apps\My Antigravity Notes.exe"), Tier::Full);
+    }
+    #[test]
+    fn shell_surfaces_and_helper_processes_are_not_application_choices() {
+        for class in ["Progman", "WorkerW", "Shell_TrayWnd", "IME", "MSCTFIME UI"] {
+            assert!(shell_window_class(class));
+        }
+        assert!(!shell_window_class("Chrome_WidgetWin_1"));
+        for name in [
+            "TextInputHost.exe",
+            "InputApp.exe",
+            "NVIDIA Overlay.exe",
+            "NVIDIA Share.exe",
+        ] {
+            assert!(helper_executable(&format!(r"C:\Windows\{name}")));
+        }
+        assert!(
+            !helper_executable(r"C:\Apps\Raycast.exe"),
+            "keep real Raycast task windows; filter its auxiliary HWNDs by their properties"
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn discovery_filters_real_tool_hidden_zero_sized_and_cloaked_windows() {
+        let _desktop = DESKTOP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        use windows_sys::Win32::{Foundation::HWND, Graphics::Dwm::*, UI::WindowsAndMessaging::*};
+        fn wide(value: &str) -> Vec<u16> {
+            value.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+        struct Window(HWND);
+        impl Drop for Window {
+            fn drop(&mut self) {
+                unsafe {
+                    DestroyWindow(self.0);
+                }
+            }
+        }
+        unsafe {
+            for (extended, visible, width, height, expected) in [
+                (WS_EX_APPWINDOW, true, 200, 100, true),
+                (WS_EX_TOOLWINDOW, true, 200, 100, false),
+                (WS_EX_NOACTIVATE, true, 200, 100, false),
+                (WS_EX_APPWINDOW, false, 200, 100, false),
+                (WS_EX_APPWINDOW, true, 0, 0, false),
+            ] {
+                let window = Window(CreateWindowExW(
+                    extended,
+                    wide("#32770").as_ptr(),
+                    wide("Claudinal discovery fixture").as_ptr(),
+                    WS_POPUP | if visible { WS_VISIBLE } else { 0 },
+                    30,
+                    30,
+                    width,
+                    height,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                ));
+                assert!(!window.0.is_null());
+                assert_eq!(
+                    discoverable_window(window.0),
+                    expected,
+                    "style {extended}, visible {visible}, size {width}x{height}"
+                );
+                if expected {
+                    let cloak: u32 = 1;
+                    assert!(
+                        DwmSetWindowAttribute(
+                            window.0,
+                            DWMWA_CLOAK as u32,
+                            &cloak as *const _ as _,
+                            4
+                        ) >= 0
+                    );
+                    assert!(
+                        !discoverable_window(window.0),
+                        "DWM-cloaked windows must not appear"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn display_paths_drop_verbatim_prefixes() {

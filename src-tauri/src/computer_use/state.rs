@@ -72,6 +72,7 @@ pub struct Cleanup {
 
 pub struct State {
     pub revision: u64,
+    pub foreground_keys: bool,
     pub runtimes: HashMap<String, Runtime>,
     pub driver_status: DriverStatus,
     pub evidence: Option<Evidence>,
@@ -89,6 +90,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             revision: 0,
+            foreground_keys: false,
             runtimes: HashMap::new(),
             driver_status: DriverStatus::default(),
             evidence: None,
@@ -118,6 +120,7 @@ impl State {
             });
         Status {
             revision: self.revision,
+            foreground_keys: self.foreground_keys,
             driver: self.driver_status.clone(),
             runtime,
             controller: self

@@ -149,6 +149,7 @@ pub fn run() {
             computer_use::computer_use_set_driver_path,
             computer_use::computer_use_list_apps,
             computer_use::computer_use_set_enabled,
+            computer_use::computer_use_set_foreground_keys,
             computer_use::computer_use_request_app,
             computer_use::computer_use_respond,
             computer_use::computer_use_revoke_app,

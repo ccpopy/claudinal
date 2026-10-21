@@ -6,6 +6,7 @@ import type { ComputerUseApp, ComputerUsePermissionRequest, ComputerUseRuntimeSt
 export interface ComputerUseApi {
   status: typeof ipc.computerUseStatus
   setEnabled: typeof ipc.computerUseSetEnabled
+  setForegroundKeys: typeof ipc.computerUseSetForegroundKeys
   listApps: typeof ipc.computerUseListApps
   requestApp: typeof ipc.computerUseRequestApp
   respond: typeof ipc.computerUseRespond
@@ -277,9 +278,18 @@ export class ComputerUseController {
     catch (error) { this.publish({ error: String(error) }) }
     finally { this.publish({ busy: null }) }
   }
+  setForegroundKeys = async (enabled: boolean) => {
+    if (this.snapshot.busy) return
+    if (!enabled && this.snapshot.status?.controller) this.invalidateRuntime(this.snapshot.status.controller.runtimeId)
+    this.publish({ busy: "foreground-keys", error: null })
+    try { this.acceptMutationStatus(await this.api.setForegroundKeys(enabled)) }
+    catch (error) { this.publish({ error: String(error) }); void this.refresh() }
+    finally { this.publish({ busy: null }) }
+  }
 }
 
 export const computerUse = new ComputerUseController({ status: ipc.computerUseStatus, setEnabled: ipc.computerUseSetEnabled, listApps: ipc.computerUseListApps,
+  setForegroundKeys: ipc.computerUseSetForegroundKeys,
   requestApp: ipc.computerUseRequestApp, respond: ipc.computerUseRespond, revokeApp: ipc.computerUseRevokeApp, takeBack: ipc.computerUseTakeBack, install: ipc.computerUseInstallDriver, setPath: ipc.computerUseSetDriverPath })
 
 const syncSetting = () => computerUse.setGlobalEnabled(loadSettings().computerUseEnabled === true)
