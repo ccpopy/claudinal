@@ -724,14 +724,62 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[test]
+    fn rotation_child() {
+        let Some(directory) = std::env::var_os("CLAUDINAL_ROTATION_TEST_CHILD") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        assert!(directory.is_absolute());
+        assert!(directory
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("claudinal-driver-renewal-"));
+        std::fs::write(directory.join("admitted"), b"ready").unwrap();
+        std::thread::sleep(Duration::from_secs(30));
+        std::fs::write(directory.join("late"), b"replayed").unwrap();
+    }
+
+    #[cfg(windows)]
     #[tokio::test]
     async fn expired_driver_is_reaped_without_revoking_approved_windows() {
         use super::super::{broker, state::State, types::Tier, Core};
+        struct PendingChild(Option<Child>);
+        impl Drop for PendingChild {
+            fn drop(&mut self) {
+                if let Some(child) = self.0.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
         let directory =
             std::env::temp_dir().join(format!("claudinal-driver-renewal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
-        let mut driver = fake_driver(&directory, false);
+        // This test exercises process lifetime only, so it does not consume the
+        // harness stdout as MCP frames. Reuse the test binary rather than tying
+        // readiness to a cold PowerShell/.NET startup on parallel CI runners.
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "computer_use::driver::tests::rotation_child",
+                "--test-threads=1",
+            ])
+            .env("CLAUDINAL_ROTATION_TEST_CHILD", &directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        crate::child_process::hide_std_window(&mut command);
+        let mut pending = PendingChild(Some(command.spawn().unwrap()));
+        // Wait before attaching the MCP reader: its strict frame parser closes
+        // harness stdout, which must not interrupt the child's startup banner.
+        // The guard still kills/reaps the child if the readiness assertion fails.
         admitted(&directory).await;
+        let mut driver =
+            Driver::from_test_child(pending.0.take().unwrap(), directory.join("manifest.json"))
+                .unwrap();
         assert!(!driver.needs_rotation());
         let now = Instant::now();
         Arc::get_mut(&mut driver).unwrap().started = now - ROTATE_AFTER;
