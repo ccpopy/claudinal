@@ -518,7 +518,7 @@ mod native {
         Graphics::Gdi::*,
         Storage::Xps::PrintWindow,
         System::Threading::*,
-        UI::{HiDpi::*, WindowsAndMessaging::*},
+        UI::{HiDpi::*, Input::KeyboardAndMouse::IsWindowEnabled, WindowsAndMessaging::*},
     };
 
     struct DpiContext(DPI_AWARENESS_CONTEXT);
