@@ -656,23 +656,43 @@ pub async fn install() -> Result<Evidence> {
             return Err(error);
         }
     };
-    let path = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
-        let relative = extracted
-            .strip_prefix(&staging)
-            .map_err(|_| Error::Other("Driver bundle layout is invalid.".into()))?
-            .to_path_buf();
-        // A locked previous copy (still exiting) keeps the staged copy in place.
-        if final_directory.exists() && std::fs::remove_dir_all(&final_directory).is_err() {
-            return Ok(extracted);
-        }
-        match std::fs::rename(&staging, &final_directory) {
-            Ok(()) => Ok(final_directory.join(relative)),
-            Err(_) => Ok(extracted),
-        }
+    let path = tokio::task::spawn_blocking(move || {
+        publish_install(&staging, &final_directory, &extracted)
     })
     .await
     .map_err(|e| Error::Other(e.to_string()))??;
     probe(path, true).await
+}
+
+fn publish_install(staging: &Path, destination: &Path, executable: &Path) -> Result<PathBuf> {
+    let relative = executable
+        .strip_prefix(staging)
+        .map_err(|_| Error::Other("Driver bundle layout is invalid.".into()))?;
+    if !executable.is_file() {
+        return Err(Error::Other("Staged driver executable is missing.".into()));
+    }
+    // Move the previous bundle as a whole. Recursive deletion can remove some
+    // companions before discovering a locked executable, damaging the old copy.
+    let previous =
+        destination.with_file_name(format!(".cua-previous-{}", uuid::Uuid::new_v4().simple()));
+    let had_previous = destination.exists();
+    if had_previous && std::fs::rename(destination, &previous).is_err() {
+        return Ok(executable.to_path_buf());
+    }
+    match std::fs::rename(staging, destination) {
+        Ok(()) => {
+            if had_previous {
+                let _ = std::fs::remove_dir_all(previous);
+            }
+            Ok(destination.join(relative))
+        }
+        Err(_) => {
+            if had_previous {
+                let _ = std::fs::rename(previous, destination);
+            }
+            Ok(executable.to_path_buf())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -703,17 +723,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn managed_install_replaces_a_complete_bundle_at_a_stable_path() {
+        let root = std::env::temp_dir().join(format!("claudinal-install-{}", uuid::Uuid::new_v4()));
+        let staging = root.join("staged");
+        let destination = root.join("cua-driver-0.37.0-x86_64");
+        std::fs::create_dir_all(staging.join("arch")).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("obsolete.dll"), b"old").unwrap();
+        let executable = staging.join("arch/cua-driver.exe");
+        std::fs::write(&executable, b"new-driver").unwrap();
+        std::fs::write(staging.join("arch/helper.dll"), b"new-helper").unwrap();
+        let installed = publish_install(&staging, &destination, &executable).unwrap();
+        assert_eq!(installed, destination.join("arch/cua-driver.exe"));
+        assert_eq!(std::fs::read(installed).unwrap(), b"new-driver");
+        assert_eq!(
+            std::fs::read(destination.join("arch/helper.dll")).unwrap(),
+            b"new-helper"
+        );
+        assert!(!destination.join("obsolete.dll").exists());
+        assert!(!staging.exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_install_promotion_keeps_the_complete_staged_bundle() {
+        let root = std::env::temp_dir().join(format!("claudinal-install-{}", uuid::Uuid::new_v4()));
+        let staging = root.join("staged");
+        std::fs::create_dir_all(&staging).unwrap();
+        let executable = staging.join("cua-driver.exe");
+        std::fs::write(&executable, b"new-driver").unwrap();
+        std::fs::write(staging.join("helper.dll"), b"new-helper").unwrap();
+        std::fs::write(root.join("blocked-parent"), b"unrelated-file").unwrap();
+        let installed =
+            publish_install(&staging, &root.join("blocked-parent/bundle"), &executable).unwrap();
+        assert_eq!(installed, executable);
+        assert_eq!(std::fs::read(installed).unwrap(), b"new-driver");
+        assert_eq!(
+            std::fs::read(staging.join("helper.dll")).unwrap(),
+            b"new-helper"
+        );
+        assert_eq!(
+            std::fs::read(root.join("blocked-parent")).unwrap(),
+            b"unrelated-file"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(windows)]
-    fn fake_driver(directory: &Path, read_request: bool) -> Arc<Driver> {
+    #[test]
+    fn locked_previous_install_never_loses_its_companions() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!("claudinal-install-{}", uuid::Uuid::new_v4()));
+        let staging = root.join("staged");
+        let destination = root.join("installed");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("0-helper.dll"), b"old-helper").unwrap();
+        std::fs::write(destination.join("z-driver.exe"), b"old-driver").unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(destination.join("z-driver.exe"))
+            .unwrap();
+        let executable = staging.join("cua-driver.exe");
+        std::fs::write(&executable, b"new-driver").unwrap();
+        let installed = publish_install(&staging, &destination, &executable).unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), b"new-driver");
+        if installed == executable {
+            assert_eq!(
+                std::fs::read(destination.join("0-helper.dll")).unwrap(),
+                b"old-helper"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("z-driver.exe")).unwrap(),
+                b"old-driver"
+            );
+        }
+        drop(locked);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    struct PendingChild(Option<Child>);
+    #[cfg(windows)]
+    impl Drop for PendingChild {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    async fn fake_driver(directory: &Path, read_request: bool) -> Arc<Driver> {
         Driver::from_test_child(
-            fake_child(directory, read_request),
+            fake_child(directory, read_request).await,
             directory.join("manifest.json"),
         )
         .unwrap()
     }
 
     #[cfg(windows)]
-    fn fake_child(directory: &Path, read_request: bool) -> Child {
+    async fn fake_child(directory: &Path, read_request: bool) -> Child {
         let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
         let script = if read_request {
@@ -721,6 +835,8 @@ mod tests {
         } else {
             "[IO.File]::WriteAllText($env:CLAUDINAL_FAKE_MARKER,'nonreading'); Start-Sleep -Seconds 30; [IO.File]::WriteAllText($env:CLAUDINAL_FAKE_LATE,'replayed')"
         };
+        let script =
+            format!("[IO.File]::WriteAllText($env:CLAUDINAL_FAKE_READY,'ready'); {script}");
         let mut command = Command::new(shell);
         command
             .args([
@@ -728,15 +844,35 @@ mod tests {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                script,
+                &script,
             ])
+            .env("CLAUDINAL_FAKE_READY", directory.join("ready"))
             .env("CLAUDINAL_FAKE_MARKER", directory.join("admitted"))
             .env("CLAUDINAL_FAKE_LATE", directory.join("late"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         crate::child_process::hide_std_window(&mut command);
-        command.spawn().unwrap()
+        let mut pending = PendingChild(Some(command.spawn().unwrap()));
+        // Cold PowerShell/.NET startup on a loaded runner is not the driver's
+        // action deadline. Admit requests only after the fixture is ready;
+        // retain the original short write, cancellation and reap assertions.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                assert!(
+                    pending.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+                    "fake driver exited before its readiness handshake"
+                );
+                if directory.join("ready").is_file() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake driver did not complete its startup handshake");
+        std::fs::remove_file(directory.join("ready")).unwrap();
+        pending.0.take().unwrap()
     }
 
     #[cfg(windows)]
@@ -772,15 +908,6 @@ mod tests {
     #[tokio::test]
     async fn expired_driver_is_reaped_without_revoking_approved_windows() {
         use super::super::{broker, state::State, types::Tier, Core};
-        struct PendingChild(Option<Child>);
-        impl Drop for PendingChild {
-            fn drop(&mut self) {
-                if let Some(child) = self.0.as_mut() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-            }
-        }
         let directory =
             std::env::temp_dir().join(format!("claudinal-driver-renewal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
@@ -872,13 +999,12 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("claudinal-driver-stop-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
-        let driver = fake_driver(&directory, true);
+        let driver = fake_driver(&directory, true).await;
         let worker_directory = directory.join("window-worker");
         std::fs::create_dir(&worker_directory).unwrap();
-        let worker = super::super::window_executor::Worker::from_test_child(fake_child(
-            &worker_directory,
-            false,
-        ))
+        let worker = super::super::window_executor::Worker::from_test_child(
+            fake_child(&worker_directory, false).await,
+        )
         .unwrap();
         let pending_worker = worker.clone();
         let worker_reply = tokio::spawn(async move { pending_worker.receive().await });
@@ -949,7 +1075,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("claudinal-driver-write-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
-        let driver = fake_driver(&directory, false);
+        let driver = fake_driver(&directory, false).await;
         admitted(&directory).await;
         let started = Instant::now();
         let result = driver

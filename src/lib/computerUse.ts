@@ -40,9 +40,12 @@ export class ComputerUseController {
   private retired = new Set<string>()
   private settled = new Set<string>()
   private answering = new Set<string>()
+  private runtimeRevisions = new Map<string, number>()
+  private resumeEpochs = new Map<string, number>()
+  private resuming = new Map<string, { epoch: number; promise: Promise<void> }>()
+  private revocations = new Set<{ runtimeId?: string; promise: Promise<void> }>()
   private revision = 0
   private cancellation = 0
-  private operation = 0
   private catalogOperation = 0
   isRuntimeAlive = (_runtimeId: string) => true
   isViewCurrent = (_key: string, _runtimeId: string) => true
@@ -68,7 +71,7 @@ export class ComputerUseController {
     if (this.globalEnabled === enabled) return
     this.globalEnabled = enabled
     this.publish({ error: null })
-    if (!enabled && [...this.runtimes.values()].some((runtime) => runtime.enabled || runtime.pendingRequests.length)) void this.takeBack()
+    if (!enabled) void this.takeBack()
   }
   registerRuntime = (runtimeId: string, conversationKey: string) => { this.runtimeOwners.set(runtimeId, conversationKey) }
   selectView = (conversationKey: string, runtimeId: string | null) => {
@@ -79,20 +82,31 @@ export class ComputerUseController {
     void this.refresh()
   }
   acceptStatus = (status: ComputerUseStatus) => {
-    if (this.snapshot.status && status.revision < this.snapshot.status.revision) return
+    const staleGlobal = !!this.snapshot.status && status.revision < this.snapshot.status.revision
     this.revision++
     const runtime = status.runtime
-    if (runtime && !this.retired.has(runtime.runtimeId) && this.isRuntimeAlive(runtime.runtimeId)) {
+    if (runtime && status.revision >= (this.runtimeRevisions.get(runtime.runtimeId) ?? -1)
+      && !this.retired.has(runtime.runtimeId) && this.isRuntimeAlive(runtime.runtimeId)) {
       const old = this.runtimes.get(runtime.runtimeId)
       const floor = this.invalidated.get(runtime.runtimeId)
       if ((!old || runtime.generation >= old.generation) && (floor === undefined || (runtime.generation > floor && !runtime.enabled))) {
         this.runtimes.set(runtime.runtimeId, runtime)
+        this.runtimeRevisions.set(runtime.runtimeId, status.revision)
         if (floor !== undefined) this.invalidated.set(runtime.runtimeId, runtime.generation)
       }
     }
-    const controller = status.controller && !this.retired.has(status.controller.runtimeId) && !this.invalidated.has(status.controller.runtimeId)
-      ? status.controller : null
-    this.publish({ status: { ...status, controller } })
+    // Replies for different runtimes can arrive out of order. Keep their own
+    // projections current without rolling back the global driver/controller.
+    if (staleGlobal) this.publish()
+    else {
+      const controller = status.controller && !this.retired.has(status.controller.runtimeId) && !this.invalidated.has(status.controller.runtimeId)
+        ? status.controller : null
+      this.publish({ status: { ...status, controller } })
+    }
+    if (!this.globalEnabled && runtime?.enabled && !this.retired.has(runtime.runtimeId)
+      && ![...this.revocations].some((work) => !work.runtimeId || work.runtimeId === runtime.runtimeId)) {
+      void this.takeBack(runtime.runtimeId)
+    }
   }
   acceptRequest = (request: ComputerUsePermissionRequest) => {
     if (this.retired.has(request.runtimeId) || !this.isRuntimeAlive(request.runtimeId) || this.settled.has(this.requestKey(request))) return
@@ -122,25 +136,46 @@ export class ComputerUseController {
   }
   /** A new user turn restores on-demand access that an earlier stop or take-back revoked. */
   resumeRuntime = async (runtimeId: string) => {
+    const epoch = this.resumeEpochs.get(runtimeId) ?? 0
+    const current = () => this.globalEnabled && !this.retired.has(runtimeId) && this.isRuntimeAlive(runtimeId)
+      && (this.resumeEpochs.get(runtimeId) ?? 0) === epoch
+    if (!current()) return
+    const previous = this.resuming.get(runtimeId)
+    if (previous) {
+      if (previous.epoch === epoch) return previous.promise
+      await previous.promise
+    }
+    const barriers = [...this.revocations].filter((work) => !work.runtimeId || work.runtimeId === runtimeId)
+    if (barriers.length) await Promise.all(barriers.map((work) => work.promise))
     const runtime = this.runtimes.get(runtimeId)
-    if (!this.globalEnabled || this.retired.has(runtimeId) || !this.isRuntimeAlive(runtimeId) || !runtime || runtime.enabled) return
-    const operation = ++this.operation
-    const cancellation = this.cancellation
-    try {
-      const status = await this.api.setEnabled(runtimeId, true)
-      // A take-back or switch-off during the call wins over this late enable.
-      if (!this.retired.has(runtimeId) && operation === this.operation && cancellation === this.cancellation && this.globalEnabled) {
+    if (!current() || !runtime || runtime.enabled) return
+    // Another caller may have recovered this runtime while the barrier settled.
+    const pending = this.resuming.get(runtimeId)
+    if (pending) return pending.promise
+    const promise = (async () => {
+      try {
+        const status = await this.api.setEnabled(runtimeId, true)
+        if (!current()) {
+          // Ignoring a reply only hides it in the UI. Undo the native enable as
+          // well, before a subsequent turn can recover this runtime again.
+          await this.revokeNative(runtimeId)
+          return
+        }
         this.invalidated.delete(runtimeId)
         this.acceptMutationStatus(status)
+      } catch {
+        // Ordinary conversation remains available if computer tools cannot resume.
       }
-    } catch {
-      // Unregistered runtimes (started while the switch was off) simply stay without tools.
-    }
+    })()
+    this.resuming.set(runtimeId, { epoch, promise })
+    try { await promise }
+    finally { if (this.resuming.get(runtimeId)?.promise === promise) this.resuming.delete(runtimeId) }
   }
   /** Synchronous barrier used before stop, disconnect and asynchronous cleanup. */
   invalidateRuntime = (runtimeId: string, retire = false) => {
     this.revision++
     this.cancellation++
+    this.resumeEpochs.set(runtimeId, (this.resumeEpochs.get(runtimeId) ?? 0) + 1)
     const runtime = this.runtimes.get(runtimeId)
     this.invalidated.set(runtimeId, runtime?.generation ?? -1)
     if (retire) {
@@ -153,6 +188,8 @@ export class ComputerUseController {
         this.retired.delete(oldest)
         this.invalidated.delete(oldest)
         this.runtimes.delete(oldest)
+        this.runtimeRevisions.delete(oldest)
+        this.resumeEpochs.delete(oldest)
       }
     }
     if (runtime) this.runtimes.set(runtimeId, { ...runtime, enabled: false, state: "revoked", apps: [], pendingRequests: [], reason: "电脑访问已收回" })
@@ -162,14 +199,23 @@ export class ComputerUseController {
   takeBack = async (runtimeId?: string) => {
     const target = runtimeId ?? this.snapshot.status?.controller?.runtimeId
     if (target) this.invalidateRuntime(target)
-    if (!runtimeId) for (const id of this.runtimes.keys()) this.invalidateRuntime(id)
+    if (!runtimeId) for (const id of new Set([...this.runtimes.keys(), ...this.resuming.keys()])) this.invalidateRuntime(id)
+    await this.revokeNative(runtimeId)
+  }
+  private revokeNative = async (runtimeId?: string) => {
     const status = this.snapshot.status
     this.publish({ error: null, ...(status ? { status: { ...status, cleanup: { state: "stopping", reason: null } } } : {}) })
-    try { this.acceptMutationStatus(await this.api.takeBack(runtimeId)) }
-    catch (error) {
-      const currentStatus = this.snapshot.status
-      this.publish({ error: String(error), ...(currentStatus ? { status: { ...currentStatus, cleanup: { state: "failed", reason: "未能确认电脑访问已收回，请重试。" } } } : {}) })
-    }
+    const promise = (async () => {
+      try { this.acceptMutationStatus(await this.api.takeBack(runtimeId)) }
+      catch (error) {
+        const currentStatus = this.snapshot.status
+        this.publish({ error: String(error), ...(currentStatus ? { status: { ...currentStatus, cleanup: { state: "failed", reason: "未能确认电脑访问已收回，请重试。" } } } : {}) })
+      }
+    })()
+    const work = { runtimeId, promise }
+    this.revocations.add(work)
+    try { await promise }
+    finally { this.revocations.delete(work) }
   }
   /** Withdraw one approved window; other grants and control stay intact. */
   revokeApp = async (appId: string) => {
