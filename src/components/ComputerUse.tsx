@@ -59,6 +59,18 @@ export function ComputerUseDriverSetup() {
   </div>
 }
 
+export function ComputerUseForegroundSwitch({ snapshot }: { snapshot: ComputerUseSnapshot }) {
+  return <div className="flex items-center justify-between gap-4">
+    <div>
+      <Label htmlFor="computer-use-foreground-keys" className="text-sm">前台组合键</Label>
+      <div className="mt-0.5 text-xs text-muted-foreground">执行时切换到已授权窗口，复制粘贴使用系统剪贴板。关闭会收回当前访问。</div>
+    </div>
+    <Switch id="computer-use-foreground-keys" checked={snapshot.status?.foregroundKeys === true}
+      disabled={!snapshot.status?.driver.supported || !!snapshot.busy}
+      onCheckedChange={(enabled) => { void computerUse.setForegroundKeys(enabled) }} />
+  </div>
+}
+
 export function ComputerUseControllerStrip({ snapshot, controllerLabel, onShowController, onShowRuntime }: { snapshot: ComputerUseSnapshot; controllerLabel: string | null; onShowController?: () => void; onShowRuntime?: (runtimeId: string) => void }) {
   const status = snapshot.status
   if (!status?.controller && status?.cleanup.state !== "stopping" && status?.cleanup.state !== "failed" && !snapshot.waiting.length) return null
@@ -69,6 +81,7 @@ export function ComputerUseControllerStrip({ snapshot, controllerLabel, onShowCo
     <Monitor className="size-4 shrink-0 text-primary" />
     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
       <span className="font-medium">{title}</span>
+      {status?.foregroundKeys && <span className="text-muted-foreground">前台组合键已开启</span>}
       {status?.controller && <button type="button" onClick={onShowController} disabled={!onShowController} className="max-w-full truncate text-muted-foreground hover:underline disabled:no-underline">
         {controllerLabel ?? status.controller.cwd}{current ? "" : " · 另一个对话"}
       </button>}

@@ -71,6 +71,8 @@ pub(super) struct Geometry {
 enum Operation {
     Capture,
     Click,
+    #[serde(rename = "edit_shortcut")]
+    EditShortcut,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -88,6 +90,8 @@ struct Request {
     button: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     count: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<super::keyboard::EditCommand>,
 }
 
 impl Request {
@@ -121,8 +125,16 @@ impl Request {
                     && request.x.is_none()
                     && request.y.is_none()
                     && request.button.is_none()
+                    && request.count.is_none()
+                    && request.command.is_none() => {}
+            Operation::EditShortcut
+                if request.command.is_some()
+                    && request.geometry.is_none()
+                    && request.x.is_none()
+                    && request.y.is_none()
+                    && request.button.is_none()
                     && request.count.is_none() => {}
-            Operation::Click => {
+            Operation::Click if request.command.is_none() => {
                 match (
                     request.button.as_deref().unwrap_or("left"),
                     request.count.unwrap_or(1),
@@ -489,6 +501,15 @@ fn execute(request: Request) -> Result<Value> {
     unsafe { native::execute(request) }
 }
 
+#[cfg(all(test, windows))]
+pub(super) fn test_edit(
+    app: &super::types::AppInfo,
+    command: super::keyboard::EditCommand,
+) -> Result<Value> {
+    execute(Request::parse(json!({"operation":"edit_shortcut",
+        "identity":super::platform::worker_identity(app)?,"command":command}))?)
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -497,7 +518,7 @@ mod native {
         Graphics::Gdi::*,
         Storage::Xps::PrintWindow,
         System::Threading::*,
-        UI::{HiDpi::*, WindowsAndMessaging::*},
+        UI::{HiDpi::*, Input::KeyboardAndMouse::IsWindowEnabled, WindowsAndMessaging::*},
     };
 
     struct DpiContext(DPI_AWARENESS_CONTEXT);
@@ -781,6 +802,112 @@ mod native {
         Ok(())
     }
 
+    unsafe fn edit_shortcut(
+        id: &Identity,
+        root: HWND,
+        command: super::super::keyboard::EditCommand,
+    ) -> Result<Value> {
+        use super::super::keyboard::EditCommand;
+        let thread = GetWindowThreadProcessId(root, std::ptr::null_mut());
+        let mut info: GUITHREADINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of_val(&info) as u32;
+        if thread == 0 || GetGUIThreadInfo(thread, &mut info) == 0 {
+            return Err(failure(
+                "The approved app's focused edit control is unavailable.",
+            ));
+        }
+        let target = info.hwndFocus;
+        let mut pid = 0;
+        let mut class = [0u16; 256];
+        let length = GetClassNameW(target, class.as_mut_ptr(), class.len() as i32);
+        if target.is_null()
+            || target != root && IsChild(root, target) == 0
+            || GetWindowThreadProcessId(target, &mut pid) == 0
+            || pid != id.pid
+            || length <= 0
+            || IsWindowEnabled(target) == 0
+        {
+            return Err(failure("Focus is not in the approved app's edit control. Enable Foreground shortcuts for this app."));
+        }
+        let class = String::from_utf16_lossy(&class[..length as usize]).to_ascii_lowercase();
+        let rich = matches!(class.as_str(), "richedit20w" | "richedit50w")
+            || class.starts_with("windowsforms10.richedit");
+        if !(class == "edit" || class.starts_with("windowsforms10.edit.") || rich) {
+            return Err(failure("Background shortcuts require a native edit control. Enable Foreground shortcuts for this app."));
+        }
+        // These are documented, cross-process system edit messages, not fake
+        // modifier keydowns. No clipboard or foreground focus is involved.
+        let send = |message, wparam, lparam| -> Result<usize> {
+            let mut result = 0;
+            if SendMessageTimeoutW(
+                target,
+                message,
+                wparam,
+                lparam,
+                SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT,
+                1000,
+                &mut result,
+            ) == 0
+            {
+                return Err(failure("The approved edit control did not answer in time."));
+            }
+            Ok(result)
+        };
+        let (message, wparam, lparam, expected_length) = match command {
+            EditCommand::SelectAll => {
+                let length = send(WM_GETTEXTLENGTH, 0, 0)?;
+                if length > 65534 {
+                    return Err(failure("This edit selection is too large to verify in background mode. Enable Foreground shortcuts."));
+                }
+                (0x00B1, 0, -1, Some(length)) // EM_SETSEL
+            }
+            EditCommand::Undo => {
+                if send(0x00C6, 0, 0)? == 0 {
+                    // EM_CANUNDO
+                    return Err(failure("The approved edit control has nothing to undo."));
+                }
+                (0x00C7, 0, 0, None) // EM_UNDO
+            }
+            EditCommand::Redo => {
+                if !rich {
+                    return Err(failure("This edit control has no background redo operation. Enable Foreground shortcuts."));
+                }
+                if send(WM_USER + 85, 0, 0)? == 0 {
+                    // EM_CANREDO
+                    return Err(failure("The approved edit control has nothing to redo."));
+                }
+                (WM_USER + 84, 0, 0, None) // EM_REDO (scalar-only message)
+            }
+        };
+        if attest(id)? != root
+            || GetGUIThreadInfo(thread, &mut info) == 0
+            || info.hwndFocus != target
+            || GetWindowThreadProcessId(target, &mut pid) == 0
+            || pid != id.pid
+            || target != root && IsChild(root, target) == 0
+        {
+            return Err(failure("The approved edit focus changed before dispatch."));
+        }
+        DISPATCHED.store(true, std::sync::atomic::Ordering::SeqCst);
+        let outcome = send(message, wparam, lparam)?;
+        if let Some(expected) = expected_length {
+            let selected = send(0x00B0, 0, 0)?; // EM_GETSEL: bounded to two 16-bit positions
+            if selected as u32 != (expected as u32) << 16
+                || send(WM_GETTEXTLENGTH, 0, 0)? != expected
+            {
+                return Err(failure("The edit control did not confirm the full selection. Observe again; the operation was not replayed."));
+            }
+        } else if outcome == 0 {
+            return Err(failure(
+                "The edit control did not confirm the edit command. Observe again.",
+            ));
+        }
+        Ok(
+            json!({"content":[{"type":"text","text":"The approved edit control confirmed the background edit command. Observe again before another action."}],
+            "structuredContent":{"effect":"confirmed","route":"edit_message","delivery_mode":"background"}}),
+        )
+    }
+
     pub(super) unsafe fn execute(request: Request) -> Result<Value> {
         let context = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if context.is_null() {
@@ -790,6 +917,13 @@ mod native {
         let hwnd = attest(&request.identity)?;
         let current = geometry(hwnd)?;
         match request.operation {
+            Operation::EditShortcut => edit_shortcut(
+                &request.identity,
+                hwnd,
+                request
+                    .command
+                    .ok_or_else(|| failure("Missing background edit command."))?,
+            ),
             Operation::Capture => {
                 let png = capture(hwnd, &current)?;
                 if attest(&request.identity)? != hwnd || geometry(hwnd)? != current {

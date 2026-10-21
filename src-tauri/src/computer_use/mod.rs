@@ -2,6 +2,8 @@
 mod broker;
 mod commands;
 mod driver;
+mod foreground;
+mod keyboard;
 mod mcp;
 mod platform;
 mod state;
@@ -1367,6 +1369,13 @@ impl Core {
 pub fn init(app: tauri::AppHandle) -> Result<()> {
     let mut initial = State::default();
     let directory = platform::data_dir();
+    initial.foreground_keys = cfg!(windows)
+        && directory
+            .as_ref()
+            .ok()
+            .and_then(|dir| std::fs::read(dir.join("foreground-keys.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<bool>(&bytes).ok())
+            .unwrap_or(false);
     let listener = if cfg!(windows) && directory.is_ok() {
         std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).and_then(|listener| {
             listener.set_nonblocking(true)?;

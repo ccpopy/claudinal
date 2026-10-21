@@ -336,52 +336,6 @@ fn number(value: &Value, key: &str, maximum: f64) -> Result<f64> {
             ))
         })
 }
-/// Canonical names match the pinned CuaDriver Windows key table.
-fn canonical_key(key: &str) -> &str {
-    match key {
-        "enter" => "return",
-        "esc" => "escape",
-        "del" => "delete",
-        "ins" => "insert",
-        "pgup" => "pageup",
-        "pgdn" => "pagedown",
-        "arrowup" => "up",
-        "arrowdown" => "down",
-        "arrowleft" => "left",
-        "arrowright" => "right",
-        _ => key,
-    }
-}
-fn key_code(key: &str) -> Option<u16> {
-    Some(match key {
-        "return" => 0x0D,
-        "tab" => 0x09,
-        "escape" => 0x1B,
-        "space" => 0x20,
-        "backspace" => 0x08,
-        "insert" => 0x2D,
-        "delete" => 0x2E,
-        "up" => 0x26,
-        "down" => 0x28,
-        "left" => 0x25,
-        "right" => 0x27,
-        "home" => 0x24,
-        "end" => 0x23,
-        "pageup" => 0x21,
-        "pagedown" => 0x22,
-        _ if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
-            key.as_bytes()[0].to_ascii_uppercase() as u16
-        }
-        _ => {
-            let number = key.strip_prefix('f')?.parse::<u16>().ok()?;
-            if !(1..=12).contains(&number) {
-                return None;
-            }
-            0x70 + number - 1
-        }
-    })
-}
-
 /// The host supplies all driver target/scope/delivery fields. None are pass-through.
 fn translate(
     core: &Core,
@@ -402,7 +356,7 @@ fn translate(
     fields(arguments, allowed)?;
     if app.tier == Tier::View && name != "computer_observe" {
         return Err(Error::Other(
-            "This browser or trading app has view-only access.".into(),
+            "This app has view-only access; input is blocked.".into(),
         ));
     }
     if app.tier == Tier::Click && matches!(name, "computer_type" | "computer_key") {
@@ -445,6 +399,7 @@ fn translate(
     output["scope"] = json!("window");
     let mut state = core.lock();
     state.authorize(id, generation, &app.app_id)?;
+    let foreground_keys = state.foreground_keys;
     let runtime = state.runtimes.get_mut(id).unwrap();
     let capture = runtime.captures.get_mut(&app.app_id).filter(|capture| capture.created.elapsed() < Duration::from_secs(60))
         .ok_or_else(|| Error::Other("Observe this exact approved window before acting. Old grounding is never reused after revoke.".into()))?;
@@ -496,50 +451,29 @@ fn translate(
             Ok(("type_text".into(), output, keys, false))
         }
         "computer_key" => {
-            let key = canonical_key(&text(arguments, "key", 16)?.to_ascii_lowercase()).to_string();
-            keys.push(key_code(&key).ok_or_else(|| Error::Other("Unsupported key name.".into()))?);
-            let modifiers = arguments
-                .get("modifiers")
-                .map(|value| {
-                    value
-                        .as_array()
-                        .ok_or_else(|| Error::Other("Key modifiers must be an array.".into()))
-                })
-                .transpose()?;
-            let mut normalized = Vec::new();
-            if let Some(modifiers) = modifiers {
-                if modifiers.len() > 3 {
-                    return Err(Error::Other("Too many key modifiers.".into()));
+            let key = text(arguments, "key", 16)?;
+            let modifiers: Vec<String> = match arguments.get("modifiers") {
+                Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                    Error::Other("Key modifiers must be an array of strings.".into())
+                })?,
+                None => Vec::new(),
+            };
+            let chord = super::keyboard::Chord::parse(key, &modifiers)?;
+            output["key"] = json!(chord.key);
+            output["modifiers"] = json!(chord.modifiers);
+            if !chord.modifiers.is_empty() {
+                if foreground_keys {
+                    output["delivery_mode"] = json!("foreground");
+                    // No driver receives foreground authority. The host checks
+                    // both the setting and runtime again at actual dispatch.
+                    capture.consumed = true;
+                    return Ok(("foreground_key".into(), output, keys, false));
                 }
-                for value in modifiers {
-                    let modifier = value
-                        .as_str()
-                        .ok_or_else(|| Error::Other("Invalid modifier.".into()))?;
-                    keys.push(match modifier {
-                        "ctrl" => 0x11,
-                        "shift" => 0x10,
-                        "alt" => 0x12,
-                        _ => {
-                            return Err(Error::Other(
-                                "Only ctrl, shift and alt modifiers are supported.".into(),
-                            ))
-                        }
-                    });
-                    if normalized.contains(&modifier) {
-                        return Err(Error::Other("Duplicate key modifier.".into()));
-                    }
-                    normalized.push(modifier);
-                }
+                output["command"] = serde_json::to_value(chord.background_command()?)?;
+                capture.consumed = true;
+                return Ok(("edit_shortcut".into(), output, keys, false));
             }
-            if normalized.contains(&"alt") && ["tab", "escape", "f4"].contains(&key.as_str())
-                || normalized.contains(&"ctrl") && normalized.contains(&"alt") && key == "delete"
-            {
-                return Err(Error::Other(
-                    "System window-switching and secure-desktop shortcuts are blocked.".into(),
-                ));
-            }
-            output["key"] = json!(key);
-            output["modifiers"] = json!(normalized);
+            keys = chord.virtual_keys();
             capture.consumed = true;
             Ok(("press_key".into(), output, keys, false))
         }
@@ -653,7 +587,9 @@ async fn execute(core: Arc<Core>, id: &str, name: &str, arguments: Value) -> Res
     let core_spawn = core.clone();
     let id_spawn = id.to_string();
     let app_spawn = app.clone();
-    let driver_result = if name == "computer_click" {
+    let driver_result = if name == "computer_click"
+        || matches!(driver_name.as_str(), "edit_shortcut" | "foreground_key")
+    {
         None
     } else {
         Some(
@@ -737,6 +673,27 @@ async fn execute(core: Arc<Core>, id: &str, name: &str, arguments: Value) -> Res
                 "button":driver_args["button"],"count":driver_args["count"]}),
             )
             .await?
+        } else if driver_name == "edit_shortcut" {
+            run_window_operation(core.clone(), id, generation, &app,
+                json!({"operation":"edit_shortcut","command":driver_args["command"]})).await?
+        } else if driver_name == "foreground_key" {
+            let core = core.clone();
+            let id = id.to_string();
+            let app = app.clone();
+            let chord = super::keyboard::Chord::parse(
+                driver_args["key"].as_str().unwrap(),
+                &serde_json::from_value::<Vec<String>>(driver_args["modifiers"].clone())?,
+            )?;
+            tokio::task::spawn_blocking(move || {
+                // Hold authority through the one-batch input. Stop either wins
+                // before dispatch or observes an already fully released chord.
+                let state = core.lock();
+                state.authorize(&id, generation, &app.app_id)?;
+                if !state.foreground_keys {
+                    return Err(Error::Other("Foreground shortcuts were disabled.".into()));
+                }
+                super::foreground::press(&app, &chord)
+            }).await.map_err(|error| Error::Other(error.to_string()))??
         } else {
             let result = driver
                 .as_ref()
@@ -869,7 +826,23 @@ async fn execute(core: Arc<Core>, id: &str, name: &str, arguments: Value) -> Res
             }
         }
         core.emit(Some(id));
-        Ok(normalize_result(name, &app_id, result))
+        let host_diagnostic = matches!(driver_name.as_str(), "edit_shortcut" | "foreground_key")
+            .then(|| result.get("content").and_then(Value::as_array)
+                .and_then(|parts| parts.first()).and_then(|part| part.get("text"))
+                .and_then(Value::as_str).map(|text| text.chars().take(512).collect::<String>()))
+            .flatten().filter(|_| result.get("isError").and_then(Value::as_bool) == Some(true));
+        let mut result = normalize_result(name, &app_id, result);
+        if let Some(diagnostic) = host_diagnostic {
+            result["structuredContent"]["diagnostic"] = json!(diagnostic);
+            result["content"].as_array_mut().unwrap().push(json!({"type":"text","text":diagnostic}));
+        }
+        if driver_name == "foreground_key" {
+            result["structuredContent"]["requestedDelivery"] = json!("foreground");
+            if let Some(text) = result["content"][0]["text"].as_str() {
+                result["content"][0]["text"] = json!(text.replace("Requested delivery: background.", "Requested delivery: foreground."));
+            }
+        }
+        Ok(result)
     }
     .await;
     if result.is_err() && !revoke_on_error.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1126,6 +1099,7 @@ fn record_observation(state: &mut super::state::State, id: &str, app_id: &str, r
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::computer_use::keyboard::key_code;
     #[tokio::test]
     async fn gateway_framing_rejects_oversized_and_partial_json() {
         assert!(read_json(&mut &b"123456\n"[..], 4).await.is_err());
@@ -1306,6 +1280,86 @@ mod tests {
             .unwrap();
             assert_eq!(dispatched["key"], canonical);
             assert_eq!(keys, vec![code]);
+        }
+    }
+    #[test]
+    fn shortcuts_use_semantic_or_explicit_foreground_routes_without_plain_key_fallback() {
+        let (core, app) = authorized();
+        observe(&core, &app);
+        let args = json!({"appId":app.app_id,"key":"A","modifiers":["ctrl"]});
+        let (route, output, keys, mouse) =
+            translate(&core, "a", 1, &app, "computer_key", &args).unwrap();
+        assert_eq!(route, "edit_shortcut");
+        assert_eq!(output["command"], "select_all");
+        assert!(keys.is_empty() && !mouse);
+        assert!(core.lock().runtimes["a"].captures[&app.app_id].consumed);
+        observe(&core, &app);
+        let copy = json!({"appId":app.app_id,"key":"c","modifiers":["ctrl"]});
+        assert!(translate(&core, "a", 1, &app, "computer_key", &copy).is_err());
+        assert!(!core.lock().runtimes["a"].captures[&app.app_id].consumed);
+        core.lock().foreground_keys = true;
+        let (route, output, keys, _) =
+            translate(&core, "a", 1, &app, "computer_key", &copy).unwrap();
+        assert_eq!(route, "foreground_key");
+        assert_eq!(output["delivery_mode"], "foreground");
+        assert!(
+            keys.is_empty(),
+            "one-batch shortcuts never register held background keys"
+        );
+        observe(&core, &app);
+        let injected =
+            json!({"appId":app.app_id,"key":"a","modifiers":["ctrl"],"delivery_mode":"foreground"});
+        assert!(translate(&core, "a", 1, &app, "computer_key", &injected).is_err());
+    }
+
+    #[test]
+    fn foreground_setting_does_not_upgrade_ide_or_system_app_permissions() {
+        let (core, mut app) = authorized();
+        core.lock().foreground_keys = true;
+        for path in [
+            r"C:\Apps\Antigravity IDE.exe",
+            r"C:\Windows\System32\Taskmgr.exe",
+            r"C:\Windows\ImmersiveControlPanel\SystemSettings.exe",
+        ] {
+            app.path = path.into();
+            app.tier = platform::tier(path);
+            observe(&core, &app);
+            for (name, arguments) in [
+                (
+                    "computer_type",
+                    json!({"appId":app.app_id,"text":"blocked"}),
+                ),
+                (
+                    "computer_key",
+                    json!({"appId":app.app_id,"key":"a","modifiers":["ctrl"]}),
+                ),
+            ] {
+                assert!(
+                    translate(&core, "a", 1, &app, name, &arguments).is_err(),
+                    "{path}"
+                );
+            }
+            if app.tier == Tier::View {
+                assert!(translate(
+                    &core,
+                    "a",
+                    1,
+                    &app,
+                    "computer_click",
+                    &json!({"appId":app.app_id,"captureId":"capture-1","x":0,"y":0})
+                )
+                .is_err());
+            }
+            assert!(!core.lock().runtimes["a"].captures[&app.app_id].consumed);
+            assert!(translate(
+                &core,
+                "a",
+                1,
+                &app,
+                "computer_observe",
+                &json!({"appId":app.app_id})
+            )
+            .is_ok());
         }
     }
     #[tokio::test]
