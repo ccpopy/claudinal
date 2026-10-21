@@ -1336,7 +1336,7 @@ impl Core {
                                 supported: cfg!(windows),
                                 platform: std::env::consts::OS.into(),
                                 state: "ready".into(),
-                                path: Some(evidence.path.to_string_lossy().into_owned()),
+                                path: Some(platform::display_path(&evidence.path)),
                                 version: Some(evidence.version.clone()),
                                 managed: evidence.managed,
                                 reason: None,
@@ -1439,7 +1439,7 @@ pub fn init(app: tauri::AppHandle) -> Result<()> {
                             supported: true,
                             platform: "windows".into(),
                             state: "ready".into(),
-                            path: Some(evidence.path.to_string_lossy().into_owned()),
+                            path: Some(platform::display_path(&evidence.path)),
                             version: Some(evidence.version.clone()),
                             managed: evidence.managed,
                             reason: None,
@@ -1464,18 +1464,15 @@ pub async fn runtime_mcp_config(
     cwd: &Path,
     enabled: bool,
 ) -> Result<Option<Value>> {
-    if !cfg!(windows) {
+    // The app-level setting is off: the conversation gets no computer tools.
+    if !cfg!(windows) || !enabled {
         return Ok(None);
     }
     let core = &app.state::<ComputerUse>().0;
     if core.broker_port == 0 {
-        return if enabled {
-            Err(Error::Other(
-                "The local computer gateway is unavailable.".into(),
-            ))
-        } else {
-            Ok(None)
-        };
+        // Never block ordinary conversations; settings shows the gateway error.
+        tracing::warn!("computer-use gateway unavailable; tools not injected");
+        return Ok(None);
     }
     let token = core
         .lock()

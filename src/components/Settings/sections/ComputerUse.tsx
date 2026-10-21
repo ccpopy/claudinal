@@ -1,13 +1,15 @@
 import { Monitor } from "lucide-react"
-import { ComputerUseDriverSetup } from "@/components/ComputerUse"
-import { SettingsCard, SettingsCardTitle, SettingsHint, SettingsSection, SettingsSectionBody, SettingsSectionHeader } from "./layout"
+import { ComputerUseDriverSetup, ComputerUseEnableSwitch } from "@/components/ComputerUse"
+import { useComputerUseSnapshot } from "@/hooks/useComputerUse"
+import { SettingsCard, SettingsCardTitle, SettingsSection, SettingsSectionBody, SettingsSectionHeader } from "./layout"
 
 export function ComputerUseSettings() {
+  const snapshot = useComputerUseSnapshot()
   return <SettingsSection>
-    <SettingsSectionHeader title="电脑使用" icon={Monitor} description="为 Windows 应用设置本地电脑使用支持。" />
+    <SettingsSectionHeader title="电脑使用" icon={Monitor} description="让 Claude 在你授权的 Windows 应用中查看和操作。" />
     <SettingsSectionBody>
+      <SettingsCard><ComputerUseEnableSwitch snapshot={snapshot} /></SettingsCard>
       <SettingsCard><SettingsCardTitle>CuaDriver</SettingsCardTitle><ComputerUseDriverSetup /></SettingsCard>
-      <SettingsHint>电脑使用默认关闭。请回到对话开启，再逐个授权应用；授权不会保存为全局设置，也不会转移到其他对话。</SettingsHint>
     </SettingsSectionBody>
   </SettingsSection>
 }

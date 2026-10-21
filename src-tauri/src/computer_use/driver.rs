@@ -565,10 +565,14 @@ pub async fn install() -> Result<Evidence> {
             "Pinned driver archive checksum mismatch. Installation cancelled.".into(),
         ));
     }
-    let directory = platform::data_dir()?
-        .join(format!("cua-driver-{PINNED_RELEASE}-{architecture}"))
-        .join(uuid::Uuid::new_v4().to_string());
-    let path = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+    let bundle = format!("cua-driver-{PINNED_RELEASE}-{architecture}");
+    let root = platform::install_root()?;
+    // Extract beside the final directory, then swap it in, so a failed or
+    // interrupted install never leaves a half-written driver at the final path.
+    let staging = root.join(format!(".{bundle}-{}", uuid::Uuid::new_v4().simple()));
+    let final_directory = root.join(&bundle);
+    let directory = staging.clone();
+    let extracted = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
             .map_err(|e| Error::Other(e.to_string()))?;
         std::fs::create_dir_all(&directory)?;
@@ -642,6 +646,29 @@ pub async fn install() -> Result<Evidence> {
         executable.ok_or_else(|| {
             Error::Other("Pinned driver archive did not contain the driver executable.".into())
         })
+    })
+    .await
+    .map_err(|e| Error::Other(e.to_string()))?;
+    let extracted = match extracted {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let path = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+        let relative = extracted
+            .strip_prefix(&staging)
+            .map_err(|_| Error::Other("Driver bundle layout is invalid.".into()))?
+            .to_path_buf();
+        // A locked previous copy (still exiting) keeps the staged copy in place.
+        if final_directory.exists() && std::fs::remove_dir_all(&final_directory).is_err() {
+            return Ok(extracted);
+        }
+        match std::fs::rename(&staging, &final_directory) {
+            Ok(()) => Ok(final_directory.join(relative)),
+            Err(_) => Ok(extracted),
+        }
     })
     .await
     .map_err(|e| Error::Other(e.to_string()))??;

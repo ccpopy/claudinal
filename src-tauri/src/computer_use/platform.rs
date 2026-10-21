@@ -10,6 +10,37 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(root.join("Claudinal").join("computer-use"))
 }
 
+/// Managed driver downloads live beside the Claudinal executable (portable
+/// layout, e.g. `release\computer-use`), falling back to local app data when
+/// that directory is not writable.
+pub fn install_root() -> Result<PathBuf> {
+    let beside_executable = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("computer-use")))
+        .filter(|dir| {
+            std::fs::create_dir_all(dir).is_ok() && {
+                let probe = dir.join(format!(".write-test-{}", uuid::Uuid::new_v4().simple()));
+                let writable = std::fs::write(&probe, b"").is_ok();
+                let _ = std::fs::remove_file(&probe);
+                writable
+            }
+        });
+    match beside_executable {
+        Some(dir) => Ok(dir),
+        None => data_dir(),
+    }
+}
+
+/// Paths are canonicalized for verification; show users the familiar form.
+pub fn display_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+    }
+}
+
 /// An OS file share lock is process lifetime scoped and releases after crashes.
 /// Its location is common to portable copies of the app in this user session.
 pub fn desktop_lock_in(directory: &std::path::Path) -> Result<File> {
@@ -574,6 +605,19 @@ mod tests {
         assert_eq!(tier("C:\\Apps\\Vivaldi\\vivaldi.exe"), Tier::View);
         assert_eq!(tier("C:\\Apps\\WezTerm\\wezterm-gui.exe"), Tier::Click);
         assert_eq!(tier("C:\\Apps\\Zed\\Zed.exe"), Tier::Click);
+    }
+    #[test]
+    fn display_paths_drop_verbatim_prefixes() {
+        use std::path::Path;
+        assert_eq!(
+            display_path(Path::new(r"\\?\F:\release\computer-use\cua-driver.exe")),
+            r"F:\release\computer-use\cua-driver.exe"
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\cua-driver.exe")),
+            r"\\server\share\cua-driver.exe"
+        );
+        assert_eq!(display_path(Path::new(r"C:\plain.exe")), r"C:\plain.exe");
     }
     #[test]
     fn pen_toolkits_and_unknown_children_are_not_posted_click_targets() {

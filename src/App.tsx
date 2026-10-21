@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils"
 import { useInstalledCliCapabilities } from "@/hooks/useInstalledCliCapabilities"
 import { useComputerUse } from "@/hooks/useComputerUse"
 import { computerUse } from "@/lib/computerUse"
-import { ComputerUseControl, ComputerUseControllerStrip, ComputerUsePermissionDialog } from "@/components/ComputerUse"
+import { ComputerUseControllerStrip, ComputerUsePermissionDialog } from "@/components/ComputerUse"
 import { canApplyRuntimePatch, capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch } from "@/lib/composerCapabilities"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
 import { inputMetadataPatch, restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
@@ -421,7 +421,6 @@ type RunningSession = {
   compacting: boolean
   apiProfileKey: string
   providerLabel: string
-  screenshotTransport: "anthropic" | "openai-chat-completions"
   apiLaunchProfileKey: string
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
@@ -497,6 +496,8 @@ async function sendCliInput(
   clientMessageId?: string,
   midTurn?: boolean
 ): Promise<void> {
+  // A new turn restores on-demand computer access revoked by an earlier stop.
+  if (!midTurn) await computerUse.resumeRuntime(sessionId)
   // Preserve raw command and every attachment in one native user input payload.
   await sendUserMessage(sessionId, blocks, clientMessageId, midTurn)
 }
@@ -912,7 +913,7 @@ export default function App() {
     const reusable = [...ownersRef.current.values()].filter((owner) => owner.key !== viewOwnerRef.current.key
       && !owner.runtimeId && coordinatorRef.current.canReleaseConversation(owner.key))
     for (const owner of reusable.slice(0, Math.max(0, reusable.length - 16))) {
-      if (coordinatorRef.current.releaseConversation(owner.key)) { ownersRef.current.delete(owner.key); computerUse.forgetConversation(owner.key) }
+      if (coordinatorRef.current.releaseConversation(owner.key)) ownersRef.current.delete(owner.key)
     }
   }, [])
   const pendingApiRuntimeRefreshRef = useRef(false)
@@ -2072,7 +2073,6 @@ export default function App() {
         compactBoundary: null, compacting: false,
         apiProfileKey,
         providerLabel: thirdPartyReady ? thirdPartyApi.providerName || "第三方 API" : "官方 Claude",
-        screenshotTransport: thirdPartyReady ? thirdPartyApi.inputFormat : "anthropic",
         apiLaunchProfileKey,
         selectedSessionMeta: resumeSessionId ? owner.selectedSessionMeta : null,
         state: runState,
@@ -2397,7 +2397,7 @@ export default function App() {
       guard()
       await spawnSession({
         runtimeId: id,
-        computerUseEnabled: task.context.computerUseEnabled && computerUse.getChoice(owner.key),
+        computerUseEnabled: task.context.computerUseEnabled && computerUse.isEnabled(),
         forkSession: !!fork,
         fileCheckpointing: launchCapabilities.fileCheckpoints === "supported",
         forwardSubagentText: launchCapabilities.subagentTextForwarding === "supported",
@@ -2817,7 +2817,7 @@ export default function App() {
       const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
       if (run?.streaming && (!run.midTurnInput || run.interrupting)) { toast.info("当前会话暂不能引导，请使用排队发送"); return { kind: "rejected", reason: "引导不可用" } }
     }
-    return coordinatorRef.current.submit({ conversationKey: key, mode: options.mode, context: { providerId: loadThirdPartyApiStore().activeProviderId, owner, options: { ...options }, collaborationMode, computerUseEnabled: computerUse.getChoice(key), authorizationRevision: currentAuthorizationRevision(), composerPrefs: cloneComposerPrefs(composerPrefs), sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
+    return coordinatorRef.current.submit({ conversationKey: key, mode: options.mode, context: { providerId: loadThirdPartyApiStore().activeProviderId, owner, options: { ...options }, collaborationMode, computerUseEnabled: computerUse.isEnabled(), authorizationRevision: currentAuthorizationRevision(), composerPrefs: cloneComposerPrefs(composerPrefs), sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
       profileRevision: currentApiLaunchProfileKey(), sourceDraftRevision: options.sourceDraftRevision ?? 0, draftKey: options.draftKey })
   }, [project, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer, planMode, sessionPermissionMode, collaborationMode, applyDefaultPermissionModeState, closeRunningSession])
 
@@ -4157,12 +4157,6 @@ export default function App() {
                   setDraftImages([...(current?.images ?? []), ...input.images])
                   setDraftDocuments([...(current?.documents ?? []), ...input.documents])
                 }} />
-                {project && <div className={cn(!empty && "px-6 pt-2")}><div className={cn(!empty && "mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl")}>
-                  <ComputerUseControl key={activeConversationKey} snapshot={desktop} conversationKey={activeConversationKey} runtimeId={sessionId}
-                    imageSupport={{ provider: activeRun?.providerLabel ?? (thirdPartyApiConfig.enabled ? thirdPartyApiConfig.providerName || "第三方 API" : "官方 Claude"),
-                      model: activeRun?.actualConfig.model ?? activeRun?.launchModel ?? composerPrefs.model ?? "",
-                      transport: activeRun?.screenshotTransport ?? (openaiCompatibleProvider ? "openai-chat-completions" : "anthropic") }} />
-                </div></div>}
                 <Suspense fallback={<ComposerLoader />}>
                   <Composer
                     centered={empty}

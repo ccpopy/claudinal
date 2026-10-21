@@ -28,6 +28,8 @@ export interface AppSettings {
   completionNotify: boolean
   // CLI 后续输入建议可能增加请求/用量；默认关闭，仅影响后续进程启动。
   promptSuggestionsEnabled?: boolean
+  // 电脑使用：开启后新会话注入按需工具，具体应用仍逐个授权；默认关闭。
+  computerUseEnabled?: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -38,7 +40,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   permissionMcpConfig: DEFAULT_PERMISSION_MCP_CONFIG,
   pinnedSlash: [],
   completionNotify: false,
-  promptSuggestionsEnabled: false
+  promptSuggestionsEnabled: false,
+  computerUseEnabled: false
 }
 
 export function loadSettings(): AppSettings {
@@ -52,6 +55,7 @@ export function loadSettings(): AppSettings {
       if (!Array.isArray(merged.pinnedSlash)) merged.pinnedSlash = []
       else merged.pinnedSlash = merged.pinnedSlash.filter((s) => typeof s === "string")
       merged.promptSuggestionsEnabled = merged.promptSuggestionsEnabled === true
+      merged.computerUseEnabled = merged.computerUseEnabled === true
       return merged
     }
   } catch {

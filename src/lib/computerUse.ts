@@ -1,4 +1,6 @@
 import * as ipc from "./ipc"
+import { loadSettings } from "./settings"
+import { subscribeSettingsBus } from "./settingsBus"
 import type { ComputerUseApp, ComputerUsePermissionRequest, ComputerUseRuntimeStatus, ComputerUseStatus } from "./ipc"
 
 export interface ComputerUseApi {
@@ -27,11 +29,11 @@ export interface ComputerUseSnapshot {
   error: string | null
 }
 
-/** Selection is memory-only. Native state remains the authority for app grants. */
+/** One app-level switch exposes on-demand tools; native state stays the authority for app grants. */
 export class ComputerUseController {
   private snapshot: ComputerUseSnapshot = { status: null, runtime: null, conversationKey: "", runtimeId: null, viewEpoch: 0, selected: false, apps: [], pending: null, waiting: [], controllerState: null, busy: null, error: null }
   private listeners = new Set<() => void>()
-  private choices = new Map<string, boolean>()
+  private globalEnabled = false
   private runtimeOwners = new Map<string, string>()
   private runtimes = new Map<string, ComputerUseRuntimeStatus>()
   private invalidated = new Map<string, number>()
@@ -51,7 +53,7 @@ export class ComputerUseController {
     const next = { ...this.snapshot, ...patch }
     next.runtime = next.runtimeId ? this.runtimes.get(next.runtimeId) ?? null : null
     next.controllerState = next.status?.controller ? this.runtimes.get(next.status.controller.runtimeId)?.state ?? null : null
-    next.selected = this.getChoice(next.conversationKey)
+    next.selected = this.globalEnabled
     next.pending = next.runtime?.pendingRequests.find((request) => !this.settled.has(this.requestKey(request)) && !this.answering.has(this.requestKey(request))) ?? null
     next.waiting = [...this.runtimes.values()].filter((runtime) => runtime.runtimeId !== next.runtimeId && runtime.enabled && this.isRuntimeAlive(runtime.runtimeId)
       && !this.invalidated.has(runtime.runtimeId) && runtime.pendingRequests.some((request) => !this.settled.has(this.requestKey(request)) && !this.answering.has(this.requestKey(request))))
@@ -60,8 +62,14 @@ export class ComputerUseController {
     for (const listener of this.listeners) listener()
   }
   private requestKey(request: ComputerUsePermissionRequest) { return `${request.runtimeId}:${request.generation}:${request.requestId}` }
-  getChoice = (key: string) => this.choices.get(key) === true
-  forgetConversation = (key: string) => { this.choices.delete(key) }
+  isEnabled = () => this.globalEnabled
+  /** Settings switch. Turning it off takes back every runtime immediately. */
+  setGlobalEnabled = (enabled: boolean) => {
+    if (this.globalEnabled === enabled) return
+    this.globalEnabled = enabled
+    this.publish({ error: null })
+    if (!enabled && [...this.runtimes.values()].some((runtime) => runtime.enabled || runtime.pendingRequests.length)) void this.takeBack()
+  }
   registerRuntime = (runtimeId: string, conversationKey: string) => { this.runtimeOwners.set(runtimeId, conversationKey) }
   selectView = (conversationKey: string, runtimeId: string | null) => {
     if (this.snapshot.conversationKey === conversationKey && this.snapshot.runtimeId === runtimeId) return
@@ -80,10 +88,6 @@ export class ComputerUseController {
       if ((!old || runtime.generation >= old.generation) && (floor === undefined || (runtime.generation > floor && !runtime.enabled))) {
         this.runtimes.set(runtime.runtimeId, runtime)
         if (floor !== undefined) this.invalidated.set(runtime.runtimeId, runtime.generation)
-        if (runtime.state === "revoked") {
-          const key = this.runtimeOwners.get(runtime.runtimeId)
-          if (key) this.choices.set(key, false)
-        }
       }
     }
     const controller = status.controller && !this.retired.has(status.controller.runtimeId) && !this.invalidated.has(status.controller.runtimeId)
@@ -116,30 +120,28 @@ export class ComputerUseController {
       this.acceptStatus(status)
     } catch (error) { if (revision === this.revision && viewEpoch === this.snapshot.viewEpoch) this.publish({ error: String(error) }) }
   }
-  setChoice = async (key: string, runtimeId: string | null, enabled: boolean) => {
-    this.choices.set(key, enabled)
-    if (!enabled && runtimeId) this.invalidateRuntime(runtimeId)
-    this.publish({ error: null })
-    if (!runtimeId) return
+  /** A new user turn restores on-demand access that an earlier stop or take-back revoked. */
+  resumeRuntime = async (runtimeId: string) => {
+    const runtime = this.runtimes.get(runtimeId)
+    if (!this.globalEnabled || this.retired.has(runtimeId) || !this.isRuntimeAlive(runtimeId) || !runtime || runtime.enabled) return
     const operation = ++this.operation
-    this.publish({ busy: "enabled" })
+    const cancellation = this.cancellation
     try {
-      const status = await this.api.setEnabled(runtimeId, enabled)
-      if (!this.retired.has(runtimeId) && operation === this.operation) {
-        if (enabled && this.getChoice(key)) this.invalidated.delete(runtimeId)
+      const status = await this.api.setEnabled(runtimeId, true)
+      // A take-back or switch-off during the call wins over this late enable.
+      if (!this.retired.has(runtimeId) && operation === this.operation && cancellation === this.cancellation && this.globalEnabled) {
+        this.invalidated.delete(runtimeId)
         this.acceptMutationStatus(status)
       }
-    } catch (error) {
-      if (operation === this.operation) { this.choices.set(key, false); this.publish({ error: String(error) }) }
-    } finally { if (operation === this.operation) this.publish({ busy: null }) }
+    } catch {
+      // Unregistered runtimes (started while the switch was off) simply stay without tools.
+    }
   }
   /** Synchronous barrier used before stop, disconnect and asynchronous cleanup. */
   invalidateRuntime = (runtimeId: string, retire = false) => {
     this.revision++
     this.cancellation++
     const runtime = this.runtimes.get(runtimeId)
-    const owner = this.runtimeOwners.get(runtimeId)
-    if (owner) this.choices.set(owner, false)
     this.invalidated.set(runtimeId, runtime?.generation ?? -1)
     if (retire) {
       this.retired.add(runtimeId)
@@ -201,7 +203,7 @@ export class ComputerUseController {
     const current = this.snapshot
     return current.viewEpoch === viewEpoch && current.runtimeId === request.runtimeId && this.isRuntimeAlive(request.runtimeId)
       && this.isViewCurrent(current.conversationKey, request.runtimeId)
-      && this.getChoice(current.conversationKey)
+      && this.globalEnabled
       && !this.retired.has(request.runtimeId) && !this.invalidated.has(request.runtimeId)
       && current.runtime?.generation === request.generation && current.runtime.enabled
       && !this.settled.has(this.requestKey(request)) && !this.answering.has(this.requestKey(request))
@@ -234,8 +236,8 @@ export class ComputerUseController {
 export const computerUse = new ComputerUseController({ status: ipc.computerUseStatus, setEnabled: ipc.computerUseSetEnabled, listApps: ipc.computerUseListApps,
   requestApp: ipc.computerUseRequestApp, respond: ipc.computerUseRespond, revokeApp: ipc.computerUseRevokeApp, takeBack: ipc.computerUseTakeBack, install: ipc.computerUseInstallDriver, setPath: ipc.computerUseSetDriverPath })
 
+const syncSetting = () => computerUse.setGlobalEnabled(loadSettings().computerUseEnabled === true)
+syncSetting()
+subscribeSettingsBus("settings", syncSetting)
+
 export const computerUseTierLabel = (tier: ipc.ComputerUseTier) => ({ view: "仅查看", click: "查看和点击", full: "完整控制" })[tier]
-export const computerUseStateLabel = (runtime: ComputerUseRuntimeStatus | null, selected: boolean) => {
-  if (!runtime) return selected ? "已选择 · 发送后逐个授权应用" : "关闭"
-  return ({ disabled: "关闭", enabled: "已启用 · 尚未授权应用", requested: "等待应用授权", granted: "已授权应用 · 尚未控制", active: "正在控制", revoked: "访问已收回" })[runtime.state]
-}
