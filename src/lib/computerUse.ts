@@ -282,9 +282,15 @@ export class ComputerUseController {
     if (this.snapshot.busy) return
     if (!enabled && this.snapshot.status?.controller) this.invalidateRuntime(this.snapshot.status.controller.runtimeId)
     this.publish({ busy: "foreground-keys", error: null })
-    try { this.acceptMutationStatus(await this.api.setForegroundKeys(enabled)) }
-    catch (error) { this.publish({ error: String(error) }); void this.refresh() }
-    finally { this.publish({ busy: null }) }
+    const promise = (async () => {
+      try { this.acceptMutationStatus(await this.api.setForegroundKeys(enabled)) }
+      catch (error) { this.publish({ error: String(error) }); void this.refresh() }
+    })()
+    // A new user turn must wait for the native revoke before restoring access.
+    const barrier = { promise }
+    if (!enabled) this.revocations.add(barrier)
+    try { await promise }
+    finally { this.revocations.delete(barrier); this.publish({ busy: null }) }
   }
 }
 

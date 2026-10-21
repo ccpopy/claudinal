@@ -13,7 +13,7 @@ pub fn computer_use_status(computer: State<'_, ComputerUse>, runtime_id: Option<
 }
 
 pub(crate) fn set_foreground_keys(core: &Arc<Core>, enabled: bool) -> Result<Status> {
-    let cleanup = {
+    let (cleanup, revoked_owner) = {
         let mut state = core.lock();
         std::fs::create_dir_all(&core.data_dir)?;
         crate::fs_atomic::atomic_write_str(
@@ -25,14 +25,19 @@ pub(crate) fn set_foreground_keys(core: &Arc<Core>, enabled: bool) -> Result<Sta
         // A later enable can never resurrect that runtime generation.
         let owner = state.owner.clone();
         if !enabled {
-            owner.and_then(|id| state.revoke(&id, "user_take_back", false))
+            (
+                owner
+                    .as_ref()
+                    .and_then(|id| state.revoke(id, "user_take_back", false)),
+                owner,
+            )
         } else {
-            None
+            (None, None)
         }
     };
     core.schedule_cleanup(cleanup);
-    core.emit(None);
-    Ok(core.status(None))
+    core.emit(revoked_owner.as_deref());
+    Ok(core.status(revoked_owner.as_deref()))
 }
 
 #[tauri::command]
