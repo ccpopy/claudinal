@@ -228,7 +228,7 @@ mod tests {
             SetTimer(root, 1, 60_000, None);
             let mut message: MSG = std::mem::zeroed();
             while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
-                if message.message == WM_TIMER {
+                if message.message == WM_TIMER && message.hwnd == root && message.wParam == 1 {
                     break;
                 }
                 TranslateMessage(&message);
@@ -301,14 +301,22 @@ mod tests {
         let app = platform::apps()
             .unwrap()
             .into_iter()
-            .find(|app| app.pid == fixture.child.id())
+            .find(|app| {
+                app.pid == fixture.child.id()
+                    && app.window_id == state["root"].as_u64().unwrap().to_string()
+            })
             .expect("visible fixture in app list");
         let app = platform::bind_window(app).unwrap();
         unsafe {
             let root = state["root"].as_u64().unwrap() as usize as HWND;
             let edit = state["edit"].as_u64().unwrap() as usize as HWND;
             let length = SendMessageW(edit, WM_GETTEXTLENGTH, 0, 0) as u32;
-            let background = window_executor::test_edit(&app, EditCommand::SelectAll).unwrap();
+            let background = window_executor::test_edit(&app, EditCommand::SelectAll).unwrap_or_else(|error| {
+                let mut pid = 0;
+                let thread = GetWindowThreadProcessId(root, &mut pid);
+                panic!("{error}; fixture root={root:?}, live={}, ancestor={:?}, pid={pid}, expected_pid={}, thread={thread}, child_exit={:?}",
+                    IsWindow(root), GetAncestor(root, GA_ROOT), app.pid, fixture.child.try_wait());
+            });
             assert_eq!(background["structuredContent"]["effect"], "confirmed");
             assert_eq!(SendMessageW(edit, 0x00B0, 0, 0) as u32, length << 16);
             assert_eq!(SendMessageW(edit, WM_GETTEXTLENGTH, 0, 0) as u32, length);
