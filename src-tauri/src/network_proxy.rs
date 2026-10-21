@@ -25,11 +25,13 @@ pub fn is_socks_proxy_url(raw: &str) -> bool {
 pub async fn start_http_connect_bridge(proxy_url: &str) -> Result<String> {
     let config = parse_socks5_config(proxy_url)?;
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    crate::child_process::disable_socket_inheritance(&listener);
     let addr = listener.local_addr()?;
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
+                    crate::child_process::disable_socket_inheritance(&stream);
                     let config = config.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_client(stream, config).await {
@@ -138,6 +140,7 @@ async fn connect_via_socks5(config: &Socks5Config, target: &str) -> Result<TcpSt
     let mut stream = TcpStream::connect((config.host.as_str(), config.port))
         .await
         .map_err(|e| Error::Other(format!("connect socks proxy: {e}")))?;
+    crate::child_process::disable_socket_inheritance(&stream);
 
     socks5_handshake(&mut stream, config).await?;
     let address = socks5_address(&host, port, config.remote_dns).await?;

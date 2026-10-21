@@ -89,6 +89,7 @@ const loadGit = () => import("./sections/Git")
 const loadEnvironment = () => import("./sections/Environment")
 const loadWorktree = () => import("./sections/Worktree")
 const loadBrowser = () => import("./sections/Browser")
+const loadComputerUse = () => import("./sections/ComputerUse")
 const loadArchive = () => import("./sections/Archive")
 const loadAccount = () => import("./sections/Account")
 const loadStatistics = () => import("./sections/Statistics")
@@ -119,6 +120,7 @@ const Worktree = lazy(() =>
   loadWorktree().then((m) => ({ default: m.Worktree }))
 )
 const Browser = lazy(() => loadBrowser().then((m) => ({ default: m.Browser })))
+const ComputerUseSettings = lazy(() => loadComputerUse().then((m) => ({ default: m.ComputerUseSettings })))
 const ArchiveSection = lazy(() =>
   loadArchive().then((m) => ({ default: m.Archive }))
 )
@@ -129,6 +131,7 @@ const Statistics = lazy(() =>
 const Network = lazy(() => loadNetwork().then((m) => ({ default: m.Network })))
 
 const SECTIONS: SectionDef[] = [
+  { id: "computer-use", label: "电脑使用", icon: Monitor, group: "tooling", Component: ComputerUseSettings, load: loadComputerUse },
   {
     id: "general",
     label: "常规",

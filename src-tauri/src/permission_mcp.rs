@@ -67,6 +67,7 @@ impl PermissionMcpBridge {
 
         let token = Uuid::new_v4().to_string();
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        crate::child_process::disable_socket_inheritance(&listener);
         let addr = listener.local_addr()?;
         let state = BridgeState {
             url: format!("http://{addr}"),
@@ -78,6 +79,7 @@ impl PermissionMcpBridge {
             loop {
                 match listener.accept().await {
                     Ok((stream, _)) => {
+                        crate::child_process::disable_socket_inheritance(&stream);
                         let app = app.clone();
                         let token = token.clone();
                         let pending = pending.clone();

@@ -11,9 +11,9 @@ use super::control::{unsupported_response, ControlReceipts, ReplyWaiters};
 use super::diagnostics::{Diagnostics, RuntimeDiagnostics};
 use super::metadata_probe;
 use super::runtime_controls::{self, Activity, Preview};
-use super::supervisor::{supervise, ProcessTree};
+use super::supervisor::{supervise_with_close, ProcessTree};
 use super::transport::{read_line, write_frame, WriteFailure, MAX_EVENT_BYTES, MAX_INPUT_BYTES};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::io::BufReader;
@@ -41,7 +41,9 @@ pub struct SpawnOptions {
     pub env: Option<std::collections::HashMap<String, String>>,
     pub env_remove: Vec<String>,
     pub permission_prompt_tool: Option<String>,
+    /// JSON contents, never a path. The manager owns the sole runtime MCP file.
     pub mcp_config: Option<String>,
+    pub computer_use_enabled: bool,
     pub settings_json: Option<String>,
     pub file_checkpointing: Option<bool>,
     pub forward_subagent_text: Option<bool>,
@@ -53,6 +55,7 @@ pub struct SpawnOptions {
 }
 
 struct Session {
+    desktop: Arc<RuntimeDesktop>,
     capabilities: capabilities::CliCapabilities,
     stdin: Mutex<ChildStdin>,
     available: AtomicBool,
@@ -69,6 +72,7 @@ struct Session {
 
 impl Session {
     fn close(&self, reason: &str) {
+        self.desktop.revoke(reason);
         self.available.store(false, Ordering::Release);
         self.replies.close("CLI 会话已停止，控制请求已取消");
         if let Ok(mut stored) = self.stop_reason.lock() {
@@ -80,9 +84,25 @@ impl Session {
     }
 }
 
+struct CloseSessionOnDrop {
+    session: Arc<Session>,
+    reason: &'static str,
+}
+
+impl Drop for CloseSessionOnDrop {
+    fn drop(&mut self) {
+        self.session.close(self.reason);
+    }
+}
+
 #[derive(Default)]
 pub struct Manager {
     sessions: Arc<DashMap<String, Arc<Session>>>,
+    pending_launches: DashMap<String, Arc<PendingLaunch>>,
+    // Runtime IDs are one-use within this app process. Old readers/cleanup must
+    // never share an authorization identity with a later launch.
+    runtime_ids: DashSet<String>,
+    cancelled_launch_ids: DashSet<String>,
     claude_help_cache: DashMap<ClaudeHelpCacheKey, String>,
     metadata_cache: metadata_probe::Cache,
     diagnostics: Arc<Diagnostics>,
@@ -103,6 +123,38 @@ impl Manager {
 
     pub fn diagnostics(&self) -> RuntimeDiagnostics {
         self.diagnostics.snapshot()
+    }
+
+    fn reserve_runtime_id(&self, runtime: &str) -> Result<()> {
+        Uuid::parse_str(runtime).map_err(|_| Error::Other("invalid runtime id".into()))?;
+        if !self.runtime_ids.insert(runtime.into()) {
+            return Err(Error::Other("runtime id has already been used".into()));
+        }
+        // This is an authorization retirement ledger, so identities cannot be
+        // evicted and later reused. Bound it with a fail-closed process limit.
+        if self.runtime_ids.len() > 65_536 {
+            self.runtime_ids.remove(runtime);
+            return Err(Error::Other(
+                "runtime identity limit reached; restart the app".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn cancel_pending_launch(&self, runtime: &str, reason: &str) {
+        // Frontend preparation (proxy/permission bridge) precedes Manager::spawn.
+        // Tombstone even a not-yet-seen valid UUID so a stop during those awaits
+        // cannot be followed by registration. Share the bounded identity ledger.
+        // Recheck the ledger after reservation even on AlreadyUsed: a concurrent
+        // spawn may have reserved between cancellation's lookup and publication.
+        let _ = self.reserve_runtime_id(runtime);
+        if self.runtime_ids.contains(runtime) {
+            self.cancelled_launch_ids.insert(runtime.into());
+        }
+        if let Some(launch) = self.pending_launches.get(runtime) {
+            launch.cancellation.cancel();
+            launch.desktop.revoke(reason);
+        }
     }
 
     pub async fn installations(&self) -> Result<capabilities::CliInstallations> {
@@ -240,12 +292,31 @@ impl Manager {
             .runtime_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        Uuid::parse_str(&runtime).map_err(|_| Error::Other("invalid runtime id".into()))?;
+        self.reserve_runtime_id(&runtime)?;
         opts.runtime_id = Some(runtime.clone());
+        let launch = Arc::new(PendingLaunch {
+            desktop: Arc::new(RuntimeDesktop {
+                app: app.clone(),
+                runtime_id: runtime.clone(),
+            }),
+            cancellation: LaunchCancellation::default(),
+        });
+        self.pending_launches
+            .insert(runtime.clone(), launch.clone());
+        let _pending = PendingLaunchGuard {
+            manager: self,
+            runtime_id: runtime.clone(),
+        };
+        // Covers a stop racing the reservation -> pending-map insertion gap.
+        if self.cancelled_launch_ids.contains(&runtime) {
+            launch.cancellation.cancel();
+            launch.desktop.revoke("launch_cancelled");
+        }
         self.diagnostics
             .record(&runtime, "launch_requested", None, None);
-        let result = self.spawn_inner(app, opts).await;
+        let result = self.spawn_inner(app.clone(), opts, launch).await;
         if let Err(error) = &result {
+            crate::computer_use::revoke_runtime(&app, &runtime, "launch_failed");
             let code = match error {
                 Error::Io(error) => error.raw_os_error(),
                 _ => None,
@@ -256,8 +327,16 @@ impl Manager {
         result
     }
 
-    async fn spawn_inner(&self, app: AppHandle, mut opts: SpawnOptions) -> Result<String> {
+    async fn spawn_inner(
+        &self,
+        app: AppHandle,
+        mut opts: SpawnOptions,
+        launch: Arc<PendingLaunch>,
+    ) -> Result<String> {
+        let desktop = launch.desktop.clone();
+        launch.cancellation.ensure_active()?;
         let (claude, version) = resolve_claude().await?;
+        launch.cancellation.ensure_active()?;
         self.diagnostics.installation(
             opts.runtime_id.as_deref().unwrap_or_default(),
             &claude,
@@ -270,6 +349,7 @@ impl Manager {
         let caps = self
             .detect_capabilities(&claude, version.clone(), &help)
             .await;
+        launch.cancellation.ensure_active()?;
         configure_session_settings_for_capabilities(&mut opts, &caps)?;
         let checkpoints_enabled = opts.file_checkpointing.unwrap_or(true)
             && caps.file_checkpoints == Support::Supported
@@ -316,18 +396,27 @@ impl Manager {
                 })
             })
             .transpose()?;
-        // JSON goes through a protected file so Windows npm shims never reparse quotes.
-        let runtime_mcp_file = opts
-            .mcp_config
-            .as_deref()
-            .map(|config| {
-                write_runtime_claude_settings_file(&format!("mcp-{session_id}"), config).map(
-                    |path| RuntimeSettings {
-                        path,
-                        session_id: session_id.clone(),
-                    },
-                )
-            })
+        let mut mcp_config = parse_runtime_mcp_config(opts.mcp_config.as_deref())?;
+        // This application-owned server is applied last. Project/global config
+        // cannot replace its executable, token, or disabled state.
+        #[cfg(windows)]
+        if let Some(managed) = crate::computer_use::runtime_mcp_config(
+            &app,
+            &session_id,
+            &opts.cwd,
+            opts.computer_use_enabled,
+        )
+        .await?
+        {
+            merge_managed_mcp_config(&mut mcp_config, managed)?;
+        }
+        // Stop can arrive while registration awaits. It must never be followed
+        // by a new helper spawn, even if the broker registered after that stop.
+        launch.cancellation.ensure_active()?;
+        #[cfg(not(windows))]
+        let _ = opts.computer_use_enabled;
+        let runtime_mcp_file = mcp_config
+            .map(|config| RuntimeSettings::mcp(&session_id, &config))
             .transpose()?;
         let collab_enabled = opts
             .env
@@ -388,9 +477,7 @@ impl Manager {
         if let Some(uuid) = &opts.resume_session_at {
             cmd.arg("--resume-session-at").arg(uuid);
         }
-        if let Some(config) = &runtime_mcp_file {
-            cmd.arg("--mcp-config").arg(&config.path);
-        }
+        append_runtime_mcp_arg(&mut cmd, runtime_mcp_file.as_ref());
         if let Some(settings_file) = &runtime_settings_file {
             cmd.arg("--settings").arg(&settings_file.path);
         }
@@ -436,26 +523,30 @@ impl Manager {
 
         hide_tokio_window(&mut cmd);
 
+        launch.cancellation.ensure_active()?;
         let mut child = cmd.spawn()?;
         let tree = match ProcessTree::attach(&child) {
             Ok(tree) => tree,
             Err(error) => {
+                desktop.revoke("process_supervision_failed");
                 let _ = child.kill().await;
                 return Err(Error::from(error));
             }
         };
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| Error::Other("stdin pipe missing".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Other("stdout pipe missing".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| Error::Other("stderr pipe missing".into()))?;
+        if let Err(error) = launch.cancellation.ensure_active() {
+            desktop.revoke("launch_cancelled");
+            drop(tree);
+            let _ = child.kill().await;
+            return Err(error);
+        }
+        let (Some(stdin), Some(stdout), Some(stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            desktop.revoke("process_pipes_missing");
+            drop(tree);
+            let _ = child.kill().await;
+            return Err(Error::Other("CLI process pipe missing".into()));
+        };
 
         let event_topic = format!("claude://session/{}/event", session_id);
         let error_topic = format!("claude://session/{}/error", session_id);
@@ -463,6 +554,7 @@ impl Manager {
         let (stop_tx, stop_rx) = watch::channel(false);
         let (done_tx, done_rx) = watch::channel(false);
         let session = Arc::new(Session {
+            desktop,
             capabilities: caps,
             stdin: Mutex::new(stdin),
             available: AtomicBool::new(true),
@@ -488,6 +580,12 @@ impl Manager {
             let session = session.clone();
             let diagnostics = self.diagnostics.clone();
             tokio::spawn(async move {
+                // Also covers reader panic/cancellation: transport loss cannot
+                // leave desktop authority live while the CLI is still running.
+                let _close = CloseSessionOnDrop {
+                    session: session.clone(),
+                    reason: "stdout_closed",
+                };
                 let mut reader = BufReader::new(stdout);
                 let mut malformed = 0;
                 loop {
@@ -499,6 +597,9 @@ impl Manager {
                             }
                             match serde_json::from_str::<Value>(trimmed) {
                                 Ok(value) => {
+                                    if runtime_event_revokes_desktop(&value) {
+                                        session.desktop.revoke("turn_error");
+                                    }
                                     let mut controls = session.control_responses.lock().await;
                                     match controls.should_forward_permission(&value) {
                                         Ok(false) => continue,
@@ -745,8 +846,16 @@ impl Manager {
         let sessions = self.sessions.clone();
         let sid = session_id.clone();
         let diagnostics = self.diagnostics.clone();
+        let supervision = supervise_with_close(child, stop_rx, tree, {
+            let session = session.clone();
+            move || session.close("process_exit")
+        });
         tokio::spawn(async move {
-            let status = supervise(child, stop_rx, tree).await;
+            let _close = CloseSessionOnDrop {
+                session: session.clone(),
+                reason: "process_supervision_closed",
+            };
+            let status = supervision.await;
             diagnostics.record(
                 &sid,
                 "process_exited",
@@ -781,6 +890,14 @@ impl Manager {
             );
             let _ = done_tx.send(true);
         });
+        if let Err(error) = launch.cancellation.ensure_active() {
+            // A concurrent stop may have seen only the pending launch. Publish
+            // the close to the now-supervised session before returning.
+            if let Some(session) = self.sessions.get(&session_id) {
+                session.close("launch_cancelled");
+            }
+            return Err(error);
+        }
         Ok(session_id)
     }
 
@@ -897,6 +1014,7 @@ impl Manager {
     /// CLI 进程与会话保活，被中断回合仍会产出 result 事件；
     /// 与 resolve_control_request 同向（GUI → CLI stdin），强杀路径见 stop。
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
+        self.cancel_pending_launch(session_id, "interrupt_requested");
         let payload = json!({
             "type": "control_request",
             "request_id": Uuid::new_v4().to_string(),
@@ -906,6 +1024,7 @@ impl Manager {
         let Some(session) = session else {
             return Ok(());
         };
+        session.desktop.revoke("interrupt_requested");
         // Never wait behind a blocked input frame. The supervisor can close the
         // process independently; inserting control bytes into that frame is unsafe.
         let result = if let Ok(mut stdin) = session.stdin.try_lock() {
@@ -1361,6 +1480,7 @@ impl Manager {
     }
 
     pub async fn stop(&self, session_id: &str) -> Result<()> {
+        self.cancel_pending_launch(session_id, "stop_requested");
         self.diagnostics
             .record(session_id, "stop_requested", None, None);
         let session = self.sessions.get(session_id).map(|entry| entry.clone());
@@ -1374,11 +1494,130 @@ impl Manager {
         }
         Ok(())
     }
+
+    /// Application shutdown cannot await individual IPC cleanup.
+    pub fn shutdown(&self) {
+        for launch in self.pending_launches.iter() {
+            launch.cancellation.cancel();
+            launch.desktop.revoke("application_shutdown");
+        }
+        for session in self.sessions.iter() {
+            session.close("application_shutdown");
+        }
+    }
+}
+
+#[derive(Default)]
+struct LaunchCancellation(AtomicBool);
+
+impl LaunchCancellation {
+    fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn ensure_active(&self) -> Result<()> {
+        if self.0.load(Ordering::Acquire) {
+            Err(Error::Other("runtime launch was cancelled".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct PendingLaunch {
+    desktop: Arc<RuntimeDesktop>,
+    cancellation: LaunchCancellation,
+}
+
+struct PendingLaunchGuard<'a> {
+    manager: &'a Manager,
+    runtime_id: String,
+}
+
+impl Drop for PendingLaunchGuard<'_> {
+    fn drop(&mut self) {
+        self.manager.pending_launches.remove(&self.runtime_id);
+    }
+}
+
+struct RuntimeDesktop {
+    app: AppHandle,
+    runtime_id: String,
+}
+
+impl RuntimeDesktop {
+    fn revoke(&self, reason: &str) {
+        crate::computer_use::revoke_runtime(&self.app, &self.runtime_id, reason);
+    }
+}
+
+impl Drop for RuntimeDesktop {
+    fn drop(&mut self) {
+        self.revoke("runtime_retired");
+    }
 }
 
 struct RuntimeSettings {
     path: PathBuf,
     session_id: String,
+}
+
+impl RuntimeSettings {
+    fn mcp(session_id: &str, config: &Value) -> Result<Self> {
+        let contents = serde_json::to_string(config)?;
+        let path = write_runtime_claude_settings_file(&format!("mcp-{session_id}"), &contents)?;
+        Ok(Self {
+            path,
+            session_id: session_id.into(),
+        })
+    }
+}
+
+fn parse_runtime_mcp_config(contents: Option<&str>) -> Result<Option<Value>> {
+    let Some(contents) = contents else {
+        return Ok(None);
+    };
+    let config: Value = serde_json::from_str(contents)?;
+    if !config.is_object() || !config.get("mcpServers").is_some_and(Value::is_object) {
+        return Err(Error::Other(
+            "runtime MCP config must contain an mcpServers object".into(),
+        ));
+    }
+    Ok(Some(config))
+}
+
+fn merge_managed_mcp_config(target: &mut Option<Value>, managed: Value) -> Result<()> {
+    let servers = managed
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            Error::Other("managed MCP config must contain an mcpServers object".into())
+        })?;
+    let target = target.get_or_insert_with(|| json!({"mcpServers": {}}));
+    let target_servers = target
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            Error::Other("runtime MCP config must contain an mcpServers object".into())
+        })?;
+    target_servers.extend(servers.clone());
+    Ok(())
+}
+
+fn append_runtime_mcp_arg(command: &mut Command, file: Option<&RuntimeSettings>) {
+    if let Some(file) = file {
+        // Protected JSON file; npm shims must never reparse the contents.
+        command.arg("--mcp-config").arg(&file.path);
+    }
+}
+
+fn runtime_event_revokes_desktop(event: &Value) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        Some("error") => true,
+        Some("result") => event.get("is_error").and_then(Value::as_bool) == Some(true),
+        Some("assistant") => event.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1645,8 +1884,10 @@ async fn claude_version(claude: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_runtime_settings_file, configure_session_settings, parse_effort_levels,
-        write_runtime_claude_settings_file, SpawnOptions,
+        append_runtime_mcp_arg, cleanup_runtime_settings_file, configure_session_settings,
+        merge_managed_mcp_config, parse_effort_levels, parse_runtime_mcp_config,
+        runtime_event_revokes_desktop, write_runtime_claude_settings_file, LaunchCancellation,
+        Manager, RuntimeSettings, SpawnOptions,
     };
     use serde_json::json;
 
@@ -1786,6 +2027,222 @@ mod tests {
             .join(format!("missing-{session_id}.json"));
 
         cleanup_runtime_settings_file(&session_id, &path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn runtime_ids_cannot_be_reused_after_failure_or_retirement() {
+        let manager = Manager::new();
+        let runtime = uuid::Uuid::new_v4().to_string();
+        manager.reserve_runtime_id(&runtime).unwrap();
+        // This identity stays reserved even while there is no live session.
+        assert!(manager.sessions.is_empty());
+        assert!(manager.reserve_runtime_id(&runtime).is_err());
+        assert!(manager.reserve_runtime_id("not-a-uuid").is_err());
+        manager
+            .reserve_runtime_id(&uuid::Uuid::new_v4().to_string())
+            .unwrap();
+    }
+
+    #[test]
+    fn pending_launch_cancellation_is_terminal_and_isolated() {
+        let old = LaunchCancellation::default();
+        let current = LaunchCancellation::default();
+        old.ensure_active().unwrap();
+        old.cancel();
+        old.cancel();
+        assert!(old.ensure_active().is_err());
+        current.ensure_active().unwrap();
+        assert!(old.ensure_active().is_err());
+    }
+
+    #[test]
+    fn stop_before_manager_spawn_tombstones_the_captured_runtime_only() {
+        let manager = Manager::new();
+        let stopped = uuid::Uuid::new_v4().to_string();
+        let next = uuid::Uuid::new_v4().to_string();
+        manager.cancel_pending_launch(&stopped, "interrupt_requested");
+        assert!(manager.cancelled_launch_ids.contains(&stopped));
+        assert!(manager.reserve_runtime_id(&stopped).is_err());
+        manager.reserve_runtime_id(&next).unwrap();
+        assert!(!manager.cancelled_launch_ids.contains(&next));
+        manager.cancel_pending_launch("invalid", "stop_requested");
+        assert!(!manager.cancelled_launch_ids.contains("invalid"));
+    }
+
+    #[test]
+    fn stop_between_reservation_and_pending_publication_is_terminal() {
+        let manager = Manager::new();
+        let runtime = uuid::Uuid::new_v4().to_string();
+        manager.reserve_runtime_id(&runtime).unwrap();
+        assert!(manager.pending_launches.is_empty());
+        manager.cancel_pending_launch(&runtime, "stop_requested");
+        assert!(manager.cancelled_launch_ids.contains(&runtime));
+        assert!(manager.reserve_runtime_id(&runtime).is_err());
+    }
+
+    #[test]
+    fn mcp_boundary_rejects_paths_and_non_object_json() {
+        for raw in [
+            r#"C:\\temp\\mcp-config.json"#,
+            r#""C:\\temp\\mcp-config.json""#,
+            "[]",
+            "{}",
+            r#"{"mcpServers":[]}"#,
+        ] {
+            assert!(
+                parse_runtime_mcp_config(Some(raw)).is_err(),
+                "accepted {raw}"
+            );
+        }
+        assert!(parse_runtime_mcp_config(None).unwrap().is_none());
+        assert!(parse_runtime_mcp_config(Some(r#"{"mcpServers":{}}"#))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn managed_mcp_gateway_overrides_project_values_last() {
+        let mut config = Some(json!({"mcpServers": {
+            "managed": {"command":"project.exe", "disabled":true},
+            "project": {"command":"project-helper"}
+        }, "other":"preserved"}));
+        merge_managed_mcp_config(&mut config, json!({"mcpServers": {
+            "managed": {"command":"app.exe", "args":["--computer-use-mcp-server"], "env":{"TOKEN":"runtime-bound"}}
+        }})).unwrap();
+        let config = config.unwrap();
+        assert_eq!(config["mcpServers"]["managed"]["command"], "app.exe");
+        assert!(config["mcpServers"]["managed"].get("disabled").is_none());
+        assert_eq!(config["mcpServers"]["project"]["command"], "project-helper");
+        assert_eq!(config["other"], "preserved");
+    }
+
+    #[test]
+    fn turn_errors_revoke_desktop_without_treating_diagnostics_as_exit() {
+        assert!(runtime_event_revokes_desktop(
+            &json!({"type":"result", "is_error":true})
+        ));
+        assert!(runtime_event_revokes_desktop(
+            &json!({"type":"error", "error":"failed"})
+        ));
+        assert!(runtime_event_revokes_desktop(
+            &json!({"type":"assistant", "isApiErrorMessage":true})
+        ));
+        for event in [
+            json!({"type":"result", "is_error":false}),
+            json!({"type":"stderr", "line":"warning"}),
+            json!({"type":"user", "message":{"content":[{"type":"tool_result", "is_error":true}]}}),
+        ] {
+            assert!(!runtime_event_revokes_desktop(&event));
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_cli_reads_real_mcp_config_json_and_file_lives_until_process_exit() {
+        use std::process::Stdio;
+        use tokio::io::{AsyncWriteExt, BufReader};
+        use tokio::process::Command;
+
+        let runtime = format!("test-{}", uuid::Uuid::new_v4());
+        let config = json!({"mcpServers":{"gateway":{"command":"fake-driver", "args":["quoted space", "中文"]}}});
+        let serialized =
+            crate::commands::serialize_runtime_mcp_config(Some(json!({"mcpServers": {
+                "gateway": config["mcpServers"]["gateway"],
+                "disabled": {"command":"must-not-launch", "disabled":true}
+            }})))
+            .unwrap();
+        let parsed = parse_runtime_mcp_config(serialized.as_deref())
+            .unwrap()
+            .unwrap();
+        let file = RuntimeSettings::mcp(&runtime, &parsed).unwrap();
+        let path = file.path.clone();
+        // App-owned metadata fixture: only arguments and JSON, no helper/model/desktop.
+        #[cfg(windows)]
+        let (extension, fixture) = (
+            "cmd",
+            "@echo off\r\nif not \"%~1\"==\"--mcp-config\" exit /b 21\r\nif not \"%~3\"==\"\" exit /b 22\r\ntype \"%~2\"\r\necho(\r\nset /p \"fixtureReply=\"\r\n",
+        );
+        #[cfg(not(windows))]
+        let (extension, fixture) = ("sh", "test \"$#\" -eq 2 && test \"$1\" = '--mcp-config' || exit 21\ncat \"$2\"\nprintf '\\n'\nread reply\n");
+        let script = std::env::temp_dir().join(format!("claudinal-fake-mcp-{runtime}.{extension}"));
+        std::fs::write(&script, fixture).unwrap();
+        let script_guard = RuntimeSettings {
+            path: script.clone(),
+            session_id: runtime.clone(),
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new(&script);
+            append_runtime_mcp_arg(&mut command, Some(&file));
+            let arguments = command
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            crate::commands::claude_runtime_command(&script, &arguments).unwrap()
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.arg(&script);
+            command
+        };
+        #[cfg(not(windows))]
+        append_runtime_mcp_arg(&mut command, Some(&file));
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        crate::child_process::hide_tokio_window(&mut command);
+        let mut child = command.spawn().unwrap();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let raw = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            super::super::transport::read_line(&mut reader, 16 * 1024),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        let actual: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(actual, config);
+        assert!(path.is_file(), "config disappeared while CLI was alive");
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"done\n")
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+        assert!(path.is_file());
+        drop(file);
+        assert!(!path.exists());
+        drop(script_guard);
+        assert!(!script.exists());
+    }
+
+    #[tokio::test]
+    async fn mcp_file_is_removed_when_spawn_fails() {
+        let runtime = format!("test-{}", uuid::Uuid::new_v4());
+        let path;
+        let result = {
+            let file = RuntimeSettings::mcp(&runtime, &json!({"mcpServers":{}})).unwrap();
+            path = file.path.clone();
+            let mut command = tokio::process::Command::new(
+                std::env::temp_dir().join(format!("missing-cli-{runtime}")),
+            );
+            append_runtime_mcp_arg(&mut command, Some(&file));
+            command.spawn()
+        };
+        assert!(result.is_err());
         assert!(!path.exists());
     }
 }

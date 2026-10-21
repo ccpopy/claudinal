@@ -26,6 +26,7 @@ import { FoldBody, FoldStateScope, useFoldOpen } from "@/lib/foldState"
 import type { SubagentTask } from "@/lib/subagents"
 import { cn } from "@/lib/utils"
 import { parseTaskNotification } from "@/lib/userMessageText"
+import { toolResultParts, validateToolImage } from "@/lib/toolResultContent"
 import type { UIBlock } from "@/types/ui"
 import { AssistantMarkdown } from "./AssistantMarkdown"
 import { CopyButton } from "./CopyButton"
@@ -246,17 +247,30 @@ function ImageBlock({
   role,
   block,
   gallery,
-  tile = false
+  tile = false,
+  validated = false
 }: {
   gallery?: UIBlock[]
   tile?: boolean
+  /** Internal: toolResultParts has already checked every image in this gallery. */
+  validated?: boolean
   role: "user" | "assistant"
   block: UIBlock
 }) {
   const [open, setOpen] = useState(false)
-  const images = useMemo(() => gallery?.filter((image) => image.type === "image" && image.imageData && image.imageMediaType).map((image) => ({ src: `data:${image.imageMediaType};base64,${image.imageData}`, alt: image.imageAlt })), [gallery])
-  if (!block.imageData || !block.imageMediaType) return null
-  const src = `data:${block.imageMediaType};base64,${block.imageData}`
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+  const checked = useMemo(() => validated && block.imageMediaType && block.imageData
+    ? { ok: true as const, mediaType: block.imageMediaType, data: block.imageData }
+    : validateToolImage(block.imageMediaType, block.imageData), [validated, block.imageMediaType, block.imageData])
+  const images = useMemo(() => gallery?.filter((image) => image.type === "image").flatMap((image) => {
+    const checked = validated && image.imageMediaType && image.imageData
+      ? { ok: true as const, mediaType: image.imageMediaType, data: image.imageData }
+      : validateToolImage(image.imageMediaType, image.imageData)
+    return checked.ok ? [{ src: `data:${checked.mediaType};base64,${checked.data}`, alt: image.imageAlt }] : []
+  }), [gallery, validated])
+  if (!checked.ok) return <div role="status" className="text-xs text-muted-foreground">图片不可用：{checked.reason}</div>
+  const src = `data:${checked.mediaType};base64,${checked.data}`
+  if (failedSrc === src) return <div role="status" className="text-xs text-muted-foreground">图片不可用：图片解码失败</div>
   const alt = block.imageAlt ?? ""
   return (
     <>
@@ -271,7 +285,7 @@ function ImageBlock({
         aria-label={alt ? `放大图片 ${alt}` : "放大图片"}
         title={alt || "点击放大"}
       >
-        <img src={src} alt={alt} className={tile ? "block size-full object-cover" : "block max-h-72 max-w-full object-contain"} loading="lazy" />
+        <img src={src} alt={alt} className={tile ? "block size-full object-cover" : "block max-h-72 max-w-full object-contain"} loading="lazy" onError={() => setFailedSrc(src)} />
         {block.imageAlt && !tile && (
           <span className="absolute right-1 bottom-1 rounded-md bg-background/85 text-foreground/90 text-[10px] font-mono px-1.5 py-0.5 border">
             {block.imageAlt}
@@ -649,10 +663,10 @@ function ToolResultBlock({ block }: { block: UIBlock }) {
       ) : turType === "create" && tur?.content ? (
         <CollapsedOutput text={tur.content} />
       ) : (
-        <CollapsedOutput
-          text={renderToolResultContent(block.toolResultContent)}
-        />
+        <ToolResultOutput content={block.toolResultContent} toolUseId={block.toolUseId} />
       )}
+      {(turType === "update" && !!tur?.structuredPatch || turType === "text" && !!tur?.file?.content || turType === "create" && !!tur?.content) &&
+        <ToolResultOutput content={block.toolResultContent} toolUseId={block.toolUseId} imagesOnly />}
     </ExpandableRow>
   )
 }
@@ -839,17 +853,15 @@ function CollapsedOutput({ text }: { text: string }) {
   )
 }
 
-function renderToolResultContent(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((c: unknown) => {
-        if (c && typeof c === "object" && "text" in (c as Record<string, unknown>)) {
-          return String((c as { text: unknown }).text)
-        }
-        return JSON.stringify(c)
-      })
-      .join("\n")
-  }
-  return JSON.stringify(content, null, 2)
+function ToolResultOutput({ content, toolUseId, imagesOnly = false }: { content: unknown; toolUseId?: string; imagesOnly?: boolean }) {
+  const parts = useMemo(() => toolResultParts(content, toolUseId).filter((part) => !imagesOnly || part.type !== "text"), [content, toolUseId, imagesOnly])
+  const images = useMemo(() => parts.flatMap((part) => part.type === "image" ? [part.block] : []), [parts])
+  if (parts.length === 1 && parts[0].type === "text") return <div data-tool-result-id={toolUseId}><CollapsedOutput text={parts[0].text} /></div>
+  return <div className="min-w-0 space-y-2" data-tool-result-id={toolUseId}>
+    {parts.map((part, index) => <FoldStateScope key={index} scope={`result-${index}`}>
+      {part.type === "image" ? <ImageBlock role="assistant" block={part.block} gallery={images} validated />
+        : part.type === "unavailable" ? <div role="status" className="text-xs text-muted-foreground">图片或工具输出不可用：{part.reason}</div>
+        : <CollapsedOutput text={part.text} />}
+    </FoldStateScope>)}
+  </div>
 }

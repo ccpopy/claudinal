@@ -80,28 +80,74 @@ impl Drop for ProcessTree {
 
 /// One Child owner: stop never locks a Child already locked by wait().
 pub async fn supervise(
-    mut child: Child,
-    mut stop: watch::Receiver<bool>,
+    child: Child,
+    stop: watch::Receiver<bool>,
     tree: ProcessTree,
 ) -> io::Result<ExitStatus> {
-    let mut tree = Some(tree);
-    let status = tokio::select! {
-        biased;
-        status = child.wait() => status,
-        _ = stop.changed() => {
-            // EOF and wait may become ready together; retain natural exit codes.
-            match tokio::time::timeout(Duration::from_millis(50), child.wait()).await {
-                Ok(status) => status,
-                Err(_) => {
-                    drop(tree.take());
-                    let _ = child.start_kill();
-                    child.wait().await
+    supervise_with_close(child, stop, tree, || {}).await
+}
+
+/// Revoke runtime authority before process-tree teardown or any reap/drain wait.
+pub fn supervise_with_close(
+    child: Child,
+    mut stop: watch::Receiver<bool>,
+    tree: ProcessTree,
+    on_close: impl FnOnce(),
+) -> impl std::future::Future<Output = io::Result<ExitStatus>> {
+    // Construct outside the future: even an unpolled/aborted supervisor revokes
+    // before dropping its Job Object or kill-on-drop Child. Field drop order is
+    // intentional and does not depend on async-generator capture ordering.
+    let process = SupervisedProcess {
+        close: CloseBeforeCleanup(Some(on_close)),
+        tree: Some(tree),
+        child,
+    };
+    async move {
+        let mut process = process;
+        let status = tokio::select! {
+            biased;
+            status = process.child.wait() => {
+                process.close.close();
+                status
+            },
+            _ = stop.changed() => {
+                process.close.close();
+                // EOF and wait may become ready together; retain natural exit codes.
+                match tokio::time::timeout(Duration::from_millis(50), process.child.wait()).await {
+                    Ok(status) => status,
+                    Err(_) => {
+                        drop(process.tree.take());
+                        let _ = process.child.start_kill();
+                        process.child.wait().await
+                    }
                 }
             }
+        };
+        drop(process.tree.take());
+        status
+    }
+}
+
+struct SupervisedProcess<F: FnOnce()> {
+    close: CloseBeforeCleanup<F>,
+    tree: Option<ProcessTree>,
+    child: Child,
+}
+
+struct CloseBeforeCleanup<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> CloseBeforeCleanup<F> {
+    fn close(&mut self) {
+        if let Some(close) = self.0.take() {
+            close();
         }
-    };
-    drop(tree);
-    status
+    }
+}
+
+impl<F: FnOnce()> Drop for CloseBeforeCleanup<F> {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 #[cfg(test)]
@@ -226,5 +272,58 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_revokes_before_cleanup_wait_and_only_once() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let (child, tree) = fake("hang");
+        let (stop, rx) = watch::channel(false);
+        let revocations = Arc::new(AtomicUsize::new(0));
+        let captured = revocations.clone();
+        let task = tokio::spawn(supervise_with_close(child, rx, tree, move || {
+            captured.fetch_add(1, Ordering::SeqCst);
+        }));
+        stop.send(true).unwrap();
+        // The callback runs before the supervisor's 50 ms grace/reap await.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while revocations.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(revocations.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(revocations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn unexpected_exit_revokes_captured_runtime_before_returning() {
+        let (child, tree) = fake("exit");
+        let (_stop, rx) = watch::channel(false);
+        let mut captured = None;
+        let status = supervise_with_close(child, rx, tree, || captured = Some("old-runtime"))
+            .await
+            .unwrap();
+        assert_eq!(status.code(), Some(17));
+        assert_eq!(captured, Some("old-runtime"));
+    }
+
+    #[tokio::test]
+    async fn dropping_unpolled_supervision_revokes_before_process_cleanup() {
+        let (child, tree) = fake("hang");
+        let (_stop, rx) = watch::channel(false);
+        let mut revoked = false;
+        let supervision = supervise_with_close(child, rx, tree, || revoked = true);
+        drop(supervision);
+        assert!(revoked);
     }
 }

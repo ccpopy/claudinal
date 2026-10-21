@@ -8,6 +8,9 @@ import { SubmissionCoordinator, isActiveInput, isAwaitingDefinitiveResult, type 
 import { retryInputFromTranscript } from "@/lib/retryInput"
 import { cn } from "@/lib/utils"
 import { useInstalledCliCapabilities } from "@/hooks/useInstalledCliCapabilities"
+import { useComputerUse } from "@/hooks/useComputerUse"
+import { computerUse } from "@/lib/computerUse"
+import { ComputerUseControl, ComputerUseControllerStrip, ComputerUsePermissionDialog } from "@/components/ComputerUse"
 import { canApplyRuntimePatch, capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch } from "@/lib/composerCapabilities"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
 import { inputMetadataPatch, restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
@@ -392,7 +395,7 @@ type ConversationOwner = {
   profileRevision: string
   fork: { sourceId: string; resumeAt: string } | null
 }
-type InputContext = { providerId: string; allowOriginalConfiguration?: boolean; approvedCommand?: string; authorizationRevision: string; composerPrefs: ComposerPrefs; sessionComposer: ComposerPrefs | null; permissionMode: AppSettings["defaultPermissionMode"]; owner: ConversationOwner; options: SendOptions; collaborationMode: boolean; cliBlocks?: Array<Record<string, unknown>> }
+type InputContext = { providerId: string; allowOriginalConfiguration?: boolean; approvedCommand?: string; authorizationRevision: string; composerPrefs: ComposerPrefs; sessionComposer: ComposerPrefs | null; permissionMode: AppSettings["defaultPermissionMode"]; owner: ConversationOwner; options: SendOptions; collaborationMode: boolean; computerUseEnabled: boolean; cliBlocks?: Array<Record<string, unknown>> }
 
 type RunningSession = {
   commandScope: SlashCommandScope
@@ -418,6 +421,7 @@ type RunningSession = {
   compacting: boolean
   apiProfileKey: string
   providerLabel: string
+  screenshotTransport: "anthropic" | "openai-chat-completions"
   apiLaunchProfileKey: string
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
@@ -886,6 +890,9 @@ export default function App() {
     viewOwnerRef.current = { token: switchTokenRef.current, projectId: project?.id ?? "", key: known?.key ?? crypto.randomUUID() }
   }
   const activeConversationKey = viewOwnerRef.current.key
+  const desktop = useComputerUse(activeConversationKey, sessionId,
+    (id) => runningSessionsRef.current.has(id),
+    (key, id) => viewOwnerRef.current.key === key && activeRuntimeIdRef.current === id && viewOwnerRef.current.token === switchTokenRef.current)
   const recoveryViewToken = switchTokenRef.current
   const currentUiIntentRef = useRef({ key: activeConversationKey, composerPrefs, permissionMode: planMode ? "plan" : sessionPermissionMode })
   currentUiIntentRef.current = { key: activeConversationKey, composerPrefs, permissionMode: planMode ? "plan" : sessionPermissionMode }
@@ -905,7 +912,7 @@ export default function App() {
     const reusable = [...ownersRef.current.values()].filter((owner) => owner.key !== viewOwnerRef.current.key
       && !owner.runtimeId && coordinatorRef.current.canReleaseConversation(owner.key))
     for (const owner of reusable.slice(0, Math.max(0, reusable.length - 16))) {
-      if (coordinatorRef.current.releaseConversation(owner.key)) ownersRef.current.delete(owner.key)
+      if (coordinatorRef.current.releaseConversation(owner.key)) { ownersRef.current.delete(owner.key); computerUse.forgetConversation(owner.key) }
     }
   }, [])
   const pendingApiRuntimeRefreshRef = useRef(false)
@@ -1270,6 +1277,7 @@ export default function App() {
     ) => {
       const run = runningSessionsRef.current.get(runtimeId)
       permissionReceiptsRef.current.forgetRuntime(runtimeId)
+      computerUse.invalidateRuntime(runtimeId, true)
       if (!run) {
         setPermissionRequests((cur) =>
           cur.filter((request) => request.session_id !== runtimeId)
@@ -2064,6 +2072,7 @@ export default function App() {
         compactBoundary: null, compacting: false,
         apiProfileKey,
         providerLabel: thirdPartyReady ? thirdPartyApi.providerName || "第三方 API" : "官方 Claude",
+        screenshotTransport: thirdPartyReady ? thirdPartyApi.inputFormat : "anthropic",
         apiLaunchProfileKey,
         selectedSessionMeta: resumeSessionId ? owner.selectedSessionMeta : null,
         state: runState,
@@ -2099,6 +2108,7 @@ export default function App() {
       })
       run.reviewLifecycle = createRunReview(run)
       owner.runtimeId = id
+      computerUse.registerRuntime(id, owner.key)
       owner.profileRevision = apiLaunchProfileKey
       runningSessionsRef.current.set(id, run)
       if (foreground()) {
@@ -2387,6 +2397,7 @@ export default function App() {
       guard()
       await spawnSession({
         runtimeId: id,
+        computerUseEnabled: task.context.computerUseEnabled && computerUse.getChoice(owner.key),
         forkSession: !!fork,
         fileCheckpointing: launchCapabilities.fileCheckpoints === "supported",
         forwardSubagentText: launchCapabilities.subagentTextForwarding === "supported",
@@ -2657,6 +2668,7 @@ export default function App() {
       sessionComposer: context.sessionComposer ? cloneComposerPrefs(context.sessionComposer) : null,
       permissionMode: context.permissionMode, authorizationRevision: context.authorizationRevision,
       collaborationMode: context.collaborationMode, allowOriginalConfiguration: !!context.allowOriginalConfiguration,
+      computerUseEnabled: context.computerUseEnabled,
       options: { mode: context.options.mode, bypassPreprocess: !!context.options.bypassPreprocess,
         skillName: context.options.skillInvocation?.name }
     }),
@@ -2805,7 +2817,7 @@ export default function App() {
       const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
       if (run?.streaming && (!run.midTurnInput || run.interrupting)) { toast.info("当前会话暂不能引导，请使用排队发送"); return { kind: "rejected", reason: "引导不可用" } }
     }
-    return coordinatorRef.current.submit({ conversationKey: key, mode: options.mode, context: { providerId: loadThirdPartyApiStore().activeProviderId, owner, options: { ...options }, collaborationMode, authorizationRevision: currentAuthorizationRevision(), composerPrefs: cloneComposerPrefs(composerPrefs), sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
+    return coordinatorRef.current.submit({ conversationKey: key, mode: options.mode, context: { providerId: loadThirdPartyApiStore().activeProviderId, owner, options: { ...options }, collaborationMode, computerUseEnabled: computerUse.getChoice(key), authorizationRevision: currentAuthorizationRevision(), composerPrefs: cloneComposerPrefs(composerPrefs), sessionComposer, permissionMode: planMode ? "plan" : sessionPermissionMode }, payload: options.payload ?? { text, images, documents },
       profileRevision: currentApiLaunchProfileKey(), sourceDraftRevision: options.sourceDraftRevision ?? 0, draftKey: options.draftKey })
   }, [project, selectedSessionMeta, reviewDiffs, composerPrefs, sessionComposer, planMode, sessionPermissionMode, collaborationMode, applyDefaultPermissionModeState, closeRunningSession])
 
@@ -2958,6 +2970,7 @@ export default function App() {
     settleClaudeWorkspaceTrust(false)
     const runtimeId = activeRuntimeIdRef.current ?? sessionIdRef.current
     const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : null
+    if (runtimeId) computerUse.invalidateRuntime(runtimeId)
     if (!run || !run.streaming) {
       // 非 streaming（或 run 不存在）：维持原有强杀语义
       await teardown()
@@ -3900,6 +3913,19 @@ export default function App() {
             onAddProject={addProjectFromChrome}
             onOpenSettings={openSettings}
           />
+          <ComputerUseControllerStrip snapshot={desktop}
+            controllerLabel={desktop.status?.controller ? (() => {
+              const run = runningSessionsRef.current.get(desktop.status.controller.runtimeId)
+              return run ? `${run.project.name} · ${run.selectedSessionMeta ? sessionDisplayTitle(run.selectedSessionMeta) : "当前对话"}` : null
+            })() : null}
+            onShowRuntime={(runtimeId) => {
+              const run = runningSessionsRef.current.get(runtimeId)
+              if (run) { setShowSettings(false); setShowPlugins(false); setShowHistory(false); void openBackgroundConversation(run.owner.key) }
+            }}
+            onShowController={desktop.status?.controller && runningSessionsRef.current.has(desktop.status.controller.runtimeId) ? () => {
+              const run = runningSessionsRef.current.get(desktop.status!.controller!.runtimeId)
+              if (run) { setShowSettings(false); setShowPlugins(false); setShowHistory(false); void openBackgroundConversation(run.owner.key) }
+            } : undefined} />
           {showSettings ? (
             <Suspense fallback={<PaneLoader label="正在加载设置…" />}>
               <SettingsWorkspace
@@ -4131,6 +4157,12 @@ export default function App() {
                   setDraftImages([...(current?.images ?? []), ...input.images])
                   setDraftDocuments([...(current?.documents ?? []), ...input.documents])
                 }} />
+                {project && <div className={cn(!empty && "px-6 pt-2")}><div className={cn(!empty && "mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl")}>
+                  <ComputerUseControl key={activeConversationKey} snapshot={desktop} conversationKey={activeConversationKey} runtimeId={sessionId}
+                    imageSupport={{ provider: activeRun?.providerLabel ?? (thirdPartyApiConfig.enabled ? thirdPartyApiConfig.providerName || "第三方 API" : "官方 Claude"),
+                      model: activeRun?.actualConfig.model ?? activeRun?.launchModel ?? composerPrefs.model ?? "",
+                      transport: activeRun?.screenshotTransport ?? (openaiCompatibleProvider ? "openai-chat-completions" : "anthropic") }} />
+                </div></div>}
                 <Suspense fallback={<ComposerLoader />}>
                   <Composer
                     centered={empty}
@@ -4387,6 +4419,10 @@ export default function App() {
           </Suspense>
         )}
         <CheckpointRewindDialog controller={checkpointControllerRef.current} />
+        {!showSettings && !showPlugins && !showHistory && desktop.conversationKey === activeConversationKey && desktop.runtimeId === sessionId && desktop.pending
+          && !activePermissionRequest && !pendingClaudeWorkspaceTrust && !inputConfirmation && <ComputerUsePermissionDialog
+            key={`${desktop.pending.runtimeId}:${desktop.pending.requestId}:${desktop.pending.generation}:${desktop.viewEpoch}`}
+            request={desktop.pending} viewEpoch={desktop.viewEpoch} />}
         <Toaster />
       </>
     </TooltipProvider>

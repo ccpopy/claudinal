@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use base64::Engine;
 use serde_json::{Map, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -12,6 +13,9 @@ use crate::error::{Error, Result};
 /// 1M 上下文 beta 标志。第一方 API 已于 2026-04-30 退役该头（原生 1M 模型免头），
 /// 但按旧协议做门禁的第三方中转仍以它作为"单请求显式启用 1M"的开关。
 const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
+const MAX_PROXY_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+const MAX_TOOL_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
@@ -80,6 +84,7 @@ impl ProxyStatusReporter {
 
 pub async fn start(config: ProxyConfig, reporter: Option<ProxyStatusReporter>) -> Result<String> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
+    crate::child_process::disable_socket_inheritance(&listener);
     let addr = listener.local_addr()?;
     let config = Arc::new(config);
     tokio::spawn(async move {
@@ -87,6 +92,7 @@ pub async fn start(config: ProxyConfig, reporter: Option<ProxyStatusReporter>) -
             let Ok((stream, _)) = listener.accept().await else {
                 break;
             };
+            crate::child_process::disable_socket_inheritance(&stream);
             let config = config.clone();
             let reporter = reporter.clone();
             tokio::spawn(async move {
@@ -154,14 +160,22 @@ async fn handle(
     }
 
     let body_start = header_end + 4;
+    if content_length > MAX_PROXY_REQUEST_BYTES
+        || buffer.len() - body_start > MAX_PROXY_REQUEST_BYTES
+    {
+        return write_request_error(&mut stream, 413, "proxy request exceeds 32 MiB").await;
+    }
     let mut body = buffer[body_start..].to_vec();
     while body.len() < content_length {
-        let mut chunk = vec![0u8; content_length - body.len()];
+        let mut chunk = vec![0u8; (content_length - body.len()).min(64 * 1024)];
         let n = stream.read(&mut chunk).await?;
         if n == 0 {
             break;
         }
         body.extend_from_slice(&chunk[..n]);
+    }
+    if body.len() != content_length {
+        return write_request_error(&mut stream, 400, "proxy request body length mismatch").await;
     }
 
     if method.eq_ignore_ascii_case("GET") && is_models_path(path) {
@@ -185,7 +199,12 @@ async fn handle(
     let mut request_model: Option<String> = None;
     if json_request {
         body = if openai_chat && messages_path {
-            let (converted, model) = anthropic_to_openai_request(&body, &config)?;
+            let (converted, model) = match anthropic_to_openai_request(&body, &config) {
+                Ok(converted) => converted,
+                Err(error) => {
+                    return write_request_error(&mut stream, 400, &error.to_string()).await
+                }
+            };
             request_model = model;
             converted
         } else {
@@ -199,6 +218,10 @@ async fn handle(
     }
     if let Some(seed) = config.cch_seed.filter(|_| messages_path && !openai_chat) {
         body = rewrite_cch(&body, seed)?;
+    }
+    if body.len() > MAX_PROXY_REQUEST_BYTES {
+        return write_request_error(&mut stream, 413, "converted proxy request exceeds 32 MiB")
+            .await;
     }
 
     // 对声明支持 1M 的模型请求 merge 1M beta 标志（按改写后的最终上游模型名匹配）。
@@ -410,6 +433,11 @@ fn body_snippet(bytes: &[u8]) -> String {
     out
 }
 
+async fn write_request_error(stream: &mut TcpStream, status: u16, message: &str) -> Result<()> {
+    write_response(stream, status, vec![("Content-Type".into(), "application/json".into())],
+        serde_json::to_vec(&serde_json::json!({"type":"error", "error": {"type":"invalid_request_error", "message":message}}))?).await
+}
+
 async fn write_response(
     stream: &mut TcpStream,
     status: u16,
@@ -593,6 +621,9 @@ fn anthropic_to_openai_request(
     body: &[u8],
     config: &ProxyConfig,
 ) -> Result<(Vec<u8>, Option<String>)> {
+    if body.len() > MAX_PROXY_REQUEST_BYTES {
+        return Err(Error::Other("proxy request exceeds 32 MiB".into()));
+    }
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|e| Error::Other(format!("proxy json parse: {e}")))?;
     let obj = value
@@ -620,10 +651,16 @@ fn anthropic_to_openai_request(
             "content": system
         }));
     }
+    let mut state = OpenAiMessageState::default();
     if let Some(items) = obj.get("messages").and_then(Value::as_array) {
         for item in items {
-            append_openai_messages(&mut messages, item)?;
+            append_openai_messages(&mut messages, item, &mut state)?;
         }
+    }
+    if !state.pending_tools.is_empty() {
+        return Err(Error::Other(
+            "proxy tool call batch is missing tool results".into(),
+        ));
     }
     out.insert("messages".into(), Value::Array(messages));
 
@@ -680,18 +717,50 @@ fn anthropic_to_openai_request(
     }
 
     let bytes = serde_json::to_vec(&Value::Object(out)).map_err(Error::from)?;
+    if bytes.len() > MAX_PROXY_REQUEST_BYTES {
+        return Err(Error::Other(
+            "converted proxy request exceeds 32 MiB".into(),
+        ));
+    }
     Ok((bytes, mapped))
 }
 
-fn append_openai_messages(out: &mut Vec<Value>, message: &Value) -> Result<()> {
+#[derive(Default)]
+struct OpenAiMessageState {
+    pending_tools: BTreeSet<String>,
+    seen_tools: BTreeSet<String>,
+    observations: Vec<Value>,
+    user_parts: Vec<Value>,
+    image_count: usize,
+    image_bytes: usize,
+    content_parts: usize,
+}
+
+fn append_openai_messages(
+    out: &mut Vec<Value>,
+    message: &Value,
+    state: &mut OpenAiMessageState,
+) -> Result<()> {
     let role = message
         .get("role")
         .and_then(Value::as_str)
         .unwrap_or("user");
     let content = message.get("content").unwrap_or(&Value::Null);
+    if role != "user" && !state.pending_tools.is_empty() {
+        return Err(Error::Other(
+            "proxy tool results must complete the previous tool call batch".into(),
+        ));
+    }
     match role {
         "assistant" => {
             let (text, tool_calls) = assistant_content_to_openai(content)?;
+            for call in &tool_calls {
+                let id = call["id"].as_str().unwrap_or_default();
+                if !state.seen_tools.insert(id.to_string()) {
+                    return Err(Error::Other("proxy duplicate tool call id".into()));
+                }
+                state.pending_tools.insert(id.to_string());
+            }
             let mut obj = Map::new();
             obj.insert("role".into(), Value::String("assistant".into()));
             if tool_calls.is_empty() || !text.trim().is_empty() {
@@ -704,7 +773,7 @@ fn append_openai_messages(out: &mut Vec<Value>, message: &Value) -> Result<()> {
             }
             out.push(Value::Object(obj));
         }
-        "user" => append_user_openai_messages(out, content),
+        "user" => append_user_openai_messages(out, content, state)?,
         "system" => {
             if let Some(text) = anthropic_content_to_text(content) {
                 out.push(serde_json::json!({
@@ -725,54 +794,249 @@ fn append_openai_messages(out: &mut Vec<Value>, message: &Value) -> Result<()> {
     Ok(())
 }
 
-fn append_user_openai_messages(out: &mut Vec<Value>, content: &Value) {
-    let Some(blocks) = content.as_array() else {
-        if let Some(text) = anthropic_content_to_text(content) {
-            out.push(serde_json::json!({
-                "role": "user",
-                "content": text
-            }));
-        }
-        return;
-    };
-
-    let mut text_parts = Vec::new();
-    let flush_text = |out: &mut Vec<Value>, text_parts: &mut Vec<String>| {
-        let text = join_nonempty(text_parts);
-        text_parts.clear();
-        if !text.is_empty() {
-            out.push(serde_json::json!({
-                "role": "user",
-                "content": text
-            }));
-        }
-    };
-
+fn append_user_openai_messages(
+    out: &mut Vec<Value>,
+    content: &Value,
+    state: &mut OpenAiMessageState,
+) -> Result<()> {
+    let singleton = [content];
+    let blocks = content
+        .as_array()
+        .map(|items| items.iter().collect::<Vec<_>>())
+        .unwrap_or_else(|| singleton.to_vec());
     for block in blocks {
         if block.get("type").and_then(Value::as_str) == Some("tool_result") {
-            flush_text(out, &mut text_parts);
             let tool_call_id = block
                 .get("tool_use_id")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let content = block
-                .get("content")
-                .and_then(anthropic_content_to_text)
-                .unwrap_or_default();
-            if !tool_call_id.is_empty() {
-                out.push(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content
-                }));
+            if !state.pending_tools.remove(tool_call_id) {
+                return Err(Error::Other(
+                    "proxy tool result has no matching pending tool call".into(),
+                ));
             }
+            let mut parts = Vec::new();
+            collect_openai_content(
+                block.get("content").unwrap_or(&Value::Null),
+                &mut parts,
+                state,
+                0,
+            )?;
+            let mut text = parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+                text.insert(0, "[Tool reported an error]".into());
+            }
+            if parts.iter().any(|part| part["type"] == "image_url") {
+                text.push(format!(
+                    "[Image observations follow for tool_use_id: {tool_call_id}]"
+                ));
+                state.observations.push(serde_json::json!({"type":"text", "text": format!("Tool result observation; tool_use_id: {tool_call_id}")}));
+                state.observations.extend(parts);
+            }
+            out.push(serde_json::json!({"role":"tool", "tool_call_id":tool_call_id, "content":join_nonempty(&text)}));
             continue;
         }
-        if let Some(text) = anthropic_content_to_text(block) {
-            text_parts.push(text);
-        }
+        let mut parts = Vec::new();
+        collect_openai_content(block, &mut parts, state, 0)?;
+        state.user_parts.extend(parts);
     }
-    flush_text(out, &mut text_parts);
+    // Chat tool messages carry text. Images follow only once every tool call in
+    // the batch has a result, including results split across Anthropic messages.
+    if state.pending_tools.is_empty() {
+        push_openai_user_content(out, &mut state.observations);
+        push_openai_user_content(out, &mut state.user_parts);
+    }
+    Ok(())
+}
+
+fn push_openai_user_content(out: &mut Vec<Value>, parts: &mut Vec<Value>) {
+    if parts.is_empty() {
+        return;
+    }
+    let parts = std::mem::take(parts);
+    let content = if parts.iter().all(|part| part["type"] == "text") {
+        Value::String(join_nonempty(
+            &parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        ))
+    } else {
+        Value::Array(parts)
+    };
+    out.push(serde_json::json!({"role":"user", "content":content}));
+}
+
+fn collect_openai_content(
+    content: &Value,
+    out: &mut Vec<Value>,
+    state: &mut OpenAiMessageState,
+    depth: usize,
+) -> Result<()> {
+    state.content_parts += 1;
+    if depth > 16 || state.content_parts > 8192 {
+        return Err(Error::Other(
+            "proxy content structure exceeds conversion limits".into(),
+        ));
+    }
+    if let Some(text) = content.as_str() {
+        out.push(serde_json::json!({"type":"text", "text":text}));
+    } else if let Some(blocks) = content.as_array() {
+        for block in blocks {
+            collect_openai_content(block, out, state, depth + 1)?;
+        }
+    } else if content.get("type").and_then(Value::as_str) == Some("image") {
+        let source = content.get("source");
+        if source.is_some_and(|source| source.get("type").and_then(Value::as_str) != Some("base64"))
+        {
+            return Err(Error::Other(
+                "proxy supports only inline base64 raster images".into(),
+            ));
+        }
+        let (mime, data) = match source {
+            Some(source) => (source.get("media_type"), source.get("data")),
+            None => (content.get("mimeType"), content.get("data")),
+        };
+        let mime = mime.and_then(Value::as_str).unwrap_or_default();
+        let data = data.and_then(Value::as_str).unwrap_or_default();
+        let decoded_len = validate_tool_image(mime, data)?;
+        state.image_count += 1;
+        state.image_bytes += decoded_len;
+        if state.image_count > 32 || state.image_bytes > 20 * 1024 * 1024 {
+            return Err(Error::Other(
+                "proxy image batch exceeds 32 images or 20 MiB".into(),
+            ));
+        }
+        out.push(serde_json::json!({"type":"image_url", "image_url":{"url":format!("data:{mime};base64,{data}")}}));
+    } else if let Some(nested) = content.get("content") {
+        collect_openai_content(nested, out, state, depth + 1)?;
+    } else if let Some(text) = anthropic_content_to_text(content) {
+        out.push(serde_json::json!({"type":"text", "text":text}));
+    } else if content
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "document" | "resource" | "resource_link" | "audio"))
+    {
+        return Err(Error::Other(
+            "proxy OpenAI Chat conversion does not support this media content type".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tool_image(mime: &str, data: &str) -> Result<usize> {
+    if !matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) {
+        return Err(Error::Other(
+            "proxy supports only PNG, JPEG, GIF and WebP images".into(),
+        ));
+    }
+    if data.is_empty() || data.len() > MAX_TOOL_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err(Error::Other("proxy image is empty or exceeds 5 MiB".into()));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| Error::Other("proxy image has invalid base64 data".into()))?;
+    if bytes.len() > MAX_TOOL_IMAGE_BYTES {
+        return Err(Error::Other("proxy image exceeds 5 MiB".into()));
+    }
+    let (width, height) = raster_dimensions(&bytes, mime)
+        .ok_or_else(|| Error::Other("proxy image has invalid raster headers".into()))?;
+    if width == 0
+        || height == 0
+        || width > 16384
+        || height > 16384
+        || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
+    {
+        return Err(Error::Other(
+            "proxy image dimensions exceed 32 megapixels or 16384 per edge".into(),
+        ));
+    }
+    Ok(bytes.len())
+}
+
+// Validate raster signature/dimensions before constructing an inline data URL.
+// This is bounded transport validation, not evidence of a provider's vision support.
+fn raster_dimensions(bytes: &[u8], mime: &str) -> Option<(u32, u32)> {
+    let be16 = |i: usize| Some(u16::from_be_bytes(bytes.get(i..i + 2)?.try_into().ok()?) as u32);
+    let le16 = |i: usize| Some(u16::from_le_bytes(bytes.get(i..i + 2)?.try_into().ok()?) as u32);
+    let be32 = |i: usize| Some(u32::from_be_bytes(bytes.get(i..i + 4)?.try_into().ok()?));
+    let le24 = |i: usize| {
+        Some(
+            u32::from(*bytes.get(i)?)
+                | (u32::from(*bytes.get(i + 1)?) << 8)
+                | (u32::from(*bytes.get(i + 2)?) << 16),
+        )
+    };
+    match mime {
+        "image/png"
+            if bytes.len() >= 33
+                && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+                && bytes.get(12..16) == Some(b"IHDR") =>
+        {
+            Some((be32(16)?, be32(20)?))
+        }
+        "image/gif"
+            if bytes.len() >= 13
+                && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) =>
+        {
+            Some((le16(6)?, le16(8)?))
+        }
+        "image/webp" if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") => {
+            match bytes.get(12..16)? {
+                b"VP8X" if bytes.len() >= 30 => Some((le24(24)? + 1, le24(27)? + 1)),
+                b"VP8 " if bytes.len() >= 30 && bytes.get(23..26) == Some(b"\x9d\x01\x2a") => {
+                    Some((le16(26)? & 0x3fff, le16(28)? & 0x3fff))
+                }
+                b"VP8L" if bytes.len() >= 25 && bytes[20] == 0x2f => Some((
+                    1 + u32::from(bytes[21]) + (u32::from(bytes[22] & 0x3f) << 8),
+                    1 + u32::from(bytes[22] >> 6)
+                        + (u32::from(bytes[23]) << 2)
+                        + (u32::from(bytes[24] & 0xf) << 10),
+                )),
+                _ => None,
+            }
+        }
+        "image/jpeg" if bytes.starts_with(b"\xff\xd8") => {
+            let mut i = 2;
+            while i + 3 < bytes.len() {
+                if bytes[i] != 0xff {
+                    return None;
+                }
+                i += 1;
+                while bytes.get(i) == Some(&0xff) {
+                    i += 1;
+                }
+                let marker = *bytes.get(i)?;
+                i += 1;
+                if matches!(marker, 0xda | 0xd9) {
+                    return None;
+                }
+                if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+                    continue;
+                }
+                let size = be16(i)? as usize;
+                if size < 2 || i + size > bytes.len() {
+                    return None;
+                }
+                if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf)
+                    && size >= 8
+                {
+                    return Some((be16(i + 5)?, be16(i + 3)?));
+                }
+                i += size;
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn assistant_content_to_openai(content: &Value) -> Result<(String, Vec<Value>)> {
@@ -798,7 +1062,7 @@ fn assistant_content_to_openai(content: &Value) -> Result<(String, Vec<Value>)> 
                     .unwrap_or_default()
                     .to_string();
                 if id.is_empty() || name.is_empty() {
-                    continue;
+                    return Err(Error::Other("proxy tool call is missing id or name".into()));
                 }
                 let input = block
                     .get("input")
@@ -813,6 +1077,11 @@ fn assistant_content_to_openai(content: &Value) -> Result<(String, Vec<Value>)> 
                         "arguments": arguments
                     }
                 }));
+            }
+            Some("image" | "document" | "audio") => {
+                return Err(Error::Other(
+                    "proxy OpenAI Chat does not support assistant media blocks".into(),
+                ))
             }
             _ => {
                 if let Some(text) = anthropic_content_to_text(block) {
@@ -1752,6 +2021,194 @@ mod tests {
         assert_eq!(value["tool_choice"], "auto");
     }
 
+    const TEST_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6O5sAAAAASUVORK5CYII=";
+
+    fn image_tool_request(results: Value) -> Value {
+        serde_json::json!({"model":"any-provider-model", "messages":[
+            {"role":"assistant", "content":[{"type":"tool_use", "id":"capture-a", "name":"screenshot", "input":{}}, {"type":"tool_use", "id":"read-b", "name":"Read", "input":{}}]},
+            {"role":"user", "content":results}
+        ]})
+    }
+
+    fn converted_request(body: &Value) -> Result<Value> {
+        let (bytes, _) = anthropic_to_openai_request(&serde_json::to_vec(body)?, &proxy_config())?;
+        serde_json::from_slice(&bytes).map_err(Error::from)
+    }
+
+    #[test]
+    fn tool_images_follow_the_complete_tool_batch_with_original_association() {
+        let body = image_tool_request(serde_json::json!([
+            {"type":"text", "text":"authored follow-up"},
+            {"type":"tool_result", "tool_use_id":"capture-a", "content":{"content":[
+                {"type":"text", "text":"capture text"}, {"type":"image", "mimeType":"image/png", "data":TEST_PNG},
+                {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":TEST_PNG}}
+            ]}},
+            {"type":"tool_result", "tool_use_id":"read-b", "content":[{"type":"text", "text":"file text"}]}
+        ]));
+        let converted = converted_request(&body).unwrap();
+        let messages = converted["messages"].as_array().unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message["role"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["assistant", "tool", "tool", "user", "user"]
+        );
+        assert_eq!(messages[1]["tool_call_id"], "capture-a");
+        assert_eq!(messages[2]["tool_call_id"], "read-b");
+        assert!(messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("capture text"));
+        assert!(!messages[1]["content"].as_str().unwrap().contains(TEST_PNG));
+        assert!(messages[3]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("capture-a"));
+        assert_eq!(
+            messages[3]["content"][2]["image_url"]["url"],
+            format!("data:image/png;base64,{TEST_PNG}")
+        );
+        assert_eq!(
+            messages[3]["content"][3]["image_url"]["url"],
+            format!("data:image/png;base64,{TEST_PNG}")
+        );
+        assert_eq!(messages[4]["content"], "authored follow-up");
+    }
+
+    #[test]
+    fn split_tool_results_defer_images_until_all_calls_are_answered() {
+        let mut body = image_tool_request(serde_json::json!([
+            {"type":"tool_result", "tool_use_id":"capture-a", "content":[{"type":"image", "mimeType":"image/png", "data":TEST_PNG}]}
+        ]));
+        body["messages"].as_array_mut().unwrap().push(serde_json::json!({"role":"user", "content":[{"type":"tool_result", "tool_use_id":"read-b", "content":"done"}]}));
+        let converted = converted_request(&body).unwrap();
+        assert_eq!(converted["messages"][2]["role"], "tool");
+        assert_eq!(converted["messages"][3]["role"], "user");
+        assert_eq!(converted["messages"][3]["content"][1]["type"], "image_url");
+    }
+
+    #[test]
+    fn unpaired_missing_and_duplicate_tool_results_are_explicit_errors() {
+        for results in [
+            serde_json::json!([{ "type":"tool_result", "tool_use_id":"foreign", "content":"text" }]),
+            serde_json::json!([{ "type":"tool_result", "tool_use_id":"capture-a", "content":"text" }]),
+            serde_json::json!([{ "type":"tool_result", "tool_use_id":"capture-a", "content":"text" }, { "type":"tool_result", "tool_use_id":"capture-a", "content":"again" }]),
+        ] {
+            assert!(converted_request(&image_tool_request(results)).is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_oversized_and_non_raster_images_never_silently_disappear() {
+        for image in [
+            serde_json::json!({"type":"image", "mimeType":"image/svg+xml", "data":TEST_PNG}),
+            serde_json::json!({"type":"image", "mimeType":"image/jpeg", "data":TEST_PNG}),
+            serde_json::json!({"type":"image", "mimeType":"image/png", "data":"%%%%"}),
+            serde_json::json!({"type":"image", "mimeType":"image/png", "data":format!("data:image/png;base64,{TEST_PNG}")}),
+            serde_json::json!({"type":"image", "source":{"type":"url", "url":"https://untrusted.invalid/image.png"}}),
+            serde_json::json!({"type":"image", "mimeType":"image/png", "data":"A".repeat(MAX_TOOL_IMAGE_BYTES.div_ceil(3) * 4 + 4)}),
+        ] {
+            let body = serde_json::json!({"messages":[{"role":"user", "content":[image]}]});
+            assert!(converted_request(&body).is_err());
+        }
+        let mut huge_dimensions = base64::engine::general_purpose::STANDARD
+            .decode(TEST_PNG)
+            .unwrap();
+        huge_dimensions[16..20].copy_from_slice(&65536u32.to_be_bytes());
+        assert!(validate_tool_image(
+            "image/png",
+            &base64::engine::general_purpose::STANDARD.encode(huge_dimensions)
+        )
+        .is_err());
+        assert!(validate_tool_image("image/png", "AB==").is_err());
+    }
+
+    #[test]
+    fn authored_images_are_multimodal_without_inventing_tool_results() {
+        let body = serde_json::json!({"messages":[{"role":"user", "content":[{"type":"text", "text":"inspect fixture"}, {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":TEST_PNG}}]}]});
+        let converted = converted_request(&body).unwrap();
+        assert_eq!(converted["messages"][0]["role"], "user");
+        assert_eq!(
+            converted["messages"][0]["content"][0]["text"],
+            "inspect fixture"
+        );
+        assert_eq!(
+            converted["messages"][0]["content"][1]["image_url"]["url"],
+            format!("data:image/png;base64,{TEST_PNG}")
+        );
+    }
+
+    #[test]
+    fn request_and_aggregate_image_limits_fail_explicitly() {
+        assert!(anthropic_to_openai_request(
+            &vec![b' '; MAX_PROXY_REQUEST_BYTES + 1],
+            &proxy_config()
+        )
+        .is_err());
+        let body = serde_json::json!({"messages":[{"role":"user", "content":(0..33).map(|_| serde_json::json!({"type":"image", "mimeType":"image/png", "data":TEST_PNG})).collect::<Vec<_>>()}]});
+        assert!(converted_request(&body).is_err());
+    }
+
+    #[tokio::test]
+    async fn proxy_reports_oversized_body_before_reading_it() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        crate::child_process::disable_socket_inheritance(&listener);
+        let address = listener.local_addr().unwrap();
+        let worker = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            crate::child_process::disable_socket_inheritance(&stream);
+            handle(stream, Arc::new(proxy_config()), None)
+                .await
+                .unwrap();
+        });
+        let mut client = TcpStream::connect(address).await.unwrap();
+        crate::child_process::disable_socket_inheritance(&client);
+        client.write_all(format!("POST /v1/messages HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", MAX_PROXY_REQUEST_BYTES + 1).as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 413"));
+        assert!(String::from_utf8_lossy(&response).contains("invalid_request_error"));
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn proxy_reports_unsupported_image_as_json_without_contacting_upstream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        crate::child_process::disable_socket_inheritance(&listener);
+        let address = listener.local_addr().unwrap();
+        let worker = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            crate::child_process::disable_socket_inheritance(&stream);
+            let mut config = proxy_config();
+            config.input_format = "openai-chat-completions".into();
+            handle(stream, Arc::new(config), None).await.unwrap();
+        });
+        let body = serde_json::json!({"messages":[{"role":"user", "content":[{"type":"image", "mimeType":"image/svg+xml", "data":"private-payload"}]}]}).to_string();
+        let mut client = TcpStream::connect(address).await.unwrap();
+        crate::child_process::disable_socket_inheritance(&client);
+        client.write_all(format!("POST /v1/messages HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 400"));
+        assert!(response.contains("PNG, JPEG, GIF and WebP"));
+        assert!(!response.contains("private-payload"));
+        worker.await.unwrap();
+    }
+
     #[test]
     fn openai_reasoning_effort_passes_through_full_level_set() {
         // OpenAI reasoning_effort 全集（前端 OPENAI_EFFORT_LEVELS）应原样透传，
@@ -2027,6 +2484,7 @@ mod tests {
     async fn proxy_roundtrip(proxy_url: &str, path: &str, body: &[u8]) -> String {
         let addr = proxy_url.strip_prefix("http://").expect("proxy url");
         let mut client = TcpStream::connect(addr).await.expect("connect proxy");
+        crate::child_process::disable_socket_inheritance(&client);
         let head = format!(
             "POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             path,
@@ -2054,11 +2512,13 @@ mod tests {
         let upstream = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind upstream");
+        crate::child_process::disable_socket_inheritance(&upstream);
         let upstream_addr = upstream.local_addr().expect("upstream addr");
         // 信号驱动：上游发出第一块后阻塞等待，确保“客户端读到第一块”先于“上游发完”。
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
             let (mut sock, _) = upstream.accept().await.expect("accept");
+            crate::child_process::disable_socket_inheritance(&sock);
             read_http_request(&mut sock).await;
             sock.write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: first\n\n",
@@ -2078,6 +2538,7 @@ mod tests {
         let proxy_url = start(config, None).await.expect("start proxy");
         let addr = proxy_url.strip_prefix("http://").expect("proxy url");
         let mut client = TcpStream::connect(addr).await.expect("connect proxy");
+        crate::child_process::disable_socket_inheritance(&client);
         let body = br#"{"model":"sonnet"}"#;
         let head = format!(
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
@@ -2131,6 +2592,7 @@ mod tests {
         let upstream = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind upstream");
+        crate::child_process::disable_socket_inheritance(&upstream);
         let upstream_addr = upstream.local_addr().expect("upstream addr");
         tokio::spawn(async move {
             let responses: [&[u8]; 2] = [
@@ -2139,6 +2601,7 @@ mod tests {
             ];
             for response in responses {
                 let (mut sock, _) = upstream.accept().await.expect("accept");
+                crate::child_process::disable_socket_inheritance(&sock);
                 read_http_request(&mut sock).await;
                 sock.write_all(response).await.expect("write response");
                 sock.flush().await.expect("flush response");
@@ -2183,11 +2646,13 @@ mod tests {
         let upstream = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind upstream");
+        crate::child_process::disable_socket_inheritance(&upstream);
         let upstream_addr = upstream.local_addr().expect("upstream addr");
         let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
             for _ in 0..4 {
                 let (mut sock, _) = upstream.accept().await.expect("accept");
+                crate::child_process::disable_socket_inheritance(&sock);
                 let request = read_http_request(&mut sock).await;
                 let _ = req_tx.send(String::from_utf8_lossy(&request).into_owned());
                 sock.write_all(
@@ -2238,10 +2703,12 @@ mod tests {
         let upstream = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind upstream");
+        crate::child_process::disable_socket_inheritance(&upstream);
         let upstream_addr = upstream.local_addr().expect("upstream addr");
         let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
             let (mut sock, _) = upstream.accept().await.expect("accept");
+            crate::child_process::disable_socket_inheritance(&sock);
             let request = read_http_request(&mut sock).await;
             let _ = req_tx.send(String::from_utf8_lossy(&request).into_owned());
             sock.write_all(

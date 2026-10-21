@@ -699,6 +699,7 @@ pub async fn spawn_session(
     permission_mcp_enabled: Option<bool>,
     permission_prompt_tool: Option<String>,
     mcp_config: Option<String>,
+    computer_use_enabled: Option<bool>,
     collab_mcp_enabled: Option<bool>,
     collab_provider_paths: Option<std::collections::HashMap<String, String>>,
     collab_enabled_providers: Option<Vec<String>>,
@@ -795,10 +796,7 @@ pub async fn spawn_session(
             crate::collab::render_default_mcp_config()?,
         );
     }
-    let mcp_config = merged_mcp_config
-        .and_then(runtime_mcp_config)
-        .map(|config| write_runtime_mcp_config_file(&config))
-        .transpose()?;
+    let mcp_config = serialize_runtime_mcp_config(merged_mcp_config)?;
     let opts = SpawnOptions {
         runtime_id,
         fork_session: fork_session.unwrap_or(false),
@@ -812,6 +810,7 @@ pub async fn spawn_session(
         env_remove,
         permission_prompt_tool,
         mcp_config,
+        computer_use_enabled: computer_use_enabled.unwrap_or(false),
         settings_json,
         file_checkpointing,
         forward_subagent_text,
@@ -917,17 +916,12 @@ fn runtime_mcp_config(mut config: Value) -> Option<Value> {
     Some(config)
 }
 
-fn write_runtime_mcp_config_file(config: &Value) -> Result<String> {
-    let dir = std::env::temp_dir().join("claudinal");
-    std::fs::create_dir_all(&dir).map_err(Error::from)?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| Error::Other(format!("system clock before UNIX_EPOCH: {e}")))?
-        .as_millis();
-    let path = dir.join(format!("mcp-config-{}-{stamp}.json", std::process::id()));
-    let text = serde_json::to_string_pretty(config)?;
-    std::fs::write(&path, text).map_err(Error::from)?;
-    Ok(path.display().to_string())
+/// Carry JSON to the process manager, which owns the only temporary config file.
+pub(crate) fn serialize_runtime_mcp_config(config: Option<Value>) -> Result<Option<String>> {
+    config
+        .and_then(runtime_mcp_config)
+        .map(|config| serde_json::to_string(&config).map_err(Error::from))
+        .transpose()
 }
 
 const RUNTIME_CLAUDE_SETTINGS_ENV_KEYS: &[&str] = &[

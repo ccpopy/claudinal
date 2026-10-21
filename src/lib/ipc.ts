@@ -24,6 +24,7 @@ export type SpawnArgs = {
   resumeSessionId?: string | null
   env?: Record<string, string> | null
   permissionMcpEnabled?: boolean | null
+  computerUseEnabled?: boolean
   permissionPromptTool?: string | null
   mcpConfig?: string | null
   collabMcpEnabled?: boolean | null
@@ -294,6 +295,61 @@ export async function listenClaudeCliCommandProgress(
 export async function spawnSession(args: SpawnArgs): Promise<string> {
   return invoke<string>("spawn_session", args as Record<string, unknown>)
 }
+
+export type ComputerUseTier = "view" | "click" | "full"
+export interface ComputerUseApp {
+  appId: string
+  name: string
+  path: string
+  pid: number
+  windowId: string
+  title: string
+  tier: ComputerUseTier
+}
+export interface ComputerUsePermissionRequest {
+  runtimeId: string
+  requestId: string
+  generation: number
+  app: ComputerUseApp
+  tier: ComputerUseTier
+  reason: string
+}
+export interface ComputerUseRuntimeStatus {
+  runtimeId: string
+  cwd: string
+  enabled: boolean
+  generation: number
+  state: "disabled" | "enabled" | "requested" | "granted" | "active" | "revoked"
+  apps: ComputerUseApp[]
+  pendingRequests: ComputerUsePermissionRequest[]
+  reason: string | null
+}
+export interface ComputerUseStatus {
+  revision: number
+  driver: {
+    supported: boolean
+    platform: string
+    state: "notInstalled" | "checking" | "ready" | "error" | "unavailable"
+    path: string | null
+    version: string | null
+    managed: boolean
+    reason: string | null
+  }
+  runtime: ComputerUseRuntimeStatus | null
+  controller: { runtimeId: string; cwd: string } | null
+  cleanup: { state: "idle" | "stopping" | "failed"; reason: string | null }
+}
+export const computerUseStatus = (runtimeId?: string) => invoke<ComputerUseStatus>("computer_use_status", { runtimeId })
+export const computerUseInstallDriver = () => invoke<ComputerUseStatus>("computer_use_install_driver")
+export const computerUseSetDriverPath = (path: string) => invoke<ComputerUseStatus>("computer_use_set_driver_path", { path })
+export const computerUseListApps = (runtimeId: string) => invoke<ComputerUseApp[]>("computer_use_list_apps", { runtimeId })
+export const computerUseSetEnabled = (runtimeId: string, enabled: boolean) => invoke<ComputerUseStatus>("computer_use_set_enabled", { runtimeId, enabled })
+export const computerUseRequestApp = (runtimeId: string, appId: string) => invoke<ComputerUsePermissionRequest>("computer_use_request_app", { runtimeId, appId })
+export const computerUseRespond = (runtimeId: string, requestId: string, allow: boolean) => invoke<ComputerUseStatus>("computer_use_respond", { runtimeId, requestId, allow })
+export const computerUseRevokeApp = (runtimeId: string, appId: string) => invoke<ComputerUseStatus>("computer_use_revoke_app", { runtimeId, appId })
+export const computerUseTakeBack = (runtimeId?: string) => invoke<ComputerUseStatus>("computer_use_take_back", { runtimeId })
+export const listenComputerUseStatus = (handler: (status: ComputerUseStatus) => void) => listen<ComputerUseStatus>("computer-use://status", (event) => handler(event.payload))
+export const listenComputerUsePermission = (handler: (request: ComputerUsePermissionRequest) => void) => listen<ComputerUsePermissionRequest>("computer-use://permission-request", (event) => handler(event.payload))
 
 export async function claudeWorkspaceTrustInfo(
   cwd: string

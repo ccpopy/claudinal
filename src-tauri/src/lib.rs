@@ -5,6 +5,7 @@ mod buddy;
 mod child_process;
 mod collab;
 mod commands;
+mod computer_use;
 mod error;
 mod fs_atomic;
 mod keychain;
@@ -51,6 +52,14 @@ pub fn run_permission_mcp_server() -> error::Result<()> {
 
 pub fn run_collab_mcp_server() -> error::Result<()> {
     collab::run_stdio_mcp_server()
+}
+
+pub fn run_computer_use_mcp_server() -> error::Result<()> {
+    computer_use::run_mcp_stdio()
+}
+
+pub fn run_computer_use_window_worker() -> error::Result<()> {
+    computer_use::run_window_worker()
 }
 
 pub fn run() {
@@ -117,7 +126,8 @@ pub fn run() {
                 }
             });
         })
-        .setup(|_app| {
+        .setup(|app| {
+            computer_use::init(app.handle().clone())?;
             // 后台回收上次运行残留的审查快照临时目录（崩溃 / 直接关窗会泄漏）
             std::thread::spawn(commands::cleanup_stale_review_snapshots);
             Ok(())
@@ -134,6 +144,15 @@ pub fn run() {
             commands::claude_workspace_trust_info,
             commands::trust_claude_workspace,
             commands::spawn_session,
+            computer_use::computer_use_status,
+            computer_use::computer_use_install_driver,
+            computer_use::computer_use_set_driver_path,
+            computer_use::computer_use_list_apps,
+            computer_use::computer_use_set_enabled,
+            computer_use::computer_use_request_app,
+            computer_use::computer_use_respond,
+            computer_use::computer_use_revoke_app,
+            computer_use::computer_use_take_back,
             commands::claude_capabilities,
             commands::claude_installations,
             commands::select_claude_installation,
@@ -239,6 +258,15 @@ pub fn run() {
             plugins::install_skill_from_path,
             plugins::run_plugin_command,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                computer_use::revoke_all(app, "application_shutdown");
+                app.state::<proc::Manager>().shutdown();
+            }
+        });
 }
