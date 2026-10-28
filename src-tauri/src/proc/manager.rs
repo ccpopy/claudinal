@@ -68,6 +68,19 @@ struct Session {
     mutation_gate: Mutex<()>,
     activity: std::sync::Mutex<Activity>,
     checkpoints_enabled: bool,
+    title_launch: TitleLaunch,
+    title_gate: Mutex<()>,
+}
+
+/// The launch environment of a live session (third-party proxy URL, model
+/// mappings), reused for its one-shot title request while the session runs.
+#[derive(Clone)]
+struct TitleLaunch {
+    claude: PathBuf,
+    cwd: PathBuf,
+    env: std::collections::HashMap<String, String>,
+    env_remove: Vec<String>,
+    safe_mode: bool,
 }
 
 impl Session {
@@ -466,7 +479,8 @@ impl Manager {
             cmd.arg("--effort").arg(effort);
         }
         if let Some(pm) = &opts.permission_mode {
-            cmd.arg("--permission-mode").arg(pm);
+            cmd.arg("--permission-mode")
+                .arg(super::permissions::cli_mode(pm));
         }
         if let Some(rid) = &opts.resume_session_id {
             cmd.arg("--resume").arg(rid);
@@ -510,6 +524,7 @@ impl Manager {
         for key in &opts.env_remove {
             cmd.env_remove(key);
         }
+        super::permissions::configure_env(&mut cmd, opts.permission_mode.as_deref());
         cmd.env(
             "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
             if checkpoints_enabled { "true" } else { "false" },
@@ -567,6 +582,14 @@ impl Manager {
             mutation_gate: Mutex::new(()),
             activity: std::sync::Mutex::new(Activity::default()),
             checkpoints_enabled,
+            title_launch: TitleLaunch {
+                claude: claude.clone(),
+                cwd: opts.cwd.clone(),
+                env: opts.env.clone().unwrap_or_default(),
+                env_remove: opts.env_remove.clone(),
+                safe_mode: capabilities::from_help("--safe-mode", &help) == Support::Supported,
+            },
+            title_gate: Mutex::new(()),
         });
         self.sessions.insert(session_id.clone(), session.clone());
         self.diagnostics.record(&session_id, "spawned", None, None);
@@ -1495,6 +1518,109 @@ impl Manager {
         Ok(())
     }
 
+    /// The CLI writes no generated title for `-p` runs, so the app asks a small
+    /// model once, reusing the live session's provider environment. Customizations
+    /// (hooks, CLAUDE.md, MCP, plugins) are skipped and nothing is persisted.
+    pub async fn generate_title(
+        &self,
+        session_id: &str,
+        conversation: &str,
+        model: &str,
+    ) -> Result<String> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .map(|session| session.value().clone())
+            .ok_or_else(|| Error::Other("session is not running".into()))?;
+        let _title_guard = session
+            .title_gate
+            .try_lock()
+            .map_err(|_| Error::Other("title request already running".into()))?;
+        if !session.available.load(Ordering::Acquire) || *session.stop.borrow() {
+            return Err(Error::Other("session is not running".into()));
+        }
+        let launch = &session.title_launch;
+        if !launch.safe_mode {
+            return Err(Error::Other("CLI does not support --safe-mode".into()));
+        }
+        let model = model.trim();
+        if model.is_empty() || model.len() > 200 {
+            return Err(Error::Other("invalid title model".into()));
+        }
+        let excerpt: String = conversation.chars().take(TITLE_INPUT_CHARS).collect();
+        if excerpt.trim().is_empty() {
+            return Err(Error::Other("nothing to title".into()));
+        }
+        // Command-line settings outrank user settings.env, like the session itself.
+        let provider_env = crate::commands::runtime_provider_env(&launch.env);
+        let settings = RuntimeSettings::write(
+            &format!("title-{}", Uuid::new_v4().simple()),
+            &json!({ "env": provider_env, "disableAllHooks": true }).to_string(),
+        )?;
+        let mcp = RuntimeSettings::write(
+            &format!("title-mcp-{}", Uuid::new_v4().simple()),
+            r#"{"mcpServers":{}}"#,
+        )?;
+        let mut arguments: Vec<String> = [
+            "-p",
+            "--output-format",
+            "json",
+            "--safe-mode",
+            "--strict-mcp-config",
+            "--no-session-persistence",
+            "--tools",
+            "",
+            "--max-turns",
+            "1",
+            "--model",
+            model,
+            "--system-prompt",
+            TITLE_SYSTEM_PROMPT,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        arguments.extend([
+            "--settings".into(),
+            settings.path.display().to_string(),
+            "--mcp-config".into(),
+            mcp.path.display().to_string(),
+        ]);
+        let mut cmd = crate::commands::claude_runtime_command(&launch.claude, &arguments)?;
+        for (key, value) in &launch.env {
+            cmd.env(key, value);
+        }
+        for key in &launch.env_remove {
+            cmd.env_remove(key);
+        }
+        super::permissions::configure_env(&mut cmd, Some("default"));
+        #[cfg(unix)]
+        cmd.process_group(0);
+        hide_tokio_window(&mut cmd);
+        cmd.current_dir(&launch.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let prompt = format!("{TITLE_USER_PREFIX}\n\n<conversation>\n{excerpt}\n</conversation>");
+        let output = run_title_command(cmd, prompt, session.stop.subscribe()).await?;
+        drop(mcp);
+        drop(settings);
+        if !session.available.load(Ordering::Acquire) {
+            return Err(Error::Other("title request cancelled".into()));
+        }
+        let value: Value = serde_json::from_slice(&output)
+            .map_err(|_| Error::Other("title response is not JSON".into()))?;
+        if value.get("is_error").and_then(Value::as_bool) == Some(true) {
+            return Err(Error::Other("title request failed".into()));
+        }
+        value
+            .get("result")
+            .and_then(Value::as_str)
+            .and_then(clean_generated_title)
+            .ok_or_else(|| Error::Other("title response was empty".into()))
+    }
+
     /// Application shutdown cannot await individual IPC cleanup.
     pub fn shutdown(&self) {
         for launch in self.pending_launches.iter() {
@@ -1557,6 +1683,98 @@ impl Drop for RuntimeDesktop {
     }
 }
 
+const TITLE_INPUT_CHARS: usize = 2000;
+const TITLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+const TITLE_OUTPUT_BYTES: usize = 64 * 1024;
+const TITLE_SYSTEM_PROMPT: &str =
+    "You write short titles for coding conversations. Reply with the title only.";
+const TITLE_USER_PREFIX: &str = "Write a title for this conversation: at most 20 Chinese characters or 8 English words, in the same language as the user, describing the task. No quotes, no trailing punctuation, no explanation.";
+
+async fn run_title_command(
+    mut command: Command,
+    prompt: String,
+    mut cancelled: watch::Receiver<bool>,
+) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if *cancelled.borrow() {
+        return Err(Error::Other("title request cancelled".into()));
+    }
+    let mut child = command.spawn()?;
+    let tree = match ProcessTree::attach(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill().await;
+            return Err(error.into());
+        }
+    };
+    let operation = async {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Other("title stdin unavailable".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Other("title stdout unavailable".into()))?;
+        let write = async move {
+            stdin.write_all(prompt.as_bytes()).await?;
+            drop(stdin);
+            Ok::<_, Error>(())
+        };
+        let read = async move {
+            let mut bytes = Vec::new();
+            stdout
+                .take((TITLE_OUTPUT_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() > TITLE_OUTPUT_BYTES {
+                return Err(Error::Other("title response exceeds output limit".into()));
+            }
+            Ok::<_, Error>(bytes)
+        };
+        let wait = async { child.wait().await.map_err(Error::from) };
+        let (_, bytes, status) = tokio::try_join!(write, read, wait)?;
+        if !status.success() {
+            return Err(Error::Other("title process failed".into()));
+        }
+        Ok(bytes)
+    };
+    let result = tokio::select! {
+        biased;
+        _ = cancelled.wait_for(|stop| *stop) => Err(Error::Other("title request cancelled".into())),
+        result = tokio::time::timeout(TITLE_TIMEOUT, operation) => result.unwrap_or_else(|_| Err(Error::Other("title request timed out".into()))),
+    };
+    // Close the owned process tree before waiting for root process cleanup.
+    drop(tree);
+    if result.is_err() {
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    }
+    result
+}
+
+/// Keep only a single bounded line; models sometimes add quotes or a label.
+fn clean_generated_title(raw: &str) -> Option<String> {
+    let line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let line = line.trim_start_matches(|c: char| c == '#' || c == '*' || c.is_whitespace());
+    let line = ["标题：", "标题:", "Title:", "title:"]
+        .iter()
+        .fold(line, |line, label| line.strip_prefix(label).unwrap_or(line))
+        .trim();
+    let quote = |c: char| {
+        matches!(
+            c,
+            '"' | '\'' | '`' | '“' | '”' | '‘' | '’' | '「' | '」' | '《' | '》' | '*'
+        )
+    };
+    // Quotes and trailing punctuation can nest in either order (`」。` or `。」`).
+    let line = line.trim_start_matches(quote).trim_end_matches(|c: char| {
+        quote(c) || matches!(c, '。' | '.' | '！' | '!' | '：' | ':' | '，' | ',')
+    });
+    let title: String = line.trim().chars().take(60).collect();
+    (!title.is_empty()).then_some(title)
+}
+
 struct RuntimeSettings {
     path: PathBuf,
     session_id: String,
@@ -1566,6 +1784,14 @@ impl RuntimeSettings {
     fn mcp(session_id: &str, config: &Value) -> Result<Self> {
         let contents = serde_json::to_string(config)?;
         let path = write_runtime_claude_settings_file(&format!("mcp-{session_id}"), &contents)?;
+        Ok(Self {
+            path,
+            session_id: session_id.into(),
+        })
+    }
+
+    fn write(session_id: &str, contents: &str) -> Result<Self> {
+        let path = write_runtime_claude_settings_file(session_id, contents)?;
         Ok(Self {
             path,
             session_id: session_id.into(),
@@ -1639,6 +1865,7 @@ fn configure_session_settings_for_capabilities(
     let object = settings
         .as_object_mut()
         .ok_or_else(|| Error::Other("runtime settings must be an object".into()))?;
+    super::permissions::configure_settings(opts.permission_mode.as_deref(), object)?;
     // This process option is set after env_remove and never delegated to the
     // settings.env layer, which Claude can apply after child-process startup.
     if let Some(env) = object.get_mut("env").and_then(Value::as_object_mut) {
@@ -1892,6 +2119,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn full_access_launch_merges_runtime_settings_without_changing_app_identity() {
+        let mut options = SpawnOptions {
+            permission_mode: Some("fullAccess".into()),
+            settings_json: Some(
+                json!({"env":{"CUSTOM":"kept"},"sandbox":{"enabled":true}}).to_string(),
+            ),
+            ..SpawnOptions::default()
+        };
+        configure_session_settings(&mut options, "2.1.309").unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(options.settings_json.as_deref().unwrap()).unwrap();
+        assert_eq!(settings["sandbox"]["enabled"], false);
+        assert_eq!(
+            settings["permissions"]["blockReadsOutsideWorkingDirectories"],
+            false
+        );
+        assert_eq!(settings["env"]["CUSTOM"], "kept");
+        assert_eq!(options.permission_mode.as_deref(), Some("fullAccess"));
+    }
+
+    #[test]
     fn startup_settings_keep_independent_ultra_model_prefs_and_manual_fields() {
         let mut options = SpawnOptions {
             effort:Some("low".into()), ultracode:Some(true), fast_mode:Some(false), enable_workflows:Some(true),
@@ -2028,6 +2276,120 @@ mod tests {
 
         cleanup_runtime_settings_file(&session_id, &path);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn generated_titles_keep_one_clean_bounded_line() {
+        use super::clean_generated_title;
+        assert_eq!(
+            clean_generated_title("标题：「电脑使用功能审查与增强」。\n解释文字").as_deref(),
+            Some("电脑使用功能审查与增强")
+        );
+        assert_eq!(
+            clean_generated_title("\n\n**Fix login redirect loop**\n").as_deref(),
+            Some("Fix login redirect loop")
+        );
+        assert_eq!(clean_generated_title("  \n  "), None);
+        assert_eq!(
+            clean_generated_title(&"长".repeat(100))
+                .unwrap()
+                .chars()
+                .count(),
+            60
+        );
+    }
+
+    #[test]
+    fn title_test_child() {
+        use std::io::Write;
+        let Ok(mode) = std::env::var("CLAUDINAL_TITLE_TEST_CHILD") else {
+            return;
+        };
+        match mode.as_str() {
+            "success" => println!(r#"{{"result":"Synthetic title"}}"#),
+            "failure" => std::process::exit(7),
+            "overflow" => {
+                let _ = std::io::stdout().write_all(&vec![b'x'; super::TITLE_OUTPUT_BYTES + 1]);
+                let _ = std::io::stdout().flush();
+            }
+            "hang" => {
+                let marker =
+                    std::path::PathBuf::from(std::env::var("CLAUDINAL_TITLE_TEST_MARKER").unwrap());
+                assert_eq!(marker.parent(), Some(std::env::temp_dir().as_path()));
+                assert!(marker
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("claudinal-title-child-"));
+                std::fs::write(marker, "started").unwrap();
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+            _ => panic!("unknown fixture"),
+        }
+    }
+
+    fn title_test_command(mode: &str) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "proc::manager::tests::title_test_child",
+                "--nocapture",
+            ])
+            .env("CLAUDINAL_TITLE_TEST_CHILD", mode)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        crate::child_process::hide_tokio_window(&mut command);
+        #[cfg(unix)]
+        command.process_group(0);
+        command
+    }
+
+    #[tokio::test]
+    async fn title_helper_rejects_failed_exit_and_excess_output() {
+        for (mode, error) in [
+            ("success", None),
+            ("failure", Some("process failed")),
+            ("overflow", Some("output limit")),
+        ] {
+            let (_sender, receiver) = tokio::sync::watch::channel(false);
+            let result =
+                super::run_title_command(title_test_command(mode), String::new(), receiver).await;
+            if let Some(error) = error {
+                assert!(result.unwrap_err().to_string().contains(error), "{mode}");
+            } else {
+                assert!(String::from_utf8(result.unwrap())
+                    .unwrap()
+                    .contains("Synthetic title"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn title_helper_is_reaped_when_parent_is_stopped() {
+        let marker =
+            std::env::temp_dir().join(format!("claudinal-title-child-{}", uuid::Uuid::new_v4()));
+        let mut command = title_test_command("hang");
+        command.env("CLAUDINAL_TITLE_TEST_MARKER", &marker);
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let request = tokio::spawn(super::run_title_command(command, String::new(), receiver));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        sender.send_replace(true);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(3), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        std::fs::remove_file(marker).unwrap();
     }
 
     #[test]

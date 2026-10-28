@@ -50,6 +50,7 @@ import {
   previewSessionRewind,
   rewindSessionFiles,
   spawnSession,
+  generateSessionTitle,
   claudeWorkspaceTrustInfo,
   trustClaudeWorkspace,
   sendUserMessage,
@@ -184,7 +185,8 @@ import { BuddyLoader } from "@/components/BuddyLoader"
 import { AppChrome } from "@/components/AppChrome"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
-import { getSessionTitle, setSessionTitle } from "@/lib/sessionTitles"
+import { claimSessionTitleAttempt, getGeneratedSessionTitle, getSessionTitle, setGeneratedSessionTitle, setSessionTitle } from "@/lib/sessionTitles"
+import { generateTitleWithFallback, titleConversationExcerpt, titleModelCandidates } from "@/lib/sessionTitleGeneration"
 import {
   cleanSessionTitleText,
   sessionDisplayTitle,
@@ -421,6 +423,7 @@ type RunningSession = {
   compacting: boolean
   apiProfileKey: string
   providerLabel: string
+  titleModels: string[]
   apiLaunchProfileKey: string
   selectedSessionMeta: SessionMeta | null
   state: ReducerState
@@ -583,7 +586,7 @@ function chatTitle(
   sessionMeta: SessionMeta | null
 ): string {
   if (jsonlSessionId) {
-    const custom = getSessionTitle(jsonlSessionId)
+    const custom = getSessionTitle(jsonlSessionId) || getGeneratedSessionTitle(jsonlSessionId, project.cwd)
     if (custom) return custom
     if (sessionMeta?.id === jsonlSessionId) {
       const generated = sessionGeneratedTitle(sessionMeta)
@@ -1243,6 +1246,27 @@ export default function App() {
         .catch((e) => console.warn("发送完成通知失败:", e))
     }
   }, [syncUnreadBadge])
+
+  // CLI -p runs never get a generated title; ask a small model once per session.
+  const titleAttemptsRef = useRef(new Set<string>())
+  const maybeGenerateSessionTitle = useCallback((run: RunningSession, sessionId: string) => {
+    const attemptKey = JSON.stringify([run.project.cwd, sessionId])
+    if (!loadSettings().autoSessionTitle || titleAttemptsRef.current.has(attemptKey)) return
+    if (getSessionTitle(sessionId) || getGeneratedSessionTitle(sessionId, run.project.cwd)) return
+    if (run.selectedSessionMeta?.id === sessionId && run.selectedSessionMeta.ai_title?.trim()) return
+    const excerpt = titleConversationExcerpt(run.state.entries)
+    if (!excerpt) return
+    if (!claimSessionTitleAttempt(sessionId, run.project.cwd)) return
+    titleAttemptsRef.current.add(attemptKey)
+    void generateTitleWithFallback(run.titleModels, (model) => generateSessionTitle(run.runtimeId, excerpt, model)).then((title) => {
+      // A rename made while the request ran must not be overwritten.
+      if (!title || getSessionTitle(sessionId) || loadSettings().autoSessionTitle === false
+        || runningSessionsRef.current.get(run.runtimeId) !== run) return
+      setGeneratedSessionTitle(sessionId, title, run.project.cwd)
+      setSidebarRefreshKey((key) => key + 1)
+      setRunningTick((tick) => tick + 1)
+    })
+  }, [])
 
   const rememberComposerDraft = useCallback(
     (key: string | undefined, next: ComposerDraft) => {
@@ -2073,6 +2097,7 @@ export default function App() {
         compactBoundary: null, compacting: false,
         apiProfileKey,
         providerLabel: thirdPartyReady ? thirdPartyApi.providerName || "第三方 API" : "官方 Claude",
+        titleModels: titleModelCandidates(thirdPartyReady ? thirdPartyApi : null),
         apiLaunchProfileKey,
         selectedSessionMeta: resumeSessionId ? owner.selectedSessionMeta : null,
         state: runState,
@@ -2307,6 +2332,7 @@ export default function App() {
           if (completedAttemptId && resultSessionId) run.suggestionTracker.completeTurn(completedAttemptId, resultSessionId, !isError && !interrupted)
           coordinatorRef.current.complete(owner.key, isError || interrupted, eventInputIds(event), () => reviewBoundary ?? Promise.resolve())
           if (!interrupted) noteCompletion(sidebarSessionKey(run.project.id, resultSessionId ?? owner.key), run.project.name, isError, (event as { result?: unknown }).result)
+          if (!interrupted && !isError && resultSessionId) maybeGenerateSessionTitle(run, resultSessionId)
           // A guide sent at the boundary may already be waiting in the CLI for
           // the next turn. Keep it active; this result must not settle that input.
           const stillRunning = coordinatorRef.current.hasRunning(owner.key)
@@ -3502,7 +3528,7 @@ export default function App() {
       project,
       sessionId: target,
       title: sessionMeta
-        ? sessionDisplayTitle(sessionMeta)
+        ? sessionDisplayTitle(sessionMeta, project.cwd)
         : getSessionTitle(target) ?? target.slice(0, 8)
     })
   }, [project, selectedSessionId, selectedSessionMeta, state])
@@ -3512,7 +3538,7 @@ export default function App() {
       setPendingDeleteSession({
         project: targetProject,
         sessionId: session.id,
-        title: sessionDisplayTitle(session)
+        title: sessionDisplayTitle(session, targetProject.cwd)
       })
     },
     []
@@ -3916,7 +3942,7 @@ export default function App() {
           <ComputerUseControllerStrip snapshot={desktop}
             controllerLabel={desktop.status?.controller ? (() => {
               const run = runningSessionsRef.current.get(desktop.status.controller.runtimeId)
-              return run ? `${run.project.name} · ${run.selectedSessionMeta ? sessionDisplayTitle(run.selectedSessionMeta) : "当前对话"}` : null
+              return run ? `${run.project.name} · ${run.selectedSessionMeta ? sessionDisplayTitle(run.selectedSessionMeta, run.project.cwd) : "当前对话"}` : null
             })() : null}
             onShowRuntime={(runtimeId) => {
               const run = runningSessionsRef.current.get(runtimeId)

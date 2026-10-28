@@ -91,7 +91,7 @@ export function ArchivedSessionPreview({
   }, [target, onUnarchived, onOpenChange])
 
   const headerTitle = target
-    ? getSessionTitle(target.session.id) ?? sessionDisplayTitle(target.session)
+    ? getSessionTitle(target.session.id) ?? sessionDisplayTitle(target.session, target.project.cwd)
     : ""
 
   return (

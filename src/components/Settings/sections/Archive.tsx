@@ -67,7 +67,7 @@ function fmtRelative(ts: number): string {
 function rowTitle(row: ArchivedRow): string {
   const customTitle = getSessionTitle(row.ref.sessionId)
   if (customTitle) return customTitle
-  if (row.meta) return sessionDisplayTitle(row.meta)
+  if (row.meta) return sessionDisplayTitle(row.meta, row.project.cwd)
   return row.ref.sessionId.slice(0, 8)
 }
 

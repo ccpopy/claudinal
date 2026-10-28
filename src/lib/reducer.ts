@@ -961,19 +961,7 @@ function reconcileAssistantBlocks(current: UIBlock[], incoming: UIBlock[]): UIBl
       continue
     }
 
-    let existingIndex = -1
-    if (
-      incomingIndex < out.length &&
-      !matchedUnkeyed.has(incomingIndex) &&
-      compatibleAssistantBlocks(out[incomingIndex], nextBlock)
-    ) {
-      existingIndex = incomingIndex
-    } else {
-      existingIndex = out.findIndex(
-        (block, index) =>
-          !matchedUnkeyed.has(index) && compatibleAssistantBlocks(block, nextBlock)
-      )
-    }
+    const existingIndex = matchUnkeyedBlock(out, nextBlock, incomingIndex, matchedUnkeyed)
 
     if (existingIndex >= 0) {
       out[existingIndex] = mergeAssistantBlock(out[existingIndex], nextBlock)
@@ -984,6 +972,25 @@ function reconcileAssistantBlocks(current: UIBlock[], incoming: UIBlock[]): UIBl
     }
   }
   return out
+}
+
+/**
+ * CLI snapshots after each content_block_stop carry only the newest block, so
+ * the snapshot position is not the block's position. Every text is "compatible"
+ * with an empty block (one message can hold a hidden empty thinking block plus a
+ * narration thinking block), so prefer real content matches before empty ones.
+ */
+function matchUnkeyedBlock(out: UIBlock[], incoming: UIBlock, position: number, matched: Set<number>): number {
+  const candidates = out.flatMap((block, index) => !matched.has(index) && compatibleAssistantBlocks(block, incoming) ? [index] : [])
+  if (!candidates.length) return -1
+  const text = (index: number) => out[index].text ?? ""
+  const incomingText = incoming.text ?? ""
+  const byPosition = (indexes: number[]) => indexes.includes(position) ? position : indexes[0]
+  const exact = candidates.filter((index) => text(index) === incomingText)
+  if (exact.length) return byPosition(exact)
+  const withContent = candidates.filter((index) => text(index) !== "")
+  if (withContent.length) return byPosition(withContent)
+  return byPosition(candidates)
 }
 
 function assistantBlockKey(block: UIBlock): string | null {

@@ -39,8 +39,8 @@ function normalize(p: string): string {
 }
 
 export function listProjects(): Project[] {
-  // 按添加顺序稳定排序：lastUsedAt 越小越靠前（首次添加靠上）
-  return load().sort((a, b) => a.lastUsedAt - b.lastUsedAt)
+  // 存储数组按首次添加顺序追加；使用该顺序，避免 lastUsedAt 更新后重排。
+  return load().reverse()
 }
 
 export function addProject(cwd: string): Project {

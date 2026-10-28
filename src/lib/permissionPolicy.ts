@@ -6,14 +6,18 @@ export interface PermissionAutoApproval {
   reason: string
 }
 
-/** A CLI request already reflects its mode, rules and hooks. Do not override it
- * with a second shell-word classifier or a tool allowlist. Explicit remembered
- * rules are handled separately by the permission dialog. */
+/** Ordinary modes leave CLI requests interactive. Full access is an explicit
+ * app-owned authorization for tool requests delivered to this runtime's host;
+ * it cannot override CLI hard denials or native desktop window consent. */
 export function autoApprovePermissionRequest(
-  _request: PermissionRequestPayload,
-  _mode: AppSettings["defaultPermissionMode"]
+  request: PermissionRequestPayload,
+  mode: AppSettings["defaultPermissionMode"]
 ): PermissionAutoApproval | null {
-  return null
+  if (mode !== "fullAccess") return null
+  const tool = request.request?.tool_name
+  if (typeof tool !== "string" || !tool.trim() || tool === "AskUserQuestion"
+    || tool === "ExitPlanMode" || tool === "EnterPlanMode") return null
+  return { response: buildPermissionAllowResponse(request), reason: "当前会话已启用全部权限" }
 }
 
 export function buildPermissionAllowResponse(request: PermissionRequestPayload): Record<string, unknown> {

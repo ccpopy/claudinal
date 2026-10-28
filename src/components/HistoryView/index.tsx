@@ -109,7 +109,7 @@ function mapBodyHits(
       target: searchHitTarget(hit),
       project,
       session,
-      title: sessionDisplayTitle(session),
+      title: sessionDisplayTitle(session, project.cwd),
       projectLabel: registered?.name ?? hit.dirLabel ?? basename(cwd),
       snippet: hit.snippet,
       role: hit.role,
@@ -161,7 +161,7 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
           ai_title: item.ai_title,
           first_user_text: item.first_user_text
         }
-        const title = sessionDisplayTitle(session)
+        const title = sessionDisplayTitle(session, project.cwd)
         const projectLabel = registered?.name ?? item.dirLabel ?? basename(cwd)
         const haystack = [
           title,

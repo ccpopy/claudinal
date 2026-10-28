@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 
 interface SelectProps
   extends Omit<React.ComponentProps<"select">, "children"> {
-  options: Array<{ value: string; label: string }>
+  options: Array<{ value: string; label: string; className?: string }>
   triggerClassName?: string
 }
 
@@ -30,7 +30,7 @@ function Select({
         {...props}
       >
         {options.map((o) => (
-          <option key={o.value} value={o.value}>
+          <option key={o.value} value={o.value} className={o.className}>
             {o.label}
           </option>
         ))}

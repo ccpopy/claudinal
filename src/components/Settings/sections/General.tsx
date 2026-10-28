@@ -39,6 +39,8 @@ import {
 } from "@/lib/ipc"
 import { buildProxyEnv, loadProxyAsync } from "@/lib/proxy"
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings"
+import { FULL_ACCESS_DESCRIPTION, FULL_ACCESS_TEXT, PERMISSION_OPTIONS } from "@/lib/sessionPermissionMode"
+import { cn } from "@/lib/utils"
 import { ensureNotificationPermission } from "@/lib/completionNotice"
 import { checkForAppUpdate } from "@/lib/updater"
 import appPackage from "../../../../package.json"
@@ -50,13 +52,6 @@ import {
   SettingsSectionFooter,
   SettingsSectionHeader
 } from "./layout"
-
-const PERMISSION_OPTIONS = [
-  { value: "default", label: "default" },
-  { value: "acceptEdits", label: "acceptEdits" },
-  { value: "plan", label: "plan" },
-  { value: "bypassPermissions", label: "bypassPermissions" }
-]
 
 const APP_VERSION = appPackage.version
 const GITHUB_REPOSITORY_URL = "https://github.com/ccpopy/claudinal"
@@ -615,6 +610,19 @@ export function General() {
               />
             </div>
             <Separator />
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label className="text-sm">自动生成会话标题</Label>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  首轮回复后用小模型生成一次标题，会产生少量用量；失败时显示首条提问。
+                </div>
+              </div>
+              <Switch
+                checked={cfg.autoSessionTitle !== false}
+                onCheckedChange={(v) => update({ autoSessionTitle: v })}
+              />
+            </div>
+            <Separator />
             <CliDiagnostics />
             <div className="flex items-center justify-between gap-4">
               <div>
@@ -839,7 +847,7 @@ export function General() {
               <div>
                 <Label className="text-sm">默认权限模式</Label>
                 <div className="text-xs text-muted-foreground mt-0.5">
-                  新会话启动时传给 Claude CLI 的 permission-mode。Composer 内的「计划模式」和权限模式选择器是会话级临时覆盖，不会写回这里。
+                  新会话的默认权限策略。Composer 内的「计划模式」和权限模式选择器是会话级覆盖，不会写回这里。
                 </div>
               </div>
               <Select
@@ -850,9 +858,11 @@ export function General() {
                       .value as AppSettings["defaultPermissionMode"]
                   })
                 }
-                options={PERMISSION_OPTIONS}
+                options={PERMISSION_OPTIONS.map((item) => ({ ...item, className: item.value === "fullAccess" ? FULL_ACCESS_TEXT : undefined }))}
+                className={cfg.defaultPermissionMode === "fullAccess" ? FULL_ACCESS_TEXT : undefined}
                 triggerClassName="max-w-[260px]"
               />
+              {cfg.defaultPermissionMode === "fullAccess" && <p className={cn("text-xs", FULL_ACCESS_TEXT)}>{FULL_ACCESS_DESCRIPTION}。系统权限与明确禁用的工具仍适用。</p>}
             </div>
             <Separator />
             <div className="space-y-4">

@@ -1,4 +1,21 @@
 const EXPANDED_PROJECTS_KEY = "claudinal.sidebar.expanded-projects"
+const COLLAPSED_SECTIONS_KEY = "claudinal.sidebar.collapsed-sections"
+export type SidebarSection = "projects" | "recent"
+
+export function listSidebarCollapsedSections(): SidebarSection[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(COLLAPSED_SECTIONS_KEY) ?? "[]")
+    return Array.isArray(value)
+      ? [...new Set(value.filter((item): item is SidebarSection => item === "projects" || item === "recent"))]
+      : []
+  } catch {
+    return []
+  }
+}
+
+export function saveSidebarCollapsedSections(sections: Iterable<SidebarSection>) {
+  localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify([...sections]))
+}
 
 export function listSidebarExpandedProjectIds(): string[] {
   try {

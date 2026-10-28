@@ -340,6 +340,10 @@ export interface ComputerUseStatus {
   controller: { runtimeId: string; cwd: string } | null
   cleanup: { state: "idle" | "stopping" | "failed"; reason: string | null }
 }
+/** One-shot title through a live session's provider environment. */
+export const generateSessionTitle = (sessionId: string, conversation: string, model: string) =>
+  invoke<string>("generate_session_title", { sessionId, conversation, model })
+
 export const computerUseStatus = (runtimeId?: string) => invoke<ComputerUseStatus>("computer_use_status", { runtimeId })
 export const computerUseInstallDriver = () => invoke<ComputerUseStatus>("computer_use_install_driver")
 export const computerUseSetDriverPath = (path: string) => invoke<ComputerUseStatus>("computer_use_set_driver_path", { path })

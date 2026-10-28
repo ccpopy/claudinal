@@ -1,5 +1,5 @@
 import type { SessionMeta } from "@/lib/ipc"
-import { getSessionTitle } from "@/lib/sessionTitles"
+import { getGeneratedSessionTitle, getSessionTitle } from "@/lib/sessionTitles"
 import { stripLeadingSlashCommand } from "@/lib/composerCommand"
 
 type SessionTitleMeta = Pick<SessionMeta, "id" | "ai_title" | "first_user_text">
@@ -27,9 +27,10 @@ export function sessionGeneratedTitle(session: SessionTitleMeta): string | null 
   )
 }
 
-export function sessionDisplayTitle(session: SessionTitleMeta): string {
+export function sessionDisplayTitle(session: SessionTitleMeta, cwd?: string): string {
   return (
     getSessionTitle(session.id) ||
+    (cwd ? getGeneratedSessionTitle(session.id, cwd) : null) ||
     sessionGeneratedTitle(session) ||
     session.id.slice(0, 8)
   )

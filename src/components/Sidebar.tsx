@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useState, useCallback } from "react"
+import { lazy, Suspense, useEffect, useMemo, useState, useCallback, useRef, useId } from "react"
 import {
+  ChevronRight,
   Copy,
   FolderOpen,
   FolderPlus,
@@ -60,8 +61,12 @@ import {
 } from "@/lib/sessionTime"
 import {
   listSidebarExpandedProjectIds,
-  saveSidebarExpandedProjectIds
+  saveSidebarExpandedProjectIds,
+  listSidebarCollapsedSections,
+  saveSidebarCollapsedSections,
+  type SidebarSection
 } from "@/lib/sidebarState"
+import { recentSidebarSessions, type SessionListState } from "@/lib/sidebarRecents"
 import {
   deriveSidebarActivity,
   sidebarSessionKey,
@@ -93,11 +98,13 @@ interface Props {
   refreshKey?: number
 }
 
-type SessionListState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "ok"; items: SessionMeta[] }
-  | { kind: "error"; message: string }
+async function loadProjectBatch(projects: Project[], load: (project: Project) => Promise<void>, active = () => true) {
+  const pending = [...projects]
+  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+    let project: Project | undefined
+    while (active() && (project = pending.shift())) await load(project)
+  }))
+}
 
 function samePinnedRefs(a: PinnedRef[], b: PinnedRef[]): boolean {
   if (a.length !== b.length) return false
@@ -168,6 +175,22 @@ export function Sidebar({
   const [sessionsByProject, setSessionsByProject] = useState<
     Record<string, SessionListState>
   >({})
+  const [collapsedSections, setCollapsedSections] = useState<Set<SidebarSection>>(
+    () => new Set(listSidebarCollapsedSections())
+  )
+  const projectsCollapsed = collapsedSections.has("projects")
+  const recentCollapsed = collapsedSections.has("recent")
+  const sectionId = useId()
+  const projectsHeadingRef = useRef<HTMLButtonElement>(null)
+  const previousProjectIds = useRef(new Set(projects.map((p) => p.id)))
+  const projectsRef = useRef(projects)
+  projectsRef.current = projects
+  const sessionLoads = useRef(new Map<string, { again: boolean; promise: Promise<void> }>())
+  const sessionLoadGeneration = useRef(0)
+  useEffect(() => () => {
+    sessionLoadGeneration.current += 1
+    sessionLoads.current.clear()
+  }, [])
   const [timeTick, setTimeTick] = useState(0)
   const [pinned, setPinned] = useState<PinnedRef[]>(() => listPinned())
   const [pinnedProjects, setPinnedProjects] = useState<PinnedProjectRef[]>(
@@ -250,44 +273,58 @@ export function Sidebar({
     [filtered, pinnedProjectIds]
   )
 
-  const loadSessions = useCallback(async (p: Project) => {
+  const loadSessions = useCallback((p: Pick<Project, "id" | "cwd">, refresh = false): Promise<void> => {
+    const generation = sessionLoadGeneration.current
+    const current = () => generation === sessionLoadGeneration.current
+      && projectsRef.current.some((project) => project.id === p.id && project.cwd === p.cwd)
+    if (!current()) return Promise.resolve()
+    const pending = sessionLoads.current.get(p.id)
+    if (pending) {
+      if (refresh) pending.again = true
+      return pending.promise
+    }
     setSessionsByProject((cur) => {
       const existing = cur[p.id]
       if (existing?.kind === "ok") return cur
       return { ...cur, [p.id]: { kind: "loading" } }
     })
-    try {
-      const items = await listProjectSessions(p.cwd)
-      setSessionsByProject((cur) => ({
-        ...cur,
-        [p.id]: { kind: "ok", items }
-      }))
-    } catch (e) {
-      const transientLock = isTransientSessionIndexLockError(e)
-      setSessionsByProject((cur) => {
-        if (transientLock) {
-          return cur[p.id]?.kind === "ok"
-            ? cur
-            : { ...cur, [p.id]: { kind: "loading" } }
+    const request = { again: false, promise: Promise.resolve() }
+    request.promise = (async () => {
+      do {
+        request.again = false
+        try {
+          const items = await listProjectSessions(p.cwd)
+          if (current() && !request.again) {
+            setSessionsByProject((cur) => ({ ...cur, [p.id]: { kind: "ok", items } }))
+          }
+        } catch (e) {
+          if (current() && !request.again) {
+            const transientLock = isTransientSessionIndexLockError(e)
+            setSessionsByProject((cur) => {
+              if (transientLock && cur[p.id]?.kind === "ok") return cur
+              return { ...cur, [p.id]: transientLock
+                ? { kind: "loading" }
+                : { kind: "error", message: String(e) } }
+            })
+          }
         }
-        return {
-          ...cur,
-          [p.id]: { kind: "error", message: String(e) }
-        }
-      })
-    }
+      } while (request.again && current())
+    })().finally(() => {
+      if (sessionLoads.current.get(p.id) === request) sessionLoads.current.delete(p.id)
+    })
+    sessionLoads.current.set(p.id, request)
+    return request.promise
   }, [])
 
   const refreshVisibleSessions = useCallback(() => {
-    for (const p of projects) {
-      if (
+    const generation = sessionLoadGeneration.current
+    void loadProjectBatch(projects.filter((p) =>
+        !recentCollapsed ||
         p.id === selectedProjectId ||
-        expanded.has(p.id) ||
+        (!projectsCollapsed && expanded.has(p.id)) ||
+        (pinnedProjectIds.has(p.id) && expanded.has(p.id)) ||
         pinnedSessionProjectIds.has(p.id)
-      ) {
-        void loadSessions(p)
-      }
-    }
+      ), (p) => loadSessions(p, true), () => generation === sessionLoadGeneration.current)
     refreshPinned()
     refreshPinnedProjects()
     refreshArchived()
@@ -295,6 +332,9 @@ export function Sidebar({
     projects,
     selectedProjectId,
     expanded,
+    projectsCollapsed,
+    recentCollapsed,
+    pinnedProjectIds,
     pinnedSessionProjectIds,
     loadSessions,
     refreshPinned,
@@ -312,6 +352,37 @@ export function Sidebar({
   useEffect(() => {
     saveSidebarExpandedProjectIds(expanded)
   }, [expanded])
+
+  useEffect(() => { saveSidebarCollapsedSections(collapsedSections) }, [collapsedSections])
+
+  const toggleSection = (section: SidebarSection) => {
+    setCollapsedSections((cur) => {
+      const next = new Set(cur)
+      if (next.has(section)) next.delete(section)
+      else next.add(section)
+      return next
+    })
+  }
+
+  useEffect(() => {
+    const added = projects.some((p) => !previousProjectIds.current.has(p.id))
+    previousProjectIds.current = new Set(projects.map((p) => p.id))
+    if (!added) return
+    setCollapsedSections((cur) => {
+      if (!cur.has("projects")) return cur
+      const next = new Set(cur)
+      next.delete("projects")
+      return next
+    })
+    const frame = requestAnimationFrame(() => projectsHeadingRef.current?.scrollIntoView({ block: "start" }))
+    return () => cancelAnimationFrame(frame)
+  }, [projects])
+
+  useEffect(() => {
+    let active = true
+    if (!recentCollapsed) void loadProjectBatch(projects, loadSessions, () => active)
+    return () => { active = false }
+  }, [projects, recentCollapsed, loadSessions])
 
   useEffect(() => {
     const validProjectIds = new Set(projects.map((project) => project.id))
@@ -383,35 +454,43 @@ export function Sidebar({
     pinnedSessionProjectIds
   ])
 
-  // notify watcher：只监听当前可见 / 置顶相关项目，避免启动时扫描所有项目。
+  const recentItems = useMemo(
+    () => recentSidebarSessions(projects, sessionsByProject, archived),
+    [projects, sessionsByProject, archived]
+  )
+  const recentProjectIds = new Set(recentItems.map((item) => item.project.id))
+  const watchedProjectsKey = JSON.stringify(projects.filter((p) =>
+    p.id === selectedProjectId ||
+    ((!projectsCollapsed || pinnedProjectIds.has(p.id)) && expanded.has(p.id)) ||
+    pinnedSessionProjectIds.has(p.id) || busyProjectIds.has(p.id) ||
+    (!recentCollapsed && recentProjectIds.has(p.id))
+  ).map(({ id, cwd }) => ({ id, cwd })))
+
+  // 只监听展示中的、当前选中的或后台忙碌的项目；最近列表不创建全盘监听。
   useEffect(() => {
+    let disposed = false
     const cleanups: Array<() => void> = []
-    const watched = projects.filter(
-      (p) =>
-        p.id === selectedProjectId ||
-        expanded.has(p.id) ||
-        pinnedSessionProjectIds.has(p.id)
-    )
-    const cwds = watched.map((p) => p.cwd)
+    const watched: Array<Pick<Project, "id" | "cwd">> = JSON.parse(watchedProjectsKey)
     for (const p of watched) {
-      watchSessions(p.cwd).catch(() => undefined)
-      listenSessionsChanged(p.cwd, () => {
-        loadSessions(p)
+      let watching = false
+      watchSessions(p.cwd).then(() => {
+        watching = true
+        if (disposed) void unwatchSessions(p.cwd).catch(() => undefined)
+      }).catch(() => undefined)
+      cleanups.push(() => {
+        if (watching) void unwatchSessions(p.cwd).catch(() => undefined)
       })
-        .then((un) => cleanups.push(un))
+      listenSessionsChanged(p.cwd, () => {
+        if (!disposed) void loadSessions(p, true)
+      })
+        .then((un) => { if (disposed) un(); else cleanups.push(un) })
         .catch(() => undefined)
     }
     return () => {
+      disposed = true
       cleanups.forEach((u) => u())
-      for (const cwd of cwds) unwatchSessions(cwd).catch(() => undefined)
     }
-  }, [
-    projects,
-    selectedProjectId,
-    expanded,
-    pinnedSessionProjectIds,
-    loadSessions
-  ])
+  }, [watchedProjectsKey, loadSessions])
 
   // 主区触发的刷新（如发送消息后），只刷新当前可见 / 置顶相关项目；
   // 同时把 pinned / archived 重新读一次，确保 ChatHeader 改动后侧栏立即同步
@@ -420,7 +499,7 @@ export function Sidebar({
     refreshVisibleSessions()
   }, [refreshKey, refreshVisibleSessions])
 
-  // 计算置顶 + 过滤后的项目列表（项目里非置顶 session 数 > 0 才显示）
+  // 置顶会话单独展示；项目节点保留，方便继续创建会话。
   const archivedSet = new Set(
     archived.map((a) => `${a.projectId}::${a.sessionId}`)
   )
@@ -610,9 +689,17 @@ export function Sidebar({
 
           <div className="flex flex-col">
             <div className="flex items-center justify-between">
-              <div className="flex h-7 items-center px-2 text-xs font-medium text-sidebar-foreground/60">
+              <button
+                ref={projectsHeadingRef}
+                type="button"
+                aria-expanded={!projectsCollapsed}
+                aria-controls={`${sectionId}-projects`}
+                onClick={() => toggleSection("projects")}
+                className="flex h-7 flex-1 items-center gap-1 rounded-md px-2 text-left text-xs font-medium text-sidebar-foreground/60 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+              >
                 项目
-              </div>
+                <ChevronRight aria-hidden="true" className={cn("size-3 transition-transform", !projectsCollapsed && "rotate-90")} />
+              </button>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -627,6 +714,7 @@ export function Sidebar({
                 <TooltipContent side="right">添加项目 (Ctrl+O)</TooltipContent>
               </Tooltip>
             </div>
+            <div id={`${sectionId}-projects`} hidden={projectsCollapsed}>
             <div className="flex flex-col gap-0.5">
               {unpinnedProjectList.length === 0 ? (
                 projects.length === 0 ? (
@@ -638,14 +726,6 @@ export function Sidebar({
                 unpinnedProjectList.map((p) => {
                   const sessionsState = sessionsByProject[p.id]
                   const visibleSessions = computeVisibleSessions(p)
-                  // 当一个项目的会话全部被置顶 / 归档后，从「项目」列表里隐藏
-                  if (
-                    sessionsState?.kind === "ok" &&
-                    sessionsState.items.length > 0 &&
-                    visibleSessions.length === 0
-                  ) {
-                    return null
-                  }
                   return (
                     <ProjectNode
                       key={p.id}
@@ -684,6 +764,55 @@ export function Sidebar({
                 })
               )}
             </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col">
+            <button
+              type="button"
+              aria-expanded={!recentCollapsed}
+              aria-controls={`${sectionId}-recent`}
+              onClick={() => toggleSection("recent")}
+              className="flex h-7 items-center gap-1 rounded-md px-2 text-left text-xs font-medium text-sidebar-foreground/60 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+            >
+              最近
+              <ChevronRight aria-hidden="true" className={cn("size-3 transition-transform", !recentCollapsed && "rotate-90")} />
+            </button>
+            <div id={`${sectionId}-recent`} hidden={recentCollapsed}>
+              <div className="flex flex-col gap-0.5">
+                {recentItems.map(({ project, session }) => (
+                  <SessionRow
+                    key={`recent-${project.id}-${session.id}`}
+                    project={project}
+                    session={session}
+                    pinned={pinnedSet.has(sidebarSessionKey(project.id, session.id))}
+                    topLevel
+                    active={selectedProjectId === project.id && selectedSessionId === session.id}
+                    streaming={streamingSet.has(sidebarSessionKey(project.id, session.id))}
+                    waiting={waitingSet.has(sidebarSessionKey(project.id, session.id))}
+                    onSelect={() => onSelectSession(project, session)}
+                    onDelete={() => onDeleteSession(project, session)}
+                    onCopyId={() => copyText(session.id, "会话 ID")}
+                    onTogglePin={() => togglePinAndRefresh(project.id, session.id)}
+                  />
+                ))}
+                {recentItems.length === 0 && (
+                  <div className="px-2 py-2 text-xs text-sidebar-foreground/60" role="status">
+                    {projects.some((p) => !sessionsByProject[p.id] || sessionsByProject[p.id].kind === "loading")
+                      ? "正在读取最近会话…"
+                      : projects.some((p) => sessionsByProject[p.id]?.kind === "error")
+                        ? "最近会话读取失败"
+                        : "暂无最近会话"}
+                    {projects.some((p) => sessionsByProject[p.id]?.kind === "error") && (
+                      <button type="button" className="ml-2 underline underline-offset-2" onClick={refreshVisibleSessions}>重试</button>
+                    )}
+                  </div>
+                )}
+                {recentItems.length === 20 && onOpenHistory && (
+                  <button type="button" onClick={onOpenHistory} className="h-7 rounded-md px-2 text-left text-xs text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground">查看全部会话</button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </ScrollArea>
@@ -721,6 +850,7 @@ function SessionRow({
   project,
   session,
   pinned,
+  topLevel = false,
   active,
   streaming,
   waiting,
@@ -732,6 +862,7 @@ function SessionRow({
   project: Project
   session: SessionMeta
   pinned: boolean
+  topLevel?: boolean
   active: boolean
   streaming: boolean
   waiting: boolean
@@ -740,7 +871,7 @@ function SessionRow({
   onCopyId: () => void
   onTogglePin: () => void
 }) {
-  const title = sessionDisplayTitle(session)
+  const title = sessionDisplayTitle(session, project.cwd)
   const compactTime = formatSessionCompactTime(session.modified_ts)
   const fullTime = formatSessionRelativeTime(session.modified_ts)
   return (
@@ -748,14 +879,15 @@ function SessionRow({
       onClick={onSelect}
       className={cn(
         "group/session relative flex h-8 items-center gap-1 rounded-md text-xs cursor-pointer transition-[background-color,color] min-w-0 max-w-full overflow-hidden pr-1.5",
-        pinned ? "pl-2" : "pl-8",
+        pinned || topLevel ? "pl-2" : "pl-8",
         active
           ? "bg-sidebar-accent text-sidebar-foreground"
           : "hover:bg-sidebar-accent/50 text-sidebar-foreground/90"
       )}
       title={`${title}\n${project.name} · ${session.msg_count} msg · ${fullTime}\n${session.id}`}
     >
-      <Tooltip>
+      {/* Top-level unpinned rows keep pin with the hover actions so the title never shifts. */}
+      {(pinned || !topLevel) && <Tooltip>
         <TooltipTrigger asChild>
           <button
             type="button"
@@ -767,7 +899,7 @@ function SessionRow({
               "inline-flex size-5 items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-opacity",
               pinned
                 ? "shrink-0 opacity-100"
-                : "absolute left-2 top-1/2 -translate-y-1/2 z-10 opacity-0 group-hover/session:opacity-100"
+                : "absolute left-2 top-1/2 -translate-y-1/2 z-10 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100"
             )}
             aria-label={pinned ? "取消置顶" : "置顶会话"}
           >
@@ -777,9 +909,9 @@ function SessionRow({
         <TooltipContent side="right">
           {pinned ? "取消置顶" : "置顶会话"}
         </TooltipContent>
-      </Tooltip>
-      <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
-      <div className="relative flex h-5 w-10 shrink-0 items-center justify-end">
+      </Tooltip>}
+      <button type="button" className="h-full min-w-0 flex-1 truncate text-left leading-5 focus-visible:outline-none focus-visible:underline" aria-current={active ? "page" : undefined}>{title}</button>
+      <div className={cn("relative flex h-5 shrink-0 items-center justify-end", topLevel && !pinned ? "w-[3.75rem]" : "w-10")}>
         {waiting ? (
           <span
             role="img"
@@ -800,6 +932,20 @@ function SessionRow({
           </span>
         )}
         <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:opacity-100">
+          {topLevel && !pinned && (
+            <button
+              type="button"
+              title=""
+              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+              aria-label="置顶会话"
+              onClick={(e) => {
+                e.stopPropagation()
+                onTogglePin()
+              }}
+            >
+              <Pin className="size-3" />
+            </button>
+          )}
           <button
             type="button"
             title=""

@@ -17,7 +17,7 @@ export const DEFAULT_PERMISSION_MCP_CONFIG = `{
 export interface AppSettings {
   // 常规：自动检查更新与默认权限模式（应用级偏好，会话级覆盖在 Composer）
   autoCheckUpdate: boolean
-  defaultPermissionMode: "default" | "acceptEdits" | "plan" | "bypassPermissions"
+  defaultPermissionMode: "default" | "acceptEdits" | "plan" | "bypassPermissions" | "fullAccess"
   // 权限 MCP 工具（可选）：开启后由 MCP server 接管 control_request
   permissionMcpEnabled: boolean
   permissionPromptTool: string
@@ -30,6 +30,8 @@ export interface AppSettings {
   promptSuggestionsEnabled?: boolean
   // 电脑使用：开启后新会话注入按需工具，具体应用仍逐个授权；默认关闭。
   computerUseEnabled?: boolean
+  // CLI -p 不生成会话标题；开启后首轮结束时用小模型生成一次，失败回退首条提问。
+  autoSessionTitle?: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -41,7 +43,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pinnedSlash: [],
   completionNotify: false,
   promptSuggestionsEnabled: false,
-  computerUseEnabled: false
+  computerUseEnabled: false,
+  autoSessionTitle: true
 }
 
 export function loadSettings(): AppSettings {
@@ -56,6 +59,7 @@ export function loadSettings(): AppSettings {
       else merged.pinnedSlash = merged.pinnedSlash.filter((s) => typeof s === "string")
       merged.promptSuggestionsEnabled = merged.promptSuggestionsEnabled === true
       merged.computerUseEnabled = merged.computerUseEnabled === true
+      merged.autoSessionTitle = merged.autoSessionTitle !== false
       return merged
     }
   } catch {

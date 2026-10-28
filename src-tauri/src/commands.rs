@@ -1279,6 +1279,34 @@ pub async fn stop_session(manager: State<'_, Manager>, session_id: String) -> Re
     manager.stop(&session_id).await
 }
 
+/// One-shot title for a live session; the caller falls back to the first prompt.
+#[tauri::command]
+pub async fn generate_session_title(
+    manager: State<'_, Manager>,
+    session_id: String,
+    conversation: String,
+    model: String,
+) -> Result<String> {
+    manager
+        .generate_title(&session_id, &conversation, &model)
+        .await
+}
+
+/// Provider variables a runtime passes through `--settings` so they outrank
+/// a user's settings.env, exactly as the session launch does.
+pub(crate) fn runtime_provider_env(
+    env: &std::collections::HashMap<String, String>,
+) -> Map<String, Value> {
+    RUNTIME_CLAUDE_SETTINGS_ENV_KEYS
+        .iter()
+        .filter_map(|key| {
+            env.get(*key)
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| ((*key).to_string(), Value::String(value.clone())))
+        })
+        .collect()
+}
+
 /// 软中断当前回合：写 interrupt control_request 到 CLI stdin，进程与会话保活。
 #[tauri::command]
 pub async fn interrupt_session(manager: State<'_, Manager>, session_id: String) -> Result<()> {

@@ -227,7 +227,7 @@ function SkillLoadBlock({ block }: { block: UIBlock }) {
 
 function ThinkingBlock({ block }: { block: UIBlock }) {
   const [open, setOpen] = useFoldOpen("thinking", !!block.partial)
-  if (!block.text && !block.partial) return null
+  if (!block.text?.trim() && !block.partial) return null
   return (
     <ExpandableRow
       open={open}
@@ -236,7 +236,8 @@ function ThinkingBlock({ block }: { block: UIBlock }) {
       label={block.partial ? "正在思考…" : "思考过程"}
     >
       <div className="text-[13px] text-muted-foreground italic whitespace-pre-wrap leading-relaxed break-words border-l-2 border-border pl-3">
-        {block.text}
+        {/* Narration thinking often ends with blank lines; pre-wrap would render them. */}
+        {block.text?.trim()}
         {block.partial && <span className="caret">▍</span>}
       </div>
     </ExpandableRow>

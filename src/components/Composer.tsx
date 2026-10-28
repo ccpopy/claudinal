@@ -55,6 +55,7 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { FULL_ACCESS_DESCRIPTION, FULL_ACCESS_TEXT, PERMISSION_OPTIONS } from "@/lib/sessionPermissionMode"
 import { composerCommandPrefix } from "@/lib/composerCommand"
 import { CommandChip } from "./CommandChip"
 import { AttachmentChip } from "./composer/AttachmentChip"
@@ -1070,33 +1071,6 @@ function ComposerEditor({
   )
 }
 
-const PERMISSION_OPTIONS: Array<{
-  value: AppSettings["defaultPermissionMode"]
-  label: string
-  description: string
-}> = [
-  {
-    value: "default",
-    label: "默认权限",
-    description: "使用 Claude CLI 默认权限策略"
-  },
-  {
-    value: "acceptEdits",
-    label: "接受编辑",
-    description: "允许文件编辑，仍保留其它权限请求"
-  },
-  {
-    value: "plan",
-    label: "计划模式",
-    description: "只规划，不直接执行修改"
-  },
-  {
-    value: "bypassPermissions",
-    label: "跳过权限",
-    description: "仅在可信工作区使用"
-  }
-]
-
 // 菜单可选项不含 plan：计划模式入口收敛到「+」菜单的开关。
 // PERMISSION_OPTIONS 保留全集，供 mode === "plan" 的旧会话（sidecar/设置残留）
 // 在 chip 上仍正确显示「计划模式」标签。
@@ -1104,7 +1078,7 @@ const SELECTABLE_PERMISSION_OPTIONS = PERMISSION_OPTIONS.filter(
   (item) => item.value !== "plan"
 )
 
-function PermissionModePicker({
+export function PermissionModePicker({
   mode,
   onChange,
   disabled
@@ -1124,21 +1098,24 @@ function PermissionModePicker({
           disabled={disabled || !onChange}
           className={cn(
             "inline-flex h-7 max-w-[128px] items-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors",
-            "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
+            mode === "fullAccess" && cn("bg-orange-500/10 hover:bg-orange-500/15", FULL_ACCESS_TEXT)
           )}
-          title="会话权限模式，下一次启动 Claude CLI 会话时生效"
+          title={mode === "fullAccess"
+            ? `全部权限：${FULL_ACCESS_DESCRIPTION}；系统权限与明确禁用的工具仍适用`
+            : "会话权限模式，下一次启动 Claude CLI 会话时生效"}
         >
           <ShieldCheck className="size-3.5" />
           <span className="truncate">{current.label}</span>
           <ChevronDown className="size-3 shrink-0 opacity-60" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="w-56 rounded-xl p-1.5">
+      <DropdownMenuContent align="start" side="top" className="w-64 rounded-xl p-1.5">
         <DropdownMenuLabel>会话权限</DropdownMenuLabel>
         {SELECTABLE_PERMISSION_OPTIONS.map((item) => (
           <DropdownMenuItem
             key={item.value}
-            className="rounded-lg"
+            className={cn("rounded-lg", item.value === "fullAccess" && cn("data-[highlighted]:bg-orange-500/10", FULL_ACCESS_TEXT))}
             onSelect={() => onChange?.(item.value)}
           >
             <span className="grid size-4 place-items-center">
@@ -1146,7 +1123,7 @@ function PermissionModePicker({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-sm">{item.label}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">
+              <span className={cn("block text-[11px] text-muted-foreground", item.value === "fullAccess" && cn(FULL_ACCESS_TEXT, "opacity-80"))}>
                 {item.description}
               </span>
             </span>

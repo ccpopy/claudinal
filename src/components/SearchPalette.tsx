@@ -145,7 +145,7 @@ export function SearchPalette({
             ai_title: item.ai_title,
             first_user_text: item.first_user_text
           }
-          const title = sessionDisplayTitle(session)
+          const title = sessionDisplayTitle(session, project.cwd)
           const haystack = [
             title,
             session.first_user_text ?? "",
@@ -571,7 +571,7 @@ function mapBodyHits(
       target: searchHitTarget(hit),
       project,
       session,
-      title: sessionDisplayTitle(session),
+      title: sessionDisplayTitle(session, project.cwd),
       projectLabel,
       snippet: hit.snippet,
       role: hit.role,

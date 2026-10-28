@@ -3,6 +3,7 @@ mod control;
 pub mod diagnostics;
 pub mod manager;
 mod metadata_probe;
+mod permissions;
 pub mod runtime_controls;
 pub mod spawn;
 mod supervisor;
