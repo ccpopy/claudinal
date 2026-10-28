@@ -55,6 +55,8 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { Kbd } from "@/components/ui/kbd"
+import { visiblePromptSuggestion } from "@/lib/promptSuggestionInput"
 import { FULL_ACCESS_DESCRIPTION, FULL_ACCESS_TEXT, PERMISSION_OPTIONS } from "@/lib/sessionPermissionMode"
 import { composerCommandPrefix } from "@/lib/composerCommand"
 import { CommandChip } from "./CommandChip"
@@ -140,6 +142,9 @@ interface Props {
   onCollaborationModeChange?: (enabled: boolean) => void
   oauthUsage?: OauthUsage | null
   context?: LiveContextUsage | null
+  /** CLI follow-up suggestion: shown as the empty editor's placeholder, Tab accepts it. */
+  promptSuggestion?: string | null
+  onAcceptPromptSuggestion?: (text: string) => boolean | void
   model?: string
   effort?: string
   ultracode?: boolean
@@ -205,6 +210,8 @@ function ComposerEditor({
   onCollaborationModeChange,
   oauthUsage,
   context,
+  promptSuggestion,
+  onAcceptPromptSuggestion,
   model = "",
   effort = "",
   ultracode = false,
@@ -512,8 +519,21 @@ function ComposerEditor({
     } catch (error) { toast.error(`未完成发送，内容已保留：${String(error)}`) }
   }
 
+  const visibleSuggestion = visiblePromptSuggestion({ suggestion: promptSuggestion, text,
+    attachments: images.length + documents.length + fileAttachments.length + pendingAttachments,
+    commandToken, disabled: !!disabled || streaming || interrupting || !!configurationPending })
+  const suggestionVisible = visibleSuggestion !== null
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.repeat || e.nativeEvent.isComposing || e.keyCode === 229)) return
+    // Tab turns the placeholder suggestion into real input; menus and IME keep Tab otherwise.
+    if (e.key === "Tab" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+      && !e.repeat && !e.nativeEvent.isComposing && e.keyCode !== 229 && suggestionVisible && !trigger) {
+      e.preventDefault()
+      menuKeyHandledRef.current.add(e.key)
+      if (onAcceptPromptSuggestion?.(visibleSuggestion!) === false) return
+      setText(visibleSuggestion!)
+      return
+    }
     // 快捷键优先级（高 → 低）：Alt 组合键（streaming 专用）→ slash token
     // 删除 → 候选菜单 → Enter 发送/排队 → Esc 软中断。
     //
@@ -865,7 +885,9 @@ function ComposerEditor({
               onKeyDown={onKey}
               onPaste={onPaste}
               placeholder={
-                commandToken
+                suggestionVisible
+                  ? visibleSuggestion!
+                  : commandToken
                   ? "补充说明，或直接发送"
                   : streaming
                     ? "补充要求，完成后发送"
@@ -875,9 +897,15 @@ function ComposerEditor({
               rows={1}
               className={cn(
                 "min-h-[56px] max-h-60 border-0 bg-transparent px-1 py-1 text-base shadow-none focus-visible:ring-0 [scrollbar-gutter:stable]",
-                "font-sans font-normal leading-relaxed text-foreground"
+                "font-sans font-normal leading-relaxed text-foreground",
+                suggestionVisible && "pr-14"
               )}
             />
+            {suggestionVisible && (
+              <span className="pointer-events-none absolute right-1 top-1.5 flex items-center gap-1 text-[11px] text-muted-foreground" aria-hidden="true">
+                <Kbd>Tab</Kbd>
+              </span>
+            )}
           </div>
 
           <div className="mt-3 flex items-center justify-between gap-3">

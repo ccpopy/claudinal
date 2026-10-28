@@ -287,16 +287,30 @@ function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): St
       ]
     }
   }
-  if (sub === "status" || sub === "api_retry") {
+  if (sub === "api_retry") {
+    // One live row per outage: later attempts update it instead of stacking.
+    const attempt = typeof ev.attempt === "number" ? `（第 ${ev.attempt} 次${typeof ev.max_retries === "number" ? ` / 共 ${ev.max_retries} 次` : ""}）` : ""
+    const entry = { kind: "system_status" as const, status: `${RETRY_STATUS_PREFIX}${attempt}`, ts }
+    return { ...state, entries: [...withoutRetryStatus(state.entries), entry] }
+  }
+  if (sub === "status") {
     return {
       ...state,
-      entries: [
-        ...state.entries,
-        { kind: "system_status", status: sub === "api_retry" ? `CLI 正在恢复连接${typeof ev.attempt === "number" ? `（第 ${ev.attempt} 次）` : ""}` : (ev.status as string) ?? "", ts }
-      ]
+      entries: [...state.entries, { kind: "system_status", status: (ev.status as string) ?? "", ts }]
     }
   }
   return appendUnknown(state, ev as ClaudeEvent, ts)
+}
+
+const RETRY_STATUS_PREFIX = "CLI 正在恢复连接"
+
+/** Retry rows only describe an ongoing outage; any new response means it recovered. */
+function withoutRetryStatus(entries: UIEntry[]): UIEntry[] {
+  return entries.some(isRetryStatus) ? entries.filter((entry) => !isRetryStatus(entry)) : entries
+}
+
+function isRetryStatus(entry: UIEntry): boolean {
+  return entry.kind === "system_status" && entry.status.startsWith(RETRY_STATUS_PREFIX)
 }
 
 function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
@@ -305,6 +319,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
   const t = inner.type as string
 
   if (t === "message_start") {
+    state = { ...state, entries: withoutRetryStatus(state.entries) }
     const msg = (inner.message as Record<string, unknown>) ?? {}
     const role = msg.role as "user" | "assistant" | undefined
     if (role !== "assistant") {
@@ -431,6 +446,7 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
 // 命中已存在 streaming UIMessage 时，只合并 content / model / usage / stopReason，
 // 保持 streaming 状态——真正的关闭由 stream_event message_stop 决定。
 function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number): State {
+  state = { ...state, entries: withoutRetryStatus(state.entries) }
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const id = msg.id as string | undefined
   const apiError = ev.isApiErrorMessage === true
@@ -800,7 +816,7 @@ function reduceResult(
   disposition: SubagentResultDisposition
 ): State {
   // 网关漏发 message_stop 时这里兜底收尾残留 streaming 消息
-  const entries = closeStreamingEntries(state.entries, ts).filter((entry) => entry.kind !== "system_status" || !entry.status.startsWith("CLI 正在恢复"))
+  const entries = withoutRetryStatus(closeStreamingEntries(state.entries, ts))
   // Claude CLI 的异步 Agent 会让前台 assistant turn 暂时结束并发出 result，
   // 随后再由 task-notification 唤醒主会话。此时 result 只是等待边界：
   // 收掉块级流式光标，但不插入“完成”卡，也不切断同一 RunGroup。

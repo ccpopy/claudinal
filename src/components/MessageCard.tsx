@@ -28,7 +28,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { cn, formatRunDuration } from "@/lib/utils"
 import type { UIEntry, UIMessage } from "@/types/ui"
-import { BlockView, ExpandableRow, CodeBlock } from "./MessageBlocks"
+import { BlockView, ExpandableRow, CodeBlock, MessageTime } from "./MessageBlocks"
 import { CopyButton } from "./CopyButton"
 import { Button } from "./ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu"
@@ -126,6 +126,9 @@ function MessageView({
     )
   }
   if (msg.apiError) return <ApiErrorMessageView msg={msg} />
+  // Completion time belongs to the reply as a whole: only its last text block shows it.
+  const lastTextIndex = msg.blocks.reduce((last, block, index) => block.type === "text" && block.text ? index : last, -1)
+  const completedAt = msg.streaming ? undefined : msg.stopTs ?? msg.ts
   return (
     <div className="flex flex-col gap-2 items-stretch">
       {msg.blocks.map((b, i) => (
@@ -135,6 +138,7 @@ function MessageView({
           block={b}
           imageGallery={msg.blocks}
           cwd={cwd}
+          timestamp={i === lastTextIndex ? completedAt : undefined}
         />
       ))}
     </div>
@@ -211,7 +215,8 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions, 
         <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
         {guide && delivery === "awaiting_ack" ? "引导已提交，等待 CLI 读取" : deliveryLabel[delivery!]}
       </p>}
-    <div className="flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
+    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
+      <MessageTime ts={msg.ts} />
       {onRetry && (!submissionActions?.payload(msg.id) || msg.deliveryState === "responded" || msg.deliveryState === "acknowledged") && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}
       {original && <CopyButton text={original} ariaLabel="复制原始输入" label="原始输入已复制" />}
       {onRewindMessage && checkpointMessageId(msg) && <DropdownMenu>

@@ -18,8 +18,14 @@ export interface Appearance {
 
 const KEY = "claudecli.appearance"
 
+// Keep Claude's Latin face, with the bundled Noto font for Chinese reading text.
+// Generic families must follow explicit CJK fonts to avoid system serif fallback.
 export const CLAUDE_FONT_READING =
+  '"Anthropic Serif", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif'
+const LEGACY_CLAUDE_READING_FONTS = new Set([
+  '"Anthropic Serif", ui-serif, Georgia, Cambria, "Times New Roman", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif',
   '"Anthropic Serif", ui-serif, Georgia, Cambria, "Times New Roman", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif'
+])
 export const CLAUDE_FONT_MONO =
   '"Anthropic Mono", ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace'
 
@@ -128,79 +134,86 @@ const CLAUDINAL_DEFAULT: Appearance = {
   }
 }
 
+/** One warm hue (claude.ai ivory / charcoal); dark surfaces sit above the page. */
 const CLAUDE_DEFAULT: Appearance = {
   light: {
     accent: "#cc7d5e",
-    background: "#f9f9f7",
-    foreground: "#2d2d2b",
+    background: "#faf9f5",
+    foreground: "#262624",
     translucentSidebar: true,
     fontUI: CLAUDE_FONT_UI,
     fontReading: CLAUDE_FONT_READING,
     fontMono: CLAUDE_FONT_MONO,
     palette: {
-      "--card": "oklch(1 0 0)",
-      "--card-foreground": "oklch(0.21 0.005 80)",
-      "--popover": "oklch(1 0 0)",
-      "--popover-foreground": "oklch(0.21 0.005 80)",
-      "--primary-foreground": "oklch(0.99 0 0)",
-      "--secondary": "oklch(0.95 0.012 90)",
-      "--secondary-foreground": "oklch(0.25 0.005 80)",
-      "--muted": "oklch(0.96 0.01 90)",
-      "--muted-foreground": "oklch(0.52 0.012 90)",
-      "--accent": "oklch(0.94 0.015 85)",
-      "--accent-foreground": "oklch(0.21 0.005 80)",
-      "--destructive": "oklch(0.55 0.2 27)",
-      "--destructive-foreground": "oklch(0.99 0 0)",
-      "--border": "oklch(0.92 0.018 90)",
-      "--input": "oklch(0.92 0.018 90)",
-      "--sidebar-foreground": "oklch(0.21 0.005 80)",
-      "--sidebar-muted": "oklch(0.52 0.012 90)",
-      "--sidebar-border": "oklch(0.9 0.015 90)",
-      "--sidebar-accent": "oklch(0.93 0.015 85)",
-      "--user": "oklch(0.95 0.018 70)",
-      "--user-foreground": "oklch(0.25 0.005 80)",
-      "--thinking": "oklch(0.96 0.018 80)",
-      "--tool": "oklch(0.96 0.02 150)",
-      "--connected": "oklch(0.55 0.13 150)",
-      "--warn": "oklch(0.6 0.13 80)"
+      "--card": "#ffffff",
+      "--card-foreground": "#262624",
+      "--popover": "#ffffff",
+      "--popover-foreground": "#262624",
+      "--primary-foreground": "#ffffff",
+      "--secondary": "#f0eee6",
+      "--secondary-foreground": "#3d3929",
+      "--muted": "#f0eee6",
+      "--muted-foreground": "#73726c",
+      "--accent": "#ece9df",
+      "--accent-foreground": "#262624",
+      "--destructive": "#b4392b",
+      "--destructive-foreground": "#ffffff",
+      "--border": "#e6e3d8",
+      "--input": "#e6e3d8",
+      "--sidebar-foreground": "#262624",
+      "--sidebar-muted": "#73726c",
+      "--sidebar-border": "#e6e3d8",
+      "--sidebar-accent": "#ece9df",
+      "--user": "#f0eee6",
+      "--user-foreground": "#262624",
+      "--thinking": "#f5f3ec",
+      "--tool": "#f5f3ec",
+      "--connected": "#3f8f5a",
+      "--warn": "#a0670f"
     }
   },
   dark: {
-    accent: "#cc7d5e",
-    background: "#2d2d2b",
-    foreground: "#f9f9f7",
+    accent: "#d97757",
+    background: "#262624",
+    foreground: "#f5f4ee",
     translucentSidebar: true,
     fontUI: CLAUDE_FONT_UI,
     fontReading: CLAUDE_FONT_READING,
     fontMono: CLAUDE_FONT_MONO,
     palette: {
-      "--card": "oklch(0.21 0.005 80)",
-      "--card-foreground": "oklch(0.96 0.005 80)",
-      "--popover": "oklch(0.21 0.005 80)",
-      "--popover-foreground": "oklch(0.96 0.005 80)",
-      "--primary-foreground": "oklch(0.16 0.005 80)",
-      "--secondary": "oklch(0.27 0.005 80)",
-      "--secondary-foreground": "oklch(0.96 0.005 80)",
-      "--muted": "oklch(0.27 0.005 80)",
-      "--muted-foreground": "oklch(0.7 0.005 80)",
-      "--accent": "oklch(0.27 0.005 80)",
-      "--accent-foreground": "oklch(0.96 0.005 80)",
-      "--destructive": "oklch(0.55 0.18 27)",
-      "--destructive-foreground": "oklch(0.96 0.005 80)",
-      "--border": "oklch(0.27 0.005 80)",
-      "--input": "oklch(0.27 0.005 80)",
-      "--sidebar-foreground": "oklch(0.96 0.005 80)",
-      "--sidebar-muted": "oklch(0.55 0.005 80)",
-      "--sidebar-border": "oklch(0.25 0.005 80)",
-      "--sidebar-accent": "oklch(0.24 0.005 80)",
-      "--user": "oklch(0.32 0.06 270)",
-      "--user-foreground": "oklch(0.95 0.005 270)",
-      "--thinking": "oklch(0.27 0.04 320)",
-      "--tool": "oklch(0.25 0.04 150)",
-      "--connected": "oklch(0.62 0.13 150)",
-      "--warn": "oklch(0.62 0.13 80)"
+      "--card": "#30302e",
+      "--card-foreground": "#f5f4ee",
+      "--popover": "#30302e",
+      "--popover-foreground": "#f5f4ee",
+      "--primary-foreground": "#1f1e1d",
+      "--secondary": "#3a3936",
+      "--secondary-foreground": "#f5f4ee",
+      "--muted": "#33322f",
+      "--muted-foreground": "#a6a39b",
+      "--accent": "#3d3c38",
+      "--accent-foreground": "#f5f4ee",
+      "--destructive": "#e0705f",
+      "--destructive-foreground": "#1f1e1d",
+      "--border": "#3e3d38",
+      "--input": "#3e3d38",
+      "--sidebar-foreground": "#f5f4ee",
+      "--sidebar-muted": "#a6a39b",
+      "--sidebar-border": "#34332f",
+      "--sidebar-accent": "#33322f",
+      "--user": "#3a3936",
+      "--user-foreground": "#f5f4ee",
+      "--thinking": "#2e2d2b",
+      "--tool": "#2e2d2b",
+      "--connected": "#6fbf8a",
+      "--warn": "#e8b562"
     }
   }
+}
+
+/** Colors of the first Claude preset; palettes were not user-editable. */
+function isLegacyClaudePreset(a: Appearance): boolean {
+  return a.light.accent === "#cc7d5e" && a.light.background === "#f9f9f7" && a.light.foreground === "#2d2d2b"
+    && a.dark.accent === "#cc7d5e" && a.dark.background === "#2d2d2b" && a.dark.foreground === "#f9f9f7"
 }
 
 export const PRESETS: Record<string, { label: string; appearance: Appearance }> = {
@@ -446,8 +459,21 @@ export function loadAppearance(): Appearance {
       !merged.dark.background &&
       !merged.dark.foreground
     if (allEmpty) return defaultAppearance()
-    const colorPresetId = matchPresetColors(merged)
     let migrated = false
+    if (isLegacyClaudePreset(merged)) {
+      for (const mode of ["light", "dark"] as const) {
+        const next = CLAUDE_DEFAULT[mode]
+        merged[mode] = {
+          ...merged[mode],
+          accent: next.accent,
+          background: next.background,
+          foreground: next.foreground,
+          palette: { ...next.palette }
+        }
+      }
+      migrated = true
+    }
+    const colorPresetId = matchPresetColors(merged)
     if (colorPresetId) {
       const preset = PRESETS[colorPresetId]
       for (const mode of ["light", "dark"] as const) {
@@ -468,11 +494,14 @@ export function loadAppearance(): Appearance {
     // Only migrate the shipped serif UI default. Explicit custom stacks stay unchanged.
     if (colorPresetId === "claude") {
       for (const mode of ["light", "dark"] as const) {
-        if (!merged[mode].fontUI || merged[mode].fontUI === CLAUDE_FONT_READING) {
+        if (!merged[mode].fontUI || LEGACY_CLAUDE_READING_FONTS.has(merged[mode].fontUI)) {
           merged[mode].fontUI = CLAUDE_FONT_UI
           migrated = true
         }
-        if (!merged[mode].fontReading) { merged[mode].fontReading = CLAUDE_FONT_READING; migrated = true }
+        if (!merged[mode].fontReading || LEGACY_CLAUDE_READING_FONTS.has(merged[mode].fontReading)) {
+          merged[mode].fontReading = CLAUDE_FONT_READING
+          migrated = true
+        }
         if (!merged[mode].fontMono) { merged[mode].fontMono = CLAUDE_FONT_MONO; migrated = true }
       }
     }

@@ -27,6 +27,7 @@ import type { SubagentTask } from "@/lib/subagents"
 import { cn } from "@/lib/utils"
 import { parseTaskNotification } from "@/lib/userMessageText"
 import { toolResultParts, validateToolImage } from "@/lib/toolResultContent"
+import { formatMessageTime, formatMessageTimeFull } from "@/lib/messageTime"
 import type { UIBlock } from "@/types/ui"
 import { AssistantMarkdown } from "./AssistantMarkdown"
 import { CopyButton } from "./CopyButton"
@@ -39,12 +40,20 @@ import { RetryButton } from "./RetryButton"
  */
 export type BlockViewVariant = "guide" | "activity" | "user"
 
+/** Hover-only time beside message actions: send time for input, completion time for replies. */
+export function MessageTime({ ts }: { ts?: number }) {
+  const label = formatMessageTime(ts)
+  if (!label) return null
+  return <time dateTime={new Date(ts!).toISOString()} title={formatMessageTimeFull(ts)} className="px-1 text-[11px] tabular-nums text-muted-foreground">{label}</time>
+}
+
 export function BlockView({
   role,
   block,
   variant,
   onRetry,
   cwd,
+  timestamp,
   subagent,
   onOpenSubagent,
   imageGallery,
@@ -58,6 +67,8 @@ export function BlockView({
   variant?: BlockViewVariant
   onRetry?: () => void | Promise<void>
   cwd?: string | null
+  /** Shown on hover next to the copy action of a finished reply's last text block. */
+  timestamp?: number
   subagent?: SubagentTask
   onOpenSubagent?: (agentId: string) => void
 }) {
@@ -69,6 +80,7 @@ export function BlockView({
         variant={variant}
         onRetry={onRetry}
         cwd={cwd}
+        timestamp={timestamp}
       />
     )
   }
@@ -125,13 +137,15 @@ function TextBlock({
   block,
   variant,
   onRetry,
-  cwd
+  cwd,
+  timestamp
 }: {
   role: "user" | "assistant"
   block: UIBlock
   variant?: BlockViewVariant
   onRetry?: () => void | Promise<void>
   cwd?: string | null
+  timestamp?: number
 }) {
   if (!block.text && !block.partial) return null
   if (role === "user") {
@@ -202,12 +216,14 @@ function TextBlock({
       />
       {!block.partial && block.text && (
         // 与用户消息一致：悬停或键盘聚焦时才出现，平时不占视觉
-        <CopyButton
-          text={block.text}
-          ariaLabel="复制消息"
-          label="消息已复制"
-          className="-ml-1.5 self-start opacity-0 transition-opacity group-hover/reply:opacity-100 focus-visible:opacity-100"
-        />
+        <div className="-ml-1.5 flex items-center self-start opacity-0 transition-opacity group-hover/reply:opacity-100 group-focus-within/reply:opacity-100">
+          <CopyButton
+            text={block.text}
+            ariaLabel="复制消息"
+            label="消息已复制"
+          />
+          <MessageTime ts={timestamp} />
+        </div>
       )}
     </div>
   )

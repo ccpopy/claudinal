@@ -1,6 +1,17 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Noto Serif SC, SIL OFL 1.1. Full variable font, with no glyph subsetting.
+ * Source: google/fonts/ofl/notoserifsc, revision 8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5.
+ * Redistribution notice: public/licenses/NotoSerifSC-OFL.txt. */
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("./assets/fonts/NotoSerifSC-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+}
+
 @font-face {
   font-family: "Anthropic Sans";
   src: url("./assets/fonts/AnthropicSansVariable.ttf") format("truetype");

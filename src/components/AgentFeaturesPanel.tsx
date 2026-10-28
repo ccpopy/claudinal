@@ -1,14 +1,11 @@
 import { useState } from "react"
-import { ChevronRight, ChevronUp, RefreshCw, Sparkles } from "lucide-react"
+import { ChevronRight, ChevronUp, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { buildCompactCommand, type CompactBoundary, type ContextUsageSummary, type PromptSuggestion } from "@/lib/agentFeatures"
+import { buildCompactCommand, type CompactBoundary, type ContextUsageSummary } from "@/lib/agentFeatures"
 
 export interface AgentFeaturesPanelProps {
   defaultExpanded?: boolean
-  suggestion?: PromptSuggestion | null
-  onInsertSuggestion?: (text: string) => void
-  onDismissSuggestion?: () => void
   context?: ContextUsageSummary | null
   contextCapability?: "supported" | "unsupported" | "unknown"
   contextLoading?: boolean
@@ -28,7 +25,6 @@ function count(value: number | undefined): string {
 
 export function AgentFeaturesPanel({
   defaultExpanded = false,
-  suggestion, onInsertSuggestion, onDismissSuggestion,
   context, contextCapability = "unknown", contextLoading = false, contextError,
   onRefreshContext, compactBoundary, compactSupported = false, compacting = false,
   busy = false, onCompact, onOpenHistory
@@ -36,18 +32,6 @@ export function AgentFeaturesPanel({
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [instructions, setInstructions] = useState("")
   return <div className="space-y-2 text-xs">
-    {suggestion && <div className="flex items-start gap-2 rounded-xl border bg-card/95 px-3 py-2 shadow-xs">
-      <Sparkles className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 text-muted-foreground">后续输入建议</div>
-        <button type="button" disabled={!onInsertSuggestion} onClick={() => onInsertSuggestion?.(suggestion.text)}
-          className="w-full whitespace-pre-wrap break-words text-left hover:text-primary disabled:opacity-50">
-          {suggestion.text}
-        </button>
-        <div className="mt-1 text-muted-foreground">点击追加到草稿，发送前可编辑。</div>
-      </div>
-      {onDismissSuggestion && <button type="button" onClick={onDismissSuggestion} className="shrink-0 text-muted-foreground hover:text-foreground">关闭建议</button>}
-    </div>}
     <div className="rounded-xl border bg-card/95 shadow-xs backdrop-blur-sm">
       <div className="flex h-8 items-center justify-between gap-3 px-3">
         <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex min-w-0 items-center gap-1.5 text-muted-foreground hover:text-foreground">

@@ -78,7 +78,7 @@ import { publishLiveRuntimeSummaries, reduceRuntimePhase, type RuntimePhase, typ
 import { RuntimeStatus } from "@/components/RuntimeStatus"
 import { CheckpointRewindController, checkpointMessageId } from "@/lib/checkpoints"
 import { CheckpointRewindDialog } from "@/components/CheckpointRewindDialog"
-import { PromptSuggestionTracker, appendPromptSuggestionToDraft, normalizeContextUsageSummary, parseCompactBoundary,
+import { PromptSuggestionTracker, normalizeContextUsageSummary, parseCompactBoundary,
   type CompactBoundary, type ContextUsageSummary } from "@/lib/agentFeatures"
 import { AgentFeaturesPanel } from "@/components/AgentFeaturesPanel"
 import { TranscriptHistoryPreview, type TranscriptHistoryRequest } from "@/components/TranscriptHistoryPreview"
@@ -4153,15 +4153,6 @@ export default function App() {
                 {activeRun && <div className={cn(!empty && "shrink-0 bg-background px-6 pt-2")}>
                   <div className={cn(!empty && "mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl")}>
                 <AgentFeaturesPanel
-                  suggestion={activeRun.suggestionTracker.current}
-                  onInsertSuggestion={(text) => {
-                    if (activeRuntimeIdRef.current !== activeRun.runtimeId || viewOwnerRef.current.key !== activeRun.owner.key
-                      || activeRun.suggestionTracker.current?.text !== text) return
-                    const current = activeComposerDraftKey ? composerDraftsRef.current.get(activeComposerDraftKey) : undefined
-                    setDraft(appendPromptSuggestionToDraft(current?.text ?? "", text))
-                    activeRun.suggestionTracker.dismiss(); setRunningTick((tick) => tick + 1)
-                  }}
-                  onDismissSuggestion={() => { activeRun.suggestionTracker.dismiss(); setRunningTick((tick) => tick + 1) }}
                   context={activeRun.contextSummary} contextCapability={activeRun.capabilities.contextUsageSummary}
                   contextLoading={activeRun.contextLoading} contextError={activeRun.contextError} onRefreshContext={() => { void refreshContextSummary() }}
                   compactBoundary={activeRun.compactBoundary} compactSupported={runtimeCommandsKnown && slashCommands.includes("compact")}
@@ -4215,6 +4206,16 @@ export default function App() {
                     collaborationMode={collaborationMode}
                     onCollaborationModeChange={handleCollaborationModeChange}
                     oauthUsage={isOfficialApi() && (!activeRun || activeRun.apiProfileKey === "official") ? planUsageSnapshot.usage : null}
+                    promptSuggestion={activeRun && activeRuntimeIdRef.current === activeRun.runtimeId ? activeRun.suggestionTracker.current?.text ?? null : null}
+                    onAcceptPromptSuggestion={(text) => {
+                      if (!activeRun || activeRuntimeIdRef.current !== activeRun.runtimeId
+                        || viewOwnerRef.current.key !== activeRun.owner.key
+                        || runningSessionsRef.current.get(activeRun.runtimeId) !== activeRun
+                        || activeRun.suggestionTracker.current?.text.trim() !== text) return false
+                      activeRun.suggestionTracker.dismiss()
+                      setRunningTick((tick) => tick + 1)
+                      return true
+                    }}
                     context={activeRun ? liveContextUsage(activeRun.state.entries, activeRun.contextSummary, activeRun.actualConfig.model ?? activeRun.launchModel, activeRun.apiProfileKey === "official") : null}
                     model={composerPrefs.model}
                     effort={composerPrefs.effort}
