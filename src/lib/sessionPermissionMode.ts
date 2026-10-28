@@ -2,7 +2,7 @@ import type { AppSettings } from "@/lib/settings"
 
 export type PermissionMode = AppSettings["defaultPermissionMode"]
 export type SessionPermissionModeSource = "default" | "session"
-export const FULL_ACCESS_DESCRIPTION = "允许联网和访问工作区外文件，关闭命令沙箱、放宽部分命令安全检查，并自动批准工具请求"
+export const FULL_ACCESS_DESCRIPTION = "放宽访问限制，自动批准工具请求。"
 
 export const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: string; description: string }> = [
   { value: "default", label: "默认权限", description: "使用 Claude CLI 默认权限策略" },

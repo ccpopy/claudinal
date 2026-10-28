@@ -94,6 +94,7 @@ import {
   type TriggerInfo
 } from "@/lib/suggestionTrigger"
 import { shortResets, fiveHourPercent } from "@/lib/oauthUsage"
+import { compactTokens, type LiveContextUsage } from "@/lib/contextUsage"
 import type { DocumentPayload, ImagePayload } from "@/types/ui"
 import {
   SuggestionPanel,
@@ -138,6 +139,7 @@ interface Props {
   collaborationMode?: boolean
   onCollaborationModeChange?: (enabled: boolean) => void
   oauthUsage?: OauthUsage | null
+  context?: LiveContextUsage | null
   model?: string
   effort?: string
   ultracode?: boolean
@@ -202,6 +204,7 @@ function ComposerEditor({
   collaborationMode = false,
   onCollaborationModeChange,
   oauthUsage,
+  context,
   model = "",
   effort = "",
   ultracode = false,
@@ -1034,7 +1037,7 @@ function ComposerEditor({
                   sessionPrefs={sessionPrefs}
                 />
               )}
-              <PlanUsageIndicator usage={oauthUsage ?? null} />
+              <PlanUsageIndicator usage={oauthUsage ?? null} context={context ?? null} />
               {streaming && canSend && <Button
                 key="guide-action"
                 onClick={() => send("guide")} disabled={sendBlocked || interrupting || !midTurnSupported}
@@ -1328,32 +1331,34 @@ function GitBranchPicker({
   )
 }
 
-function PlanUsageIndicator({ usage }: { usage: OauthUsage | null }) {
+function PlanUsageIndicator({ usage, context }: { usage: OauthUsage | null; context: LiveContextUsage | null }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     if (!usage) return
     const timer = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(timer)
   }, [usage])
-  // 仅 Anthropic OAuth 登录用户能拿到 plan usage；第三方 API / 未登录返回 null。
-  // 该控件的存在本身="官方账号已登录"。
-  if (!usage) return null
-  const percent = fiveHourPercent(usage)
-  if (percent === null) return null
-
-  const fiveHour = usage.five_hour
-  const sevenDay = usage.seven_day
-  const sevenDayOpus = usage.seven_day_opus ?? undefined
-  const sevenDaySonnet = usage.seven_day_sonnet ?? undefined
+  // Plan rows exist only for a signed-in Claude subscription; context works for every provider.
+  const planPercent = fiveHourPercent(usage)
+  const percent = planPercent ?? context?.percent ?? null
+  if (percent === null && !context) return null
 
   const fmtReset = (resetsAt: string | null | undefined) => {
     const t = shortResets(resetsAt, now)
     if (!t) return ""
     return t === "等待更新" ? "等待更新" : `${t}后重置`
   }
-
+  const weekly = [
+    { label: "每周 · 全部模型", window: usage?.seven_day },
+    { label: "每周 · Sonnet", window: usage?.seven_day_sonnet ?? undefined },
+    { label: "每周 · Opus", window: usage?.seven_day_opus ?? undefined }
+  ].filter((row): row is { label: string; window: OauthUsageWindow } => !!row.window)
+  const contextDetail = context
+    ? [context.contextWindow ? `${compactTokens(context.usedTokens)} / ${compactTokens(context.contextWindow)}` : `${compactTokens(context.usedTokens)} tokens`,
+      context.compactThreshold ? `${compactTokens(context.compactThreshold)} 时压缩` : ""].filter(Boolean).join(" · ")
+    : ""
   const ringStyle = {
-    background: `conic-gradient(var(--primary) ${percent}%, var(--border) 0)`
+    background: `conic-gradient(var(--primary) ${percent ?? 0}%, var(--border) 0)`
   }
 
   return (
@@ -1362,7 +1367,7 @@ function PlanUsageIndicator({ usage }: { usage: OauthUsage | null }) {
         <button
           type="button"
           className="inline-flex size-7 items-center justify-center rounded-full transition-opacity hover:opacity-80"
-          aria-label={`Plan ${percent}%`}
+          aria-label={planPercent !== null ? `计划用量 ${planPercent}%` : percent !== null ? `上下文 ${percent}%` : `上下文 ${compactTokens(context!.usedTokens)} tokens`}
         >
           <span
             className="grid size-4 place-items-center rounded-full"
@@ -1379,38 +1384,18 @@ function PlanUsageIndicator({ usage }: { usage: OauthUsage | null }) {
         collisionPadding={12}
         className="w-72 max-w-[calc(100vw-24px)] rounded-xl px-4 py-3"
       >
-        <div className="space-y-2 text-left">
-          <div className="text-xs font-medium text-muted-foreground">
-            计划用量
-          </div>
-          {fiveHour && (
+        <div className="space-y-2.5 text-left">
+          {context && <UsageRow label="上下文" percent={context.percent} suffix={contextDetail} />}
+          {usage?.five_hour && (
             <UsageRow
-              label="5 小时限额"
-              window={fiveHour}
-              suffix={fmtReset(fiveHour.resets_at)}
+              label="5 小时"
+              percent={usage.five_hour.utilization}
+              suffix={fmtReset(usage.five_hour.resets_at)}
             />
           )}
-          {sevenDay && (
-            <UsageRow
-              label="每周 · 全部模型"
-              window={sevenDay}
-              suffix={fmtReset(sevenDay.resets_at)}
-            />
-          )}
-          {sevenDaySonnet && (
-            <UsageRow
-              label="每周 · Sonnet"
-              window={sevenDaySonnet}
-              suffix={fmtReset(sevenDaySonnet.resets_at)}
-            />
-          )}
-          {sevenDayOpus && (
-            <UsageRow
-              label="每周 · 仅 Opus"
-              window={sevenDayOpus}
-              suffix={fmtReset(sevenDayOpus.resets_at)}
-            />
-          )}
+          {weekly.map((row) => (
+            <UsageRow key={row.label} label={row.label} percent={row.window.utilization} suffix={fmtReset(row.window.resets_at)} />
+          ))}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -1419,30 +1404,31 @@ function PlanUsageIndicator({ usage }: { usage: OauthUsage | null }) {
 
 function UsageRow({
   label,
-  window: w,
+  percent,
   suffix
 }: {
   label: string
-  window: OauthUsageWindow
+  /** Absent when the context window is unknown: show the detail without a bar. */
+  percent?: number
   suffix?: string
 }) {
-  const pct = Math.max(0, Math.min(100, Math.round(w.utilization)))
+  const pct = percent === undefined || !Number.isFinite(percent) ? null : Math.max(0, Math.min(100, Math.round(percent)))
   const tone =
-    pct >= 90 ? "bg-destructive" : pct >= 60 ? "bg-warn" : "bg-primary"
+    pct === null ? "bg-primary" : pct >= 90 ? "bg-destructive" : pct >= 60 ? "bg-warn" : "bg-primary"
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="truncate">{label}</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">
-          {pct}%{suffix ? ` · ${suffix}` : ""}
+          {[pct === null ? "" : `${pct}%`, suffix].filter(Boolean).join(" · ")}
         </span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+      {pct !== null && <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
           className={cn("h-full transition-[width]", tone)}
           style={{ width: `${pct}%` }}
         />
-      </div>
+      </div>}
     </div>
   )
 }

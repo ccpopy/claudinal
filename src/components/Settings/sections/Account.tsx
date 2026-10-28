@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { planUsage, planUsageAccountKey } from "@/lib/planUsage"
 import {
   AlertTriangle,
   Cloud,
@@ -26,12 +27,9 @@ import {
   authCancelLogin,
   authLogout,
   authStartLogin,
-  fetchOauthUsage,
   getAuthStatus,
-  invalidateOauthUsageRequest,
   readClaudeSettings,
-  type AuthStatus,
-  type OauthUsage
+  type AuthStatus
 } from "@/lib/ipc"
 import {
   SettingsCard,
@@ -93,37 +91,18 @@ export function Account() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
   const [authStatusError, setAuthStatusError] = useState<string | null>(null)
   const [env, setEnv] = useState<Record<string, string>>({})
-  const [oauth, setOauth] = useState<OauthUsage | null>(null)
-  const [oauthError, setOauthError] = useState<string | null>(null)
-  const [oauthLoading, setOauthLoading] = useState(false)
-  const [oauthFetchedAt, setOauthFetchedAt] = useState<number>(0)
+  // Shared with the composer ring: CLI rate-limit events keep it current, so
+  // opening this page or refocusing the window does not query the usage API.
+  const usageSnapshot = useSyncExternalStore(planUsage.subscribe, planUsage.getSnapshot, planUsage.getSnapshot)
+  const { usage: oauth, error: oauthError, loading: oauthLoading, updatedAt: oauthFetchedAt } = usageSnapshot
   const [loading, setLoading] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [awaitingLogin, setAwaitingLogin] = useState(false)
   const [resetBusy, setResetBusy] = useState(false)
   const requestRef = useRef(0)
-  const accountKeyRef = useRef("")
 
-  const refreshOauth = useCallback(async (request: number) => {
-    if (request !== requestRef.current) return
-    setOauthLoading(true)
-    setOauthError(null)
-    try {
-      const data = await fetchOauthUsage()
-      if (request !== requestRef.current) return
-      setOauth(data)
-      setOauthFetchedAt(Date.now())
-    } catch (e) {
-      if (request !== requestRef.current) return
-      // Keep the last successful snapshot for this account, visibly marked stale.
-      setOauthError(String(e))
-    } finally {
-      if (request === requestRef.current) setOauthLoading(false)
-    }
-  }, [])
-
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options: { force?: boolean } = {}) => {
     const request = ++requestRef.current
     setLoading(true)
     let nextEnv: Record<string, string> = {}
@@ -155,43 +134,23 @@ export function Account() {
     } catch (e) {
       if (request !== requestRef.current) return
       setAuthStatusError(String(e))
-      setOauthLoading(false)
       return
     } finally {
       if (request === requestRef.current) setLoading(false)
     }
     if (request !== requestRef.current) return
     const nextAuth = detectAuth(nextEnv, nextStatus)
-    const nextAccountKey = nextAuth.kind === "oauth"
-      ? JSON.stringify([nextAuth.status.orgId, nextAuth.status.email, nextAuth.method]) : ""
-    if (nextAccountKey !== accountKeyRef.current) {
-      accountKeyRef.current = nextAccountKey
-      invalidateOauthUsageRequest()
-      setOauth(null)
-      setOauthError(null)
-      setOauthFetchedAt(0)
-    }
+    const accountChanged = planUsage.setAccount(nextAuth.kind === "oauth" ? planUsageAccountKey(nextAuth.status) : null)
     if (nextAuth.kind === "oauth") {
-      await refreshOauth(request)
-    } else {
-      setOauth(null)
-      setOauthError(null)
-      setOauthFetchedAt(0)
-      setOauthLoading(false)
+      // Reopening this page reuses the snapshot, even when old. Refresh is explicit.
+      if (accountChanged || options.force) await planUsage.refresh(options)
     }
-  }, [refreshOauth])
+  }, [])
 
   useEffect(() => {
     void refresh()
     return () => { requestRef.current += 1 }
   }, [refresh])
-
-  // Returning from the official usage/reset page updates counts without re-entry.
-  useEffect(() => {
-    const onFocus = () => { if (!loading && !oauthLoading && !awaitingLogin && !logoutBusy && !resetBusy) void refresh() }
-    window.addEventListener("focus", onFocus)
-    return () => window.removeEventListener("focus", onFocus)
-  }, [refresh, loading, oauthLoading, awaitingLogin, logoutBusy, resetBusy])
 
   const stopAwaitingLogin = useCallback(async () => {
     setAwaitingLogin(false)
@@ -219,8 +178,8 @@ export function Account() {
           authCancelLogin().catch(() => undefined)
           setAwaitingLogin(false)
           toast.success("登录已生效")
-          invalidateOauthUsageRequest()
-          void refresh()
+          planUsage.clear()
+          void refresh({ force: true })
           return
         }
       } catch {
@@ -245,18 +204,12 @@ export function Account() {
 
   const performLogout = useCallback(async () => {
     requestRef.current += 1
-    invalidateOauthUsageRequest()
-    setOauthLoading(false)
     setLoading(false)
     setLogoutBusy(true)
     try {
       await authLogout()
-      invalidateOauthUsageRequest()
-      accountKeyRef.current = ""
       setAuthStatus(null)
-      setOauth(null)
-      setOauthError(null)
-      setOauthFetchedAt(0)
+      planUsage.setAccount(null)
       toast.success("已登出")
       await refresh()
     } catch (e) {
@@ -290,7 +243,7 @@ export function Account() {
           <Button
             variant="outline"
             size="sm"
-            onClick={refresh}
+            onClick={() => { void refresh({ force: true }) }}
             disabled={loading || oauthLoading || resetBusy}
           >
             <RefreshCw className={loading || oauthLoading ? "animate-spin" : ""} />
@@ -348,7 +301,7 @@ export function Account() {
             error={oauthError}
             loading={oauthLoading}
             fetchedAt={oauthFetchedAt}
-            onRefresh={() => { void refresh() }}
+            onRefresh={() => { void refresh({ force: true }) }}
             account={{ orgId: authStatus?.orgId ?? null, email: authStatus?.email ?? null }}
             onResetBusyChange={setResetBusy}
           />

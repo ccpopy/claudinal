@@ -26,6 +26,7 @@ import {
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
   useCallback,
   Suspense
 } from "react"
@@ -67,8 +68,6 @@ import {
   readSessionSidecar,
   patchSessionSidecar,
   deleteSessionJsonl,
-  fetchOauthUsage,
-  type OauthUsage,
   type PermissionRequestPayload,
   type SessionMeta
 } from "@/lib/ipc"
@@ -158,6 +157,8 @@ import {
   trimApiUrl
 } from "@/lib/thirdPartyApi"
 import { isOfficialApi } from "@/lib/oauthUsage"
+import { planUsage, seedPlanUsage } from "@/lib/planUsage"
+import { liveContextUsage } from "@/lib/contextUsage"
 import {
   markInterruptedResult,
   reduce,
@@ -422,6 +423,7 @@ type RunningSession = {
   compactBoundary: CompactBoundary | null
   compacting: boolean
   apiProfileKey: string
+  planUsageEpoch: number
   providerLabel: string
   titleModels: string[]
   apiLaunchProfileKey: string
@@ -828,7 +830,7 @@ export default function App() {
     null
   )
   const [thirdPartyApiVersion, setThirdPartyApiVersion] = useState(0)
-  const [oauthUsage, setOauthUsage] = useState<OauthUsage | null>(null)
+  const planUsageSnapshot = useSyncExternalStore(planUsage.subscribe, planUsage.getSnapshot, planUsage.getSnapshot)
   const [draft, setDraft] = useState("")
   const [draftImages, setDraftImages] = useState<ImagePayload[]>([])
   const [draftDocuments, setDraftDocuments] = useState<DocumentPayload[]>([])
@@ -1247,6 +1249,7 @@ export default function App() {
     }
   }, [syncUnreadBadge])
 
+  const refreshContextSummaryRef = useRef<() => void>(() => {})
   // CLI -p runs never get a generated title; ask a small model once per session.
   const titleAttemptsRef = useRef(new Set<string>())
   const maybeGenerateSessionTitle = useCallback((run: RunningSession, sessionId: string) => {
@@ -1691,11 +1694,7 @@ export default function App() {
     if (settings.autoCheckUpdate) {
       void checkForAppUpdate({ silent: true })
     }
-    if (isOfficialApi()) {
-      fetchOauthUsage()
-        .then((u) => setOauthUsage(u))
-        .catch(() => setOauthUsage(null))
-    }
+    void seedPlanUsage()
     const list = listProjects()
     setProjects(list)
     if (list.length > 0) setProject((cur) => cur ?? list[0])
@@ -1901,16 +1900,11 @@ export default function App() {
         refreshActiveApiRuntime()
       }
       refreshComposerDefaults()
-      if (!isOfficialApi()) {
-        setOauthUsage(null)
-        return
+      // Unrelated settings saves must not query the usage API.
+      if (previousProfileKey !== nextProfileKey) {
+        planUsage.clear()
+        void seedPlanUsage()
       }
-      fetchOauthUsage()
-        .then((usage) => setOauthUsage(usage))
-        .catch((error) => {
-          console.error("刷新 OAuth 用量失败:", error)
-          setOauthUsage(null)
-        })
     }
     const off1 = subscribeSettingsBus("settings", refreshSettings)
     const off2 = subscribeSettingsBus("composerPrefs", refreshComposerDefaults)
@@ -1921,10 +1915,9 @@ export default function App() {
       setRunningTick((tick) => tick + 1)
     })
     const off5 = subscribeSettingsBus("oauthUsage", () => {
-      setOauthUsage(null)
-      if (isOfficialApi()) {
-        fetchOauthUsage().then(setOauthUsage).catch(() => setOauthUsage(null))
-      }
+      // A quota reset keeps account/runtime ownership, but invalidates cached numbers.
+      planUsage.invalidateUsage()
+      void planUsage.refresh({ force: true })
     })
     return () => {
       off1()
@@ -2096,6 +2089,7 @@ export default function App() {
         suggestionTurnId: task.attemptId, contextSummary: null, contextLoading: false, contextError: null, contextGeneration: 0,
         compactBoundary: null, compacting: false,
         apiProfileKey,
+        planUsageEpoch: planUsage.getEpoch(),
         providerLabel: thirdPartyReady ? thirdPartyApi.providerName || "第三方 API" : "官方 Claude",
         titleModels: titleModelCandidates(thirdPartyReady ? thirdPartyApi : null),
         apiLaunchProfileKey,
@@ -2156,6 +2150,10 @@ export default function App() {
           if (typeof requestId === "string") settlePermissionRequest(run.runtimeId, requestId)
           run.publication?.immediate()
           return
+        }
+        // Every API response carries both plan windows; no usage request needed.
+        if ((event as { type?: string }).type === "rate_limit_event" && run.apiProfileKey === "official") {
+          planUsage.acceptRateLimitInfo((event as { rate_limit_info?: unknown }).rate_limit_info, run.planUsageEpoch)
         }
         if ((event as { type?: string }).type === "prompt_suggestion") {
           if (run.suggestionTracker.accept(event, run.suggestionTracker.owner)) setRunningTick((tick) => tick + 1)
@@ -2231,7 +2229,11 @@ export default function App() {
         }
         if (t === "system") {
           const boundary = parseCompactBoundary(event)
-          if (boundary && boundary.sessionId === run.jsonlSessionId) { run.compactBoundary = boundary; run.compacting = false; setRunningTick((tick) => tick + 1) }
+          if (boundary && boundary.sessionId === run.jsonlSessionId) {
+            run.compactBoundary = boundary; run.compacting = false
+            run.contextGeneration++; run.contextSummary = null; run.contextLoading = false
+            setRunningTick((tick) => tick + 1)
+          }
           if ((event as { subtype?: string; status?: unknown }).subtype === "status" && (event as { status?: unknown }).status === "compacting") { run.compacting = true; setRunningTick((tick) => tick + 1) }
           if ((event as { subtype?: string }).subtype === "init") {
             const init = ev as { model?: unknown; fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown }
@@ -2339,18 +2341,13 @@ export default function App() {
           if (stillRunning) run.phase = { kind: "starting", since: Date.now(), detail: "仍有已写入输入等待 CLI 后续回合确认" }
           if (!stillRunning) run.reviewUnreliableReason = null
           setRunningSessionTurnActive(run, stillRunning)
+          // Query only after settlement: a queued guide may already own the next turn.
+          if (!stillRunning && activeRuntimeIdRef.current === run.runtimeId) refreshContextSummaryRef.current()
           setSidebarRefreshKey((k) => k + 1)
           if (activeRuntimeIdRef.current === run.runtimeId) {
             gitWorktreeStatus(run.project.cwd)
               .then(setGitStatus)
               .catch(() => setGitStatus(null))
-          }
-          if (run.apiProfileKey === "official") {
-            fetchOauthUsage()
-              .then((u) => setOauthUsage(u))
-              .catch(() => {
-                // OAuth 拉取失败保留旧值
-              })
           }
           const sid = resultSessionId
           if (sid) {
@@ -3784,7 +3781,7 @@ export default function App() {
   const refreshContextSummary = useCallback(async () => {
     const runtimeId = activeRuntimeIdRef.current
     const run = runtimeId ? runningSessionsRef.current.get(runtimeId) : undefined
-    if (!run || run.streaming || run.configurationUpdate || run.pendingPermissionRequestIds.size || run.capabilities.contextUsageSummary !== "supported") return
+    if (!run || run.streaming || run.contextLoading || run.configurationUpdate || run.pendingPermissionRequestIds.size || run.capabilities.contextUsageSummary !== "supported") return
     const generation = ++run.contextGeneration
     const conversationKey = viewOwnerRef.current.key
     run.contextLoading = true; run.contextError = null; setRunningTick((tick) => tick + 1)
@@ -3799,6 +3796,7 @@ export default function App() {
       setRunningTick((tick) => tick + 1)
     }
   }, [])
+  refreshContextSummaryRef.current = () => { void refreshContextSummary() }
   const activeUpstreamStatus = activeRun?.upstreamStatus ?? null
   const activeInterrupting = activeRun?.interrupting ?? false
   const submissionActions: SubmissionActions = {
@@ -4216,7 +4214,8 @@ export default function App() {
                     onOpenPlugins={openPlugins}
                     collaborationMode={collaborationMode}
                     onCollaborationModeChange={handleCollaborationModeChange}
-                    oauthUsage={oauthUsage}
+                    oauthUsage={isOfficialApi() && (!activeRun || activeRun.apiProfileKey === "official") ? planUsageSnapshot.usage : null}
+                    context={activeRun ? liveContextUsage(activeRun.state.entries, activeRun.contextSummary, activeRun.actualConfig.model ?? activeRun.launchModel, activeRun.apiProfileKey === "official") : null}
                     model={composerPrefs.model}
                     effort={composerPrefs.effort}
                     ultracode={composerPrefs.ultracode}
