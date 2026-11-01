@@ -80,17 +80,19 @@ function visibleMessage(message: UIMessage, blocks: UIBlock[]): UIMessage {
  * A finished text block with only whitespace renders nothing, yet as its own
  * group it still adds a list gap and a timeline marker. Live stream-json sends
  * content blocks as separate events, so these accumulate into blank space.
+ * Finished thinking without a summary (adaptive thinking) also renders nothing
+ * in ThinkingBlock, so it must not count as a run step either.
  */
 function hasVisibleContent(block: UIBlock): boolean {
-  return block.type !== "text" || !!block.partial || !!block.text?.trim()
+  if (block.type !== "text" && block.type !== "thinking") return true
+  return !!block.partial || !!block.text?.trim()
 }
 
 function isProgressAssistantMessage(message: UIMessage): boolean {
   return (
     message.backgroundActivity === true ||
     message.stopReason === "tool_use" ||
-    message.blocks.some((block) => block.type === "tool_use") ||
-    (message.streaming && message.stopReason !== "end_turn")
+    message.blocks.some((block) => block.type === "tool_use")
   )
 }
 

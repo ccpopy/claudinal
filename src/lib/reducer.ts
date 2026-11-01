@@ -320,6 +320,11 @@ function isRetryStatus(entry: UIEntry): boolean {
   return entry.kind === "system_status" && entry.status.startsWith(RETRY_STATUS_PREFIX)
 }
 
+/** Assistant output produced while background subagents are still pending is progress, not the final reply. */
+function isBackgroundActivity(state: State): boolean {
+  return state.subagents.cycleActive && !subagentCycleReadyForFinal(state.subagents)
+}
+
 function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
   if (!raw || typeof raw !== "object") return state
   const inner = raw as Record<string, unknown>
@@ -340,6 +345,10 @@ function reduceStreamEvent(state: State, raw: unknown, ts: number): State {
       model: msg.model as string | undefined,
       usage: msg.usage as Record<string, unknown> | undefined,
       stopReason: null,
+      // Classify at message_start so text streamed while background subagents
+      // are pending lands in the run steps immediately instead of jumping there
+      // once the assistant snapshot arrives. Later snapshots retain this marker.
+      backgroundActivity: isBackgroundActivity(state) || undefined,
       streaming: true,
       ts
     }
@@ -457,8 +466,7 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
   const msg = (ev.message as Record<string, unknown>) ?? {}
   const id = msg.id as string | undefined
   const apiError = ev.isApiErrorMessage === true
-  const backgroundActivity =
-    state.subagents.cycleActive && !subagentCycleReadyForFinal(state.subagents)
+  const backgroundActivity = isBackgroundActivity(state)
   const blocks = convertContentBlocks(msg.content)
   // jsonl 历史路径：用消息 ts 给 thinking/tool_use 块当 startedAt
   for (const b of blocks) {
@@ -483,7 +491,9 @@ function reduceAssistant(state: State, ev: Record<string, unknown>, ts: number):
       stopReason:
         (msg.stop_reason as string | null | undefined) ?? cur.stopReason ?? null,
       apiError: apiError || cur.apiError,
-      backgroundActivity,
+      // A delayed snapshot may arrive after Agent completion; the waiting
+      // message must keep its placement rather than become a final summary.
+      backgroundActivity: cur.backgroundActivity || backgroundActivity,
       streaming: cur.streaming
     }
     const next = state.entries.slice()
