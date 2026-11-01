@@ -484,7 +484,7 @@ export function Network() {
                   <div className={test.ok ? "text-connected" : "text-destructive"}>
                     {test.message}
                   </div>
-                  <div className="font-mono text-[11px] text-muted-foreground">
+                  <div className="font-mono text-[12px] text-muted-foreground">
                     {test.target} · {test.latency} ms
                     {test.status !== null && ` · HTTP ${test.status}`}
                   </div>
@@ -510,7 +510,7 @@ export function Network() {
         description={
           <span>
             将从 <code className="font-mono">~/.claude/settings.json</code> 的 <code className="font-mono">env</code> 中删除以下字段：
-            <span className="mt-2 block space-y-0.5 font-mono text-[11px] text-foreground/85">
+            <span className="mt-2 block space-y-0.5 font-mono text-[12px] text-foreground/85">
               {conflicts.map((c) => (
                 <span key={c.key} className="block break-all">
                   {c.key} = "{c.value}"
@@ -556,7 +556,7 @@ function SecretBadge({
 }) {
   if (!hasPwd) {
     return (
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-[12px] text-muted-foreground">
         留空表示无需认证
       </span>
     )
@@ -578,7 +578,7 @@ function SecretBadge({
     )
   }
   return (
-    <span className="text-[11px] text-muted-foreground">
+    <span className="text-[12px] text-muted-foreground">
       尚未保存到钥匙串，点击保存以加密
     </span>
   )

@@ -85,8 +85,9 @@ export function restoreFoldScroll(root: HTMLElement, positions: ScrollPositions)
   }
 }
 
-function MountedFoldBody({ positions, className, children }: {
+function MountedFoldBody({ positions, animate, className, children }: {
   positions: ScrollPositions
+  animate: boolean
   className?: string
   children: ReactNode
 }) {
@@ -98,7 +99,8 @@ function MountedFoldBody({ positions, className, children }: {
   useLayoutEffect(() => {
     if (ref.current) restoreFoldScroll(ref.current, positions)
   }, [positions])
-  return <div ref={rememberRef} className={className}>{children}</div>
+  const body = <div ref={rememberRef} className={className}>{children}</div>
+  return animate ? <div className="fold-open">{body}</div> : body
 }
 
 /** Closing actually unmounts heavy descendants; reopening restores their scroll. */
@@ -110,11 +112,14 @@ export function FoldBody({ open, name = "body", className, children }: {
 }) {
   const scope = useContext(FoldContext)
   const local = useRef<ScrollPositions>(new Map())
+  // Only a user-visible transition animates; bodies open on first mount stay still.
+  const closedBefore = useRef(!open)
+  if (!open) closedBefore.current = true
   const key = JSON.stringify([...(scope?.path ?? []), name])
   let positions = scope?.store.scroll.get(key)
   if (!positions) {
     positions = local.current
     scope?.store.scroll.set(key, positions)
   }
-  return open ? <MountedFoldBody positions={positions} className={className}>{children}</MountedFoldBody> : null
+  return open ? <MountedFoldBody positions={positions} animate={closedBefore.current} className={className}>{children}</MountedFoldBody> : null
 }

@@ -17,11 +17,12 @@ export function QueuedComposerBar({ messages, actions }: {
   actions: SubmissionActions
 }) {
   if (!messages.length) return null
-  return <section aria-label="待发送消息" className="mx-auto max-w-3xl rounded-xl border bg-card/95 shadow-xs xl:max-w-4xl 2xl:max-w-5xl">
+  return <section aria-label="待发送消息" className="mx-auto max-w-3xl rounded-xl border-[0.5px] bg-card/95 xl:max-w-4xl 2xl:max-w-5xl">
     <div className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground">
-      <Clock3 className="size-3.5" aria-hidden />待发送 · {messages.length}
+      <Clock3 className="size-3.5" aria-hidden />待发送
+      <span className="rounded-full bg-muted px-1.5 leading-5 tabular-nums">{messages.length}</span>
     </div>
-    <div className="max-h-64 overflow-y-auto divide-y">
+    <div className="max-h-64 overflow-y-auto divide-y-[0.5px]">
       {messages.map((message) => <QueuedRow key={message.id} message={message} actions={actions} />)}
     </div>
   </section>

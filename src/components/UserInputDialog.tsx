@@ -242,7 +242,7 @@ export function UserInputDialog({ request, onSettled, canSettle }: Props) {
                               </span>
                             )}
                             {option.preview && (
-                              <span className="mt-2 block whitespace-pre-wrap rounded border bg-muted/40 p-2 font-mono text-[11px] text-muted-foreground">
+                              <span className="mt-2 block whitespace-pre-wrap rounded border bg-muted/40 p-2 font-mono text-[12px] text-muted-foreground">
                                 {option.preview}
                               </span>
                             )}

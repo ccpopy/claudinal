@@ -31,7 +31,7 @@ export function PlanUsageSection({ data, error, loading, fetchedAt, onRefresh, a
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <div className="text-sm font-semibold">计划用量限额</div>
-          <Badge variant="outline" className="font-sans text-[10px] tracking-normal">Claude 订阅</Badge>
+          <Badge variant="outline" className="font-sans text-[12px] tracking-normal">Claude 订阅</Badge>
           {loading && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="正在更新用量" />}
         </div>
         <p className="text-xs text-muted-foreground">与你的 Claude 账号共享会话和每周额度。「统计」展示本地会话用量。</p>
@@ -56,7 +56,7 @@ export function PlanUsageSection({ data, error, loading, fetchedAt, onRefresh, a
             sub={resetTime(window.resets_at) ? `${resetTime(window.resets_at)} 重置` : "重置时间暂未提供"} window={window} />)}
         </div>
       </>}
-      {fetchedAt > 0 && <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+      {fetchedAt > 0 && <div className="inline-flex items-center gap-1 text-[12px] text-muted-foreground">
         <RefreshCw className="size-3" />{error ? "上次成功更新" : "最近更新"}：{new Date(fetchedAt).toLocaleTimeString("zh-CN")}
       </div>}
     </SettingsCard>
@@ -69,7 +69,7 @@ export function PlanUsageSection({ data, error, loading, fetchedAt, onRefresh, a
 function UsageBar({ label, sub, window: window }: { label: string; sub: string; window: OauthUsageWindow }) {
   const percent = Number.isFinite(window.utilization) ? Math.max(0, Math.min(100, window.utilization)) : null
   return <div className="grid grid-cols-[minmax(0,1fr)_56px] items-center gap-x-3 gap-y-2 sm:grid-cols-[160px_minmax(0,1fr)_56px]">
-    <div className="col-span-2 sm:col-span-1"><div className="text-sm">{label}</div><div className="text-[11px] text-muted-foreground">{sub}</div></div>
+    <div className="col-span-2 sm:col-span-1"><div className="text-sm">{label}</div><div className="text-[12px] text-muted-foreground">{sub}</div></div>
     <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} className="h-2 overflow-hidden rounded-full bg-muted">
       <div className={cn("h-full transition-[width]", percent !== null && percent >= 90 ? "bg-destructive" : percent !== null && percent >= 60 ? "bg-warn" : "bg-primary")} style={{ width: `${percent ?? 0}%` }} />
     </div>

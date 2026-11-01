@@ -196,7 +196,7 @@ export function CollaborationFlow({ open, onOpenChange, cwd, currentSessionId }:
               <DialogPrimitive.Title className="text-sm font-medium">
                 协同流程
               </DialogPrimitive.Title>
-              <Badge variant="outline" className="text-[10px]">
+              <Badge variant="outline" className="text-[12px]">
                 {loading ? "加载中" : `${flows.length} 个流程`}
               </Badge>
               {cwd && (
@@ -317,9 +317,9 @@ function FlowListItem({
     >
       <div className="flex items-center gap-1.5 min-w-0">
         <StepIcon status={flow.status} />
-        <span className="truncate font-mono text-[11px]">{shortId(flow.id)}</span>
+        <span className="truncate font-mono text-[12px]">{shortId(flow.id)}</span>
         {isCurrent && (
-          <Badge variant="primary" className="ml-auto text-[10px]">
+          <Badge variant="primary" className="ml-auto text-[12px]">
             当前
           </Badge>
         )}
@@ -332,7 +332,7 @@ function FlowListItem({
       >
         {flow.userPrompt || "（无用户描述）"}
       </div>
-      <div className="mt-1 flex items-center gap-2 text-[10px] tabular-nums">
+      <div className="mt-1 flex items-center gap-2 text-[12px] tabular-nums">
         {statusBadge(flow.status)}
         <span className="text-muted-foreground">
           {flow.steps.length} 步
@@ -499,7 +499,7 @@ function StepCard({
         <Badge variant={step.writeAllowed ? "warn" : "outline"}>
           {step.writeAllowed ? "允许写入" : "只读"}
         </Badge>
-        <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+        <span className="ml-auto font-mono text-[12px] text-muted-foreground">
           {shortId(step.id)}
         </span>
       </header>
@@ -518,7 +518,7 @@ function StepCard({
           <Label className="text-xs text-muted-foreground">允许路径</Label>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {step.allowedPaths.map((path) => (
-              <Badge key={path} variant="outline" className="font-mono text-[10px]">
+              <Badge key={path} variant="outline" className="font-mono text-[12px]">
                 {path}
               </Badge>
             ))}
@@ -575,7 +575,7 @@ function StepCard({
                 <span className="font-mono break-all">{change.path}</span>
                 <Badge
                   variant={change.allowed ? "outline" : "destructive"}
-                  className="ml-auto text-[10px]"
+                  className="ml-auto text-[12px]"
                 >
                   {change.allowed ? change.changeType : "越界"}
                 </Badge>
@@ -602,12 +602,12 @@ function StepCard({
                     record.exitCode === 0 ? "text-connected" : "text-destructive"
                   )}
                 />
-                <code className="font-mono text-[11px] break-all">
+                <code className="font-mono text-[12px] break-all">
                   {record.command}
                 </code>
                 <Badge
                   variant={record.exitCode === 0 ? "success" : "destructive"}
-                  className="ml-auto text-[10px]"
+                  className="ml-auto text-[12px]"
                 >
                   exit {record.exitCode}
                 </Badge>
@@ -616,12 +616,12 @@ function StepCard({
                 {formatTime(record.startedAt)} → {formatTime(record.endedAt)}
               </div>
               {record.stdoutPreview && (
-                <pre className="rounded border bg-background p-2 text-[11px] font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">
+                <pre className="rounded border bg-background p-2 text-[12px] font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">
                   {record.stdoutPreview}
                 </pre>
               )}
               {record.stderrPreview && (
-                <pre className="rounded border border-destructive/30 bg-destructive/5 p-2 text-[11px] font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto text-destructive">
+                <pre className="rounded border border-destructive/30 bg-destructive/5 p-2 text-[12px] font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto text-destructive">
                   {record.stderrPreview}
                 </pre>
               )}
@@ -721,7 +721,7 @@ function StepCard({
               {verifyLoading ? <Loader2 className="animate-spin" /> : <Play />}
               执行
             </Button>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-[12px] text-muted-foreground">
               在流程 cwd 下通过系统 shell 执行；exit code、stdout、stderr 会真实记录。
             </span>
           </div>
@@ -741,12 +741,12 @@ function AgentRunBlock({
       <div className="flex flex-wrap items-center gap-2">
         <Terminal className="size-3.5" />
         <span className="font-medium">{run.provider}</span>
-        <Badge variant="outline" className="text-[10px]">
+        <Badge variant="outline" className="text-[12px]">
           {run.permissionMode}
         </Badge>
         <Badge
           variant={run.exitCode === 0 ? "success" : "destructive"}
-          className="ml-auto text-[10px]"
+          className="ml-auto text-[12px]"
         >
           exit {run.exitCode}
         </Badge>
@@ -754,35 +754,35 @@ function AgentRunBlock({
       <div className="text-muted-foreground">
         {formatTime(run.startedAt)} → {formatTime(run.endedAt)}
       </div>
-      <pre className="overflow-x-auto rounded border bg-background p-2 text-[11px] font-mono whitespace-pre-wrap break-words">
+      <pre className="overflow-x-auto rounded border bg-background p-2 text-[12px] font-mono whitespace-pre-wrap break-words">
         {run.command.join(" ")}
       </pre>
       {run.stdoutPreview && (
         <details className="rounded border bg-background">
-          <summary className="cursor-pointer px-2 py-1 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer px-2 py-1 text-[12px] text-muted-foreground">
             stdout 预览
           </summary>
-          <pre className="border-t p-2 text-[11px] font-mono whitespace-pre-wrap break-words max-h-60 overflow-auto">
+          <pre className="border-t p-2 text-[12px] font-mono whitespace-pre-wrap break-words max-h-60 overflow-auto">
             {run.stdoutPreview}
           </pre>
         </details>
       )}
       {run.stderrPreview && (
         <details className="rounded border border-destructive/30 bg-destructive/5">
-          <summary className="cursor-pointer px-2 py-1 text-[11px] text-destructive">
+          <summary className="cursor-pointer px-2 py-1 text-[12px] text-destructive">
             stderr 预览
           </summary>
-          <pre className="border-t p-2 text-[11px] font-mono whitespace-pre-wrap break-words max-h-60 overflow-auto text-destructive">
+          <pre className="border-t p-2 text-[12px] font-mono whitespace-pre-wrap break-words max-h-60 overflow-auto text-destructive">
             {run.stderrPreview}
           </pre>
         </details>
       )}
       {run.structuredOutput !== null && run.structuredOutput !== undefined && (
         <details className="rounded border bg-background">
-          <summary className="cursor-pointer px-2 py-1 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer px-2 py-1 text-[12px] text-muted-foreground">
             结构化输出
           </summary>
-          <pre className="border-t p-2 text-[11px] font-mono whitespace-pre-wrap break-words max-h-60 overflow-auto">
+          <pre className="border-t p-2 text-[12px] font-mono whitespace-pre-wrap break-words max-h-60 overflow-auto">
             {JSON.stringify(run.structuredOutput, null, 2)}
           </pre>
         </details>
@@ -801,7 +801,7 @@ function FilePathButton({ path, label }: { path: string; label: string }) {
     <Button
       variant="ghost"
       size="sm"
-      className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+      className="h-6 gap-1 px-1.5 text-[12px] text-muted-foreground hover:text-foreground"
       onClick={() =>
         openPath(path).catch((e) => toast.error(`打开失败: ${String(e)}`))
       }

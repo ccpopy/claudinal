@@ -206,12 +206,12 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions, 
         {body}
       </div>
     </div>}
-    {msg.submissionPendingNames?.length && !footer ? <p className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
+    {msg.submissionPendingNames?.length && !footer ? <p className="flex items-center gap-1 px-1 text-[12px] text-muted-foreground">
       <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />附件准备中：{msg.submissionPendingNames.join("、")}
     </p> : null}
     {footer && submissionActions
       ? <SubmissionFooter message={msg} actions={submissionActions} onEdit={() => setEditing(true)} />
-      : status && (delivery !== "preparing" || showPendingLabel) && <p role="status" className={cn("flex items-center gap-1 px-1 text-[11px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
+      : status && (delivery !== "preparing" || showPendingLabel) && <p role="status" className={cn("flex items-center gap-1 px-1 text-[12px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
         <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
         {guide && delivery === "awaiting_ack" ? "引导已提交，等待 CLI 读取" : deliveryLabel[delivery!]}
       </p>}
@@ -301,29 +301,29 @@ function SystemInitView({
       open={open}
       onToggle={() => setOpen(!open)}
       icon={Cog}
-      label={`会话开始${e.model ? ` · ${e.model}` : ""}`}
+      label={`会话开始${e.model ? ` ${e.model}` : ""}`}
     >
       <div className="flex flex-col gap-1.5 text-muted-foreground">
         {e.requestedModel && e.requestedModel !== e.model && <div className="text-xs">请求模型：{e.requestedModel} · CLI 报告：{e.model ?? "待确认"}</div>}
-        {e.cwd && <div className="font-mono break-all text-[11px]">{e.cwd}</div>}
+        {e.cwd && <div className="font-mono break-all text-[12px]">{e.cwd}</div>}
         <div className="flex flex-wrap gap-1">
           {e.permissionMode && (
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-[12px]">
               perm: {e.permissionMode}
             </Badge>
           )}
           {e.outputStyle && (
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-[12px]">
               style: {e.outputStyle}
             </Badge>
           )}
           {e.fastModeState && (
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-[12px]">
               fast: {e.fastModeState}
             </Badge>
           )}
           {e.version && (
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-[12px]">
               v{e.version}
             </Badge>
           )}
@@ -340,7 +340,7 @@ function SystemInitView({
                       ? "warn"
                       : "outline"
                 }
-                className="text-[10px]"
+                className="text-[12px]"
               >
                 {m.name} · {m.status}
               </Badge>
@@ -404,7 +404,7 @@ function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; 
                 ? "已取消"
                 : "完成"}
           {failed && e.subtype && e.subtype !== "success"
-            ? ` · ${e.subtype}`
+            ? ` ${e.subtype}`
             : ""}
         </span>
         {typeof e.totalCostUsd === "number" && (
@@ -449,14 +449,14 @@ function PermissionDenialList({ denials, onOpenPermissions }: { denials: Permiss
       open={open}
       onToggle={() => setOpen(!open)}
       icon={ShieldAlert}
-      label={`权限被拒 · ${denials.length} 个工具`}
+      label={`权限被拒 ${denials.length} 个工具`}
       tone="error"
     >
       <div className="space-y-1.5">
         {denials.map((d, i) => (
           <DenialRow key={d.tool_use_id ?? i} d={d} />
         ))}
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-[12px] text-muted-foreground">
           检查当前权限配置及拒绝原因，确认后再重试。
           {onOpenPermissions && <button type="button" className="ml-2 text-primary underline" onClick={onOpenPermissions}>打开权限设置</button>}
         </div>
@@ -489,7 +489,7 @@ function HookEventView({ e }: { e: Extract<UIEntry, { kind: "hook" }> }) {
       open={open}
       onToggle={() => setOpen(!open)}
       icon={Webhook}
-      label={`hook · ${e.hookEventName ?? "event"}${e.toolName ? ` · ${e.toolName}` : ""}`}
+      label={`hook ${e.hookEventName ?? "event"}${e.toolName ? ` ${e.toolName}` : ""}`}
     >
       <CodeBlock>{JSON.stringify(e.raw, null, 2)}</CodeBlock>
     </ExpandableRow>

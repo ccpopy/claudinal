@@ -96,10 +96,10 @@ export function RunGroup({
       : computeRunMs(startTs, endTs, running, Date.now())
 
   const hasTime = total > 0
-  const stepInfo = hasSteps ? ` · ${visibleSteps.length} 步` : ""
+  const stepInfo = hasSteps ? ` ${visibleSteps.length} 步` : ""
   const subagentInfo =
     running && pendingSubagentCount > 0
-      ? ` · ${pendingSubagentCount} 个子智能体`
+      ? ` ${pendingSubagentCount} 个子智能体`
       : ""
   const label = running
     ? hasTime
@@ -125,7 +125,7 @@ export function RunGroup({
                   : undefined
                 return (
                   <FoldStateScope key={s.key} store={foldState} scope={s.key}>
-                  <div data-navigation-step={s.key} tabIndex={-1} className="rounded-sm focus:outline-none focus:ring-2 focus:ring-primary/40">
+                  <div data-navigation-step={s.key} tabIndex={-1} className="rounded-sm focus:outline-none">
                   <FoldReveal requestId={navigation?.stepKey === s.key ? navigation.requestId : undefined}>
                   <BlockView
                     role="assistant"

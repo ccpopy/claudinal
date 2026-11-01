@@ -58,7 +58,7 @@ export function SuggestionPanel({
           return (
             <div key={it.key}>
               {showHeader && (
-                <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                <div className="px-3 pt-2 pb-1 text-[12px] uppercase tracking-wider text-muted-foreground/70">
                   {it.group}
                 </div>
               )}
@@ -87,7 +87,7 @@ export function SuggestionPanel({
                 )}
                 <span className="font-mono text-xs shrink-0">{it.primary}</span>
                 {it.secondary && (
-                  <span className="text-[11px] text-muted-foreground truncate">
+                  <span className="text-[12px] text-muted-foreground truncate">
                     {it.secondary}
                   </span>
                 )}

@@ -271,7 +271,7 @@ export function Archive({ onSelectProject, onSelectSession }: Props) {
                 >
                   {group.project.name}
                 </span>
-                <span className="font-mono text-[11px] text-muted-foreground">
+                <span className="font-mono text-[12px] text-muted-foreground">
                   {group.items.length}
                 </span>
               </div>
@@ -394,7 +394,7 @@ function SessionIndexDiagnosticsCard({
       <div className="flex items-center gap-2">
         <Database className="size-3.5 text-muted-foreground" />
         <span className="text-sm font-semibold">会话索引</span>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-[12px] text-muted-foreground">
           仅读取缓存，不影响原始会话数据。
         </span>
         <div className="ml-auto flex items-center gap-2">
@@ -559,7 +559,7 @@ function ArchivedListItem({
             </Badge>
           )}
         </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground tabular-nums">
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted-foreground tabular-nums">
           <span>归档于 {archivedAgo}</span>
           {msgCount != null && <span>{msgCount} 条消息</span>}
           <span

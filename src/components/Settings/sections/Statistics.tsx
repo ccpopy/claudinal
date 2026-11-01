@@ -222,13 +222,13 @@ export function Statistics() {
                 <SettingsCardTitle>全部会话累计</SettingsCardTitle>
                 <Badge
                   variant="outline"
-                  className="font-sans text-[10px] tracking-normal"
+                  className="font-sans text-[12px] tracking-normal"
                 >
                   GUI sidecar
                 </Badge>
               </div>
               {usage && usage.last_updated > 0 && (
-                <div className="text-[11px] text-muted-foreground tabular-nums">
+                <div className="text-[12px] text-muted-foreground tabular-nums">
                   最后扫描：{new Date(usage.last_updated * 1000).toLocaleString("zh-CN")}
                 </div>
               )}
@@ -299,7 +299,7 @@ export function Statistics() {
                 <button
                   type="button"
                   onClick={() => setMode("pricing")}
-                  className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  className="text-[12px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                 >
                   管理定价 →
                 </button>
@@ -334,13 +334,13 @@ export function Statistics() {
                                     <TooltipTrigger asChild>
                                       <Badge
                                         variant="secondary"
-                                        className="font-sans text-[10px]"
+                                        className="font-sans text-[12px]"
                                       >
                                         {entry.match.groupName}
                                       </Badge>
                                     </TooltipTrigger>
                                     <TooltipContent side="top">
-                                      <div className="text-[11px]">
+                                      <div className="text-[12px]">
                                         命中规则：
                                         <code className="font-mono">
                                           {entry.match.rule.pattern}
@@ -359,14 +359,14 @@ export function Statistics() {
                                       —
                                       <Badge
                                         variant="warn"
-                                        className="font-sans text-[10px]"
+                                        className="font-sans text-[12px]"
                                       >
                                         未配置
                                       </Badge>
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent side="top">
-                                    <div className="text-[11px]">
+                                    <div className="text-[12px]">
                                       在「定价设置」中为该模型 ID 添加规则
                                     </div>
                                   </TooltipContent>
@@ -420,10 +420,10 @@ function Stat({
 }) {
   return (
     <div className="rounded-md bg-muted/30 px-3 py-2">
-      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="text-[12px] text-muted-foreground">{label}</div>
       <div className="text-sm font-mono tabular-nums">{value}</div>
       {hint && (
-        <div className="text-[10px] text-muted-foreground/70 mt-0.5">{hint}</div>
+        <div className="text-[12px] text-muted-foreground/70 mt-0.5">{hint}</div>
       )}
     </div>
   )
@@ -474,7 +474,7 @@ function ActivityHeatmap({ cells, days }: { cells: ActivityCell[]; days: number 
           {/* 24 行（小时） */}
           {Array.from({ length: 24 }).map((_, hour) => (
             <div key={hour} className="flex items-center gap-1">
-              <div className="w-7 text-[10px] text-muted-foreground tabular-nums shrink-0 text-right">
+              <div className="w-7 text-[12px] text-muted-foreground tabular-nums shrink-0 text-right">
                 {hour % 3 === 0 ? hour.toString().padStart(2, "0") : ""}
               </div>
               <div className="flex gap-0.5">
@@ -494,7 +494,7 @@ function ActivityHeatmap({ cells, days }: { cells: ActivityCell[]; days: number 
                         <div className="text-xs">
                           {d} · {hour.toString().padStart(2, "0")}:00
                         </div>
-                        <div className="text-[11px] text-muted-foreground">
+                        <div className="text-[12px] text-muted-foreground">
                           {count} 条消息
                         </div>
                       </TooltipContent>
@@ -514,7 +514,7 @@ function ActivityHeatmap({ cells, days }: { cells: ActivityCell[]; days: number 
                 return (
                   <div
                     key={di}
-                    className="w-3 text-[9px] text-muted-foreground tabular-nums text-center"
+                    className="w-3 text-[12px] text-muted-foreground tabular-nums text-center"
                   >
                     {show ? day : ""}
                   </div>
@@ -524,7 +524,7 @@ function ActivityHeatmap({ cells, days }: { cells: ActivityCell[]; days: number 
           </div>
         </div>
       </div>
-      <div className="flex items-center justify-center gap-2 text-[10px] text-muted-foreground">
+      <div className="flex items-center justify-center gap-2 text-[12px] text-muted-foreground">
         <span>少</span>
         {[0.05, 0.25, 0.5, 0.75, 1].map((r) => (
           <div

@@ -52,6 +52,51 @@
   font-display: swap;
 }
 
+/* 系统 CJK 字体只有固定字重。按区间显式映射，让暗色下 -40 的字重
+ * （360/460/560）仍落在原来的字面上，而不是掉到 Light、跳到 Bold。
+ * 声明同名家族即可接管，字体栈与用户自定义栈都不用改。 */
+@font-face {
+  font-family: "Microsoft YaHei";
+  src: local("Microsoft YaHei Light"), local("MicrosoftYaHeiLight");
+  font-weight: 100 329;
+}
+
+@font-face {
+  font-family: "Microsoft YaHei";
+  src: local("Microsoft YaHei"), local("MicrosoftYaHei");
+  font-weight: 330 549;
+}
+
+@font-face {
+  font-family: "Microsoft YaHei";
+  src: local("Microsoft YaHei Bold"), local("MicrosoftYaHei-Bold");
+  font-weight: 550 900;
+}
+
+@font-face {
+  font-family: "PingFang SC";
+  src: local("PingFangSC-Light"), local("PingFang SC Light");
+  font-weight: 100 329;
+}
+
+@font-face {
+  font-family: "PingFang SC";
+  src: local("PingFangSC-Regular"), local("PingFang SC Regular");
+  font-weight: 330 449;
+}
+
+@font-face {
+  font-family: "PingFang SC";
+  src: local("PingFangSC-Medium"), local("PingFang SC Medium");
+  font-weight: 450 549;
+}
+
+@font-face {
+  font-family: "PingFang SC";
+  src: local("PingFangSC-Semibold"), local("PingFang SC Semibold");
+  font-weight: 550 900;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* Claudinal light 主题（默认） */
@@ -125,6 +170,12 @@
   --tool: #1d2d4a;
   --connected: #6ab8ff;
   --warn: #f1c76f;
+
+  /* 浅字在深底上会显得更粗，整体减 40 抵消光渗 */
+  --font-weight-normal: 360;
+  --font-weight-medium: 460;
+  --font-weight-semibold: 560;
+  --font-weight-bold: 660;
 }
 
 @theme inline {
@@ -181,7 +232,13 @@
     font-family: var(--font-sans);
     font-optical-sizing: auto;
     font-size: 14px;
-    font-weight: 400;
+    font-weight: var(--font-weight-normal, 400);
+  }
+  /* bolder 是相对值，深色 360 会被推到 700；改用令牌保持减 40 */
+  b,
+  strong,
+  th {
+    font-weight: var(--font-weight-bold, 700);
   }
   * {
     scrollbar-width: thin;
@@ -414,7 +471,87 @@ pre::-webkit-scrollbar-button:vertical:end:increment {
   animation: sidebar-project-sessions-up 180ms var(--ease-drawer);
 }
 
+/* 输入面：0.5px 细边框，平时不投影；聚焦时内环描边 + 外环半透明光晕。
+   高分屏下 0.5px 是真正的 hairline，100% 缩放时浏览器会取整为 1 设备像素。 */
+@layer components {
+  .composer-surface {
+    border: 0.5px solid var(--border);
+    background: var(--card);
+    transition:
+      box-shadow 160ms ease,
+      border-color 160ms ease,
+      background-color 160ms ease;
+  }
+
+  .composer-surface:focus-within {
+    border-color: color-mix(in oklab, var(--primary) 55%, var(--border));
+    box-shadow:
+      0 0 0 0.5px color-mix(in oklab, var(--primary) 55%, var(--border)),
+      0 0 0 4px color-mix(in oklab, var(--primary) 14%, transparent);
+  }
+}
+
+/* 仅限输入框内部：去掉系统滚动条外观，滚轮、触控板、选区与键盘滚动不受影响 */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* 折叠区展开：grid 行轨 0fr → 1fr，高度跟随真实内容，不测量 DOM。
+   只在入场期间裁切，结束后恢复 overflow，避免截掉内部阴影与焦点环。
+   收起仍直接卸载，长输出不在折叠后继续承担渲染开销。 */
+@keyframes fold-open {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    overflow: hidden;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    overflow: hidden;
+  }
+}
+
+.fold-open {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: fold-open 200ms var(--ease-drawer);
+}
+
+.fold-open > * {
+  min-height: 0;
+}
+
+/* 流式正文逐字入场：只有新挂载的 span 会播放，已有文字保持静止；
+   动画结束后不再占用合成层，开销只与「正在入场」的字数相关。 */
+@keyframes stream-word-in {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.stream-word {
+  animation: stream-word-in 280ms ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .fold-open,
+  .stream-word {
+    animation: none;
+  }
+  .composer-surface {
+    transition: none;
+  }
   .sidebar-pane,
   .sidebar-pane__inner {
     transition-duration: 1ms;

@@ -32,7 +32,7 @@ export function BackgroundConversationsBar({ items, onOpen }: {
   if (items.length === 0) return null
   return (
     <nav aria-label="后台会话" className="flex items-center gap-2 border-b bg-muted/30 px-6 py-1.5 text-xs">
-      <span className="shrink-0 text-muted-foreground">后台会话 · {items.length}</span>
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-muted-foreground">后台会话<span className="rounded-full bg-muted px-1.5 leading-5 tabular-nums">{items.length}</span></span>
       <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto scrollbar-thin">
         {items.map((item) => (
           <button

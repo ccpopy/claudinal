@@ -623,6 +623,17 @@ export function General() {
               />
             </div>
             <Separator />
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label className="text-sm" htmlFor="stream-reveal">流式文字渐显</Label>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  回复生成时新文字逐词淡入；代码块不受影响。
+                </div>
+              </div>
+              <Switch id="stream-reveal" checked={cfg.streamReveal !== false}
+                onCheckedChange={(v) => update({ streamReveal: v })} />
+            </div>
+            <Separator />
             <CliDiagnostics />
             <div className="flex items-center justify-between gap-4">
               <div>
@@ -701,7 +712,7 @@ export function General() {
                     </span>
                   </div>
                   {cliInfo.path && (
-                    <div className="mt-1 font-mono text-[11px]">{cliInfo.path}</div>
+                    <div className="mt-1 font-mono text-[12px]">{cliInfo.path}</div>
                   )}
                   <div className="mt-2 space-y-1">
                     {cliInfo.version_error && (
@@ -771,7 +782,7 @@ export function General() {
                     <div className="flex min-w-0 items-center gap-2 font-medium text-foreground">
                       <Terminal className="size-3.5 shrink-0" />
                       <span className="shrink-0">命令输出</span>
-                      <span className="truncate font-mono text-[11px] text-muted-foreground">
+                      <span className="truncate font-mono text-[12px] text-muted-foreground">
                         {cliCommandProgress.command}
                       </span>
                     </div>
@@ -787,7 +798,7 @@ export function General() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-6 px-1.5 text-[11px]"
+                        className="h-6 px-1.5 text-[12px]"
                         onClick={() => setCliCommandLogExpanded((v) => !v)}
                       >
                         {cliCommandLogVisible ? (
@@ -808,7 +819,7 @@ export function General() {
                     <>
                       <pre
                         ref={cliCommandProgressRef}
-                        className="mt-2 max-h-44 overflow-y-auto rounded-sm bg-muted/35 px-2 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words"
+                        className="mt-2 max-h-44 overflow-y-auto rounded-sm bg-muted/35 px-2 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words"
                       >
                         {cliCommandProgress.chunks.length === 0 ? (
                           <span className="text-muted-foreground">

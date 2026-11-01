@@ -639,7 +639,7 @@ export function MessageStream({
                 ref={getTimelineTargetRef(g.key)}
                 data-timeline-target={g.key}
                 tabIndex={-1}
-                className="scroll-mt-6 rounded-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                className="scroll-mt-6 rounded-sm focus:outline-none"
               >
                 <FoldReveal requestId={navigation?.groupKey === g.key ? navigationRequest?.id : undefined}>
                 <MemoMessageCard
@@ -700,7 +700,7 @@ export function MessageStream({
             )
           }
           return (
-            <div key={g.key} ref={getTimelineTargetRef(g.key)} tabIndex={-1} className="rounded-sm focus:outline-none focus:ring-2 focus:ring-primary/40">
+            <div key={g.key} ref={getTimelineTargetRef(g.key)} tabIndex={-1} className="rounded-sm focus:outline-none">
             <FoldReveal requestId={navigation?.groupKey === g.key ? navigationRequest?.id : undefined}>
             <MemoMessageCard
                   submissionActions={submissionActions}
@@ -738,7 +738,7 @@ export function MessageStream({
           ) : (
             <ArrowDown className="size-3.5" />
           )}
-          {streaming ? "新内容 · 跳到底部" : "跳到底部"}
+          {streaming ? "跳到最新" : "跳到底部"}
         </Button>
       )}
     </ScrollArea>

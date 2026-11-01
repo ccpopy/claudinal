@@ -60,12 +60,12 @@ interface Props {
 
 const PERSISTABLE_EFFORTS: EffortLevel[] = ["low", "medium", "high", "xhigh"]
 const MENU_LABEL_CLASS =
-  "px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground"
+  "px-2 pt-1 pb-1 text-[12px] font-medium text-muted-foreground"
 const MENU_ITEM_CLASS =
   "h-8 rounded-lg px-2 text-[13px] font-normal leading-5 text-popover-foreground hover:bg-primary/10 hover:text-foreground data-[highlighted]:bg-primary/10 data-[highlighted]:text-foreground"
-const MENU_META_CLASS = "text-[10px] leading-none text-muted-foreground"
+const MENU_META_CLASS = "text-[12px] leading-none text-muted-foreground"
 const MENU_CHECK_CLASS = "size-3.5 text-primary"
-const MENU_HINT_CLASS = "px-2 pb-1 text-[11px] leading-snug text-muted-foreground"
+const MENU_HINT_CLASS = "px-2 pb-1 text-[12px] leading-snug text-muted-foreground"
 
 /** 菜单内的开关行：点击切换且不关闭菜单；hint 仅在需要用户注意时显示。 */
 function FeatureToggle({ label, meta, checked, disabled, title, hint, onToggle }: {
@@ -146,9 +146,9 @@ export function ModelEffortPicker({
   const modelLabel = modelDisplayLabel(model)
   const currentEffortLabel = supportsEffort ? effortLabel(safeEffort) : null
   const selectedLabel = currentEffortLabel
-    ? `${modelLabel} · ${currentEffortLabel}`
+    ? `${modelLabel} ${currentEffortLabel}`
     : modelLabel
-  const triggerLabel = `${selectedLabel}${ultracode ? " · Ultracode" : ""}${fastMode ? " · Fast" : ""}`
+  const triggerLabel = `${selectedLabel}${ultracode ? " Ultracode" : ""}${fastMode ? " Fast" : ""}`
   const actualLabel = actualConfig?.model
     ? `${modelDisplayLabel(actualConfig.model)} · ${effortLabel(actualConfig.effort ?? "")}${actualConfig.ultracode ? " · Ultracode" : ""}${actualConfig.fastModeState === "on" ? " · Fast" : actualConfig.fastModeState === "cooldown" ? " · Fast 冷却中" : ""}`
     : "尚未确认"
@@ -246,7 +246,7 @@ export function ModelEffortPicker({
         {/* 仅在配置待应用时提示；完整的所选/实际配置见触发按钮的悬停说明 */}
         {configurationPending && (
           <div
-            className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground"
+            className="px-2 py-1.5 text-[12px] leading-relaxed text-muted-foreground"
             title="修改从下一次请求生效，进行中的请求保持原配置"
           >
             配置待应用 · {actualProcessLabel}
@@ -279,7 +279,7 @@ export function ModelEffortPicker({
 
         <DropdownMenuLabel className={MENU_LABEL_CLASS}>
           思考强度
-          <span className="ml-2 text-[10px] font-normal normal-case">
+          <span className="ml-2 text-[12px] font-normal normal-case">
             {sourceLabel}
           </span>
         </DropdownMenuLabel>
@@ -308,7 +308,7 @@ export function ModelEffortPicker({
                 <span className="flex-1">{effortLabel(lvl)}</span>
                 {sessionOnly && (
                   <span
-                    className="text-[10px] text-warn"
+                    className="text-[12px] text-warn"
                     title="max 仅在本次进程/会话中使用，不写入永久默认"
                   >
                     仅本会话
@@ -334,7 +334,7 @@ export function ModelEffortPicker({
         )}
 
         {supportsEffort && isMaxSelected && (
-          <div className="mt-1 flex items-start gap-1.5 rounded-lg border border-warn/40 bg-warn/5 px-2.5 py-1.5 text-[11px] leading-snug text-warn">
+          <div className="mt-1 flex items-start gap-1.5 rounded-lg border border-warn/40 bg-warn/5 px-2.5 py-1.5 text-[12px] leading-snug text-warn">
             <AlertTriangle className="mt-0.5 size-3 shrink-0" />
             <span>max 仅对本会话生效，不写入默认</span>
           </div>

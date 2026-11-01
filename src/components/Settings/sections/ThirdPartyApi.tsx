@@ -800,7 +800,7 @@ export function ThirdPartyApi() {
                 列表会缓存到当前供应商。角色映射用于 Composer 的 Sonnet / Opus / Haiku 选择；新会话启动前会解析成这里填写的实际请求模型。
               </SettingsHint>
               {cachedModelCount > 0 && (
-                <div className="text-[11px] text-muted-foreground">
+                <div className="text-[12px] text-muted-foreground">
                   已缓存 {cachedModelCount} 个模型，点击输入框可从列表中选择，也可以手动输入。
                 </div>
               )}

@@ -925,7 +925,7 @@ function ServerDiagnostic({
     ? "border-warn/40 bg-warn/5 text-foreground"
     : "border-destructive/30 bg-destructive/5 text-foreground"
   return (
-    <div className={cn("border-t px-4 py-3 text-[11px] space-y-1.5", tone)}>
+    <div className={cn("border-t px-4 py-3 text-[12px] space-y-1.5", tone)}>
       <div className="font-medium">
         {isNeedsAuth
           ? "需要 OAuth 登录"

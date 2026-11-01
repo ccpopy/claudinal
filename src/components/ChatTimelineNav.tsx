@@ -240,7 +240,7 @@ export function ChatTimelineNav({
                     className="pointer-events-none w-72 rounded-xl p-3 shadow-lg data-[state=closed]:hidden [animation-duration:0ms] sm:w-80"
                   >
                     <div className="space-y-1.5">
-                      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                      <div className="flex items-center justify-between gap-2 text-[12px] text-muted-foreground">
                         <span>{item.label}</span>
                         {item.time && (
                           <span className="font-mono">{item.time}</span>

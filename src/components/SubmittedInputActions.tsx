@@ -14,6 +14,7 @@ import {
   RotateCcw,
   ScrollText,
   SkipForward,
+  Trash2,
   X,
   type LucideIcon
 } from "lucide-react"
@@ -45,6 +46,9 @@ export interface SubmissionActions {
   retryOriginal?(id: string): void | Promise<void>
   edit(id: string, payload: InputPayload): void
   cancel(id: string): void
+  /** Unsent cancelled/failed inputs can be deleted instead of lingering. */
+  canDiscard?(id: string): boolean
+  discard?(id: string): void
   resume(id: string): void
   resumeQueue?(id: string): void
   resumeInput?(id: string): void
@@ -151,6 +155,11 @@ export function SubmissionFooter({
       {canEditSubmission(message) && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={onEdit}>
         <Pencil className="size-3.5" />
         编辑
+      </Button>}
+      {actions.canDiscard?.(message.id) && <Button type="button" variant="ghost" size="sm"
+        className={cn(actionClass, "hover:bg-destructive/10 hover:text-destructive")} onClick={() => actions.discard?.(message.id)}>
+        <Trash2 className="size-3.5" />
+        删除
       </Button>}
       {queued && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={() => actions.cancel(message.id)}>
         <X className="size-3.5" />
@@ -307,7 +316,7 @@ export function MessageInlineEditor({
   }
 
   const hasAttachments = draft.images.length > 0 || draft.files.length > 0 || !!draft.pendingNames?.length
-  return <div className="w-full max-w-[85%] rounded-[14px] border bg-card p-3 shadow-sm focus-within:border-ring/60">
+  return <div className="composer-surface w-full max-w-[85%] rounded-[14px] p-3">
     {hasAttachments && <div className="mb-2 flex flex-wrap gap-2">
       {draft.images.map((image, index) => <AttachmentChip
         key={`image-${index}`}
@@ -343,7 +352,7 @@ export function MessageInlineEditor({
       placeholder="编辑消息内容"
       onChange={(event) => setDraft((value) => ({ ...value, body: event.target.value }))}
       onKeyDown={onKeyDown}
-      className="block min-h-[44px] w-full resize-none bg-transparent px-1 py-0.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground [scrollbar-gutter:stable]"
+      className="block min-h-[44px] w-full resize-none bg-transparent px-1 py-0.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground scrollbar-none"
     />
     <div className="mt-2 flex items-center justify-between gap-2">
       <input

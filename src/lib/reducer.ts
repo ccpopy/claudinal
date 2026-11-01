@@ -39,6 +39,7 @@ export type Action =
       ts?: number
     }
   | { kind: "delivery_changed"; messageId: string; state: UIMessage["deliveryState"] }
+  | { kind: "input_discarded"; messageId: string }
   | { kind: "runtime_exited" }
   | { kind: "truncate_after_message"; messageId: string }
   | { kind: "load_transcript"; events: ClaudeEvent[] }
@@ -74,6 +75,12 @@ export function reduce(state: State, action: Action): State {
   if (action.kind === "delivery_changed") {
     return { ...state, entries: state.entries.map((entry) => entry.kind === "message" && entry.id === action.messageId
       ? { ...entry, deliveryState: action.state !== "responded" && (entry.deliveryState === "acknowledged" || entry.deliveryState === "responded") ? entry.deliveryState : action.state } : entry) }
+  }
+  if (action.kind === "input_discarded") {
+    // Only unsent local inputs are discarded, so no transcript boundary depends on them.
+    const keep = (entry: UIEntry) => !(entry.kind === "message" && entry.id === action.messageId)
+    const pending = state.pendingInputs?.filter(keep)
+    return { ...state, entries: state.entries.filter(keep), ...(pending ? { pendingInputs: pending } : {}) }
   }
   if (action.kind === "runtime_exited") {
     return { ...state, hiddenStream: false, pendingInterruption: false, subagents: settleSubagentRegistryForResume(state.subagents), entries: closeStreamingEntries(state.entries, Date.now()).map((entry) => entry.kind === "message"

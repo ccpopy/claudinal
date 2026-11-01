@@ -385,7 +385,7 @@ function GroupCard({
               onDelete={() => onDeleteRule(rule)}
             />
           ))}
-          <div className="text-[11px] text-muted-foreground/70">
+          <div className="text-[12px] text-muted-foreground/70">
             示例：<code className="font-mono">claude-opus-4-7</code> 可命中{" "}
             <code className="font-mono">claude-opus-4-7</code>、
             <code className="font-mono">azure/claude-opus-4-7-20260101</code> 及 [1m] 变体。通配符 * 会同时匹配不同子版本，请将特殊规则放在前面。
@@ -398,12 +398,12 @@ function GroupCard({
 
 function RuleHeaderRow() {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_repeat(5,minmax(0,84px))_72px] items-center gap-2 px-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-      <Label className="text-[11px]">模型 ID（glob）</Label>
+    <div className="grid grid-cols-[minmax(0,1fr)_repeat(5,minmax(0,84px))_72px] items-center gap-2 px-1 text-[12px] uppercase tracking-wider text-muted-foreground">
+      <Label className="text-[12px]">模型 ID（glob）</Label>
       {PRICE_FIELDS.map((f) => (
         <Label
           key={f.key}
-          className="justify-self-center text-center text-[11px]"
+          className="justify-self-center text-center text-[12px]"
           title={f.title}
         >
           {f.label}

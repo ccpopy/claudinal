@@ -334,7 +334,7 @@ export function Browser({ cwd }: Props) {
               <div className="flex items-center gap-2">
                 <Stethoscope className="size-4 text-warn" />
                 <h3 className="text-sm font-semibold">MCP 启动诊断</h3>
-                <Badge variant="warn" className="font-sans text-[10px]">
+                <Badge variant="warn" className="font-sans text-[12px]">
                   {failingRows.length > 0 ? "检测到失败" : "环境变量提醒"}
                 </Badge>
               </div>
@@ -354,7 +354,7 @@ export function Browser({ cwd }: Props) {
                             className="font-mono break-all"
                           >
                             · {row.name}
-                            <span className="ml-1 text-[11px] text-muted-foreground">
+                            <span className="ml-1 text-[12px] text-muted-foreground">
                               （{row.scope === "global" ? "用户级" : "项目级"} · {row.status}）
                             </span>
                           </li>
@@ -440,7 +440,7 @@ export function Browser({ cwd }: Props) {
                     {pw?.root_path ?? (loading ? "检测中…" : "未检测")}
                   </div>
                   {pw?.env_override && (
-                    <div className="mt-1 text-[11px] text-warn">
+                    <div className="mt-1 text-[12px] text-warn">
                       路径来自环境变量 PLAYWRIGHT_BROWSERS_PATH
                     </div>
                   )}

@@ -409,7 +409,7 @@ function ColorRow({
     <div className="grid grid-cols-[minmax(88px,112px)_1fr] items-center gap-3">
       <div className="min-w-0">
         <Label className="text-xs font-medium">{label}</Label>
-        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+        <div className="mt-0.5 truncate text-[12px] text-muted-foreground">
           {description}
         </div>
       </div>

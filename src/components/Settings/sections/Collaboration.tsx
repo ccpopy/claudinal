@@ -341,7 +341,7 @@ function ProviderRow({
                     : "未安装"}
             </Badge>
             {status?.version && (
-              <span className="font-mono text-[11px] text-muted-foreground">
+              <span className="font-mono text-[12px] text-muted-foreground">
                 {status.version}
               </span>
             )}

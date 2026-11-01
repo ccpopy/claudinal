@@ -108,7 +108,7 @@ export function ChatHeader({
         {archived && (
           <span
             title="此会话已归档；可在侧边栏「设置 - 已归档对话」中恢复"
-            className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+            className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[12px] font-medium text-primary"
           >
             已归档
           </span>
@@ -202,7 +202,7 @@ export function ChatHeader({
                 >
                   <Waypoints className="size-4" />
                   {subagentCount > 0 && (
-                    <span className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full bg-primary text-[9px] font-medium text-primary-foreground">
+                    <span className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full bg-primary text-[12px] font-medium text-primary-foreground">
                       {subagentCount > 9 ? "9+" : subagentCount}
                     </span>
                   )}
@@ -255,7 +255,7 @@ export function ChatHeader({
               >
                 <GitCompareArrows className="size-4" />
                 {diffCount > 0 && (
-                  <span className="absolute -top-1 -right-1 size-4 rounded-full bg-primary text-primary-foreground text-[9px] font-medium inline-flex items-center justify-center">
+                  <span className="absolute -top-1 -right-1 size-4 rounded-full bg-primary text-primary-foreground text-[12px] font-medium inline-flex items-center justify-center">
                     {diffCount > 9 ? "9+" : diffCount}
                   </span>
                 )}

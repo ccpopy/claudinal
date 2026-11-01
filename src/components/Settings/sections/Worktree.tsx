@@ -319,7 +319,7 @@ export function Worktree({ cwd, onSelectProject, onProjectsChanged }: Props) {
                 <FolderGit2 className="size-4 text-muted-foreground" />
                 <h3 className="text-sm font-semibold">当前仓库</h3>
                 {list?.currentRoot && (
-                  <span className="truncate font-mono text-[11px] text-muted-foreground">
+                  <span className="truncate font-mono text-[12px] text-muted-foreground">
                     {formatPathForDisplay(list.currentRoot)}
                   </span>
                 )}
@@ -633,14 +633,14 @@ function WorktreeRow({
             </Badge>
           )}
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted-foreground">
           <span className="truncate font-mono" title={worktree.path}>
             {formatPathForDisplay(worktree.path)}
           </span>
           {worktree.head && <span className="font-mono">{worktree.head.slice(0, 8)}</span>}
         </div>
         {worktree.statusError && (
-          <div className="mt-1 break-all text-[11px] text-destructive">
+          <div className="mt-1 break-all text-[12px] text-destructive">
             {worktree.statusError}
           </div>
         )}

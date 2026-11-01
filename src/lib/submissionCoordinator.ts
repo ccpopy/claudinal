@@ -74,6 +74,8 @@ export interface SubmissionAdapter<C> {
   write(task: SubmittedInput<C>): Promise<void>
   settled(task: SubmittedInput<C>): void
   archived?(receipt: ArchivedInput): void
+  /** A discarded input left the coordinator; drop its UI entry and durable copy. */
+  removed?(task: SubmittedInput<C>): void
   /** Completed payloads are re-read on demand from transcript/durable storage. */
   restorePayload?(id: string): Promise<InputPayload | undefined>
 }
@@ -107,6 +109,7 @@ export class SubmissionCoordinator<C> {
   private resumedInputs = new Set<string>()
   private drafts = new Map<string, string>()
   private settling = new Map<string, Promise<void>>()
+  private persisting = new Set<string>()
   /** Running total of archived attempts, kept in step with archivedInputs. */
   private archivedAttemptCount = 0
   constructor(private adapter: SubmissionAdapter<C>, private defer: (fn: () => void) => void = (fn) => {
@@ -189,7 +192,12 @@ export class SubmissionCoordinator<C> {
         this.assertCurrent(task, attempt)
         task.payloadRef = payload; this.emit(task)
       }
-      await this.adapter.persist(this.attemptView(task))
+      this.persisting.add(attempt)
+      try { await this.adapter.persist(this.attemptView(task)) } finally {
+        this.persisting.delete(attempt)
+        // An older retry may be the last outstanding save. Refresh deletion UI.
+        if (task.attemptId !== attempt && this.canDiscard(task.messageId)) this.emit(task)
+      }
       if (task.attemptId !== attempt) return
       if (task.controller.signal.aborted) { task.localState = "saved"; this.emit(task); this.adapter.settled(task); return }
       task.localState = "saved"; task.timings.saved = performance.now()
@@ -197,8 +205,8 @@ export class SubmissionCoordinator<C> {
       task.pause = this.isQueuePaused(task) ? this.paused.get(task.conversationKey) : undefined
       this.emit(task); void this.pump(task.conversationKey)
     } catch (error) {
-      if (task.attemptId !== attempt) return
-      if (task.controller.signal.aborted) { this.adapter.settled(task); return }
+      if (this.tasks.get(task.messageId) !== task || task.attemptId !== attempt) return
+      if (task.controller.signal.aborted) { this.emit(task); this.adapter.settled(task); return }
       task.localState = "save_failed"; this.fail(task, error, false)
     }
   }
@@ -411,6 +419,27 @@ export class SubmissionCoordinator<C> {
     if (!task || task.attempts.find((a) => a.id === task.attemptId)?.deliveryCertainty !== "not_sent") return false
     const pause = this.paused.get(task.conversationKey)
     this.cancel(id)
+    if (pause?.reason === "not_sent" && pause.blockerId === id) this.resumeQueue(task.conversationKey)
+    return true
+  }
+  /** Only settled inputs that certainly never reached the CLI can disappear without a trace. */
+  canDiscard(id: string): boolean {
+    const task = this.tasks.get(id)
+    if (!task || this.busy.get(task.conversationKey) === id) return false
+    // A persist still in flight would recreate the deleted recovery copy.
+    if (task.attempts.some((attempt) => this.persisting.has(attempt.id))) return false
+    if (task.deliveryState !== "cancelled" && task.deliveryState !== "failed") return false
+    return task.attempts.every((attempt) => attempt.deliveryCertainty === "not_sent")
+  }
+  /** Delete an unsent input; if it blocked the queue, its dependants continue like abandon(). */
+  discard(id: string): boolean {
+    if (!this.canDiscard(id)) return false
+    const task = this.tasks.get(id)!
+    const pause = this.paused.get(task.conversationKey)
+    task.controller.abort()
+    this.tasks.delete(id); this.resumedInputs.delete(id)
+    for (const attempt of task.attempts) this.attemptOwners.delete(attempt.id)
+    this.adapter.removed?.(task)
     if (pause?.reason === "not_sent" && pause.blockerId === id) this.resumeQueue(task.conversationKey)
     return true
   }

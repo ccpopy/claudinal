@@ -24,7 +24,7 @@ export function AttachmentChip({
         <span className="block max-w-40 truncate text-xs font-medium">
           {label}
         </span>
-        <span className="block text-[10px] leading-none text-muted-foreground">
+        <span className="block text-[12px] leading-none text-muted-foreground">
           {meta}
         </span>
       </span>

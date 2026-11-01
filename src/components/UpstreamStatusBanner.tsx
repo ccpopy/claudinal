@@ -47,7 +47,7 @@ export function UpstreamStatusBanner({
         )}
       </span>
       {hasMessage && (
-        <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground/70 md:inline">
+        <span className="hidden min-w-0 truncate font-mono text-[12px] text-muted-foreground/70 md:inline">
           {status.message}
         </span>
       )}
@@ -82,14 +82,14 @@ export function UpstreamStatusBanner({
         >
           <div className="overflow-hidden">
             <div className="flex items-start gap-2 border-t px-3 py-2">
-              <div className="max-h-40 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-muted-foreground">
+              <div className="max-h-40 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all font-mono text-[12px] text-muted-foreground">
                 {status.message}
               </div>
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-7 shrink-0 gap-1 px-2 text-[11px]"
+                className="h-7 shrink-0 gap-1 px-2 text-[12px]"
                 onClick={() => {
                   void navigator.clipboard.writeText(status.message).then(
                     () => toast.success("已复制"),

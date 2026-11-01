@@ -170,18 +170,18 @@ function AgentRow({
         <span className="block truncate text-sm font-medium" title={agent.description}>
           {agent.description}
         </span>
-        <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="mt-0.5 flex items-center gap-2 text-[12px] text-muted-foreground">
           <AgentStatus status={agent.status} />
           {agent.model && <span className="truncate font-mono">{agent.model}</span>}
         </span>
         {(agent.parentTaskId || agent.spawnDepth !== undefined) && (
-          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground" title={agent.parentTaskId}>
+          <span className="mt-0.5 block truncate text-[12px] text-muted-foreground" title={agent.parentTaskId}>
             {agent.spawnDepth !== undefined && `层级 ${agent.spawnDepth}`}
             {agent.parentTaskId && ` · 父任务：${parent?.description ?? `${agent.parentTaskId}（未关联）`}`}
           </span>
         )}
       </span>
-      <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/75">
+      <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground/75">
         {formatRunDuration(duration, agent.status === "running")}
       </span>
     </button>
@@ -204,8 +204,9 @@ function AgentSection({
   if (agents.length === 0) return null
   return (
     <section className="space-y-1">
-      <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {title} · {agents.length}
+      <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-3 text-[12px] font-medium uppercase tracking-wide text-muted-foreground">
+        {title}
+        <span className="rounded-full bg-muted px-1.5 font-normal leading-5 tabular-nums">{agents.length}</span>
       </div>
       {agents.map((agent) => (
         <AgentRow
@@ -359,7 +360,7 @@ function SubagentTranscript({
       <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索该智能体的过程和回答"
         aria-label="搜索子智能体转录" className="h-8 min-w-0 flex-1 text-xs" />
-      {query.trim() && <span className="shrink-0 text-[11px] text-muted-foreground">{visibleEntries.length} 条</span>}
+      {query.trim() && <span className="shrink-0 text-[12px] text-muted-foreground">{visibleEntries.length} 条</span>}
       <Button type="button" variant="ghost" size="sm" disabled={!responseText} aria-label="复制子智能体回答"
         onClick={() => { void navigator.clipboard.writeText(responseText).then(() => toast.success("已复制智能体回答"), (reason) => toast.error(`复制回答失败：${String(reason)}`)) }}>
         <Copy className="size-3.5" />复制回答
@@ -485,14 +486,14 @@ export function SubagentsPanel({
                   >
                     {selectedAgent.description}
                   </DialogPrimitive.Title>
-                  <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <div className="mt-0.5 flex items-center gap-2 text-[12px] text-muted-foreground">
                     <AgentStatus status={selectedAgent.status} />
                     {selectedAgent.summary && (
                       <span className="truncate">{selectedAgent.summary}</span>
                     )}
                   </div>
                   {(selectedAgent.parentTaskId || selectedAgent.runId || selectedAgent.spawnDepth !== undefined) && (
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
                       {selectedAgent.spawnDepth !== undefined && <span>层级 {selectedAgent.spawnDepth}</span>}
                       {selectedParent ? <button type="button" className="max-w-64 truncate underline underline-offset-2" onClick={() => onSelectedAgentChange(selectedParent.id)}>父任务：{selectedParent.description}</button>
                         : selectedAgent.parentTaskId && <span title={selectedAgent.parentTaskId}>父任务未关联</span>}
@@ -500,7 +501,7 @@ export function SubagentsPanel({
                       {selectedAgent.rawStatus && selectedAgent.status === "unknown" && <span title={selectedAgent.rawStatus}>{selectedAgent.rawStatus}</span>}
                     </div>
                   )}
-                  <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-primary">
+                  <div className="mt-1 flex flex-wrap gap-3 text-[12px] text-primary">
                     {selectedParent && selectedAgent.toolUseId && <button type="button" className="hover:underline" onClick={() => {
                       setAgentNavigation({ agentId: selectedParent.id, sessionId, request: { id: crypto.randomUUID(), target: { toolUseId: selectedAgent.toolUseId! } } })
                       onSelectedAgentChange(selectedParent.id)
@@ -533,7 +534,7 @@ export function SubagentsPanel({
                 <DialogPrimitive.Title className="text-sm font-medium">
                   子智能体
                 </DialogPrimitive.Title>
-                <Badge variant="outline" className="text-[10px]">
+                <Badge variant="outline" className="text-[12px]">
                   {agents.length}
                 </Badge>
                 <DialogPrimitive.Close asChild>

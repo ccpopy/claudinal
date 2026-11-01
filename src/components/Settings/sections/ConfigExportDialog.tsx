@@ -428,12 +428,12 @@ function FieldRow({
       <Label className="font-mono text-xs flex-1 min-w-0 truncate">
         {name}
         {sensitive && (
-          <span className="ml-1 inline-block rounded bg-warn/20 text-warn px-1 py-0.5 text-[10px] font-sans align-middle">
+          <span className="ml-1 inline-block rounded bg-warn/20 text-warn px-1 py-0.5 text-[12px] font-sans align-middle">
             敏感
           </span>
         )}
       </Label>
-      <code className="min-w-0 max-w-[45%] truncate text-[11px] text-muted-foreground">
+      <code className="min-w-0 max-w-[45%] truncate text-[12px] text-muted-foreground">
         {preview}
       </code>
     </div>
@@ -473,7 +473,7 @@ function EnvBlock({
         <Switch checked={topSelected} onCheckedChange={setTopSelected} />
         <Label className="font-mono text-xs flex-1 min-w-0">
           env
-          <span className="ml-2 text-[10px] font-sans text-muted-foreground">
+          <span className="ml-2 text-[12px] font-sans text-muted-foreground">
             （展开下面的子项分别勾选）
           </span>
         </Label>
@@ -494,15 +494,15 @@ function EnvBlock({
                 }
                 disabled={!topSelected}
               />
-              <Label className="font-mono text-[11px] flex-1 min-w-0 truncate">
+              <Label className="font-mono text-[12px] flex-1 min-w-0 truncate">
                 env.{ek}
                 {isSensitive && (
-                  <span className="ml-1 inline-block rounded bg-warn/20 text-warn px-1 py-0.5 text-[10px] font-sans align-middle">
+                  <span className="ml-1 inline-block rounded bg-warn/20 text-warn px-1 py-0.5 text-[12px] font-sans align-middle">
                     敏感
                   </span>
                 )}
               </Label>
-              <code className="min-w-0 max-w-[45%] truncate text-[11px] text-muted-foreground">
+              <code className="min-w-0 max-w-[45%] truncate text-[12px] text-muted-foreground">
                 {preview}
               </code>
             </div>

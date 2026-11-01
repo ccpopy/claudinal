@@ -243,7 +243,7 @@ export function BuddyLoader({ label = "正在召回会话…", className }: Prop
         {reaction && (
           <div
             className={cn(
-              "pointer-events-none absolute -top-9 left-1/2 max-w-[min(15rem,calc(100vw-2rem))] -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-[11px] leading-tight text-popover-foreground shadow-sm transition-opacity duration-300 motion-reduce:transition-none",
+              "pointer-events-none absolute -top-9 left-1/2 max-w-[min(15rem,calc(100vw-2rem))] -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-[12px] leading-tight text-popover-foreground shadow-sm transition-opacity duration-300 motion-reduce:transition-none",
               reaction.fading && "opacity-35"
             )}
           >
@@ -274,7 +274,7 @@ export function BuddyLoader({ label = "正在召回会话…", className }: Prop
       <div className="flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
         <span
           className={cn(
-            "rounded-sm border px-1.5 py-0.5 text-[10px] leading-none tabular-nums",
+            "rounded-sm border px-1.5 py-0.5 text-[12px] leading-none tabular-nums",
             RARITY_BADGE[bones.rarity]
           )}
         >

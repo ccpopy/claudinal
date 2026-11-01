@@ -927,7 +927,7 @@ function SessionRow({
             className="size-3 animate-spin text-primary transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0"
           />
         ) : (
-          <span className="text-right text-[11px] tabular-nums text-sidebar-foreground/60 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">
+          <span className="text-right text-[12px] tabular-nums text-sidebar-foreground/60 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">
             {compactTime}
           </span>
         )}

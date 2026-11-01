@@ -341,7 +341,7 @@ function AuthActions({
   // 第三方 / 官方 key 模式下账号鉴权由 env 提供，登入登出按钮无意义，藏起来
   if (auth.kind === "third-party" || auth.kind === "official-key") {
     return (
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-[12px] text-muted-foreground">
         凭据由环境变量提供，CLI 登录状态不适用
       </span>
     )
@@ -371,7 +371,7 @@ function AuthActions({
               <Cloud className="size-4" />
               <div className="flex flex-col">
                 <span>Claude.ai 订阅</span>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-[12px] text-muted-foreground">
                   默认（适合 Pro / Max 用户）
                 </span>
               </div>
@@ -380,7 +380,7 @@ function AuthActions({
               <ExternalLink className="size-4" />
               <div className="flex flex-col">
                 <span>Anthropic Console</span>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-[12px] text-muted-foreground">
                   按 API 用量计费
                 </span>
               </div>
@@ -427,7 +427,7 @@ function AuthBlock({
         <div className="flex items-center gap-2 text-sm">
           <Key className="size-4 text-primary" />
           <span className="font-medium">{auth.label}</span>
-          <Badge variant="success" className="text-[10px]">
+          <Badge variant="success" className="text-[12px]">
             活跃
           </Badge>
         </div>
@@ -442,7 +442,7 @@ function AuthBlock({
         <div className="flex items-center gap-2 text-sm">
           <Key className="size-4 text-primary" />
           <span className="font-medium">官方 API Key</span>
-          <Badge variant="success" className="text-[10px]">
+          <Badge variant="success" className="text-[12px]">
             活跃
           </Badge>
         </div>
@@ -457,9 +457,9 @@ function AuthBlock({
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <Cloud className="size-4 text-connected" />
           <span className="font-medium">{describeMethod(method)}</span>
-          <Badge variant="success" className="text-[10px]">已登录</Badge>
+          <Badge variant="success" className="text-[12px]">已登录</Badge>
           {status.subscriptionType && (
-            <Badge variant="primary" className="text-[10px]">
+            <Badge variant="primary" className="text-[12px]">
               {status.subscriptionType}
             </Badge>
           )}

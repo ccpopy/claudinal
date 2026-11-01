@@ -16,6 +16,7 @@ import { LocalFileIcon } from "@/components/LocalFileIcon"
 import { openPath, openPathWith } from "@/lib/ipc"
 import { classifyReference, type LocalFileReference } from "@/lib/localPath"
 import { remarkReferenceSources } from "@/lib/markdownReferences"
+import { rehypeStreamWords, useStreamReveal } from "@/lib/streamWords"
 import { loadLocalFileStatus, localFileUnavailableReason } from "@/lib/localFileStatus"
 import { cn } from "@/lib/utils"
 
@@ -301,9 +302,12 @@ function useThrottledText(text: string, partial: boolean): string {
   return partial ? throttled : text
 }
 
-const MarkdownInner = memo(function MarkdownInner({ text }: { text: string }) {
+const remarkPlugins = [remarkGfm, remarkReferenceSources]
+const streamRehypePlugins = [rehypeStreamWords]
+
+const MarkdownInner = memo(function MarkdownInner({ text, reveal }: { text: string; reveal: boolean }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkReferenceSources]} components={components} urlTransform={(url) => {
+    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={reveal ? streamRehypePlugins : undefined} components={components} urlTransform={(url) => {
       const classification = classifyReference(url, { source: "markdown_link", cwd: "/" })
       return classification.kind === "local" ? url : defaultUrlTransform(url)
     }}>
@@ -321,6 +325,7 @@ export function AssistantMarkdown({
 }: Props) {
   const throttled = useThrottledText(text, !!partial)
   const deferred = useDeferredValue(throttled)
+  const streamReveal = useStreamReveal()
   const sessionCommands = useContext(MarkdownCommandsContext)
   const effectiveCommands = commands ?? sessionCommands
   const referenceContext = useMemo(() => ({ cwd: cwd ?? null, commands: effectiveCommands }), [cwd, effectiveCommands])
@@ -334,7 +339,7 @@ export function AssistantMarkdown({
       data-markdown-variant={variant === "activity" ? "activity" : undefined}
     >
       <MarkdownReferenceContext.Provider value={referenceContext}>
-        <MarkdownInner text={deferred} />
+        <MarkdownInner text={deferred} reveal={!!partial && streamReveal} />
       </MarkdownReferenceContext.Provider>
       {partial && <span className="caret">▍</span>}
     </div>

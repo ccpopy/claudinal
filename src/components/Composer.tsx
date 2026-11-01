@@ -768,7 +768,7 @@ function ComposerEditor({
         />
         <div
           className={cn(
-            "rounded-[14px] border bg-card p-3 shadow-sm transition-colors",
+            "composer-surface rounded-[14px] p-3",
             dragOver && "bg-accent/40 ring-2 ring-inset ring-ring/50"
           )}
         >
@@ -816,9 +816,9 @@ function ComposerEditor({
                   label={file.name}
                   meta={
                     file.contentMode === "metadata-only"
-                      ? `${formatBytes(file.size)} · 仅信息`
+                      ? `${formatBytes(file.size)} 仅信息`
                       : file.contentMode === "document"
-                        ? `${formatBytes(file.size)} · PDF`
+                        ? `${formatBytes(file.size)} PDF`
                         : formatBytes(file.size)
                   }
                   onRemove={() => {
@@ -896,13 +896,13 @@ function ComposerEditor({
               disabled={disabled}
               rows={1}
               className={cn(
-                "min-h-[56px] max-h-60 border-0 bg-transparent px-1 py-1 text-base shadow-none focus-visible:ring-0 [scrollbar-gutter:stable]",
+                "min-h-[56px] max-h-60 border-0 bg-transparent px-1 py-1 text-base shadow-none focus-visible:ring-0 scrollbar-none",
                 "font-sans font-normal leading-relaxed text-foreground",
                 suggestionVisible && "pr-14"
               )}
             />
             {suggestionVisible && (
-              <span className="pointer-events-none absolute right-1 top-1.5 flex items-center gap-1 text-[11px] text-muted-foreground" aria-hidden="true">
+              <span className="pointer-events-none absolute right-1 top-1.5 flex items-center gap-1 text-[12px] text-muted-foreground" aria-hidden="true">
                 <Kbd>Tab</Kbd>
               </span>
             )}
@@ -976,7 +976,7 @@ function ComposerEditor({
                     <Blocks className="size-4" />
                     <span className="flex-1">插件</span>
                     {installedPlugins.length > 0 && (
-                      <span className="text-[10px] text-muted-foreground tabular-nums">
+                      <span className="text-[12px] text-muted-foreground tabular-nums">
                         {installedPlugins.length}
                       </span>
                     )}
@@ -985,7 +985,7 @@ function ComposerEditor({
                     className="w-60 rounded-xl p-1"
                     sideOffset={6}
                   >
-                    <div className="px-2 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
+                    <div className="px-2 py-1 text-[12px] uppercase tracking-wider text-muted-foreground">
                       {installedPlugins.length > 0
                         ? `${installedPlugins.length} 个已安装插件`
                         : "未安装插件"}
@@ -1007,7 +1007,7 @@ function ComposerEditor({
                           >
                             <Package className="size-4 text-muted-foreground" />
                             <span className="flex-1 truncate">{p.name}</span>
-                            <span className="text-[10px] text-muted-foreground">
+                            <span className="text-[12px] text-muted-foreground">
                               {[p.enabled ? "" : "已停用", p.scope === "project" ? "项目" : p.scope === "local" ? "本地" : ""].filter(Boolean).join(" · ")}
                             </span>
                           </DropdownMenuItem>
@@ -1154,7 +1154,7 @@ export function PermissionModePicker({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-sm">{item.label}</span>
-              <span className={cn("block text-[11px] text-muted-foreground", item.value === "fullAccess" && cn(FULL_ACCESS_TEXT, "opacity-80"))}>
+              <span className={cn("block text-[12px] text-muted-foreground", item.value === "fullAccess" && cn(FULL_ACCESS_TEXT, "opacity-80"))}>
                 {item.description}
               </span>
             </span>
@@ -1316,7 +1316,7 @@ function GitBranchPicker({
                     {branch.name}
                   </span>
                   {branch.name === current && effectiveStatus.changedFiles > 0 && (
-                    <span className="block text-[11px] text-muted-foreground">
+                    <span className="block text-[12px] text-muted-foreground">
                       {dirtySummary}
                     </span>
                   )}
@@ -1377,9 +1377,9 @@ function PlanUsageIndicator({ usage, context }: { usage: OauthUsage | null; cont
     return t === "等待更新" ? "等待更新" : `${t}后重置`
   }
   const weekly = [
-    { label: "每周 · 全部模型", window: usage?.seven_day },
-    { label: "每周 · Sonnet", window: usage?.seven_day_sonnet ?? undefined },
-    { label: "每周 · Opus", window: usage?.seven_day_opus ?? undefined }
+    { label: "每周全部模型", window: usage?.seven_day },
+    { label: "每周 Sonnet", window: usage?.seven_day_sonnet ?? undefined },
+    { label: "每周 Opus", window: usage?.seven_day_opus ?? undefined }
   ].filter((row): row is { label: string; window: OauthUsageWindow } => !!row.window)
   const contextDetail = context
     ? [context.contextWindow ? `${compactTokens(context.usedTokens)} / ${compactTokens(context.contextWindow)}` : `${compactTokens(context.usedTokens)} tokens`,
@@ -1448,7 +1448,7 @@ function UsageRow({
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="truncate">{label}</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">
-          {[pct === null ? "" : `${pct}%`, suffix].filter(Boolean).join(" · ")}
+          {[pct === null ? "" : `${pct}%`, suffix].filter(Boolean).join(" ")}
         </span>
       </div>
       {pct !== null && <div className="h-1.5 overflow-hidden rounded-full bg-muted">

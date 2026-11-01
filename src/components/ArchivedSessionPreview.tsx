@@ -112,7 +112,7 @@ export function ArchivedSessionPreview({
             >
               {headerTitle}
             </span>
-            <span className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+            <span className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[12px] font-medium text-primary">
               已归档
             </span>
             {target && (

@@ -32,6 +32,8 @@ export interface AppSettings {
   computerUseEnabled?: boolean
   // CLI -p 不生成会话标题；开启后首轮结束时用小模型生成一次，失败回退首条提问。
   autoSessionTitle?: boolean
+  // 流式回复逐字渐显；系统开启「减弱动态效果」时由 CSS 自动停用。
+  streamReveal?: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -44,7 +46,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   completionNotify: false,
   promptSuggestionsEnabled: false,
   computerUseEnabled: false,
-  autoSessionTitle: true
+  autoSessionTitle: true,
+  streamReveal: true
 }
 
 export function loadSettings(): AppSettings {
@@ -60,6 +63,7 @@ export function loadSettings(): AppSettings {
       merged.promptSuggestionsEnabled = merged.promptSuggestionsEnabled === true
       merged.computerUseEnabled = merged.computerUseEnabled === true
       merged.autoSessionTitle = merged.autoSessionTitle !== false
+      merged.streamReveal = merged.streamReveal !== false
       return merged
     }
   } catch {

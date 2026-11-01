@@ -109,7 +109,7 @@ export function InputRecovery({ cwd, activeRuntimeIds, liveMessageIds = [], cent
         {recoverable.map((input) => <li key={input.id} className="flex items-center gap-3 px-3 py-2">
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm text-foreground" title={input.preview}>{input.preview || "附件消息"}</p>
-            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+            <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
               {deliveryLabel[input.state === "writing" || input.state === "awaiting_ack" ? "delivery_unknown" : input.state]}
               {input.attachments ? ` · ${input.attachments} 个附件` : ""}
             </p>

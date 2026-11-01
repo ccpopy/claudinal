@@ -462,7 +462,7 @@ function PaletteSection({
 }) {
   return (
     <div className="mb-1.5 last:mb-0">
-      <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+      <div className="px-2 pb-1 pt-1 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
         {title}
       </div>
       <div className="flex flex-col">{children}</div>
@@ -512,7 +512,7 @@ function PaletteRow({
         <Highlighted text={label} query={highlight ?? ""} />
       </span>
       {badge && (
-        <span className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+        <span className="shrink-0 rounded border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[12px] font-medium text-primary">
           {badge}
         </span>
       )}

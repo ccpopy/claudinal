@@ -349,7 +349,7 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
               className="h-8 w-full rounded-md border bg-background px-2.5 pl-7 text-sm outline-none transition-colors focus:border-primary/40"
             />
           </div>
-          <div className="flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-[11px] text-muted-foreground">
+          <div className="flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-[12px] text-muted-foreground">
             <ArrowDownNarrowWide className="size-3.5" />
             <select
               value={sortMode}
@@ -369,7 +369,7 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
               onChange={(e) =>
                 setProjectFilter(e.target.value ? e.target.value : null)
               }
-              className="h-8 max-w-[220px] truncate rounded-md border bg-background px-2 text-[11px] text-foreground outline-none"
+              className="h-8 max-w-[220px] truncate rounded-md border bg-background px-2 text-[12px] text-foreground outline-none"
             >
               <option value="">全部项目（{projectsInIndex.length}）</option>
               {projectsInIndex.map((p) => (
@@ -379,7 +379,7 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
               ))}
             </select>
           )}
-          <label className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2 text-[11px] text-muted-foreground">
+          <label className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2 text-[12px] text-muted-foreground">
             <input
               type="checkbox"
               checked={includeArchived}
@@ -406,7 +406,7 @@ export function HistoryView({ projects, onBack, onSelectSession }: Props) {
               清除筛选
             </Button>
           )}
-          <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
+          <span className="ml-auto text-[12px] text-muted-foreground tabular-nums">
             {filteredSessions.length} / {totalIndexed}
           </span>
         </div>
@@ -485,7 +485,7 @@ function SectionTitle({
     <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
       <span>{label}</span>
       <span className="font-mono tabular-nums">{count}</span>
-      {hint && <span className="text-[11px] normal-case">· {hint}</span>}
+      {hint && <span className="text-[12px] normal-case">· {hint}</span>}
     </div>
   )
 }
@@ -515,12 +515,12 @@ function SessionRow({
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium">{entry.title}</span>
           {entry.archived && (
-            <Badge variant="outline" className="font-sans text-[10px]">
+            <Badge variant="outline" className="font-sans text-[12px]">
               已归档
             </Badge>
           )}
         </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground tabular-nums">
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted-foreground tabular-nums">
           <span className="truncate" title={entry.project.cwd}>
             {entry.projectLabel}
           </span>
@@ -559,11 +559,11 @@ function BodyHitRow({
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium">{hit.title}</span>
-          <Badge variant="outline" className="font-sans text-[10px]">
+          <Badge variant="outline" className="font-sans text-[12px]">
             {hit.role}
           </Badge>
           {hit.archived && (
-            <Badge variant="outline" className="font-sans text-[10px]">
+            <Badge variant="outline" className="font-sans text-[12px]">
               已归档
             </Badge>
           )}
@@ -574,7 +574,7 @@ function BodyHitRow({
         >
           {hit.snippet}
         </div>
-        <div className="text-[11px] text-muted-foreground tabular-nums">
+        <div className="text-[12px] text-muted-foreground tabular-nums">
           {hit.projectLabel}
         </div>
       </div>

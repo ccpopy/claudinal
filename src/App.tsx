@@ -912,6 +912,7 @@ export default function App() {
     write: (task) => submissionAdapterRef.current.write(task),
     settled: (task) => submissionAdapterRef.current.settled(task),
     archived: (receipt) => submissionAdapterRef.current.archived?.(receipt),
+    removed: (task) => submissionAdapterRef.current.removed?.(task),
     restorePayload: (id) => submissionAdapterRef.current.restorePayload?.(id) ?? Promise.resolve(undefined)
   })
   const pruneClosedConversationOwners = useCallback(() => {
@@ -2787,6 +2788,19 @@ export default function App() {
       else void updateOutboxState(task.messageId, task.deliveryState, task.attemptId).catch(console.warn)
     },
     archived: () => pruneClosedConversationOwners(),
+    removed: (task) => {
+      const owner = task.context.owner
+      const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
+      const action = { kind: "input_discarded" as const, messageId: task.messageId }
+      if (run) applyRunningAction(run, action)
+      else {
+        owner.state = reduce(owner.state, action)
+        if (viewOwnerRef.current.key === owner.key) { stateRef.current = owner.state; dispatch({ kind: "replace_state", state: owner.state }) }
+      }
+      void removeOutbox(task.messageId).catch((error) => toast.error(`删除本地恢复记录失败：${String(error)}`))
+      setRunningTick((tick) => tick + 1)
+      pruneClosedConversationOwners()
+    },
     restorePayload: async (id) => {
       const receipt = sentInputsRef.current.get(id)
       const archive = coordinatorRef.current.archivedInputs.get(id)
@@ -3806,6 +3820,8 @@ export default function App() {
     retryOriginal: (id) => retryUserMessage(id, "original"),
     edit: (id, payload) => { void editSubmittedMessage(id, payload) },
     cancel: (id) => coordinatorRef.current.cancel(id),
+    canDiscard: (id) => coordinatorRef.current.canDiscard(id),
+    discard: (id) => { coordinatorRef.current.discard(id) },
     canGuide: (id) => {
       const task = coordinatorRef.current.tasks.get(id)
       const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined

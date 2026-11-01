@@ -44,7 +44,7 @@ export type BlockViewVariant = "guide" | "activity" | "user"
 export function MessageTime({ ts }: { ts?: number }) {
   const label = formatMessageTime(ts)
   if (!label) return null
-  return <time dateTime={new Date(ts!).toISOString()} title={formatMessageTimeFull(ts)} className="px-1 text-[11px] tabular-nums text-muted-foreground">{label}</time>
+  return <time dateTime={new Date(ts!).toISOString()} title={formatMessageTimeFull(ts)} className="px-1 text-[12px] tabular-nums text-muted-foreground">{label}</time>
 }
 
 export function BlockView({
@@ -235,7 +235,7 @@ function SkillLoadBlock({ block }: { block: UIBlock }) {
   if (!skill) return null
   return <ExpandableRow open={open} onToggle={() => setOpen(!open)} icon={BookOpen} label={`加载 ${skill.name} Skill`}>
     <div className="max-h-80 min-w-0 overflow-auto rounded-lg border bg-muted/30 p-3 scrollbar-thin">
-      <div className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{skill.directory}</div>
+      <div className="mb-2 break-all font-mono text-[12px] text-muted-foreground">{skill.directory}</div>
       <AssistantMarkdown text={skill.content} cwd={skill.directory} variant="activity" />
     </div>
   </ExpandableRow>
@@ -304,7 +304,7 @@ function ImageBlock({
       >
         <img src={src} alt={alt} className={tile ? "block size-full object-cover" : "block max-h-72 max-w-full object-contain"} loading="lazy" onError={() => setFailedSrc(src)} />
         {block.imageAlt && !tile && (
-          <span className="absolute right-1 bottom-1 rounded-md bg-background/85 text-foreground/90 text-[10px] font-mono px-1.5 py-0.5 border">
+          <span className="absolute right-1 bottom-1 rounded-md bg-background/85 text-foreground/90 text-[12px] font-mono px-1.5 py-0.5 border">
             {block.imageAlt}
           </span>
         )}
@@ -330,7 +330,7 @@ function AttachmentBlock({
     fileType,
     size,
     block.attachmentContentMode === "metadata-only" ? "仅文件信息" : null
-  ].filter(Boolean).join(" · ")
+  ].filter(Boolean).join(" ")
   return (
     <div
       className={cn(
@@ -346,7 +346,7 @@ function AttachmentBlock({
           <span className="block truncate text-sm font-medium leading-5" title={name}>
             {name}
           </span>
-          <span className="block truncate text-[11px] leading-4 text-muted-foreground">
+          <span className="block truncate text-[12px] leading-4 text-muted-foreground">
             {meta}
           </span>
         </span>
@@ -530,7 +530,7 @@ function ToolUseDetails({
       <div className="space-y-2">
         {fp && <FileChip path={fp} />}
         {replaceAll && (
-          <Badge variant="outline" className="text-[10px]">
+          <Badge variant="outline" className="text-[12px]">
             replace_all
           </Badge>
         )}
@@ -555,7 +555,7 @@ function ToolUseDetails({
         {fp && <FileChip path={fp} />}
         {edits.map((e, i) => (
           <div key={i} className="space-y-1">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            <div className="text-[12px] uppercase tracking-wide text-muted-foreground">
               edit #{i + 1}
             </div>
             {(e.old_string as string) !== undefined && (
@@ -659,7 +659,7 @@ function ToolResultBlock({ block }: { block: UIBlock }) {
       (acc, h) => acc + (h.lines ?? []).filter((l) => l.startsWith("-")).length,
       0
     )
-    label = `更新 ${basename(tur?.filePath)} · +${adds} -${dels}`
+    label = `更新 ${basename(tur?.filePath)} +${adds} -${dels}`
     Icon = FileEdit
   } else {
     label = "工具完成"
@@ -727,7 +727,7 @@ export function ExpandableRow({
         />
         <Icon className="size-3.5" />
         <span className={cn("text-left break-all", labelClassName)}>{label}</span>
-        {meta && <span className="text-[10px] tabular-nums opacity-70">· {meta}</span>}
+        {meta && <span className="text-[12px] tabular-nums opacity-70">· {meta}</span>}
         {trailing}
       </button>
       <FoldBody open={open} className="mt-1.5 ml-5">{children}</FoldBody>
@@ -760,7 +760,7 @@ function DiffSide({
 }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
+      <div className="text-[12px] uppercase tracking-wide text-muted-foreground mb-0.5">
         {label}
       </div>
       <pre
@@ -782,7 +782,7 @@ function DiffView({ patch }: { patch: StructuredPatchHunk[] }) {
     <div className="rounded-md border bg-muted/40 overflow-auto scrollbar-thin max-h-80">
       {patch.map((hunk, i) => (
         <div key={i} className="font-mono text-[12px]">
-          <div className="px-2 py-0.5 bg-muted/80 text-muted-foreground text-[11px]">
+          <div className="px-2 py-0.5 bg-muted/80 text-muted-foreground text-[12px]">
             @@ -{hunk.oldStart ?? 0},{hunk.oldLines ?? 0} +{hunk.newStart ?? 0},{hunk.newLines ?? 0} @@
           </div>
           {(hunk.lines ?? []).map((line, j) => {
@@ -818,7 +818,7 @@ function TerminalBlock({
   const lines = children.split("\n")
   return (
     <div className="rounded-md border bg-foreground/[0.06] dark:bg-black/40 overflow-hidden">
-      <div className="px-2 py-1 border-b border-foreground/10 text-[10px] uppercase tracking-wider text-muted-foreground font-mono flex items-center gap-1.5">
+      <div className="px-2 py-1 border-b border-foreground/10 text-[12px] uppercase tracking-wider text-muted-foreground font-mono flex items-center gap-1.5">
         <span className="size-2 rounded-full bg-destructive/60" />
         <span className="size-2 rounded-full bg-warn/60" />
         <span className="size-2 rounded-full bg-connected/60" />
@@ -861,7 +861,7 @@ function CollapsedOutput({ text }: { text: string }) {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="text-[11px] text-muted-foreground hover:text-foreground"
+          className="text-[12px] text-muted-foreground hover:text-foreground"
         >
           {open ? "收起" : "展开全部"}
         </button>

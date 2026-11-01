@@ -218,7 +218,7 @@ export function RunReviewCard({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 gap-1 px-2 text-[11px]"
+          className="h-7 gap-1 px-2 text-[12px]"
           onClick={() => onShowDiff?.()}
         >
           <GitCompareArrows className="size-3.5" />
@@ -251,7 +251,7 @@ export function RunReviewCard({
             {canCollapseFiles && (
               <button
                 type="button"
-                className="flex h-7 w-full items-center justify-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                className="flex h-7 w-full items-center justify-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                 onClick={() => {
                   setFilesExpanded((current) => {
                     const next = !current
@@ -325,10 +325,10 @@ function ReviewFileRow({
             <span className="min-w-0 flex-1 truncate font-mono text-foreground/90">
               {file.path}
             </span>
-            <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
+            <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[12px] text-muted-foreground sm:inline-flex">
               {sourceLabel}
             </span>
-            <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
+            <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-[12px] text-muted-foreground sm:inline-flex">
               {statusLabel(file.status)}
             </span>
             {file.binary ? (

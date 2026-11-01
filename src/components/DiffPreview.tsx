@@ -77,8 +77,8 @@ export function UnifiedDiff({
   return (
     <div className={cn("overflow-hidden rounded-md border bg-muted/20", !wrapLines && "min-w-max")}>
       {hunks.map((h, hi) => (
-        <div key={hi} className={cn("font-mono", compact ? "text-[11px]" : "text-[12px]")}>
-          <div className="bg-muted/80 px-3 py-1 text-[11px] text-muted-foreground">
+        <div key={hi} className={cn("font-mono", compact ? "text-[12px]" : "text-[12px]")}>
+          <div className="bg-muted/80 px-3 py-1 text-[12px] text-muted-foreground">
             @@ -{h.oldStart ?? 0},{h.oldLines ?? 0} +{h.newStart ?? 0},
             {h.newLines ?? 0} @@
           </div>
@@ -198,8 +198,8 @@ function SplitDiff({
   return (
     <div className={cn("overflow-hidden rounded-md border bg-muted/20", !wrapLines && "min-w-max")}>
       {hunks.map((h, hi) => (
-        <div key={hi} className={cn("font-mono", compact ? "text-[11px]" : "text-[12px]")}>
-          <div className="bg-muted/80 px-3 py-1 text-[11px] text-muted-foreground">
+        <div key={hi} className={cn("font-mono", compact ? "text-[12px]" : "text-[12px]")}>
+          <div className="bg-muted/80 px-3 py-1 text-[12px] text-muted-foreground">
             @@ -{h.oldStart ?? 0},{h.oldLines ?? 0} +{h.newStart ?? 0},
             {h.newLines ?? 0} @@
           </div>
@@ -267,7 +267,7 @@ function CreatedFilePreview({
           className={cn(
             "grid min-w-0 bg-connected/15 font-mono",
             compact
-              ? "grid-cols-[2.5rem_1rem_minmax(0,1fr)] text-[11px]"
+              ? "grid-cols-[2.5rem_1rem_minmax(0,1fr)] text-[12px]"
               : "grid-cols-[3.25rem_1.25rem_minmax(0,1fr)] text-[12px]"
           )}
         >

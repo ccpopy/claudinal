@@ -221,7 +221,7 @@ export function DiffOverview({
             <DialogPrimitive.Title className="text-sm font-medium">
               {title}
             </DialogPrimitive.Title>
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-[12px]">
               {changes.length} 文件
             </Badge>
             {onSelectReview && (
@@ -274,7 +274,7 @@ export function DiffOverview({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-7 gap-1 px-2 text-[11px]"
+                  className="h-7 gap-1 px-2 text-[12px]"
                   onClick={() =>
                     setViewMode((current) =>
                       current === "unified" ? "split" : "unified"
@@ -297,7 +297,7 @@ export function DiffOverview({
                   size="sm"
                   onClick={copyAllPatches}
                   disabled={changes.length === 0}
-                  className="h-7 gap-1 px-2 text-[11px]"
+                  className="h-7 gap-1 px-2 text-[12px]"
                 >
                   {copiedAllPatch ? (
                     <Check className="size-3.5 text-connected" />
@@ -423,7 +423,7 @@ export function DiffOverview({
                             {displayNames[i]}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2 text-[10px] mt-0.5 ml-4 tabular-nums">
+                        <div className="flex items-center gap-2 text-[12px] mt-0.5 ml-4 tabular-nums">
                           <span className="text-connected">+{c.adds}</span>
                           <span className="text-destructive">-{c.dels}</span>
                           <span className="text-muted-foreground">
@@ -552,14 +552,14 @@ function SourceFilterChips({
             type="button"
             onClick={() => onChange(chip.value)}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[10px] transition-colors tabular-nums",
+              "rounded-full border px-2 py-0.5 text-[12px] transition-colors tabular-nums",
               active
                 ? "border-primary/40 bg-primary/10 text-primary"
                 : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground"
             )}
           >
             {chip.label}
-            <span className="ml-1 text-[10px] opacity-70">{chip.count}</span>
+            <span className="ml-1 text-[12px] opacity-70">{chip.count}</span>
           </button>
         )
       })}

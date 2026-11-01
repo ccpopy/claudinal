@@ -467,14 +467,14 @@ export function PluginsView({ cwd, onBack, onSkillsChanged, sessionPlugins }: Pr
             <TabsTrigger value="plugins" className="gap-1.5">
               <Package className="size-3.5" />
               插件
-              <span className="ml-1 rounded-sm bg-background/60 px-1 text-[10px] tabular-nums text-muted-foreground">
+              <span className="ml-1 rounded-sm bg-background/60 px-1 text-[12px] tabular-nums text-muted-foreground">
                 {installed.length}
               </span>
             </TabsTrigger>
             <TabsTrigger value="skills" className="gap-1.5">
               <Sparkles className="size-3.5" />
               技能
-              <span className="ml-1 rounded-sm bg-background/60 px-1 text-[10px] tabular-nums text-muted-foreground">
+              <span className="ml-1 rounded-sm bg-background/60 px-1 text-[12px] tabular-nums text-muted-foreground">
                 {skills.length}
               </span>
             </TabsTrigger>
@@ -491,19 +491,19 @@ export function PluginsView({ cwd, onBack, onSkillsChanged, sessionPlugins }: Pr
               <TabsList variant="line">
                 <TabsTrigger value="installed" className="gap-1.5">
                   已安装
-                  <span className="rounded-sm bg-muted px-1 tabular-nums text-[10px]">
+                  <span className="rounded-sm bg-muted px-1 tabular-nums text-[12px]">
                     {installed.length}
                   </span>
                 </TabsTrigger>
                 <TabsTrigger value="discover" className="gap-1.5">
                   发现
-                  <span className="rounded-sm bg-muted px-1 tabular-nums text-[10px]">
+                  <span className="rounded-sm bg-muted px-1 tabular-nums text-[12px]">
                     {discoverList.length}
                   </span>
                 </TabsTrigger>
                 <TabsTrigger value="marketplaces" className="gap-1.5">
                   Marketplace
-                  <span className="rounded-sm bg-muted px-1 tabular-nums text-[10px]">
+                  <span className="rounded-sm bg-muted px-1 tabular-nums text-[12px]">
                     {marketplaces.length}
                   </span>
                 </TabsTrigger>
@@ -716,7 +716,7 @@ function InstalledList({
                 <Badge variant="outline" className="font-sans">
                   {scopeLabel(p.scope)}
                 </Badge>
-                <Badge variant="outline">已安装 · {p.enabled ? "已启用" : "已停用"}</Badge>
+                <Badge variant="outline">{p.enabled ? "已安装并启用" : "已安装，已停用"}</Badge>
                 <Badge variant="secondary">{sessionPlugins?.includes(p.name) || sessionPlugins?.includes(p.id) ? "本会话已加载" : sessionPlugins ? "本会话未列出" : "本会话加载状态未确认"}</Badge>
                 {p.version && p.version !== "unknown" && (
                   <Badge variant="secondary" className="font-mono">
@@ -822,7 +822,7 @@ function DiscoverList({
                   </Badge>
                 )}
                 {it.plugin.author && (
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-[12px] text-muted-foreground">
                     by {it.plugin.author}
                   </span>
                 )}
@@ -1002,7 +1002,7 @@ function SkillInstallCatalog({
                 <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
                   {s.description}
                 </div>
-                <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                <div className="mt-1 truncate font-mono text-[12px] text-muted-foreground">
                   {s.command}
                 </div>
               </div>
@@ -1194,7 +1194,7 @@ function AddMarketplaceDialog({
                 type="button"
                 onClick={() => setValue(s)}
                 disabled={busy}
-                className="rounded-sm border bg-muted/40 px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="rounded-sm border bg-muted/40 px-2 py-0.5 font-mono text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 {s}
               </button>
