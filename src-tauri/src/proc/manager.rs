@@ -252,13 +252,6 @@ impl Manager {
         Ok(levels)
     }
 
-    pub async fn capabilities(
-        &self,
-        session_id: Option<&str>,
-    ) -> Result<capabilities::CliCapabilities> {
-        self.refresh_capabilities(session_id, false).await
-    }
-
     pub async fn refresh_capabilities(
         &self,
         session_id: Option<&str>,
@@ -929,6 +922,7 @@ impl Manager {
         session_id: &str,
         content_blocks: Value,
         client_message_id: Option<String>,
+        delivery: UserDelivery,
     ) -> Result<()> {
         let id = client_message_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         Uuid::parse_str(&id).map_err(|_| Error::Other("invalid client message id".into()))?;
@@ -946,6 +940,21 @@ impl Manager {
                     message: "会话已结束，尚未发送".into(),
                 })
             })?;
+        let guide_support = match delivery {
+            UserDelivery::GuideNow => session.capabilities.immediate_guide,
+            UserDelivery::GuideNext => session.capabilities.mid_turn_input,
+            _ => Support::Supported,
+        };
+        if guide_support != Support::Supported {
+            return Err(Error::Delivery(DeliveryError {
+                code: "mid_turn_unverified".into(),
+                phase: "prepare".into(),
+                runtime_id: session_id.into(),
+                delivery_certainty: "not_sent".into(),
+                os_error_code: None,
+                message: "当前 CLI 不支持即时引导，请更新 CLI 或排队发送".into(),
+            }));
+        }
         let mut submissions =
             tokio::time::timeout(Duration::from_secs(10), session.submissions.lock())
                 .await
@@ -958,14 +967,12 @@ impl Manager {
                 "runtime submission limit reached; start a new runtime".into(),
             ));
         }
-        let payload = json!({
-            "type": "user",
-            "uuid": id,
-            "message": {
-                "role": "user",
-                "content": content_blocks
-            }
-        });
+        let payload = user_message_payload(
+            &id,
+            content_blocks,
+            delivery,
+            &session.capabilities.resolved_version,
+        );
         let result = self.write_json_lines(session_id, vec![payload]).await;
         match &result {
             Ok(()) => {
@@ -1633,6 +1640,39 @@ impl Manager {
     }
 }
 
+/// How a stream-json user message is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserDelivery {
+    /// App-generated input; no human origin is added.
+    #[default]
+    Synthetic,
+    /// Typed input that starts the next turn.
+    Followup,
+    /// Typed guide read once running tool calls finish.
+    GuideNext,
+    /// Typed guide with priority=now.
+    GuideNow,
+}
+
+fn user_message_payload(id: &str, content: Value, delivery: UserDelivery, version: &str) -> Value {
+    let mut payload = json!({
+        "type": "user", "uuid": id,
+        "message": { "role": "user", "content": content }
+    });
+    // Without origin, newer CLIs treat input as unattributed and skip
+    // human-only checks such as the ultracode keyword.
+    if delivery != UserDelivery::Synthetic
+        && capabilities::human_origin(version) != Support::Unsupported
+    {
+        payload["origin"] = json!({ "kind": "human" });
+    }
+    if delivery == UserDelivery::GuideNow {
+        payload["priority"] = json!("now");
+    }
+    payload
+}
+
 #[derive(Default)]
 struct LaunchCancellation(AtomicBool);
 
@@ -2110,6 +2150,42 @@ async fn claude_version(claude: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_payload_shape_follows_delivery_and_origin_support() {
+        use super::{user_message_payload as payload, UserDelivery};
+        let content = serde_json::json!([
+            { "type": "text", "text": "change course" },
+            { "type": "image", "source": { "type": "base64", "data": "aW1hZ2U=" } }
+        ]);
+        let guide = payload(
+            "attempt",
+            content.clone(),
+            UserDelivery::GuideNow,
+            "2.1.296",
+        );
+        assert_eq!(guide["priority"], "now");
+        assert_eq!(guide["origin"]["kind"], "human");
+        assert_eq!(guide["uuid"], "attempt");
+        assert_eq!(guide["message"]["content"], content);
+        assert!(guide.get("isSynthetic").is_none());
+        assert!(guide.get("agent_id").is_none());
+        for delivery in [UserDelivery::Followup, UserDelivery::GuideNext] {
+            let human = payload("next", content.clone(), delivery, "2.1.270");
+            assert!(human.get("priority").is_none(), "{delivery:?}");
+            assert_eq!(human["origin"]["kind"], "human", "{delivery:?}");
+            assert_eq!(human["message"]["content"], content);
+        }
+        let synthetic = payload("auto", content.clone(), UserDelivery::Synthetic, "2.1.296");
+        assert!(synthetic.get("origin").is_none());
+        assert!(synthetic.get("priority").is_none());
+        // Before 2.1.210 an absent origin already meant human input.
+        let old = payload("old", content, UserDelivery::Followup, "2.1.123");
+        assert!(old.get("origin").is_none());
+        assert_eq!(
+            serde_json::from_value::<UserDelivery>(json!("guide_now")).unwrap(),
+            UserDelivery::GuideNow
+        );
+    }
     use super::{
         append_runtime_mcp_arg, cleanup_runtime_settings_file, configure_session_settings,
         merge_managed_mcp_config, parse_effort_levels, parse_runtime_mcp_config,

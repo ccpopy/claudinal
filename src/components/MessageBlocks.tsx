@@ -159,7 +159,7 @@ function TextBlock({
           <div className="w-full min-w-0 text-foreground text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
             {cleaned}
           </div>
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-has-[:focus-visible]/msg:opacity-100">
             {onRetry && <RetryButton onRetry={onRetry} />}
             <CopyButton
               text={cleaned}
@@ -175,7 +175,7 @@ function TextBlock({
         <div className="max-w-full min-w-0 bg-muted text-foreground rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
           {cleaned}
         </div>
-        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-has-[:focus-visible]/msg:opacity-100">
           {onRetry && <RetryButton onRetry={onRetry} />}
           <CopyButton
             text={cleaned}
@@ -216,7 +216,7 @@ function TextBlock({
       />
       {!block.partial && block.text && (
         // 与用户消息一致：悬停或键盘聚焦时才出现，平时不占视觉
-        <div className="-ml-1.5 flex items-center self-start opacity-0 transition-opacity group-hover/reply:opacity-100 group-focus-within/reply:opacity-100">
+        <div className="-ml-1.5 flex items-center self-start opacity-0 transition-opacity group-hover/reply:opacity-100 group-has-[:focus-visible]/reply:opacity-100">
           <CopyButton
             text={block.text}
             ariaLabel="复制消息"

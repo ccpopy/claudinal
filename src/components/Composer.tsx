@@ -59,6 +59,7 @@ import { Kbd } from "@/components/ui/kbd"
 import { visiblePromptSuggestion } from "@/lib/promptSuggestionInput"
 import { FULL_ACCESS_DESCRIPTION, FULL_ACCESS_TEXT, PERMISSION_OPTIONS } from "@/lib/sessionPermissionMode"
 import { composerCommandPrefix } from "@/lib/composerCommand"
+import { guideDescription } from "@/lib/composerCapabilities"
 import { CommandChip } from "./CommandChip"
 import { AttachmentChip } from "./composer/AttachmentChip"
 import {
@@ -116,6 +117,8 @@ interface Props {
   onRecallQueued?: () => void
   streaming: boolean
   midTurnSupported?: boolean
+  /** 引导以 priority=now 送达；否则在当前工具调用结束后读取 */
+  immediateGuide?: boolean
   /** 软中断进行中：停止按钮转为 spinner 并禁用（由 App 从 activeRun 派生） */
   interrupting?: boolean
   disabled?: boolean
@@ -185,6 +188,7 @@ function ComposerEditor({
   onRecallQueued,
   streaming,
   midTurnSupported = false,
+  immediateGuide = false,
   interrupting = false,
   disabled,
   centered,
@@ -573,7 +577,7 @@ function ComposerEditor({
     ) {
       e.preventDefault()
       if (midTurnSupported) send("guide")
-      else toast.info("当前会话尚未确认支持引导，请使用排队发送")
+      else toast.info("当前 CLI 不支持即时引导，请更新 CLI 或排队发送")
       return
     }
     if (
@@ -1070,7 +1074,7 @@ function ComposerEditor({
                 key="guide-action"
                 onClick={() => send("guide")} disabled={sendBlocked || interrupting || !midTurnSupported}
                 variant="outline" size="sm" aria-label="引导"
-                title={midTurnSupported ? "现在提交，在当前动作完成后读取，不打断执行 (Ctrl/⌘+Enter)" : "当前会话尚未确认支持引导，可使用排队发送"}
+                title={midTurnSupported ? `${guideDescription(immediateGuide)} (Ctrl/⌘+Enter)` :"当前 CLI 不支持即时引导，可更新 CLI 或排队发送"}
                 className="h-8 gap-1 rounded-lg"
               ><CornerDownRight className="size-3.5" />引导</Button>}
               {(!streaming || canSend) && <Button

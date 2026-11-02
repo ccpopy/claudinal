@@ -8,12 +8,23 @@ export function capturedRuntimeCapabilities(observed: CliCapabilities | null): C
   return {
     executablePath: "", resolvedVersion: "unknown", installKind: "unknown", fingerprint: "",
     checkedAt: new Date().toISOString(), certification: "Captured runtime capabilities unavailable", evidence: {},
-    coreStream: "unknown", userMessageReplay: "unknown", midTurnInput: "unknown", hookEvents: "unknown",
+    coreStream: "unknown", userMessageReplay: "unknown", midTurnInput: "unknown", immediateGuide: "unknown", hookEvents: "unknown",
     headlessModelCommand: "unknown", nativeUltracodeEffort: "unknown", forkSession: "unknown", interrupt: "unknown",
     subagentTextForwarding: "unknown", fileCheckpoints: "unknown", runtimeSettingsControl: "unknown",
     independentUltracode: "unknown", modelSettings: "unknown", autoCompactWindow: "unknown", headlessFastMode: "unknown",
     promptSuggestions: "unknown", contextUsageSummary: "unknown"
   }
+}
+
+/** Guides use priority=now only where the CLI supports it; older CLIs read them after running tools. */
+export function guideDelivery(capabilities: CliCapabilities): "guide_now" | "guide_next" {
+  return capabilities.immediateGuide === "supported" ? "guide_now" : "guide_next"
+}
+
+export function guideDescription(immediate: boolean): string {
+  return immediate
+    ? "立即调整任务：可转入后台的工作会转入后台，否则先中断当前回复再读取"
+    : "在当前工具调用结束后读取，不打断执行"
 }
 
 export function composerFeatureCapabilities(installed: InstalledCliSnapshot, runtime?: { capabilities: CliCapabilities; apiLaunchProfileKey: string }, selectedProfileKey?: string): ComposerFeatureCapabilities {

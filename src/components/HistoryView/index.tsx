@@ -524,10 +524,10 @@ function SessionRow({
           <span className="truncate" title={entry.project.cwd}>
             {entry.projectLabel}
           </span>
-          <span title={formatSessionAbsoluteTime(ts)}>
+          <span className="whitespace-nowrap" title={formatSessionAbsoluteTime(ts)}>
             {formatSessionRelativeTime(ts)}
           </span>
-          <span>{entry.session.msg_count} 条消息</span>
+          <span className="whitespace-nowrap">{entry.session.msg_count} 条消息</span>
           <span className="truncate font-mono opacity-70">
             {entry.session.id.slice(0, 8)}
           </span>

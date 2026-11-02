@@ -215,7 +215,7 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions, 
         <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
         {guide && delivery === "awaiting_ack" ? "引导已提交，等待 CLI 读取" : deliveryLabel[delivery!]}
       </p>}
-    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
+    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-has-[:focus-visible]/msg:opacity-100">
       <MessageTime ts={msg.ts} />
       {onRetry && (!submissionActions?.payload(msg.id) || msg.deliveryState === "responded" || msg.deliveryState === "acknowledged") && <RetryButton onRetry={onRetry} ariaLabel={delivery === "failed" ? "重新发送未送达输入" : "在新分支重新执行"} />}
       {original && <CopyButton text={original} ariaLabel="复制原始输入" label="原始输入已复制" />}

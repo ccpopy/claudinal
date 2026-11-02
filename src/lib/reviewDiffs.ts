@@ -1,5 +1,5 @@
 import type { ReviewRunDiff } from "@/lib/diff"
-import type { WorktreeFileDiff } from "@/lib/ipc"
+import type { FileDiffNotice, WorktreeFileDiff } from "@/lib/ipc"
 import type { ClaudeEvent } from "@/types/events"
 
 /** Persist the observed GUI boundary when CLI results omit wire timestamps. */
@@ -97,11 +97,25 @@ function parseReviewHunk(
   }
 }
 
+function parseFileDiffNotice(value: unknown): FileDiffNotice | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const notice = value as Record<string, unknown>
+  if (notice.kind === "timed_out") return { kind: "timed_out" }
+  if (notice.kind === "truncated" && typeof notice.shownLines === "number" && Number.isFinite(notice.shownLines)) {
+    return { kind: "truncated", shownLines: notice.shownLines }
+  }
+  return undefined
+}
+
 function parseReviewFileDiff(value: unknown, label: string): WorktreeFileDiff {
   const record = recordFromUnknown(value, label)
   const hunks = record.hunks
   if (!Array.isArray(hunks)) throw new Error(`${label}.hunks 必须是数组`)
+  const eolOnly = optionalStringField(record, "eolOnly", label)
+  const notice = parseFileDiffNotice(record.notice)
   return {
+    ...(eolOnly ? { eolOnly } : {}),
+    ...(notice ? { notice } : {}),
     path: stringField(record, "path", label),
     oldPath: optionalStringField(record, "oldPath", label),
     status: stringField(record, "status", label),
@@ -124,6 +138,7 @@ function parseReviewDiff(value: unknown, label: string): ReviewRunDiff["diff"] {
   }
   const state = ["pending", "ready", "partial", "unavailable"].includes(String(record.reviewState)) ? record.reviewState as ReviewRunDiff["diff"]["reviewState"] : undefined
   const interrupted = state === "pending"
+  const patchNotice = interrupted ? null : optionalStringField(record, "patchNotice", label)
   const reason = interrupted ? "上次文件审查未完成，轮次位置已保留" : optionalStringField(record, "reviewReason", label)
   const metrics = <T,>(value: unknown, keys: string[]): T | undefined => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
@@ -132,6 +147,7 @@ function parseReviewDiff(value: unknown, label: string): ReviewRunDiff["diff"] {
     return Object.fromEntries(keys.map((key) => [key, data[key]])) as T
   }
   return {
+    ...(patchNotice ? { patchNotice } : {}),
     isRepo: booleanField(record, "isRepo", label),
     files: files.map((file, index) =>
       parseReviewFileDiff(file, `${label}.files[${index}]`)

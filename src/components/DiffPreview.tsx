@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { FileWarning } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AssistantMarkdown } from "@/components/AssistantMarkdown"
@@ -5,6 +6,9 @@ import type { FileChange, StructuredHunk } from "@/lib/diff"
 import { cn } from "@/lib/utils"
 
 export type DiffViewMode = "unified" | "split"
+
+/** diff 横向滚动条常驻时使用的更醒目 thumb。 */
+export const DIFF_SCROLL_THUMB = "bg-muted-foreground/30 hover:bg-muted-foreground/50"
 
 interface DiffRow {
   kind: "add" | "del" | "ctx" | "meta"
@@ -65,6 +69,19 @@ function hunkRows(hunk: StructuredHunk): DiffRow[] {
   })
 }
 
+// 不换行模式下行号/符号列 sticky，背景必须不透明；以下颜色等价于
+// 「行半透明底色 → 容器 muted/20 → card」逐层叠加后的结果。
+const DIFF_SURFACE_BG = "bg-[color-mix(in_oklab,var(--muted)_20%,var(--card))]"
+const STICKY_ROW_BG: Record<DiffRow["kind"], string> = {
+  ctx: DIFF_SURFACE_BG,
+  add: "bg-[color-mix(in_oklab,var(--connected)_15%,color-mix(in_oklab,var(--muted)_20%,var(--card)))]",
+  del: "bg-[color-mix(in_oklab,var(--destructive)_15%,color-mix(in_oklab,var(--muted)_20%,var(--card)))]",
+  meta: "bg-[color-mix(in_oklab,var(--muted)_40%,color-mix(in_oklab,var(--muted)_20%,var(--card)))]"
+}
+const CREATED_SURFACE_BG = "bg-[color-mix(in_oklab,var(--connected)_5%,var(--card))]"
+const CREATED_STICKY_BG =
+  "bg-[color-mix(in_oklab,var(--connected)_15%,color-mix(in_oklab,var(--connected)_5%,var(--card)))]"
+
 export function UnifiedDiff({
   hunks,
   compact = false,
@@ -74,15 +91,24 @@ export function UnifiedDiff({
   compact?: boolean
   wrapLines?: boolean
 }) {
+  // overflow-clip 保留圆角裁剪但不形成滚动容器，sticky 才能相对外层滚动区生效。
+  const sticky = !wrapLines
   return (
-    <div className={cn("overflow-hidden rounded-md border bg-muted/20", !wrapLines && "min-w-max")}>
+    <div
+      className={cn(
+        "overflow-clip rounded-md border",
+        wrapLines ? "bg-muted/20" : cn("min-w-max", DIFF_SURFACE_BG)
+      )}
+    >
       {hunks.map((h, hi) => (
         <div key={hi} className={cn("font-mono", compact ? "text-[12px]" : "text-[12px]")}>
           <div className="bg-muted/80 px-3 py-1 text-[12px] text-muted-foreground">
             @@ -{h.oldStart ?? 0},{h.oldLines ?? 0} +{h.newStart ?? 0},
             {h.newLines ?? 0} @@
           </div>
-          {hunkRows(h).map((row, li) => (
+          {hunkRows(h).map((row, li) => {
+            const gutterBg = sticky ? STICKY_ROW_BG[row.kind] : undefined
+            return (
             <div
               key={li}
               className={cn(
@@ -95,17 +121,37 @@ export function UnifiedDiff({
                 row.kind === "meta" && "bg-muted/40 text-muted-foreground italic"
               )}
             >
-              <div className="select-none border-r px-2 py-0.5 text-right text-muted-foreground/75">
+              <div
+                className={cn(
+                  "select-none border-r px-2 py-0.5 text-right text-muted-foreground/75",
+                  sticky && "sticky left-0 z-[1]",
+                  gutterBg
+                )}
+              >
                 {row.oldLine ?? ""}
               </div>
-              <div className="select-none border-r px-2 py-0.5 text-right text-muted-foreground/75">
+              <div
+                className={cn(
+                  "select-none border-r px-2 py-0.5 text-right text-muted-foreground/75",
+                  sticky &&
+                    (compact
+                      ? "sticky left-[2.5rem] z-[1]"
+                      : "sticky left-[3.25rem] z-[1]"),
+                  gutterBg
+                )}
+              >
                 {row.newLine ?? ""}
               </div>
               <div
                 className={cn(
                   "select-none px-1 py-0.5 text-center",
                   row.kind === "add" && "text-connected",
-                  row.kind === "del" && "text-destructive"
+                  row.kind === "del" && "text-destructive",
+                  sticky &&
+                    (compact
+                      ? "sticky left-[5rem] z-[1]"
+                      : "sticky left-[6.5rem] z-[1]"),
+                  gutterBg
                 )}
               >
                 {row.sign}
@@ -121,7 +167,8 @@ export function UnifiedDiff({
                 {row.text || " "}
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       ))}
     </div>
@@ -259,8 +306,14 @@ function CreatedFilePreview({
   compact: boolean
   wrapLines: boolean
 }) {
+  const sticky = !wrapLines
   return (
-    <div className={cn("overflow-hidden rounded-md border border-connected/20 bg-connected/5", !wrapLines && "min-w-max")}>
+    <div
+      className={cn(
+        "overflow-clip rounded-md border border-connected/20",
+        wrapLines ? "bg-connected/5" : cn("min-w-max", CREATED_SURFACE_BG)
+      )}
+    >
       {content.split("\n").map((line, index) => (
         <div
           key={index}
@@ -271,10 +324,28 @@ function CreatedFilePreview({
               : "grid-cols-[3.25rem_1.25rem_minmax(0,1fr)] text-[12px]"
           )}
         >
-          <div className="select-none border-r px-2 py-0.5 text-right text-muted-foreground/75">
+          <div
+            className={cn(
+              "select-none border-r px-2 py-0.5 text-right text-muted-foreground/75",
+              sticky && cn("sticky left-0 z-[1]", CREATED_STICKY_BG)
+            )}
+          >
             {index + 1}
           </div>
-          <div className="select-none px-1 py-0.5 text-center text-connected">+</div>
+          <div
+            className={cn(
+              "select-none px-1 py-0.5 text-center text-connected",
+              sticky &&
+                cn(
+                  compact
+                    ? "sticky left-[2.5rem] z-[1]"
+                    : "sticky left-[3.25rem] z-[1]",
+                  CREATED_STICKY_BG
+                )
+            )}
+          >
+            +
+          </div>
           <div
             className={cn(
               "min-w-0 px-2 py-0.5",
@@ -316,6 +387,21 @@ function MarkdownRichPreview({ change }: { change: FileChange }) {
       <AssistantMarkdown text={change.content} />
     </div>
   )
+}
+
+/** 仅行尾符变化：内容没有差异，安静地说明即可。 */
+function QuietNotice({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={cn("rounded-md border border-dashed bg-muted/20 px-4 py-3 text-xs text-muted-foreground", className)}>
+      {children}
+    </div>
+  )
+}
+
+function fileBudgetNotice(notice: FileChange["notice"]): string | null {
+  if (notice?.kind === "timed_out") return "审查计算超时，此文件未生成 diff"
+  if (notice?.kind === "truncated") return `输出预算已用尽，仅显示前 ${notice.shownLines} 行，完整改动请在编辑器中查看`
+  return null
 }
 
 /** patch 不可用时的结构化空态：说明原因、统计与后续操作。 */
@@ -374,6 +460,7 @@ export function FileDiffPreview({
   className?: string
 }) {
   const showRichMarkdown = richMarkdown && isMarkdownPath(change.path)
+  const budgetNotice = fileBudgetNotice(change.notice)
   const body = showRichMarkdown ? (
     <MarkdownRichPreview change={change} />
   ) : change.binary ? (
@@ -386,12 +473,19 @@ export function FileDiffPreview({
       compact={compact}
       wrapLines={wrapLines}
     />
+  ) : change.eolOnly && change.hunks.length === 0 ? (
+    <QuietNotice>仅行尾符变化（{change.eolOnly}），文件内容没有差异。</QuietNotice>
   ) : change.hunks.length > 0 ? (
-    viewMode === "split" ? (
-      <SplitDiff hunks={change.hunks} compact={compact} wrapLines={wrapLines} />
-    ) : (
-      <UnifiedDiff hunks={change.hunks} compact={compact} wrapLines={wrapLines} />
-    )
+    <>
+      {viewMode === "split" ? (
+        <SplitDiff hunks={change.hunks} compact={compact} wrapLines={wrapLines} />
+      ) : (
+        <UnifiedDiff hunks={change.hunks} compact={compact} wrapLines={wrapLines} />
+      )}
+      {budgetNotice && <QuietNotice className="mt-2">{budgetNotice}</QuietNotice>}
+    </>
+  ) : budgetNotice ? (
+    <QuietNotice>{budgetNotice}</QuietNotice>
   ) : (
     <DiffFallbackNotice change={change} canOpenFromList={!bounded} />
   )
@@ -405,6 +499,8 @@ export function FileDiffPreview({
       className={cn(maxHeightClassName, className)}
       viewportClassName={maxHeightClassName}
       scrollbarOrientation={wrapLines ? "vertical" : "both"}
+      type={wrapLines ? undefined : "auto"}
+      thumbClassName={wrapLines ? undefined : DIFF_SCROLL_THUMB}
     >
       <div className="min-w-0 pr-2">{body}</div>
     </ScrollArea>

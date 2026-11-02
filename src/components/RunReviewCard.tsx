@@ -208,9 +208,13 @@ export function RunReviewCard({
           <span className="font-medium">本轮 {files.length} 个文件已更改</span>
           <span className="font-mono text-connected">+{additions}</span>
           <span className="font-mono text-destructive">-{deletions}</span>
-          {review.diff.patchError && (
+          {review.diff.patchError ? (
             <span className="truncate text-muted-foreground">
               patch 不完整
+            </span>
+          ) : review.diff.patchNotice && (
+            <span className="truncate text-muted-foreground" title={review.diff.patchNotice}>
+              部分 diff 未显示
             </span>
           )}
         </button>
@@ -333,6 +337,10 @@ function ReviewFileRow({
             </span>
             {file.binary ? (
               <span className="shrink-0 text-muted-foreground">二进制</span>
+            ) : file.eolOnly ? (
+              <span className="shrink-0 text-muted-foreground">仅行尾符</span>
+            ) : file.notice?.kind === "timed_out" ? (
+              <span className="shrink-0 text-muted-foreground">未生成 diff</span>
             ) : (
               <>
                 <span className="shrink-0 font-mono text-connected">

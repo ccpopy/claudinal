@@ -899,7 +899,7 @@ function SessionRow({
               "inline-flex size-5 items-center justify-center rounded text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-opacity",
               pinned
                 ? "shrink-0 opacity-100"
-                : "absolute left-2 top-1/2 -translate-y-1/2 z-10 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100"
+                : "absolute left-2 top-1/2 -translate-y-1/2 z-10 opacity-0 group-hover/session:opacity-100 group-has-[:focus-visible]/session:opacity-100"
             )}
             aria-label={pinned ? "取消置顶" : "置顶会话"}
           >
@@ -911,27 +911,27 @@ function SessionRow({
         </TooltipContent>
       </Tooltip>}
       <button type="button" className="h-full min-w-0 flex-1 truncate text-left leading-5 focus-visible:outline-none focus-visible:underline" aria-current={active ? "page" : undefined}>{title}</button>
-      <div className={cn("relative flex h-5 shrink-0 items-center justify-end", topLevel && !pinned ? "w-[3.75rem]" : "w-10")}>
+      <div className={cn("relative flex h-5 shrink-0 items-center justify-end", topLevel && !pinned ? "min-w-[3.75rem]" : "min-w-10")}>
         {waiting ? (
           <span
             role="img"
             aria-label="等待处理"
             title="等待处理"
-            className="inline-flex size-3 items-center justify-center text-primary transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0"
+            className="inline-flex size-3 items-center justify-center text-primary transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/session:opacity-0"
           >
             <Hourglass aria-hidden="true" className="size-3 animate-pulse" />
           </span>
         ) : streaming ? (
           <Loader2
             aria-label="运行中"
-            className="size-3 animate-spin text-primary transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0"
+            className="size-3 animate-spin text-primary transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/session:opacity-0"
           />
         ) : (
-          <span className="text-right text-[12px] tabular-nums text-sidebar-foreground/60 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">
+          <span className="whitespace-nowrap text-right text-[12px] tabular-nums text-sidebar-foreground/60 transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/session:opacity-0">
             {compactTime}
           </span>
         )}
-        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:opacity-100">
+        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-has-[:focus-visible]/session:opacity-100">
           {topLevel && !pinned && (
             <button
               type="button"
@@ -1049,14 +1049,14 @@ function ProjectNode({
             <Loader2
               aria-label="项目中有运行中的会话"
               className={cn(
-                "size-3 animate-spin text-primary transition-opacity group-hover/project:opacity-0 group-focus-within/project-actions:opacity-0",
+                "size-3 animate-spin text-primary transition-opacity group-hover/project:opacity-0 group-has-[:focus-visible]/project-actions:opacity-0",
                 menuOpen && "opacity-0"
               )}
             />
           )}
           <div
             className={cn(
-              "pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project-actions:pointer-events-auto group-focus-within/project-actions:opacity-100",
+              "pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-has-[:focus-visible]/project-actions:pointer-events-auto group-has-[:focus-visible]/project-actions:opacity-100",
               menuOpen && "pointer-events-auto opacity-100"
             )}
           >

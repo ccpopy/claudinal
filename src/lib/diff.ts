@@ -1,4 +1,5 @@
 import type {
+  FileDiffNotice,
   GitWorktreeStatus,
   WorktreeDiff,
   WorktreeFileDiff,
@@ -26,6 +27,9 @@ export interface FileChange {
   hunks: StructuredHunk[]
   content?: string
   binary?: boolean
+  /** 仅行尾符变化（如 "CRLF → LF"），没有 hunks。 */
+  eolOnly?: string
+  notice?: FileDiffNotice
   adds: number
   dels: number
 }
@@ -116,6 +120,8 @@ export function fileChangeFromWorktreeFile(
     source,
     hunks: file.hunks,
     binary: file.binary,
+    ...(file.eolOnly ? { eolOnly: file.eolOnly } : {}),
+    ...(file.notice ? { notice: file.notice } : {}),
     adds: file.additions,
     dels: file.deletions
   }

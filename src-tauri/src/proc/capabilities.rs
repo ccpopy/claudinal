@@ -37,6 +37,7 @@ pub struct CliCapabilities {
     pub core_stream: Support,
     pub user_message_replay: Support,
     pub mid_turn_input: Support,
+    pub immediate_guide: Support,
     pub hook_events: Support,
     pub headless_model_command: Support,
     pub native_ultracode_effort: Support,
@@ -91,12 +92,21 @@ pub fn from_help(flag: &str, help: &str) -> Support {
 }
 
 pub fn mid_turn_input(version: &str) -> Support {
-    // Streaming input predates this minimum. We need the result's complete input
-    // UUID list to settle guides without completing a late guide from the next
-    // turn. 2.1.259 added the list; 2.1.265 also covers no-API/deferred results.
-    // See the SDK reference's user_message_uuid / user_message_uuids contract.
-    // https://code.claude.com/docs/en/agent-sdk/typescript#user_message_uuid
+    // Plain streaming input is read once running tool calls finish. This
+    // minimum is where results attribute every input UUID they consumed.
     version_at_least(version, (2, 1, 265))
+}
+
+pub fn immediate_guide(version: &str) -> Support {
+    // Human priority=now moves eligible foreground work to the background, or
+    // interrupts the turn when nothing can move.
+    // https://code.claude.com/docs/en/agent-sdk/typescript#sdkusermessage
+    version_at_least(version, (2, 1, 286))
+}
+
+pub fn human_origin(version: &str) -> Support {
+    // Earlier CLIs treated an absent origin as human input.
+    version_at_least(version, (2, 1, 210))
 }
 
 fn observed_control_support(version: &str) -> Support {
@@ -125,8 +135,9 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
             ),
             (
                 "midTurnInput",
-                "stream-json; complete result input UUID attribution: >=2.1.265",
+                "plain streaming input with complete result input UUID attribution: >=2.1.265",
             ),
+            ("immediateGuide", "human priority=now: >=2.1.286"),
             ("hookEvents", "help"),
             (
                 "forkSession",
@@ -177,6 +188,7 @@ pub fn detect(path: &std::path::Path, version: String, help: &str) -> CliCapabil
             version_at_least(&version, (1, 0, 86))
         },
         mid_turn_input: mid_turn_input(&version),
+        immediate_guide: immediate_guide(&version),
         hook_events: from_help("--include-hook-events", help),
         headless_model_command: version_at_least(&version, (2, 1, 205)),
         native_ultracode_effort: version_at_least(&version, (2, 1, 203)),
@@ -224,25 +236,34 @@ mod tests {
         );
     }
     #[test]
-    fn mid_turn_uses_result_attribution_minimum_not_a_version_allowlist() {
+    fn guide_capabilities_use_minimums_not_a_version_allowlist() {
         for version in [
-            "2.1.265",
-            "2.1.282",
-            "2.1.283 (Claude Code)",
-            "2.1.284",
+            "2.1.286",
+            "2.1.287",
+            "2.1.314 (Claude Code)",
             "2.2.0",
             "3.0.0",
         ] {
             // --help is not a complete protocol capability inventory.
             let caps = detect(std::path::Path::new("claude"), version.into(), "");
             assert_eq!(caps.mid_turn_input, Support::Supported, "{version}");
+            assert_eq!(caps.immediate_guide, Support::Supported, "{version}");
             assert_eq!(caps.user_message_replay, Support::Supported, "{version}");
         }
+        // Legacy guides: read after running tool calls, never priority=now.
+        for version in ["2.1.265", "2.1.285"] {
+            let caps = detect(std::path::Path::new("claude"), version.into(), "");
+            assert_eq!(caps.mid_turn_input, Support::Supported, "{version}");
+            assert_eq!(caps.immediate_guide, Support::Unsupported, "{version}");
+        }
         assert_eq!(mid_turn_input("2.1.264"), Support::Unsupported);
+        assert_eq!(human_origin("2.1.209"), Support::Unsupported);
+        assert_eq!(human_origin("2.1.210"), Support::Supported);
         let help = "  --fork-session  When resuming, create a new session ID";
         let caps = detect(std::path::Path::new("claude"), "2.1.295".into(), help);
         assert_eq!(caps.fork_session, Support::Supported);
         assert_eq!(mid_turn_input("unknown"), Support::Unknown);
+        assert_eq!(immediate_guide("unknown"), Support::Unknown);
     }
 
     #[test]

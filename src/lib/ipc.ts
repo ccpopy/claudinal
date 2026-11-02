@@ -90,12 +90,21 @@ export interface WorktreeFileDiff {
   deletions: number
   binary: boolean
   hunks: DiffHunk[]
+  /** 仅行尾符变化时的说明（如 "CRLF → LF"），此时 hunks 为空。 */
+  eolOnly?: string | null
+  /** 审查预算导致此文件 diff 不完整（truncated）或未生成（timed_out）。 */
+  notice?: FileDiffNotice
 }
+
+export type FileDiffNotice = { kind: "truncated"; shownLines: number } | { kind: "timed_out" }
 
 export interface WorktreeDiff {
   isRepo: boolean
   files: WorktreeFileDiff[]
+  /** 真实读取失败。 */
   patchError?: string | null
+  /** 输出/时间预算说明，不是错误。 */
+  patchNotice?: string | null
 }
 
 export type ReviewPreparationState = "pending" | "ready" | "partial" | "unavailable"
@@ -430,13 +439,20 @@ export async function resolvePermissionRequest(args: {
   })
 }
 
+/**
+ * Typed input carries human origin; "guide_now" adds priority=now and
+ * "guide_next" is read once running tool calls finish. Omitted means
+ * app-generated input without human origin.
+ */
+export type UserMessageDelivery = "followup" | "guide_next" | "guide_now"
+
 export async function sendUserMessage(
   sessionId: string,
   contentBlocks: Array<Record<string, unknown>>,
   clientMessageId?: string,
-  midTurn?: boolean
+  delivery?: UserMessageDelivery
 ): Promise<void> {
-  return invoke("send_user_message", { sessionId, contentBlocks, clientMessageId, midTurn })
+  return invoke("send_user_message", { sessionId, contentBlocks, clientMessageId, delivery })
 }
 
 export async function sendSkillInvocation(
@@ -1341,6 +1357,7 @@ export interface CliCapabilities {
   coreStream: "supported" | "unsupported" | "unknown"
   userMessageReplay: "supported" | "unsupported" | "unknown"
   midTurnInput: "supported" | "unsupported" | "unknown"
+  immediateGuide: "supported" | "unsupported" | "unknown"
   hookEvents: "supported" | "unsupported" | "unknown"
   headlessModelCommand: "supported" | "unsupported" | "unknown"
   nativeUltracodeEffort: "supported" | "unsupported" | "unknown"

@@ -121,6 +121,7 @@ export function CliDiagnostics() {
         <dl className="grid grid-cols-2 gap-1 text-xs">
           <dt>用户消息确认</dt><dd>{labels[info.userMessageReplay]}</dd>
           <dt>引导</dt><dd>{labels[info.midTurnInput]}</dd>
+          <dt>即时引导</dt><dd>{labels[info.immediateGuide]}</dd>
           <dt>Hook 事件</dt><dd>{labels[info.hookEvents]}</dd>
           <dt>旧式 Ultracode effort</dt><dd>{labels[info.nativeUltracodeEffort]}</dd>
           <dt>独立 Ultracode 开关</dt><dd>{labels[info.independentUltracode]}</dd>

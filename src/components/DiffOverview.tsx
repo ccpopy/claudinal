@@ -40,7 +40,11 @@ import {
   type ReviewRunDiff
 } from "@/lib/diff"
 import type { UIEntry } from "@/types/ui"
-import { FileDiffPreview, type DiffViewMode } from "@/components/DiffPreview"
+import {
+  DIFF_SCROLL_THUMB,
+  FileDiffPreview,
+  type DiffViewMode
+} from "@/components/DiffPreview"
 import { LocalFileContextMenu } from "@/components/LocalFileContextMenu"
 
 interface Props {
@@ -178,6 +182,7 @@ export function DiffOverview({
   const active = changes[safeActiveIdx]
   const snapshotPatchError = snapshotDiffs?.find((diff) => diff.patchError)?.patchError
   const patchError = worktreeDiffError ?? snapshotPatchError ?? null
+  const patchNotice = snapshotDiffs?.find((diff) => diff.patchNotice)?.patchNotice ?? null
 
   const copyActivePath = () => {
     if (!active) return
@@ -424,8 +429,18 @@ export function DiffOverview({
                           </span>
                         </div>
                         <div className="flex items-center gap-2 text-[12px] mt-0.5 ml-4 tabular-nums">
-                          <span className="text-connected">+{c.adds}</span>
-                          <span className="text-destructive">-{c.dels}</span>
+                          {c.eolOnly ? (
+                            <span className="text-muted-foreground">
+                              仅行尾符（{c.eolOnly}）
+                            </span>
+                          ) : c.notice?.kind === "timed_out" ? (
+                            <span className="text-muted-foreground">未生成 diff</span>
+                          ) : (
+                            <>
+                              <span className="text-connected">+{c.adds}</span>
+                              <span className="text-destructive">-{c.dels}</span>
+                            </>
+                          )}
                           <span className="text-muted-foreground">
                             {sourceLabel}
                           </span>
@@ -440,6 +455,8 @@ export function DiffOverview({
               key={active?.path ?? "empty"}
               className="min-h-0"
               scrollbarOrientation={wrapLines ? "vertical" : "both"}
+              type={wrapLines ? undefined : "auto"}
+              thumbClassName={wrapLines ? undefined : DIFF_SCROLL_THUMB}
             >
               {active && (
                 <div className="p-3 space-y-2">
@@ -455,6 +472,11 @@ export function DiffOverview({
                       {patchError
                         ? `读取 patch 失败：${patchError}`
                         : "正在读取最新文件 diff…"}
+                    </div>
+                  )}
+                  {patchNotice && (
+                    <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                      {patchNotice}
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2">

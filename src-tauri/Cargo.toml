@@ -1,6 +1,6 @@
 [package]
 name = "claudecli-desktop"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 default-run = "claudecli-desktop"
 
@@ -37,6 +37,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "linux-
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 tauri-plugin-process = "2"
 tauri-plugin-notification = "~2.4.0"
+similar = "3.2.1"
 
 [profile.dev]
 incremental = true

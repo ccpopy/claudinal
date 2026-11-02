@@ -27,6 +27,7 @@ import {
   type OutgoingFileMarker
 } from "@/lib/inputAttachments"
 import { formatBytes, SUPPORTED_ATTACHMENT_ACCEPT } from "@/lib/fileAttachments"
+import { guideDescription } from "@/lib/composerCapabilities"
 import type { UIMessage } from "@/types/ui"
 import type { InputPayload, SubmissionQueueState } from "@/lib/submissionCoordinator"
 import { cn } from "@/lib/utils"
@@ -55,6 +56,8 @@ export interface SubmissionActions {
   queueState?(id: string): SubmissionQueueState | undefined
   canGuide?(id: string): boolean
   guide?(id: string): void
+  /** Whether the guide uses priority=now instead of waiting for running tools. */
+  guideImmediate?(id: string): boolean
 }
 
 type Tone = "error" | "muted"
@@ -166,7 +169,7 @@ export function SubmissionFooter({
         取消排队
       </Button>}
       {state === "queued" && actions.canGuide?.(message.id) && <Button type="button" variant="outline" size="sm" className={actionClass}
-        title="改为引导，不打断正在执行的动作" onClick={() => actions.guide?.(message.id)}>
+        title={guideDescription(!!actions.guideImmediate?.(message.id))} onClick={() => actions.guide?.(message.id)}>
         <CornerDownRight className="size-3.5" />立即引导
       </Button>}
       {state === "paused" && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={() => (actions.resumeQueue ?? actions.resume)(message.id)}>

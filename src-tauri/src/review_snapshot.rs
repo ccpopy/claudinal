@@ -20,9 +20,11 @@ const CAPTURE_TIME: Duration = Duration::from_millis(250);
 /// The worker stops scanning at its deadline and then publishes a partial
 /// manifest; the outer wait must outlast that write or partial is never kept.
 const PUBLISH_GRACE: Duration = Duration::from_millis(200);
-const DIFF_TIME: Duration = Duration::from_secs(3);
+/// Safety net for the whole review diff. Per-file diffs run in process, so
+/// this is normally far from reached; files computed before it keep hunks.
+const DIFF_TIME: Duration = Duration::from_secs(10);
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_FILES: usize = 2000;
 const MAX_ENTRIES: usize = 20_000;
 const MAX_COMMAND_BYTES: usize = 2 * 1024 * 1024;
@@ -293,6 +295,9 @@ impl Control {
         } else {
             Ok(())
         }
+    }
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
     }
     fn elapsed_ms(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
@@ -618,6 +623,7 @@ fn unavailable_diff(reason: String) -> ReviewSnapshotFinish {
             is_repo: false,
             files: Vec::new(),
             patch_error: Some(reason.clone()),
+            patch_notice: None,
         },
         review_state: ReviewState::Unavailable,
         review_reason: Some(reason),
@@ -668,7 +674,11 @@ fn finish_frozen(dir: &Path, control: &Control) -> Result<ReviewSnapshotFinish> 
         .filter(|file| current.contains_key(&file.path) || endpoint.missing.contains(&file.path))
         .collect();
     let changes = classify_review_snapshot_changes(before, current);
-    let (files, patch_error) = review_snapshot_changes_to_diff(dir, &changes, control);
+    let crate::commands::ReviewDiffFiles {
+        files,
+        patch_error,
+        patch_notice,
+    } = review_snapshot_changes_to_diff(dir, &changes, control);
     if control.cancelled.load(Ordering::Acquire) {
         return Err(Error::Other("审查计算已取消，结果已丢弃".into()));
     }
@@ -681,16 +691,19 @@ fn finish_frozen(dir: &Path, control: &Control) -> Result<ReviewSnapshotFinish> 
     timings.diff_ms = control.elapsed_ms();
     let partial = baseline.state == ReviewState::Partial
         || endpoint.state == ReviewState::Partial
-        || patch_error.is_some();
+        || patch_error.is_some()
+        || patch_notice.is_some();
     let reason = endpoint
         .reason
         .or(baseline.reason)
-        .or_else(|| patch_error.clone());
+        .or_else(|| patch_error.clone())
+        .or_else(|| patch_notice.clone());
     Ok(ReviewSnapshotFinish {
         diff: WorktreeDiff {
             is_repo: false,
             files,
             patch_error,
+            patch_notice,
         },
         review_state: if partial {
             ReviewState::Partial
@@ -980,7 +993,11 @@ fn capture_file_inner(
     }))
 }
 
-fn bounded_read(path: &Path, max_bytes: u64, control: Option<&Control>) -> Result<Vec<u8>> {
+pub(crate) fn bounded_read(
+    path: &Path,
+    max_bytes: u64,
+    control: Option<&Control>,
+) -> Result<Vec<u8>> {
     let mut file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
@@ -1077,6 +1094,9 @@ pub(crate) fn command_output(
     Ok((code, bytes, truncated))
 }
 
+/// Test-only reference implementation for parity checks against the
+/// in-process diff in `review_diff`.
+#[cfg(test)]
 pub(crate) fn git_diff(
     old: &Path,
     new: &Path,

@@ -17,6 +17,7 @@ mod oauth_usage;
 mod permission_mcp;
 mod plugins;
 mod proc;
+mod review_diff;
 mod review_snapshot;
 mod session;
 mod startup;

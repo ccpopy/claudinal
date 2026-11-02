@@ -11,7 +11,7 @@ import { useInstalledCliCapabilities } from "@/hooks/useInstalledCliCapabilities
 import { useComputerUse } from "@/hooks/useComputerUse"
 import { computerUse } from "@/lib/computerUse"
 import { ComputerUseControllerStrip, ComputerUsePermissionDialog } from "@/components/ComputerUse"
-import { canApplyRuntimePatch, capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch } from "@/lib/composerCapabilities"
+import { canApplyRuntimePatch, capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch, guideDelivery } from "@/lib/composerCapabilities"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
 import { inputMetadataPatch, restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
 import { isAuthoredUserMessage, markAuthoredEvent } from "@/lib/messageOrigin"
@@ -47,6 +47,7 @@ import {
   applySessionRuntimeSettings,
   type SessionSettingsPatch,
   type CliCapabilities,
+  type UserMessageDelivery,
   getSessionContextUsage,
   previewSessionRewind,
   rewindSessionFiles,
@@ -499,12 +500,12 @@ async function sendCliInput(
   blocks: Array<Record<string, unknown>>,
   _skillInvocation?: SkillInvocation | null,
   clientMessageId?: string,
-  midTurn?: boolean
+  delivery: UserMessageDelivery = "followup"
 ): Promise<void> {
   // A new turn restores on-demand computer access revoked by an earlier stop.
-  if (!midTurn) await computerUse.resumeRuntime(sessionId)
+  if (delivery === "followup") await computerUse.resumeRuntime(sessionId)
   // Preserve raw command and every attachment in one native user input payload.
-  await sendUserMessage(sessionId, blocks, clientMessageId, midTurn)
+  await sendUserMessage(sessionId, blocks, clientMessageId, delivery)
 }
 
 // The original input is restored by UUID sidecar metadata; literal markers are never stripped.
@@ -2771,7 +2772,7 @@ export default function App() {
       if (/^\s*\/compact(?:\s|$)/.test(task.payloadRef.text)) run.compacting = true
       if (!guiding) { run.activeInputId = task.messageId; run.phase = { kind: "starting", since: Date.now() } }
       setRunningSessionTurnActive(run, true)
-      try { await sendCliInput(run.runtimeId, blocks, undefined, task.attemptId, guiding) }
+      try { await sendCliInput(run.runtimeId, blocks, undefined, task.attemptId, guiding ? guideDelivery(run.capabilities) : "followup") }
       catch (error) {
         if (task.deliveryState !== "acknowledged" && task.deliveryState !== "responded") {
           if (guiding) throw error // Preserve the current run and its shared file baseline.
@@ -3674,10 +3675,14 @@ export default function App() {
   ].map((owner) => [owner.key, owner])).values()].flatMap((owner) => {
     if (owner.key === activeConversationKey) return []
     const run = owner.runtimeId ? runningSessionsRef.current.get(owner.runtimeId) : undefined
-    const tasks = [...coordinatorRef.current.tasks.values()].filter((task) => task.conversationKey === owner.key && task.deliveryState !== "responded")
+    // Stopped inputs retain their recovery data, but no longer represent
+    // background work or a decision the user still needs to make.
+    const tasks = [...coordinatorRef.current.tasks.values()].filter((task) => task.conversationKey === owner.key
+      && task.deliveryState !== "responded" && task.deliveryState !== "cancelled" && task.runState !== "cancelled"
+      && task.pause?.reason !== "user_stop")
     const attention = (run?.pendingPermissionRequestIds.size ?? 0) > 0
-      || tasks.some((task) => ["paused", "failed", "delivery_unknown", "needs_confirmation", "cancelled"].includes(task.deliveryState)
-        || task.runState === "failed" || task.runState === "cancelled")
+      || tasks.some((task) => ["paused", "failed", "delivery_unknown", "needs_confirmation"].includes(task.deliveryState)
+        || task.runState === "failed")
     const running = !!run?.streaming || tasks.some((task) => task.runState === "running")
     if (!attention && !running && tasks.length === 0) return []
     const sessionId = owner.sessionId ?? findInitSessionId(owner.state)
@@ -3831,6 +3836,11 @@ export default function App() {
       const task = coordinatorRef.current.tasks.get(id)
       const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
       if (run?.midTurnInput && run.streaming && !run.interrupting) coordinatorRef.current.promote(id)
+    },
+    guideImmediate: (id) => {
+      const task = coordinatorRef.current.tasks.get(id)
+      const run = task?.context.owner.runtimeId ? runningSessionsRef.current.get(task.context.owner.runtimeId) : undefined
+      return run?.capabilities.immediateGuide === "supported"
     },
     queueState: (id) => { const task = coordinatorRef.current.tasks.get(id); return task ? coordinatorRef.current.queueState(task.conversationKey) : undefined },
     resume: (id) => { const task = coordinatorRef.current.tasks.get(id); if (task) coordinatorRef.current.resumeQueue(task.conversationKey) },
@@ -4196,6 +4206,7 @@ export default function App() {
                     streaming={streaming || [...coordinatorRef.current.tasks.values()].some((task) => task.conversationKey === activeConversationKey && isActiveInput(task))}
                     interrupting={activeInterrupting}
                     midTurnSupported={!!activeRun?.midTurnInput && !!activeRun.streaming}
+                    immediateGuide={activeRun?.capabilities.immediateGuide === "supported"}
                     disabled={!cliPath || !project}
                     draftKey={activeComposerDraftKey}
                     initialDraft={activeComposerDraft}

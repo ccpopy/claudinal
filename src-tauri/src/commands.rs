@@ -1240,26 +1240,15 @@ pub async fn send_user_message(
     session_id: String,
     content_blocks: Value,
     client_message_id: Option<String>,
-    mid_turn: Option<bool>,
+    delivery: Option<crate::proc::manager::UserDelivery>,
 ) -> Result<()> {
-    if mid_turn == Some(true)
-        && manager
-            .capabilities(Some(&session_id))
-            .await?
-            .mid_turn_input
-            != crate::proc::capabilities::Support::Supported
-    {
-        return Err(Error::Delivery(crate::error::DeliveryError {
-            code: "mid_turn_unverified".into(),
-            phase: "prepare".into(),
-            runtime_id: session_id.clone(),
-            delivery_certainty: "not_sent".into(),
-            os_error_code: None,
-            message: "当前会话尚未确认支持引导，尚未发送".into(),
-        }));
-    }
     manager
-        .send(&session_id, content_blocks, client_message_id)
+        .send(
+            &session_id,
+            content_blocks,
+            client_message_id,
+            delivery.unwrap_or_default(),
+        )
         .await
 }
 
@@ -1526,6 +1515,24 @@ pub struct WorktreeFileDiff {
     pub deletions: u32,
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
+    /// 仅行尾符变化（如 "CRLF → LF"）；此时不生成 hunks，避免整文件 -/+ 噪音。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eol_only: Option<String>,
+    /// 审查预算导致此文件 diff 不完整或未生成。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<FileDiffNotice>,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FileDiffNotice {
+    /// 输出预算用尽：hunks 只含前 `shown_lines` 行，增删计数仍覆盖整个文件。
+    Truncated {
+        #[serde(rename = "shownLines")]
+        shown_lines: u32,
+    },
+    /// 时间预算用尽：未生成 hunks 与计数。
+    TimedOut,
 }
 
 #[derive(Serialize)]
@@ -1534,6 +1541,9 @@ pub struct WorktreeDiff {
     pub is_repo: bool,
     pub files: Vec<WorktreeFileDiff>,
     pub patch_error: Option<String>,
+    /// 预算说明（非读取失败）：哪些文件被截断或未生成 diff。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch_notice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1762,6 +1772,7 @@ pub async fn worktree_diff(cwd: String) -> Result<WorktreeDiff> {
             is_repo: false,
             files: vec![],
             patch_error: None,
+            patch_notice: None,
         });
     }
 
@@ -1838,6 +1849,7 @@ pub async fn worktree_diff(cwd: String) -> Result<WorktreeDiff> {
         is_repo: true,
         files,
         patch_error: None,
+        patch_notice: None,
     })
 }
 
@@ -1947,177 +1959,167 @@ pub(crate) fn review_snapshot_changes_to_diff(
     snapshot_dir: &std::path::Path,
     changes: &[ReviewSnapshotChange],
     control: &ReviewControl,
-) -> (Vec<WorktreeFileDiff>, Option<String>) {
-    if changes.is_empty() {
-        return (Vec::new(), None);
-    }
-
-    let git_available = which::which("git").is_ok();
-    let mut patch_error = if git_available {
-        None
-    } else {
-        Some("未找到 git，无法为无仓库本地文件生成 no-index patch。".to_string())
-    };
-    let empty = snapshot_dir.join("empty");
-    let can_use_git_diff = if git_available {
-        match std::fs::write(&empty, b"") {
-            Ok(()) => true,
-            Err(e) => {
-                record_patch_error(
-                    &mut patch_error,
-                    format!("创建 no-index 空文件失败: {}: {e}", empty.display()),
-                );
-                false
-            }
-        }
-    } else {
-        false
-    };
-
-    let mut files = Vec::new();
+) -> ReviewDiffFiles {
+    let mut files = Vec::with_capacity(changes.len());
+    let mut patch_error = None;
+    let mut budget = crate::review_diff::OutputBudget::default();
     for change in changes {
-        if let Err(reason) = control.check() {
-            record_patch_error(&mut patch_error, reason);
-            files.extend(changes[files.len()..].iter().map(|change| {
-                let binary = change.before.as_ref().is_some_and(|f| f.binary)
-                    || change.after.as_ref().is_some_and(|f| f.binary);
-                review_file_list_only_diff(change, binary)
-            }));
-            break;
-        }
         let binary = change.before.as_ref().is_some_and(|f| f.binary)
             || change.after.as_ref().is_some_and(|f| f.binary);
-        if binary || !can_use_git_diff {
-            push_review_fallback_file_diff(
-                &mut files,
-                &mut patch_error,
-                snapshot_dir,
-                change,
-                binary,
-            );
+        let mut file = review_file_list_only_diff(change, binary);
+        if binary {
+            files.push(file);
             continue;
         }
-
-        let (old_path, new_path, current_tmp) =
-            match review_no_index_paths(snapshot_dir, change, &empty) {
-                Ok(paths) => paths,
-                Err(e) => {
-                    record_patch_error(&mut patch_error, e);
-                    push_review_fallback_file_diff(
-                        &mut files,
-                        &mut patch_error,
-                        snapshot_dir,
-                        change,
-                        false,
-                    );
-                    continue;
-                }
-            };
-        match crate::review_snapshot::git_diff(&old_path, &new_path, control) {
-            Ok(raw) => {
-                let mut parsed = parse_git_patch(&raw);
-                if let Some(mut file) = parsed.pop() {
-                    file.path = change.path.clone();
-                    file.old_path = None;
-                    file.status = change.status.clone();
-                    files.push(file);
+        // Past the deadline only cancellation remains, and the caller
+        // discards cancelled results.
+        if control.check().is_err() {
+            file.notice = Some(FileDiffNotice::TimedOut);
+            files.push(file);
+            continue;
+        }
+        match review_change_diff(snapshot_dir, change, control, &mut budget) {
+            Ok((outcome, eol_only)) => {
+                file.additions = outcome.additions;
+                file.deletions = outcome.deletions;
+                file.binary = outcome.binary;
+                file.hunks = outcome.hunks;
+                file.eol_only = eol_only.map(str::to_string);
+                file.notice = if outcome.timed_out {
+                    Some(FileDiffNotice::TimedOut)
+                } else if outcome.truncated {
+                    Some(FileDiffNotice::Truncated {
+                        shown_lines: outcome.shown_lines,
+                    })
                 } else {
-                    record_patch_error(
-                        &mut patch_error,
-                        format!("git diff --no-index 未返回可解析 patch: {}", change.path),
-                    );
-                    push_review_fallback_file_diff(
-                        &mut files,
-                        &mut patch_error,
-                        snapshot_dir,
-                        change,
-                        false,
-                    );
+                    None
+                };
+            }
+            Err(reason) => {
+                record_patch_error(&mut patch_error, format!("{}: {reason}", change.path))
+            }
+        }
+        files.push(file);
+    }
+    let patch_notice = review_budget_notice(&files);
+    ReviewDiffFiles {
+        files,
+        patch_error,
+        patch_notice,
+    }
+}
+
+pub(crate) struct ReviewDiffFiles {
+    pub files: Vec<WorktreeFileDiff>,
+    /// Real read failures.
+    pub patch_error: Option<String>,
+    /// Output/time budget notices; not failures.
+    pub patch_notice: Option<String>,
+}
+
+fn review_budget_notice(files: &[WorktreeFileDiff]) -> Option<String> {
+    let mut truncated = files.iter().filter_map(|file| match file.notice {
+        Some(FileDiffNotice::Truncated { shown_lines }) => Some((file, shown_lines)),
+        _ => None,
+    });
+    let timed_out = files
+        .iter()
+        .filter(|file| file.notice == Some(FileDiffNotice::TimedOut))
+        .count();
+    let mut notices = Vec::new();
+    if let Some((first, shown_lines)) = truncated.next() {
+        let rest = truncated.count();
+        let mut text = format!(
+            "审查 diff 达到输出预算：{} 仅显示前 {shown_lines} 行",
+            first.path
+        );
+        if rest > 0 {
+            text.push_str(&format!("，另有 {rest} 个文件未完整显示"));
+        }
+        notices.push(text);
+    }
+    if timed_out > 0 {
+        notices.push(format!(
+            "审查 diff 超出时间预算：{timed_out} 个文件未生成 diff，已保留文件列表"
+        ));
+    }
+    (!notices.is_empty()).then(|| notices.join("；"))
+}
+
+fn review_change_diff(
+    snapshot_dir: &std::path::Path,
+    change: &ReviewSnapshotChange,
+    control: &ReviewControl,
+    budget: &mut crate::review_diff::OutputBudget,
+) -> std::result::Result<(crate::review_diff::DiffOutcome, Option<&'static str>), String> {
+    let before = match &change.before {
+        Some(before) => {
+            let path = before.baseline_path.as_ref().ok_or("缺少审查基线文本")?;
+            crate::review_snapshot::bounded_read(
+                &snapshot_dir.join(path),
+                crate::review_snapshot::MAX_FILE_BYTES,
+                Some(control),
+            )
+            .map_err(|error| format!("读取审查基线失败: {error}"))?
+        }
+        None => Vec::new(),
+    };
+    let after = match &change.after {
+        Some(after) => after.content.as_ref().ok_or("缺少审查终点文本")?.as_bytes(),
+        None => &[],
+    };
+    let eol_only = line_ending_only_change(&before, after);
+    let outcome = crate::review_diff::diff_texts(&before, after, control.deadline(), budget);
+    Ok((outcome, eol_only))
+}
+
+/// 两段字节在把 "\r\n" 归一为 "\n" 后相同、但原始字节不同 → 仅行尾符变化。
+/// 返回 "CRLF → LF" / "LF → CRLF" / "混合"。
+pub(crate) fn line_ending_only_change(old: &[u8], new: &[u8]) -> Option<&'static str> {
+    if old == new {
+        return None;
+    }
+    let normalize = |bytes: &[u8]| -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                i += 1;
+                continue;
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        out
+    };
+    if normalize(old) != normalize(new) {
+        return None;
+    }
+    // (CRLF 个数, 裸 LF 个数)
+    let style = |bytes: &[u8]| -> (usize, usize) {
+        let mut crlf = 0;
+        let mut lf = 0;
+        for (i, b) in bytes.iter().enumerate() {
+            if *b == b'\n' {
+                if i > 0 && bytes[i - 1] == b'\r' {
+                    crlf += 1;
+                } else {
+                    lf += 1;
                 }
             }
-            Err(e) => {
-                record_patch_error(&mut patch_error, e);
-                push_review_fallback_file_diff(
-                    &mut files,
-                    &mut patch_error,
-                    snapshot_dir,
-                    change,
-                    false,
-                );
-            }
         }
-        if let Some(path) = current_tmp {
-            if let Err(e) = std::fs::remove_file(&path) {
-                record_patch_error(
-                    &mut patch_error,
-                    format!(
-                        "清理 no-index 当前文件临时副本失败: {}: {e}",
-                        path.display()
-                    ),
-                );
-            }
-        }
+        (crlf, lf)
+    };
+    match (style(old), style(new)) {
+        ((crlf, 0), (0, lf)) if crlf > 0 && lf > 0 => Some("CRLF → LF"),
+        ((0, lf), (crlf, 0)) if crlf > 0 && lf > 0 => Some("LF → CRLF"),
+        _ => Some("混合"),
     }
-    (files, patch_error)
 }
 
 fn record_patch_error(slot: &mut Option<String>, message: String) {
     if slot.is_none() {
         *slot = Some(message);
-    }
-}
-
-fn review_no_index_paths(
-    snapshot_dir: &std::path::Path,
-    change: &ReviewSnapshotChange,
-    empty: &std::path::Path,
-) -> std::result::Result<
-    (
-        std::path::PathBuf,
-        std::path::PathBuf,
-        Option<std::path::PathBuf>,
-    ),
-    String,
-> {
-    let old_path = change
-        .before
-        .as_ref()
-        .and_then(|before| before.baseline_path.as_ref())
-        .map(|rel| snapshot_dir.join(rel))
-        .unwrap_or_else(|| empty.to_path_buf());
-
-    let new_path = if let Some(after) = change.after.as_ref() {
-        let content = after.content.as_ref().ok_or_else(|| {
-            format!(
-                "当前文件没有可生成 no-index patch 的文本内容: {}",
-                change.path
-            )
-        })?;
-        let tmp = snapshot_dir
-            .join("files")
-            .join(format!("current-{}.txt", uuid::Uuid::new_v4()));
-        std::fs::write(&tmp, content.as_bytes())
-            .map_err(|e| format!("写入 no-index 当前文件临时副本失败: {}: {e}", tmp.display()))?;
-        return Ok((old_path, tmp.clone(), Some(tmp)));
-    } else {
-        empty.to_path_buf()
-    };
-    Ok((old_path, new_path, None))
-}
-
-fn push_review_fallback_file_diff(
-    files: &mut Vec<WorktreeFileDiff>,
-    patch_error: &mut Option<String>,
-    snapshot_dir: &std::path::Path,
-    change: &ReviewSnapshotChange,
-    binary: bool,
-) {
-    match review_fallback_file_diff(snapshot_dir, change, binary) {
-        Ok(file) => files.push(file),
-        Err(e) => {
-            record_patch_error(patch_error, e);
-            files.push(review_file_list_only_diff(change, binary));
-        }
     }
 }
 
@@ -2130,133 +2132,8 @@ fn review_file_list_only_diff(change: &ReviewSnapshotChange, binary: bool) -> Wo
         deletions: 0,
         binary,
         hunks: Vec::new(),
-    }
-}
-
-fn review_fallback_file_diff(
-    snapshot_dir: &std::path::Path,
-    change: &ReviewSnapshotChange,
-    binary: bool,
-) -> std::result::Result<WorktreeFileDiff, String> {
-    let (additions, deletions, hunks) = if binary {
-        (0, 0, Vec::new())
-    } else {
-        review_full_file_hunks(snapshot_dir, change)?
-    };
-    Ok(WorktreeFileDiff {
-        path: change.path.clone(),
-        old_path: None,
-        status: change.status.clone(),
-        additions,
-        deletions,
-        binary,
-        hunks,
-    })
-}
-
-fn review_full_file_hunks(
-    snapshot_dir: &std::path::Path,
-    change: &ReviewSnapshotChange,
-) -> std::result::Result<(u32, u32, Vec<DiffHunk>), String> {
-    // A replacement fallback can otherwise allocate one String per tiny line.
-    // Keep the file list when the frozen text is too dense for a bounded patch.
-    const MAX_FALLBACK_LINES: usize = 20_000;
-    if change
-        .after
-        .as_ref()
-        .and_then(|file| file.content.as_ref())
-        .is_some_and(|content| {
-            content.lines().take(MAX_FALLBACK_LINES + 1).count() > MAX_FALLBACK_LINES
-        })
-    {
-        return Err("审查 diff 超过行数预算，保留文件列表".into());
-    }
-    if let Some(path) = change
-        .before
-        .as_ref()
-        .and_then(|file| file.baseline_path.as_ref())
-    {
-        let content = std::fs::read_to_string(snapshot_dir.join(path))
-            .map_err(|error| format!("读取审查基线文本失败: {error}"))?;
-        if content.lines().take(MAX_FALLBACK_LINES + 1).count() > MAX_FALLBACK_LINES {
-            return Err("审查 diff 超过行数预算，保留文件列表".into());
-        }
-    }
-    match (&change.before, &change.after) {
-        (None, Some(after)) => {
-            let Some(content) = after.content.as_ref() else {
-                return Ok((0, 0, Vec::new()));
-            };
-            let lines = text_lines(content);
-            let additions = lines.len() as u32;
-            let hunks = if additions == 0 {
-                Vec::new()
-            } else {
-                vec![DiffHunk {
-                    old_start: 0,
-                    old_lines: 0,
-                    new_start: 1,
-                    new_lines: additions,
-                    lines: lines.into_iter().map(|line| format!("+{line}")).collect(),
-                }]
-            };
-            Ok((additions, 0, hunks))
-        }
-        (Some(before), None) => {
-            let Some(baseline) = before.baseline_path.as_ref() else {
-                return Ok((0, 0, Vec::new()));
-            };
-            let path = snapshot_dir.join(baseline);
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| format!("读取审查基线文本失败: {}: {e}", path.display()))?;
-            let lines = text_lines(&content);
-            let deletions = lines.len() as u32;
-            let hunks = if deletions == 0 {
-                Vec::new()
-            } else {
-                vec![DiffHunk {
-                    old_start: 1,
-                    old_lines: deletions,
-                    new_start: 0,
-                    new_lines: 0,
-                    lines: lines.into_iter().map(|line| format!("-{line}")).collect(),
-                }]
-            };
-            Ok((0, deletions, hunks))
-        }
-        (Some(before), Some(after)) => {
-            let Some(baseline) = before.baseline_path.as_ref() else {
-                return Ok((0, 0, Vec::new()));
-            };
-            let Some(after_content) = after.content.as_ref() else {
-                return Ok((0, 0, Vec::new()));
-            };
-            let baseline_path = snapshot_dir.join(baseline);
-            let before_content = std::fs::read_to_string(&baseline_path)
-                .map_err(|e| format!("读取审查基线文本失败: {}: {e}", baseline_path.display()))?;
-            let before_lines = text_lines(&before_content);
-            let after_lines = text_lines(after_content);
-            let deletions = before_lines.len() as u32;
-            let additions = after_lines.len() as u32;
-            let lines = before_lines
-                .into_iter()
-                .map(|line| format!("-{line}"))
-                .chain(after_lines.into_iter().map(|line| format!("+{line}")))
-                .collect::<Vec<_>>();
-            let hunks = if lines.is_empty() {
-                Vec::new()
-            } else {
-                vec![DiffHunk {
-                    old_start: 1,
-                    old_lines: deletions,
-                    new_start: 1,
-                    new_lines: additions,
-                    lines,
-                }]
-            };
-            Ok((additions, deletions, hunks))
-        }
-        (None, None) => Ok((0, 0, Vec::new())),
+        eol_only: None,
+        notice: None,
     }
 }
 
@@ -2823,7 +2700,7 @@ fn parse_git_status_z(raw: &str) -> Vec<GitStatusEntry> {
     out
 }
 
-fn parse_git_patch(raw: &str) -> Vec<WorktreeFileDiff> {
+pub(crate) fn parse_git_patch(raw: &str) -> Vec<WorktreeFileDiff> {
     let mut files = Vec::new();
     let mut current: Option<WorktreeFileDiff> = None;
     let mut current_hunk: Option<DiffHunk> = None;
@@ -2841,6 +2718,8 @@ fn parse_git_patch(raw: &str) -> Vec<WorktreeFileDiff> {
                 deletions: 0,
                 binary: false,
                 hunks: Vec::new(),
+                eol_only: None,
+                notice: None,
             });
             continue;
         }
@@ -2992,6 +2871,8 @@ fn untracked_file_diff(root: &std::path::Path, rel: &str) -> Option<WorktreeFile
             deletions: 0,
             binary: true,
             hunks: Vec::new(),
+            eol_only: None,
+            notice: None,
         });
     }
     let content = String::from_utf8(bytes).ok()?;
@@ -3019,6 +2900,8 @@ fn untracked_file_diff(root: &std::path::Path, rel: &str) -> Option<WorktreeFile
         deletions: 0,
         binary: false,
         hunks,
+        eol_only: None,
+        notice: None,
     })
 }
 
@@ -3718,6 +3601,241 @@ index 1111111..2222222 100644
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].additions, 1);
         assert_eq!(files[0].deletions, 1);
+    }
+
+    #[test]
+    fn line_ending_only_change_detects_eol_direction() {
+        assert_eq!(
+            line_ending_only_change(b"a\r\nb\r\n", b"a\nb\n"),
+            Some("CRLF → LF")
+        );
+        assert_eq!(
+            line_ending_only_change(b"a\nb\n", b"a\r\nb\r\n"),
+            Some("LF → CRLF")
+        );
+        assert_eq!(
+            line_ending_only_change(b"a\r\nb\n", b"a\nb\r\n"),
+            Some("混合")
+        );
+        assert_eq!(
+            line_ending_only_change(b"a\r\nb", b"a\nb"),
+            Some("CRLF → LF")
+        );
+        // 相同字节、内容变化、裸 CR 都不算行尾符变化
+        assert_eq!(line_ending_only_change(b"a\nb\n", b"a\nb\n"), None);
+        assert_eq!(line_ending_only_change(b"a\r\nb\r\n", b"a\nc\n"), None);
+        assert_eq!(line_ending_only_change(b"a\r", b"a"), None);
+        assert_eq!(line_ending_only_change(b"", b""), None);
+    }
+
+    #[test]
+    fn review_snapshot_diff_reports_eol_only_without_hunks() {
+        let dir =
+            std::env::temp_dir().join(format!("claudinal-eol-only-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        std::fs::write(dir.join("files").join("a.txt"), "one\r\ntwo\r\n").unwrap();
+        let change = ReviewSnapshotChange {
+            path: "a.txt".into(),
+            status: "M".into(),
+            before: Some(ReviewSnapshotFile {
+                path: "a.txt".into(),
+                size: 10,
+                modified_ms: 1,
+                hash: 1,
+                binary: false,
+                baseline_path: Some("files/a.txt".into()),
+            }),
+            after: Some(ReviewCurrentFile {
+                size: 8,
+                hash: 2,
+                binary: false,
+                content: Some("one\ntwo\n".into()),
+            }),
+        };
+        let control = ReviewControl::new(
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::time::Duration::from_secs(3),
+        );
+        let files = review_snapshot_changes_to_diff(&dir, &[change], &control).files;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].eol_only.as_deref(), Some("CRLF → LF"));
+        assert!(files[0].hunks.is_empty());
+        assert_eq!(files[0].additions, 0);
+        assert_eq!(files[0].deletions, 0);
+    }
+
+    #[test]
+    fn review_snapshot_diff_preserves_completed_hunks_when_a_baseline_is_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "claudinal-frozen-diff-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let baseline = |path: &str| ReviewSnapshotFile {
+            path: path.into(),
+            size: 4,
+            modified_ms: 0,
+            hash: 1,
+            binary: false,
+            baseline_path: Some(path.into()),
+        };
+        let current = |text: &str| ReviewCurrentFile {
+            size: text.len() as u64,
+            hash: 2,
+            binary: false,
+            content: Some(text.into()),
+        };
+        std::fs::write(dir.join("modify.txt"), b"old\n").unwrap();
+        std::fs::write(dir.join("delete.txt"), b"gone\n").unwrap();
+        let changes = vec![
+            ReviewSnapshotChange {
+                path: "modify.txt".into(),
+                status: "M".into(),
+                before: Some(baseline("modify.txt")),
+                after: Some(current("new\n")),
+            },
+            ReviewSnapshotChange {
+                path: "missing.txt".into(),
+                status: "M".into(),
+                before: Some(baseline("missing.txt")),
+                after: Some(current("new\n")),
+            },
+            ReviewSnapshotChange {
+                path: "add.txt".into(),
+                status: "A".into(),
+                before: None,
+                after: Some(current("added")),
+            },
+            ReviewSnapshotChange {
+                path: "delete.txt".into(),
+                status: "D".into(),
+                before: Some(baseline("delete.txt")),
+                after: None,
+            },
+        ];
+        let control = ReviewControl::new(
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::time::Duration::from_secs(10),
+        );
+        let ReviewDiffFiles {
+            files,
+            patch_error: error,
+            patch_notice,
+        } = review_snapshot_changes_to_diff(&dir, &changes, &control);
+        let baseline_bytes = std::fs::read(dir.join("modify.txt")).unwrap();
+        let entries = std::fs::read_dir(&dir).unwrap().count();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(baseline_bytes, b"old\n");
+        assert_eq!(entries, 2, "diff must not write temporary copies");
+        assert_eq!(files.len(), changes.len());
+        assert_eq!(files[0].hunks[0].lines, ["-old", "+new"]);
+        assert!(
+            files[1].hunks.is_empty(),
+            "missing baseline must not become an invented replacement"
+        );
+        assert_eq!((files[2].additions, files[2].deletions), (1, 0));
+        assert_eq!((files[3].additions, files[3].deletions), (0, 1));
+        assert!(error.unwrap().contains("missing.txt"));
+        assert!(patch_notice.is_none());
+        assert!(files.iter().all(|file| file.notice.is_none()));
+    }
+
+    #[test]
+    fn review_snapshot_diff_reports_time_and_output_limits_separately() {
+        let added = |path: &str, lines: usize| ReviewSnapshotChange {
+            path: path.into(),
+            status: "A".into(),
+            before: None,
+            after: Some(ReviewCurrentFile {
+                size: (lines * 2) as u64,
+                hash: 2,
+                binary: false,
+                content: Some("x\n".repeat(lines)),
+            }),
+        };
+        let changes = vec![added("dense.txt", 60_000), added("later.txt", 3)];
+        let control = |duration| {
+            ReviewControl::new(
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                duration,
+            )
+        };
+        // Added files need no baseline directory at all.
+        let path = std::path::Path::new("unused-review-baseline");
+        let result = review_snapshot_changes_to_diff(
+            path,
+            &changes,
+            &control(std::time::Duration::from_secs(10)),
+        );
+        let files = &result.files;
+        assert_eq!(files[0].additions, 60_000);
+        assert_eq!(files[0].hunks[0].new_lines, 50_000);
+        assert_eq!(
+            files[0].notice,
+            Some(FileDiffNotice::Truncated {
+                shown_lines: 50_000
+            })
+        );
+        assert!(files[1].notice.is_none());
+        assert!(result.patch_error.is_none());
+        assert_eq!(
+            result.patch_notice.as_deref(),
+            Some("审查 diff 达到输出预算：dense.txt 仅显示前 50000 行")
+        );
+        let value = serde_json::to_value(&files[0]).unwrap();
+        assert_eq!(
+            value["notice"],
+            serde_json::json!({"kind": "truncated", "shownLines": 50_000})
+        );
+        assert!(serde_json::to_value(&files[1])
+            .unwrap()
+            .get("notice")
+            .is_none());
+
+        let result =
+            review_snapshot_changes_to_diff(path, &changes, &control(std::time::Duration::ZERO));
+        assert_eq!(result.files.len(), 2);
+        for file in &result.files {
+            assert!(file.hunks.is_empty(), "{}", file.path);
+            assert_eq!((file.additions, file.deletions), (0, 0), "{}", file.path);
+            assert_eq!(file.notice, Some(FileDiffNotice::TimedOut), "{}", file.path);
+        }
+        assert!(result.patch_error.is_none());
+        assert_eq!(
+            result.patch_notice.as_deref(),
+            Some("审查 diff 超出时间预算：2 个文件未生成 diff，已保留文件列表")
+        );
+        assert_eq!(
+            serde_json::to_value(&result.files[0]).unwrap()["notice"],
+            serde_json::json!({"kind": "timed_out"})
+        );
+    }
+
+    #[test]
+    fn review_budget_notice_names_the_first_truncated_file_and_counts_the_rest() {
+        let file = |path: &str, notice| WorktreeFileDiff {
+            path: path.into(),
+            old_path: None,
+            status: "M".into(),
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            hunks: Vec::new(),
+            eol_only: None,
+            notice,
+        };
+        let files = [
+            file("a.rs", None),
+            file("b.rs", Some(FileDiffNotice::Truncated { shown_lines: 12 })),
+            file("c.rs", Some(FileDiffNotice::Truncated { shown_lines: 0 })),
+            file("d.rs", Some(FileDiffNotice::TimedOut)),
+        ];
+        assert_eq!(
+            review_budget_notice(&files).as_deref(),
+            Some("审查 diff 达到输出预算：b.rs 仅显示前 12 行，另有 1 个文件未完整显示；审查 diff 超出时间预算：1 个文件未生成 diff，已保留文件列表")
+        );
+        assert!(review_budget_notice(&files[..1]).is_none());
     }
 
     #[test]

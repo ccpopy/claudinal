@@ -34,7 +34,9 @@ export class RunReviewLifecycle {
   private freezing?: ReviewRound
   private rounds = new Map<string, ReviewRound>()
   constructor(private cwd: string, private adapter: RunReviewAdapter,
-    private budgets = { captureMs: 500, finishMs: 3500 }) {}
+    // Native diff gets 10 s, including semaphore wait. Allow its result and
+    // snapshot cleanup to arrive before expiring the frontend owner.
+    private budgets = { captureMs: 500, finishMs: 12_000 }) {}
   private async bounded<T>(work: Promise<T>, ms: number): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try { return await Promise.race([work, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error("文件审查超过准备预算")), ms) })]) }
@@ -126,7 +128,7 @@ export class RunReviewLifecycle {
       const reviewState = diff.reviewState === "ready" && round.status.state === "partial" ? "partial" : diff.reviewState
       this.update(round, reviewState, reason)
       this.adapter.publish({ id: round.id, createdAt: round.createdAt, diff: { ...diff, reviewState, reviewReason: reason,
-        patchError: [diff.patchError, reviewState !== "ready" ? reason : null].filter(Boolean).join("；") || null } })
+        patchError: [diff.patchError, reviewState !== "ready" && reason !== diff.patchNotice ? reason : null].filter(Boolean).join("；") || null } })
     } catch (error) {
       if (!round.cancelled) {
         this.update(round, "unavailable", String(error))

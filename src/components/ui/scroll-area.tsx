@@ -5,12 +5,15 @@ import { cn } from "@/lib/utils"
 type ScrollAreaProps = React.ComponentProps<typeof ScrollAreaPrimitive.Root> & {
   viewportClassName?: string
   scrollbarOrientation?: "vertical" | "horizontal" | "both"
+  /** 局部覆盖滚动条 thumb 样式（如 diff 横向滚动需要更醒目的 thumb）。 */
+  thumbClassName?: string
 }
 
 function ScrollArea({
   className,
   viewportClassName,
   scrollbarOrientation = "vertical",
+  thumbClassName,
   children,
   ...props
 }: ScrollAreaProps) {
@@ -30,10 +33,10 @@ function ScrollArea({
         {children}
       </ScrollAreaPrimitive.Viewport>
       {(scrollbarOrientation === "vertical" || scrollbarOrientation === "both") && (
-        <ScrollBar />
+        <ScrollBar thumbClassName={thumbClassName} />
       )}
       {(scrollbarOrientation === "horizontal" || scrollbarOrientation === "both") && (
-        <ScrollBar orientation="horizontal" />
+        <ScrollBar orientation="horizontal" thumbClassName={thumbClassName} />
       )}
       <ScrollAreaPrimitive.Corner />
     </ScrollAreaPrimitive.Root>
@@ -43,8 +46,11 @@ function ScrollArea({
 function ScrollBar({
   className,
   orientation = "vertical",
+  thumbClassName,
   ...props
-}: React.ComponentProps<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>) {
+}: React.ComponentProps<typeof ScrollAreaPrimitive.ScrollAreaScrollbar> & {
+  thumbClassName?: string
+}) {
   return (
     <ScrollAreaPrimitive.ScrollAreaScrollbar
       data-slot="scroll-area-scrollbar"
@@ -59,7 +65,7 @@ function ScrollBar({
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="bg-border rounded-full relative flex-1"
+        className={cn("bg-border rounded-full relative flex-1", thumbClassName)}
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )
