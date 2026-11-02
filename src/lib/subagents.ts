@@ -1,5 +1,5 @@
 import type { ClaudeEvent } from "@/types/events"
-import { isTaskNotificationEvent } from "./messageOrigin"
+import { isTaskNotificationEvent, queuedCommandPrompt } from "./messageOrigin"
 
 export type SubagentStatus = "running" | "completed" | "failed" | "cancelled" | "unknown"
 
@@ -101,6 +101,8 @@ function stringValue(value: unknown): string | undefined {
 function eventText(event: ClaudeEvent): string {
   const obj = event as Record<string, unknown>
   if (typeof obj.content === "string") return obj.content
+  const queued = queuedCommandPrompt(obj)
+  if (queued !== undefined) return queued
   const message = recordOf(obj.message)
   const content = message?.content
   if (typeof content === "string") return content
@@ -560,10 +562,12 @@ export function reduceSubagentRegistry(
     const index = current.agents.findIndex((agent) => agent.id === notification.taskId)
     if (index >= 0) {
       const previous = current.agents[index]
-      if (runIsLate(previous, stringValue(recordOf(obj.origin)?.runId))) {
+      // A mid-turn delivery is a queued_command attachment carrying its own origin.
+      const origin = recordOf(obj.origin) ?? recordOf(recordOf(obj.attachment)?.origin)
+      if (runIsLate(previous, stringValue(origin?.runId))) {
         return { registry: current, changed: false, resultDisposition: "none" }
       }
-      const delivered = type === "user"
+      const delivered = type === "user" || type === "attachment"
       const queued = type === "queue-operation" && obj.operation === "enqueue"
       const status = notification.status ?? previous.status
       const endedAt = status === "running" || status === "unknown" ? undefined : (previous.endedAt ?? ts)

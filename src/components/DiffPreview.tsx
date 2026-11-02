@@ -96,7 +96,7 @@ export function UnifiedDiff({
   return (
     <div
       className={cn(
-        "overflow-clip rounded-md border",
+        "isolate overflow-clip rounded-md border",
         wrapLines ? "bg-muted/20" : cn("min-w-max", DIFF_SURFACE_BG)
       )}
     >
@@ -310,7 +310,7 @@ function CreatedFilePreview({
   return (
     <div
       className={cn(
-        "overflow-clip rounded-md border border-connected/20",
+        "isolate overflow-clip rounded-md border border-connected/20",
         wrapLines ? "bg-connected/5" : cn("min-w-max", CREATED_SURFACE_BG)
       )}
     >

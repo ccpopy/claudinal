@@ -128,6 +128,37 @@ function parseReviewFileDiff(value: unknown, label: string): WorktreeFileDiff {
   }
 }
 
+/** Coverage and budget notes from review_snapshot.rs / commands.rs: they limit scope, they are not read failures. */
+const REVIEW_COVERAGE_NOTES = new Set([
+  "起点或终点枚举不完整，仅审查已覆盖文件",
+  "Git 候选枚举达到时间或输出预算",
+  "Git 候选枚举达到条目预算",
+  "审查候选文件达到数量预算",
+  "审查目录深度达到预算",
+  "审查枚举达到数量预算",
+  "基线准备时文件消失，已排除该文件",
+  "审查准备达到时间预算，覆盖范围不完整",
+  "审查读取达到文件数量预算",
+  "审查跳过超过单文件预算的文件",
+  "审查读取达到总字节预算",
+  // Former git_diff truncation message, stored by older versions inside patchError.
+  "审查 diff 达到时间或输出预算，保留文件列表"
+])
+const REVIEW_BUDGET_NOTICE_PREFIXES = ["审查 diff 达到输出预算", "审查 diff 超出时间预算"]
+
+function isReviewCoverageNote(segment: string): boolean {
+  return REVIEW_COVERAGE_NOTES.has(segment) || REVIEW_BUDGET_NOTICE_PREFIXES.some((prefix) => segment.startsWith(prefix))
+}
+
+/** Records written before patchNotice existed folded coverage notes into patchError. */
+function splitLegacyPatchError(patchError: string | null): { patchError: string | null; patchNotice: string | null } {
+  const segments = patchError?.split("；").map((segment) => segment.trim()).filter(Boolean) ?? []
+  return {
+    patchError: segments.filter((segment) => !isReviewCoverageNote(segment)).join("；") || null,
+    patchNotice: segments.filter(isReviewCoverageNote).join("；") || null
+  }
+}
+
 function parseReviewDiff(value: unknown, label: string): ReviewRunDiff["diff"] {
   const record = recordFromUnknown(value, label)
   const files = record.files
@@ -138,7 +169,11 @@ function parseReviewDiff(value: unknown, label: string): ReviewRunDiff["diff"] {
   }
   const state = ["pending", "ready", "partial", "unavailable"].includes(String(record.reviewState)) ? record.reviewState as ReviewRunDiff["diff"]["reviewState"] : undefined
   const interrupted = state === "pending"
-  const patchNotice = interrupted ? null : optionalStringField(record, "patchNotice", label)
+  const storedNotice = interrupted ? null : optionalStringField(record, "patchNotice", label)
+  // 0.7.2 can store coverage in patchError alongside a budget patchNotice.
+  // Normalize the error independently so that mixed records are repaired too.
+  const { patchError: storedError, patchNotice: legacyNotice } = splitLegacyPatchError(patchError ?? null)
+  const patchNotice = interrupted ? null : [...new Set([storedNotice, legacyNotice].filter(Boolean))].join("；") || null
   const reason = interrupted ? "上次文件审查未完成，轮次位置已保留" : optionalStringField(record, "reviewReason", label)
   const metrics = <T,>(value: unknown, keys: string[]): T | undefined => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
@@ -152,7 +187,7 @@ function parseReviewDiff(value: unknown, label: string): ReviewRunDiff["diff"] {
     files: files.map((file, index) =>
       parseReviewFileDiff(file, `${label}.files[${index}]`)
     ),
-    patchError: interrupted ? reason : patchError ?? null,
+    patchError: interrupted ? reason : storedError,
     reviewState: interrupted ? "unavailable" : state,
     reviewReason: reason,
     timings: metrics(record.timings, ["enumerationMs", "readMs", "hashMs", "writeMs", "totalMs", "freezeMs", "diffMs"]),

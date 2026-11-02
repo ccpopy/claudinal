@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
   Check,
+  CircleAlert,
   Columns2,
   ClipboardCopy,
   FileEdit,
@@ -65,7 +66,7 @@ interface Props {
   onRefresh?: () => void
 }
 
-type SourceFilter = "all" | FileChange["source"]
+export type SourceFilter = "all" | FileChange["source"]
 
 const SOURCE_LABEL: Record<FileChange["source"], string> = {
   session: "本轮",
@@ -77,6 +78,59 @@ const SOURCE_LABEL: Record<FileChange["source"], string> = {
 function reviewLabel(index: number, total: number): string {
   if (index === total - 1) return "上轮对话"
   return `第 ${index + 1} 轮对话`
+}
+
+export interface ReviewLevelMessages {
+  errors: string[]
+  notices: string[]
+}
+
+/**
+ * 轮次级提示（快照读取失败、覆盖率 / 预算说明、工作树 diff 失败）只跟随贡献当前过滤的来源：
+ * 快照轮次对应「快照」，工作树 diff 对应「工作树」与其失败时回落的「状态」。多轮相同文案去重。
+ */
+export function reviewLevelMessages(
+  filter: SourceFilter,
+  snapshotDiffs: WorktreeDiff[] | undefined,
+  worktreeDiffError: string | null | undefined
+): ReviewLevelMessages {
+  const errors = new Set<string>()
+  const notices = new Set<string>()
+  if ((filter === "all" || filter === "git" || filter === "status") && worktreeDiffError) {
+    errors.add(worktreeDiffError)
+  }
+  if (filter === "all" || filter === "snapshot") {
+    for (const diff of snapshotDiffs ?? []) {
+      if (diff.patchError) errors.add(diff.patchError)
+      if (diff.patchNotice) notices.add(diff.patchNotice)
+    }
+  }
+  return { errors: [...errors], notices: [...notices] }
+}
+
+export function ReviewMessagesIndicator({ messages }: { messages: ReviewLevelMessages }) {
+  const { errors, notices } = messages
+  if (errors.length === 0 && notices.length === 0) return null
+  const isError = errors.length > 0
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs transition-colors hover:bg-accent",
+            isError ? "text-destructive" : "text-muted-foreground"
+          )}
+        >
+          <CircleAlert className="size-3.5 shrink-0" />
+          {isError ? "部分 diff 读取失败" : "部分 diff 未显示"}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[360px] whitespace-pre-line">
+        {[...errors, ...notices].join("\n")}
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 async function copyToClipboard(text: string, kind: string) {
@@ -180,24 +234,10 @@ export function DiffOverview({
 
   const safeActiveIdx = Math.min(activeIdx, Math.max(changes.length - 1, 0))
   const active = changes[safeActiveIdx]
-  const snapshotPatchError = snapshotDiffs?.find((diff) => diff.patchError)?.patchError
-  const patchError = worktreeDiffError ?? snapshotPatchError ?? null
-  const patchNotice = snapshotDiffs?.find((diff) => diff.patchNotice)?.patchNotice ?? null
-
-  const copyActivePath = () => {
-    if (!active) return
-    void copyToClipboard(active.path, "文件路径")
-  }
-
-  const copyActivePatch = () => {
-    if (!active) return
-    const patch = formatHunksAsPatch(active)
-    if (!patch) {
-      toast.warning("当前文件没有可复制的 patch")
-      return
-    }
-    void copyToClipboard(patch, "patch")
-  }
+  const reviewMessages = useMemo(
+    () => reviewLevelMessages(filter, snapshotDiffs, worktreeDiffError),
+    [filter, snapshotDiffs, worktreeDiffError]
+  )
 
   const copyAllPatches = async () => {
     if (changes.length === 0) return
@@ -271,6 +311,7 @@ export function DiffOverview({
                 setActiveIdx(0)
               }}
             />
+            <ReviewMessagesIndicator messages={reviewMessages} />
           </div>
           <div className="flex items-center gap-1">
             <Tooltip>
@@ -379,8 +420,8 @@ export function DiffOverview({
           <div className="flex-1 grid place-items-center px-6 text-center text-muted-foreground text-sm">
             {worktreeDiffLoading
               ? "正在读取文件 diff…"
-              : patchError
-                ? `读取文件 diff 失败：${patchError}`
+              : reviewMessages.errors.length > 0
+                ? `读取文件 diff 失败：${reviewMessages.errors.join("；")}`
                 : allChanges.length > 0
                   ? `当前过滤（${SOURCE_LABEL[filter as FileChange["source"]] ?? "全部"}）下没有文件变更`
                   : "当前会话没有文件变更"}
@@ -459,82 +500,14 @@ export function DiffOverview({
               thumbClassName={wrapLines ? undefined : DIFF_SCROLL_THUMB}
             >
               {active && (
-                <div className="p-3 space-y-2">
-                  {(worktreeDiffLoading || patchError) && (
-                    <div
-                      className={cn(
-                        "rounded-md border px-3 py-2 text-xs",
-                        patchError
-                          ? "border-destructive/25 bg-destructive/5 text-destructive"
-                          : "bg-muted/30 text-muted-foreground"
-                      )}
-                    >
-                      {patchError
-                        ? `读取 patch 失败：${patchError}`
-                        : "正在读取最新文件 diff…"}
-                    </div>
-                  )}
-                  {patchNotice && (
-                    <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                      {patchNotice}
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between gap-2">
-                    <LocalFileContextMenu path={active.path} cwd={cwd} source={active.source === "git" ? "git" : "tool"}>
-                      <div className="min-w-0 text-xs font-mono text-muted-foreground break-all">
-                        {active.path}
-                        {active.oldPath && active.oldPath !== active.path && (
-                          <span> ← {active.oldPath}</span>
-                        )}
-                      </div>
-                    </LocalFileContextMenu>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="size-7 text-muted-foreground"
-                            onClick={copyActivePath}
-                            aria-label="复制文件路径"
-                          >
-                            <FileText className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom">复制文件路径</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="size-7 text-muted-foreground"
-                            onClick={copyActivePatch}
-                            aria-label="复制此文件的 patch"
-                            disabled={
-                              active.binary ||
-                              (active.hunks.length === 0 &&
-                                !(active.kind === "create" && active.content))
-                            }
-                          >
-                            <ClipboardCopy className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom">
-                          复制当前文件 patch
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </div>
-                  <FileDiffPreview
-                    change={active}
-                    viewMode={viewMode}
-                    wrapLines={wrapLines}
-                    richMarkdown={richMarkdown}
-                  />
-                </div>
+                <DiffFilePane
+                  active={active}
+                  cwd={cwd}
+                  loading={worktreeDiffLoading}
+                  viewMode={viewMode}
+                  wrapLines={wrapLines}
+                  richMarkdown={richMarkdown}
+                />
               )}
             </ScrollArea>
           </div>
@@ -542,6 +515,101 @@ export function DiffOverview({
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
+  )
+}
+
+/** 单文件 diff 区域：只展示文件级提示（行尾符 / 截断 / 超时由 FileDiffPreview 负责），轮次级提示在头部汇总。 */
+export function DiffFilePane({
+  active,
+  cwd,
+  loading,
+  viewMode,
+  wrapLines,
+  richMarkdown
+}: {
+  active: FileChange
+  cwd?: string | null
+  loading?: boolean
+  viewMode: DiffViewMode
+  wrapLines: boolean
+  richMarkdown: boolean
+}) {
+  const copyActivePath = () => {
+    void copyToClipboard(active.path, "文件路径")
+  }
+
+  const copyActivePatch = () => {
+    const patch = formatHunksAsPatch(active)
+    if (!patch) {
+      toast.warning("当前文件没有可复制的 patch")
+      return
+    }
+    void copyToClipboard(patch, "patch")
+  }
+
+  return (
+    <div className="p-3 space-y-2">
+      {loading && (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          正在读取最新文件 diff…
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <LocalFileContextMenu path={active.path} cwd={cwd} source={active.source === "git" ? "git" : "tool"}>
+          <div className="min-w-0 text-xs font-mono text-muted-foreground break-all">
+            {active.path}
+            {active.oldPath && active.oldPath !== active.path && (
+              <span> ← {active.oldPath}</span>
+            )}
+          </div>
+        </LocalFileContextMenu>
+        <div className="flex shrink-0 items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7 text-muted-foreground"
+                onClick={copyActivePath}
+                aria-label="复制文件路径"
+              >
+                <FileText className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">复制文件路径</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7 text-muted-foreground"
+                onClick={copyActivePatch}
+                aria-label="复制此文件的 patch"
+                disabled={
+                  active.binary ||
+                  (active.hunks.length === 0 &&
+                    !(active.kind === "create" && active.content))
+                }
+              >
+                <ClipboardCopy className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              复制当前文件 patch
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+      <FileDiffPreview
+        change={active}
+        viewMode={viewMode}
+        wrapLines={wrapLines}
+        richMarkdown={richMarkdown}
+      />
+    </div>
   )
 }
 

@@ -127,8 +127,11 @@ export class RunReviewLifecycle {
       const reason = diff.reviewReason ?? round.status.reason
       const reviewState = diff.reviewState === "ready" && round.status.state === "partial" ? "partial" : diff.reviewState
       this.update(round, reviewState, reason)
+      // A partial reason describes coverage or budget scope; only the diff's own error is a read failure.
+      const coverage = reviewState !== "ready" && reason !== diff.patchError && reason !== diff.patchNotice ? reason : null
       this.adapter.publish({ id: round.id, createdAt: round.createdAt, diff: { ...diff, reviewState, reviewReason: reason,
-        patchError: [diff.patchError, reviewState !== "ready" && reason !== diff.patchNotice ? reason : null].filter(Boolean).join("；") || null } })
+        patchError: diff.patchError || null,
+        patchNotice: [diff.patchNotice, coverage].filter(Boolean).join("；") || null } })
     } catch (error) {
       if (!round.cancelled) {
         this.update(round, "unavailable", String(error))

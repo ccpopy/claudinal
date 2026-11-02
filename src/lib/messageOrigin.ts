@@ -21,9 +21,21 @@ export function markAuthoredEvent(event: ClaudeEvent, entries: readonly UIEntry[
     ...(text !== undefined ? { claudinalAuthoredText: text } : {}) } : event
 }
 
+/** A mid-turn delivery of a queued input is recorded as a queued_command attachment. */
+export function queuedCommandPrompt(event: Record<string, unknown>): string | undefined {
+  const attachment = event.attachment as { type?: unknown; prompt?: unknown } | undefined
+  return event.type === "attachment" && attachment?.type === "queued_command" && typeof attachment.prompt === "string"
+    ? attachment.prompt : undefined
+}
+
+function isQueuedTaskNotification(event: Record<string, unknown>): boolean {
+  return queuedCommandPrompt(event) !== undefined
+    && (event.attachment as { commandMode?: unknown }).commandMode === "task-notification"
+}
+
 export function eventUserText(event: Record<string, unknown>): string {
   const message = event.message as { content?: unknown } | undefined
-  const content = message?.content ?? event.content
+  const content = message?.content ?? event.content ?? queuedCommandPrompt(event)
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
   return content.filter((block) => block?.type === "text" && typeof block.text === "string")
@@ -61,7 +73,7 @@ export function isTaskNotificationEvent(
   const text = eventUserText(event).trim()
   if (event.type === "user" && ORIGIN_CATEGORIES[originKind(event)] === "task") return true
   if (!/^<task-notification>[\s\S]*?<\/task-notification>(?:\s|$)/i.test(text)) return false
-  if (event.type === "queue-operation") return true
+  if (event.type === "queue-operation" || isQueuedTaskNotification(event)) return true
   if (event.type !== "user") return false
   if (hasInjectedProvenance(event)) return true
   const note = parseTaskNotification(text)

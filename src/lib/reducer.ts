@@ -3,7 +3,7 @@ import type { UIBlock, UIEntry, UIMessage } from "../types/ui"
 import { decodeCliCommandEnvelope } from "./commandRegistry"
 import { splitUploadedFileText } from "./fileAttachments"
 import { parseSkillContent, skillLoadFromEvent, SKILL_META_PROMPT_PREFIX } from "./skillContent"
-import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, userActivityCategory } from "./messageOrigin"
+import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, queuedCommandPrompt, userActivityCategory } from "./messageOrigin"
 import {
   initSubagentRegistry,
   isForwardedSubagentEvent,
@@ -128,7 +128,8 @@ export function reduce(state: State, action: Action): State {
       const t = (ev as { type?: string }).type
       // queue-operation 本身不进入消息流，但其中的 task-notification
       // 是异步 Agent 生命周期的权威完成信号，必须先归一后再隐藏。
-      if (t === "queue-operation") {
+      // queued_command 附件是通知在回合中途送达的记录；reduceAttachment 会隐藏它。
+      if (t === "queue-operation" || queuedCommandPrompt(ev as Record<string, unknown>) !== undefined) {
         s = reduceEvent(s, ev)
         continue
       }
