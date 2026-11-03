@@ -38,6 +38,15 @@ export function isBackgroundBatchReceipt(event: unknown): boolean {
     && (value.terminal_reason === undefined || value.terminal_reason === "completed")
     && eventInputIds(value)?.length === 0
 }
+
+/** A successful CLI stage can end before a written guide is consumed. */
+export function continuedGuideIds(event: Record<string, unknown>, guides: readonly { id: string; attemptId: string }[]): string[] {
+  if (event.type !== "result" || event.is_error === true || event.stop_reason === "max_tokens"
+    || ["interrupted", "api_error", "max_tokens"].includes(String(event.terminal_reason))) return []
+  const answered = eventInputIds(event)
+  if (answered?.length === 0) return []
+  return guides.filter((guide) => !answered?.includes(guide.attemptId)).map((guide) => guide.id)
+}
 export type DeliveryState = "preparing" | "needs_confirmation" | "paused" | "cancelled" | "queued" | "writing" | "awaiting_ack" | "acknowledged" | "responded" | "failed" | "delivery_unknown"
 
 export const deliveryLabel: Record<DeliveryState, string> = {

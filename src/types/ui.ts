@@ -93,6 +93,8 @@ export interface UIMessage {
 
 export interface UISystemInit {
   kind: "system_init"
+  /** Host process generation; a repeated CLI init is a metadata update. */
+  runtimeId?: string
   sessionId?: string
   model?: string
   requestedModel?: string
@@ -132,6 +134,8 @@ export interface UIResult {
   terminalReason?: string
   /** Provenance of the triggering input, independent of whether this response ended. */
   originKind?: string
+  /** Written guides left for the next CLI stage of this request. */
+  continuationInputIds?: string[]
   /** 同一回合已包含可见的 assistant API 错误卡，result 无需重复回显相同正文。 */
   hasApiErrorMessage?: boolean
   modelUsage?: Record<string, unknown>

@@ -54,6 +54,7 @@ interface RunPlaceholder {
   steps: RunStep[]
   running: boolean
   background: boolean
+  continuationResult?: Extract<UIEntry, { kind: "result" }>
   durationMs?: number
   startTs?: number
   endTs?: number
@@ -125,7 +126,7 @@ function rendersStandaloneEntry(entry: UIEntry, entries: UIEntry[], index: numbe
     for (let i = index - 1; i >= 0; i--) {
       const previous = entries[i]
       if (previous.kind !== "system_init") continue
-      const cardMetadata = (init: typeof entry) => [init.sessionId, init.model, init.requestedModel,
+      const cardMetadata = (init: typeof entry) => [init.runtimeId, init.sessionId, init.model, init.requestedModel,
         init.cwd, init.permissionMode, init.outputStyle, init.fastModeState, init.version, init.mcpServers]
       return JSON.stringify(cardMetadata(previous)) !== JSON.stringify(cardMetadata(entry))
     }
@@ -288,6 +289,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
       if (cur) {
         cur.running = false
         cur.durationMs = e.durationMs
+        if (e.continuationInputIds?.length) cur.continuationResult = e
         if (e.ts && (!cur.endTs || e.ts > cur.endTs)) cur.endTs = e.ts
       }
       const fallbackText = state.hasFinalAssistantText ? null : resultFinalText(e)
@@ -306,12 +308,21 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
           }
         })
       }
-      groups.push({ kind: "entry", key: `result-${i}`, entry: e })
+      if (!cur?.continuationResult) groups.push({ kind: "entry", key: `result-${i}`, entry: e })
       state.current = null
       state.hasFinalAssistantText = false
+      // Before its canonical echo, the guide may still be above this result.
+      // Open the same next-stage placeholder now; ACK reordering keeps its key.
+      const guideId = e.continuationInputIds?.[0]
+      const nextGuide = guideId ? groups.find((group) => group.kind === "msg" && group.msg.id === guideId) : undefined
+      if (nextGuide?.kind === "msg") ensureRun(nextGuide.msg.ts, nextGuide.msg.id)
     } else if (rendersStandaloneEntry(e, entries, i)) {
       // 其它 entry（system_init / stderr / raw / hook）只渲染，不拉宽 endTs
-      groups.push({ kind: "entry", key: `entry-${i}-${e.kind}`, entry: e })
+      const group: EntryGroup = { kind: "entry", key: `entry-${i}-${e.kind}`, entry: e }
+      // Init arrives after the user opened the empty run placeholder, but it
+      // precedes that run's execution; keep the card above its growing steps.
+      if (e.kind === "system_init" && state.current && state.current.steps.length === 0) groups.splice(groups.indexOf(state.current), 0, group)
+      else groups.push(group)
     }
   }
 
@@ -669,6 +680,7 @@ export function MessageStream({
                 steps={g.steps}
                 running={g.running}
                 background={g.background}
+                continuationResult={g.continuationResult}
                 cwd={cwd}
                 durationMs={g.durationMs}
                 startTs={g.startTs}

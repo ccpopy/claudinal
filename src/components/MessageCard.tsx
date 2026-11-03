@@ -346,6 +346,7 @@ interface PermissionDenial {
 
 function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; e: Extract<UIEntry, { kind: "result" }> }) {
   const background = e.originKind === "task-notification" || e.originKind === "auto-continuation"
+  const continuation = !!e.continuationInputIds?.length
   const denials = (e.permissionDenials as PermissionDenial[] | undefined) ?? []
   const interrupted = e.terminalReason === "interrupted"
   const failed =
@@ -379,7 +380,7 @@ function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; 
           <AlertTriangle className="size-3.5" />
         ) : interrupted ? (
           <CircleStop className="size-3.5" />
-        ) : background ? (
+        ) : background || continuation ? (
           <CornerDownRight className="size-3.5" />
         ) : (
           <CheckCircle2 className="size-3.5" />
@@ -391,9 +392,11 @@ function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; 
               ? "已截断"
               : interrupted
                 ? "已取消"
-                : background
-                  ? "后台响应结束"
-                  : "本轮完成"}
+                : continuation
+                  ? "阶段结束"
+                  : background
+                    ? "后台响应结束"
+                    : "本轮完成"}
           {failed && e.subtype && e.subtype !== "success"
             ? ` ${e.subtype}`
             : ""}

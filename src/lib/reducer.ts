@@ -4,7 +4,7 @@ import { decodeCliCommandEnvelope } from "./commandRegistry"
 import { splitUploadedFileText } from "./fileAttachments"
 import { parseSkillContent, skillLoadFromEvent, SKILL_META_PROMPT_PREFIX } from "./skillContent"
 import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, originKind, queuedCommandPrompt, userActivityCategory } from "./messageOrigin"
-import { isBackgroundBatchReceipt } from "./submission"
+import { continuedGuideIds, isBackgroundBatchReceipt } from "./submission"
 import {
   initSubagentRegistry,
   isForwardedSubagentEvent,
@@ -269,33 +269,35 @@ function hasDiagnostics(value: unknown): boolean {
 function reduceSystem(state: State, ev: Record<string, unknown>, ts: number): State {
   const sub = ev.subtype as string | undefined
   if (sub === "init") {
-    return {
-      ...state,
-      entries: [
-        ...state.entries,
-        {
-          kind: "system_init",
-          sessionId: ev.session_id as string | undefined,
-          model: ev.model as string | undefined,
-          requestedModel: ev.requested_model as string | undefined,
-          cwd: ev.cwd as string | undefined,
-          permissionMode: ev.permissionMode as string | undefined,
-          mcpServers:
-            Array.isArray(ev.mcp_servers) ? ev.mcp_servers.filter((server): server is { name: string; status: string } => !!server && typeof server.name === "string" && typeof server.status === "string") : [],
-          tools: eventStrings(ev.tools),
-          skills: eventStrings(ev.skills),
-          slashCommands: eventStrings(ev.slash_commands),
-          agents: eventStrings(ev.agents),
-          plugins: Array.isArray(ev.plugins) ? ev.plugins.flatMap((plugin: unknown) => typeof plugin === "string" ? [plugin] : plugin && typeof plugin === "object" && typeof (plugin as { name?: unknown }).name === "string" ? [(plugin as { name: string }).name] : []) : undefined,
-          version: ev.claude_code_version as string | undefined,
-          outputStyle: ev.output_style as string | undefined,
-          apiKeySource: ev.apiKeySource as string | undefined,
-          fastModeState: ev.fast_mode_state as string | undefined,
-          ts
-        },
-        ...((hasDiagnostics(ev.mcp_server_errors) || hasDiagnostics(ev.plugin_errors)) ? [{ kind: "stderr" as const, line: `部分扩展未加载：${JSON.stringify({ mcp: ev.mcp_server_errors, plugins: ev.plugin_errors })}`, ts }] : [])
-      ]
+    const entry: Extract<UIEntry, { kind: "system_init" }> = {
+      kind: "system_init",
+      runtimeId: ev.claudinalRuntimeId as string | undefined,
+      sessionId: ev.session_id as string | undefined,
+      model: ev.model as string | undefined,
+      requestedModel: ev.requested_model as string | undefined,
+      cwd: ev.cwd as string | undefined,
+      permissionMode: ev.permissionMode as string | undefined,
+      mcpServers:
+        Array.isArray(ev.mcp_servers) ? ev.mcp_servers.filter((server): server is { name: string; status: string } => !!server && typeof server.name === "string" && typeof server.status === "string") : [],
+      tools: eventStrings(ev.tools),
+      skills: eventStrings(ev.skills),
+      slashCommands: eventStrings(ev.slash_commands),
+      agents: eventStrings(ev.agents),
+      plugins: Array.isArray(ev.plugins) ? ev.plugins.flatMap((plugin: unknown) => typeof plugin === "string" ? [plugin] : plugin && typeof plugin === "object" && typeof (plugin as { name?: unknown }).name === "string" ? [(plugin as { name: string }).name] : []) : undefined,
+      version: ev.claude_code_version as string | undefined,
+      outputStyle: ev.output_style as string | undefined,
+      apiKeySource: ev.apiKeySource as string | undefined,
+      fastModeState: ev.fast_mode_state as string | undefined,
+      ts
     }
+    const index = entry.runtimeId ? state.entries.findIndex((previous) => previous.kind === "system_init" && previous.runtimeId === entry.runtimeId) : -1
+    const entries = state.entries.slice()
+    if (index >= 0) entries[index] = { ...entry, ts: entries[index].ts }
+    else entries.push(entry)
+    if (hasDiagnostics(ev.mcp_server_errors) || hasDiagnostics(ev.plugin_errors)) {
+      entries.push({ kind: "stderr", line: `部分扩展未加载：${JSON.stringify({ mcp: ev.mcp_server_errors, plugins: ev.plugin_errors })}`, ts })
+    }
+    return { ...state, entries }
   }
   if (sub === "api_retry") {
     // One live row per outage: later attempts update it instead of stacking.
@@ -864,6 +866,9 @@ function reduceResult(
   const terminalReason = state.pendingInterruption
     ? "interrupted"
     : (ev.terminal_reason as string | undefined)
+  const continuationInputIds = continuedGuideIds({ ...ev, terminal_reason: terminalReason, stop_reason: stopReason }, entries.flatMap((entry) =>
+    entry.kind === "message" && entry.role === "user" && entry.delivery === "guide" && entry.runState === "running" && entry.attemptId
+      ? [{ id: entry.id, attemptId: entry.attemptId }] : []))
   return {
     ...state,
     entries: [
@@ -882,6 +887,7 @@ function reduceResult(
         stopReason,
         terminalReason,
         originKind: originKind(ev) || undefined,
+        continuationInputIds: continuationInputIds.length ? continuationInputIds : undefined,
         hasApiErrorMessage: hasApiErrorMessageSinceLastResult(entries) || undefined,
         modelUsage: ev.modelUsage as Record<string, unknown> | undefined,
         permissionDenials: ev.permission_denials as unknown[] | undefined,

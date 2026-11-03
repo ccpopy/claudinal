@@ -19,7 +19,7 @@ import { isAuthoredUserMessage, isTaskNotificationEvent, markAuthoredEvent } fro
 import { routeCommand } from "@/lib/commandRegistry"
 import { saveOutbox, removeOutbox, updateOutboxState } from "@/lib/outbox"
 import { InputRecovery } from "@/components/InputRecovery"
-import { eventInputIds, isBackgroundBatchReceipt, type SubmitOutcome } from "@/lib/submission"
+import { continuedGuideIds, eventInputIds, isBackgroundBatchReceipt, type SubmitOutcome } from "@/lib/submission"
 import {
   useEffect,
   lazy,
@@ -2170,6 +2170,7 @@ export default function App() {
           ? coordinatorRef.current.acknowledge(acknowledgedId) : false
         event = markAuthoredEvent(localEcho ? { ...event, claudinalAuthored: true } : event, run.state.entries)
         if (isBackgroundBatchReceipt(event)) return
+        if (event.type === "system" && event.subtype === "init") event = { ...event, claudinalRuntimeId: run.runtimeId }
         const subagentTransition = reduceSubagentRegistry(run.subagents, event)
         if (subagentTransition.changed) {
           run.subagents = subagentTransition.registry
@@ -2291,11 +2292,13 @@ export default function App() {
           const resultIds = eventInputIds(event)
           const written = [...coordinatorRef.current.tasks.values()].filter((task) => task.conversationKey === owner.key
             && isAwaitingDefinitiveResult(task))
+          const continuingGuide = continuedGuideIds(event as Record<string, unknown>, written.filter((task) => task.mode === "guide" && task.runState === "running")
+            .map((task) => ({ id: task.messageId, attemptId: task.attemptId }))).length > 0
           const crossedGuide = crossesWrittenInputBoundary(written, resultIds)
-          if (crossedGuide) run.reviewUnreliableReason = resultIds?.length === 0
+          if (crossedGuide && !continuingGuide) run.reviewUnreliableReason = resultIds?.length === 0
             ? "CLI 结果输入关联无效，本轮文件边界无法可靠归属"
             : "仍有已写入引导或输入未被本次结果确认，文件边界无法单独归属本轮"
-          const reviewBoundary = subagentTransition.resultDisposition === "intermediate" ? undefined
+          const reviewBoundary = subagentTransition.resultDisposition === "intermediate" || continuingGuide ? undefined
             : run.reviewUnreliableReason ? run.reviewLifecycle?.rejectBoundary(run.reviewUnreliableReason) : finishRunReview(run)
           const activeAttemptId = run.activeInputId ? coordinatorRef.current.tasks.get(run.activeInputId)?.attemptId : undefined
           const completedAttemptId = activeAttemptId && (!resultIds || resultIds.includes(activeAttemptId)) ? activeAttemptId : resultIds?.[0]
