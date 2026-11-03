@@ -17,6 +17,7 @@ export interface RunStep {
 interface Props {
   steps: RunStep[]
   running: boolean
+  background?: boolean
   cwd?: string | null
   durationMs?: number
   startTs?: number
@@ -41,6 +42,7 @@ function computeRunMs(
 export function RunGroup({
   steps,
   running,
+  background = false,
   cwd,
   durationMs,
   startTs,
@@ -101,13 +103,15 @@ export function RunGroup({
     running && pendingSubagentCount > 0
       ? ` ${pendingSubagentCount} 个子智能体`
       : ""
+  const runningLabel = background ? "后台处理中…" : "处理中…"
+  const processedLabel = background ? "已处理后台通知" : "已处理"
   const label = running
     ? hasTime
-      ? `处理中… ${formatRunDuration(total, running)}${stepInfo}${subagentInfo}`
-      : `处理中…${subagentInfo}`
+      ? `${runningLabel} ${formatRunDuration(total, running)}${stepInfo}${subagentInfo}`
+      : `${runningLabel}${subagentInfo}`
     : hasTime
-      ? `已处理 ${formatRunDuration(total, running)}${stepInfo}`
-      : `已处理${stepInfo || ""}`
+      ? `${processedLabel} ${formatRunDuration(total, running)}${stepInfo}`
+      : `${processedLabel}${stepInfo || ""}`
 
   return (
     <div className="self-stretch flex flex-col">

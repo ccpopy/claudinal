@@ -126,6 +126,8 @@ interface Props {
   draftKey?: string
   initialDraft?: ComposerDraft
   onDraftChange?: (draft: ComposerDraft) => void
+  externalDraft?: ComposerDraft
+  onExternalDraftConsumed?: () => void
   externalText?: string
   externalImages?: ImagePayload[]
   externalDocuments?: DocumentPayload[]
@@ -195,6 +197,8 @@ function ComposerEditor({
   draftKey,
   initialDraft,
   onDraftChange,
+  externalDraft,
+  onExternalDraftConsumed,
   externalText,
   externalImages,
   externalDocuments,
@@ -443,6 +447,17 @@ function ComposerEditor({
     el.style.height = "auto"
     el.style.height = Math.min(el.scrollHeight, 240) + "px"
   }, [text])
+
+  useEffect(() => {
+    if (!externalDraft) return
+    const next = cloneComposerDraft(externalDraft)
+    setText(next.text)
+    setImages(next.images)
+    setDocuments(next.documents)
+    setFileAttachments(next.fileAttachments)
+    onExternalDraftConsumed?.()
+    requestAnimationFrame(() => ref.current?.focus())
+  }, [externalDraft, onExternalDraftConsumed, setText, setImages, setDocuments, setFileAttachments])
 
   useEffect(() => {
     const hasText = externalText !== undefined && externalText !== ""

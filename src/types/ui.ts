@@ -130,6 +130,8 @@ export interface UIResult {
   isError?: boolean
   stopReason?: string
   terminalReason?: string
+  /** Provenance of the triggering input, independent of whether this response ended. */
+  originKind?: string
   /** 同一回合已包含可见的 assistant API 错误卡，result 无需重复回显相同正文。 */
   hasApiErrorMessage?: boolean
   modelUsage?: Record<string, unknown>

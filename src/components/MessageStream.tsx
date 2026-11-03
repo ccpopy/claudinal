@@ -53,6 +53,7 @@ interface RunPlaceholder {
   key: string
   steps: RunStep[]
   running: boolean
+  background: boolean
   durationMs?: number
   startTs?: number
   endTs?: number
@@ -144,7 +145,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
     hasFinalAssistantText: false
   }
 
-  const ensureRun = (startTs?: number, sourceId?: string): RunPlaceholder => {
+  const ensureRun = (startTs?: number, sourceId?: string, background = false): RunPlaceholder => {
     if (state.current) {
       if (startTs && !state.current.startTs) state.current.startTs = startTs
       return state.current
@@ -154,6 +155,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
       key: sourceId ? `run-${sourceId}` : `run-${state.counter++}`,
       steps: [],
       running: true,
+      background,
       startTs
     }
     groups.push(r)
@@ -187,6 +189,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
       const block: UIBlock = e.kind === "skill_load"
         ? { type: "skill_load", skill: e, toolUseId: e.toolUseId }
         : { type: "activity", activity: e }
+      if (e.kind === "activity" && e.category === "task" && !state.current) ensureRun(e.ts, e.id, true)
       if (state.current) {
         appendStep(state.current, { key: `${e.kind}-${e.id}`, block, messageId: e.id, messageUuid: e.kind === "activity" ? e.eventId : undefined })
         stamp(e.ts)
@@ -222,6 +225,7 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
               key: `msg-${m.id}`,
               msg: visibleMessage(m, userVisible)
             })
+            if (!state.current) ensureRun(m.ts, m.id)
             continue
           }
           if (m.deliveryState && ["preparing", "needs_confirmation", "queued", "paused", "cancelled", "failed", "delivery_unknown"].includes(m.deliveryState)) {
@@ -664,6 +668,7 @@ export function MessageStream({
               <RunGroup
                 steps={g.steps}
                 running={g.running}
+                background={g.background}
                 cwd={cwd}
                 durationMs={g.durationMs}
                 startTs={g.startTs}

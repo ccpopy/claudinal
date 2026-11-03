@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react"
+import { useState } from "react"
 import {
   CircleAlert,
   CircleStop,
@@ -6,10 +6,7 @@ import {
   CornerDownRight,
   Download,
   FileText,
-  Image as ImageIcon,
-  Loader2,
   MoreHorizontal,
-  Paperclip,
   Pencil,
   RotateCcw,
   ScrollText,
@@ -19,14 +16,6 @@ import {
   type LucideIcon
 } from "lucide-react"
 import { toast } from "sonner"
-import {
-  joinOutgoingText,
-  prepareInputFiles,
-  splitOutgoingText,
-  buildOutgoingText,
-  type OutgoingFileMarker
-} from "@/lib/inputAttachments"
-import { formatBytes, SUPPORTED_ATTACHMENT_ACCEPT } from "@/lib/fileAttachments"
 import { guideDescription } from "@/lib/composerCapabilities"
 import type { UIMessage } from "@/types/ui"
 import type { InputPayload, SubmissionQueueState } from "@/lib/submissionCoordinator"
@@ -38,14 +27,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
-import { AttachmentChip } from "./composer/AttachmentChip"
 
 export interface SubmissionActions {
   payload(id: string): InputPayload | undefined
   retry(id: string): void | Promise<void>
   retryCurrent?(id: string): void | Promise<void>
   retryOriginal?(id: string): void | Promise<void>
-  edit(id: string, payload: InputPayload): void
+  canEdit?(id: string): boolean
+  edit(id: string): void
   cancel(id: string): void
   /** Unsent cancelled/failed inputs can be deleted instead of lingering. */
   canDiscard?(id: string): boolean
@@ -116,12 +105,10 @@ function attemptTarget(attempt: NonNullable<UIMessage["attemptDetails"]>[number]
  */
 export function SubmissionFooter({
   message,
-  actions,
-  onEdit
+  actions
 }: {
   message: UIMessage
   actions: SubmissionActions
-  onEdit: () => void
 }) {
   const [details, setDetails] = useState(false)
   const payload = actions.payload(message.id)
@@ -155,7 +142,8 @@ export function SubmissionFooter({
         <RotateCcw className="size-3.5" />
         {unknown ? "再次发送" : actions.retryCurrent ? "按当前配置重试" : "重试"}
       </Button>}
-      {canEditSubmission(message) && <Button type="button" variant="ghost" size="sm" className={actionClass} onClick={onEdit}>
+      {canEditSubmission(message) && <Button type="button" variant="ghost" size="sm" className={actionClass}
+        title="取回输入框编辑，重新发送前不会投递" disabled={actions.canEdit?.(message.id) === false} onClick={() => actions.edit(message.id)}>
         <Pencil className="size-3.5" />
         编辑
       </Button>}
@@ -228,170 +216,4 @@ function downloadPayload(id: string, payload: InputPayload) {
   link.download = `claudinal-input-${id}.json`
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-interface EditorDraft {
-  body: string
-  files: OutgoingFileMarker[]
-  images: InputPayload["images"]
-  documents: InputPayload["documents"]
-  pendingNames?: string[]
-}
-
-/**
- * 就地编辑：气泡原位变成与底部输入框同风格的编辑卡，
- * 只持有这条消息的副本，绝不触碰底部草稿。
- */
-export function MessageInlineEditor({
-  message,
-  payload,
-  onSubmit,
-  onCancel
-}: {
-  message: UIMessage
-  payload: InputPayload
-  onSubmit: (payload: InputPayload) => void
-  onCancel: () => void
-}) {
-  const [draft, setDraft] = useState<EditorDraft>(() => {
-    const split = splitOutgoingText(payload.text)
-    return { body: split.body, files: split.files, images: payload.images, documents: payload.documents, pendingNames: payload.pendingNames }
-  })
-  const [preparing, setPreparing] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const generation = useRef(0)
-  const queued = message.deliveryState === "queued" || message.deliveryState === "paused"
-
-  useEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = "auto"
-    el.style.height = `${Math.min(el.scrollHeight, 320)}px`
-  }, [draft.body])
-
-  useEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.focus()
-    el.setSelectionRange(el.value.length, el.value.length)
-    return () => { generation.current += 1 }
-  }, [])
-
-  const empty = !draft.body.trim() && !draft.files.length && !draft.images.length && !draft.documents.length
-  const blocked = preparing || !!draft.pendingNames?.length || empty
-
-  const submit = () => {
-    if (blocked) return
-    onSubmit({ text: joinOutgoingText(draft.body, draft.files), images: draft.images, documents: draft.documents })
-  }
-
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return
-    if (event.key === "Escape") {
-      event.preventDefault()
-      event.stopPropagation()
-      onCancel()
-    } else if (event.key === "Enter" && !event.shiftKey && !event.altKey) {
-      event.preventDefault()
-      submit()
-    }
-  }
-
-  const addFiles = async (files: File[]) => {
-    if (!files.length) return
-    const current = generation.current
-    setPreparing(true)
-    try {
-      const ready = await prepareInputFiles(files)
-      if (current !== generation.current) return
-      setDraft((value) => ({
-        ...value,
-        files: [...value.files, ...splitOutgoingText(buildOutgoingText("", ready.files)).files],
-        images: [...value.images, ...ready.images],
-        documents: [...value.documents, ...ready.documents]
-      }))
-    } catch (error) {
-      if (current === generation.current) toast.error(`附件读取失败：${String(error)}`)
-    } finally {
-      if (current === generation.current) setPreparing(false)
-    }
-  }
-
-  const hasAttachments = draft.images.length > 0 || draft.files.length > 0 || !!draft.pendingNames?.length
-  return <div className="composer-surface w-full max-w-[85%] rounded-[14px] p-3">
-    {hasAttachments && <div className="mb-2 flex flex-wrap gap-2">
-      {draft.images.map((image, index) => <AttachmentChip
-        key={`image-${index}`}
-        icon={<img src={`data:${image.mime};base64,${image.data}`} alt="" className="size-6 rounded-full object-cover" />}
-        label={`图片 ${index + 1}`}
-        meta={formatBytes(Math.ceil((image.data.length * 3) / 4))}
-        onRemove={() => setDraft((value) => ({ ...value, images: value.images.filter((_, i) => i !== index) }))}
-      />)}
-      {draft.files.map((file, index) => <AttachmentChip
-        key={`file-${index}`}
-        icon={<FileText className="size-3.5" />}
-        label={file.name || "未命名附件"}
-        meta={[file.size !== undefined ? formatBytes(file.size) : null, file.mode === "document" ? "PDF" : file.mode === "metadata-only" ? "仅信息" : null].filter(Boolean).join(" · ")}
-        onRemove={() => setDraft((value) => ({
-          ...value,
-          files: value.files.filter((_, i) => i !== index),
-          documents: file.mode === "document" ? value.documents.filter((doc) => doc.name !== file.name) : value.documents
-        }))}
-      />)}
-      {draft.pendingNames?.map((name) => <AttachmentChip
-        key={`pending-${name}`}
-        icon={<ImageIcon className="size-3.5" />}
-        label={name}
-        meta="未就绪"
-        onRemove={() => setDraft((value) => ({ ...value, pendingNames: value.pendingNames?.filter((item) => item !== name) }))}
-      />)}
-    </div>}
-    <textarea
-      ref={textareaRef}
-      rows={1}
-      value={draft.body}
-      aria-label="编辑消息"
-      placeholder="编辑消息内容"
-      onChange={(event) => setDraft((value) => ({ ...value, body: event.target.value }))}
-      onKeyDown={onKeyDown}
-      className="block min-h-[44px] w-full resize-none bg-transparent px-1 py-0.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground scrollbar-none"
-    />
-    <div className="mt-2 flex items-center justify-between gap-2">
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        accept={SUPPORTED_ATTACHMENT_ACCEPT}
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden
-        onChange={(event) => {
-          const files = Array.from(event.currentTarget.files ?? [])
-          event.currentTarget.value = ""
-          void addFiles(files)
-        }}
-      />
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="h-8 w-8 px-0 text-muted-foreground"
-        disabled={preparing}
-        onClick={() => fileInputRef.current?.click()}
-        aria-label="添加附件"
-        title="添加附件"
-      >
-        {preparing ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-      </Button>
-      <div className="flex items-center gap-2">
-        <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" onClick={onCancel} title="取消 (Esc)">
-          取消
-        </Button>
-        <Button type="button" size="sm" className="h-8 text-xs" disabled={blocked} onClick={submit} title={queued ? "保存 (Enter)" : "发送 (Enter)"}>
-          {queued ? "保存" : "发送"}
-        </Button>
-      </div>
-    </div>
-  </div>
 }

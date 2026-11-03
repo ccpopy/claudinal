@@ -422,6 +422,19 @@ export class SubmissionCoordinator<C> {
     if (pause?.reason === "not_sent" && pause.blockerId === id) this.resumeQueue(task.conversationKey)
     return true
   }
+  canWithdraw(id: string): boolean {
+    const task = this.tasks.get(id)
+    return !!task && (!task.payloadRef.prepare || task.localState === "save_failed") && this.busy.get(task.conversationKey) !== id
+      && ["queued", "paused", "cancelled", "failed"].includes(task.deliveryState)
+      && task.attempts.every((attempt) => attempt.deliveryCertainty === "not_sent" && !this.persisting.has(attempt.id))
+  }
+  /** Take an unsent input back to the composer without racing its durable save. */
+  withdraw(id: string): InputPayload | undefined {
+    if (!this.canWithdraw(id)) return undefined
+    const task = this.tasks.get(id)!
+    this.cancel(id)
+    return this.discard(id) ? task.payloadRef : undefined
+  }
   /** Only settled inputs that certainly never reached the CLI can disappear without a trace. */
   canDiscard(id: string): boolean {
     const task = this.tasks.get(id)

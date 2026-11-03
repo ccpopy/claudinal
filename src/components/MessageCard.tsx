@@ -1,4 +1,4 @@
-import { MessageInlineEditor, SubmissionFooter, canEditSubmission, hasSubmissionFooter, type SubmissionActions } from "./SubmittedInputActions"
+import { SubmissionFooter, hasSubmissionFooter, type SubmissionActions } from "./SubmittedInputActions"
 import { deliveryLabel, type DeliveryState } from "@/lib/submission"
 import { parseCommand } from "@/lib/commandRegistry"
 import { checkpointMessageId } from "@/lib/checkpoints"
@@ -172,20 +172,6 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions, 
   const guide = msg.delivery === "guide"
   const delivery = msg.deliveryState
   const status = delivery ? DELIVERY_STATUS[delivery] : null
-  const [editing, setEditing] = useState(false)
-  const payload = submissionActions?.payload(msg.id)
-  // 状态变化（如重试后进入发送中）或原始输入失效时退出编辑
-  useEffect(() => { if (!payload || !canEditSubmission(msg)) setEditing(false) }, [payload, msg])
-  if (editing && payload && submissionActions) {
-    return <div className="flex min-w-0 flex-col items-end">
-      <MessageInlineEditor
-        message={msg}
-        payload={payload}
-        onCancel={() => setEditing(false)}
-        onSubmit={(next) => { submissionActions.edit(msg.id, next); setEditing(false) }}
-      />
-    </div>
-  }
   const footer = hasSubmissionFooter(msg, submissionActions)
   return <div className="group/msg flex min-w-0 flex-col items-end gap-1.5">
     {others.length > 0 && <div className="flex max-w-[85%] flex-wrap justify-end gap-2 [&>*]:max-w-full">
@@ -210,7 +196,7 @@ function UserMessageView({ msg, cwd, slashCommands, onRetry, submissionActions, 
       <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />附件准备中：{msg.submissionPendingNames.join("、")}
     </p> : null}
     {footer && submissionActions
-      ? <SubmissionFooter message={msg} actions={submissionActions} onEdit={() => setEditing(true)} />
+      ? <SubmissionFooter message={msg} actions={submissionActions} />
       : status && (delivery !== "preparing" || showPendingLabel) && <p role="status" className={cn("flex items-center gap-1 px-1 text-[12px]", status.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
         <status.icon className={cn("size-3 shrink-0", status.spin && "animate-spin")} aria-hidden />
         {guide && delivery === "awaiting_ack" ? "引导已提交，等待 CLI 读取" : deliveryLabel[delivery!]}
@@ -359,6 +345,7 @@ interface PermissionDenial {
 }
 
 function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; e: Extract<UIEntry, { kind: "result" }> }) {
+  const background = e.originKind === "task-notification" || e.originKind === "auto-continuation"
   const denials = (e.permissionDenials as PermissionDenial[] | undefined) ?? []
   const interrupted = e.terminalReason === "interrupted"
   const failed =
@@ -392,6 +379,8 @@ function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; 
           <AlertTriangle className="size-3.5" />
         ) : interrupted ? (
           <CircleStop className="size-3.5" />
+        ) : background ? (
+          <CornerDownRight className="size-3.5" />
         ) : (
           <CheckCircle2 className="size-3.5" />
         )}
@@ -402,7 +391,9 @@ function ResultView({ e, onOpenPermissions }: { onOpenPermissions?: () => void; 
               ? "已截断"
               : interrupted
                 ? "已取消"
-                : "完成"}
+                : background
+                  ? "后台响应结束"
+                  : "本轮完成"}
           {failed && e.subtype && e.subtype !== "success"
             ? ` ${e.subtype}`
             : ""}

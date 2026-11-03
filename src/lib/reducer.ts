@@ -3,7 +3,8 @@ import type { UIBlock, UIEntry, UIMessage } from "../types/ui"
 import { decodeCliCommandEnvelope } from "./commandRegistry"
 import { splitUploadedFileText } from "./fileAttachments"
 import { parseSkillContent, skillLoadFromEvent, SKILL_META_PROMPT_PREFIX } from "./skillContent"
-import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, queuedCommandPrompt, userActivityCategory } from "./messageOrigin"
+import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, originKind, queuedCommandPrompt, userActivityCategory } from "./messageOrigin"
+import { isBackgroundBatchReceipt } from "./submission"
 import {
   initSubagentRegistry,
   isForwardedSubagentEvent,
@@ -181,6 +182,7 @@ function parseTs(ev: unknown): number {
 
 function reduceEvent(state: State, ev: ClaudeEvent, transition?: SubagentTransition): State {
   if (!ev || typeof ev !== "object") return state
+  if (isBackgroundBatchReceipt(ev)) return state
   if (!isForwardedSubagentEvent(ev)) ev = markAuthoredEvent(ev, state.entries)
   const ts = parseTs(ev)
   const t = (ev as { type?: string }).type
@@ -532,7 +534,14 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
     const local = state.entries.find((entry) => entry.kind === "message" && entry.role === "user" && entry.attemptIds?.includes(uuid))
     if (local?.kind === "message") {
       if (local.attemptId !== uuid) return state
-      return { ...state, entries: state.entries.map((entry) => entry === local ? { ...local, transcriptUuid: uuid, deliveryState: local.deliveryState === "responded" ? "responded" : "acknowledged" } : entry) }
+      const acknowledged: UIMessage = { ...local, transcriptUuid: uuid, deliveryState: local.deliveryState === "responded" ? "responded" : "acknowledged" }
+      // A guide can be written during one turn and consumed in the next. Its
+      // first canonical echo, rather than stdin write time, establishes that boundary.
+      if (local.delivery === "guide" && local.deliveryState !== "responded" && !local.transcriptUuid
+        && state.entries.slice(state.entries.indexOf(local) + 1).some((entry) => entry.kind === "result")) {
+        return { ...state, entries: [...state.entries.filter((entry) => entry !== local), { ...acknowledged, ts }] }
+      }
+      return { ...state, entries: state.entries.map((entry) => entry === local ? acknowledged : entry) }
     }
   }
   if (uuid && state.entries.some((entry) => isAuthoredUserMessage(entry) && entry.id === uuid)) {
@@ -872,6 +881,7 @@ function reduceResult(
         isError: ev.is_error as boolean | undefined,
         stopReason,
         terminalReason,
+        originKind: originKind(ev) || undefined,
         hasApiErrorMessage: hasApiErrorMessageSinceLastResult(entries) || undefined,
         modelUsage: ev.modelUsage as Record<string, unknown> | undefined,
         permissionDenials: ev.permission_denials as unknown[] | undefined,

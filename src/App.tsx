@@ -6,6 +6,7 @@ import { QueuedComposerBar } from "@/components/QueuedComposerBar"
 import type { SubmissionActions } from "@/components/SubmittedInputActions"
 import { SubmissionCoordinator, isActiveInput, isAwaitingDefinitiveResult, type InputPayload, type SubmittedInput, type SubmissionAdapter } from "@/lib/submissionCoordinator"
 import { retryInputFromTranscript } from "@/lib/retryInput"
+import { restoreInputToDraft } from "@/lib/inputAttachments"
 import { cn } from "@/lib/utils"
 import { useInstalledCliCapabilities } from "@/hooks/useInstalledCliCapabilities"
 import { useComputerUse } from "@/hooks/useComputerUse"
@@ -14,11 +15,11 @@ import { ComputerUseControllerStrip, ComputerUsePermissionDialog } from "@/compo
 import { canApplyRuntimePatch, capturedRuntimeCapabilities, composerFeatureCapabilities, filterComposerRuntimePatch, guideDelivery } from "@/lib/composerCapabilities"
 import { compileUserInput, inputUiBlocks, validateInputSize } from "@/lib/compileUserInput"
 import { inputMetadataPatch, restoreInputMetadata, restoreTranscriptInputOrigins } from "@/lib/inputMetadata"
-import { isAuthoredUserMessage, markAuthoredEvent } from "@/lib/messageOrigin"
+import { isAuthoredUserMessage, isTaskNotificationEvent, markAuthoredEvent } from "@/lib/messageOrigin"
 import { routeCommand } from "@/lib/commandRegistry"
 import { saveOutbox, removeOutbox, updateOutboxState } from "@/lib/outbox"
 import { InputRecovery } from "@/components/InputRecovery"
-import { eventInputIds, type SubmitOutcome } from "@/lib/submission"
+import { eventInputIds, isBackgroundBatchReceipt, type SubmitOutcome } from "@/lib/submission"
 import {
   useEffect,
   lazy,
@@ -120,6 +121,7 @@ import {
 } from "@/lib/composerPrefs"
 import {
   ComposerDraftStore,
+  emptyComposerDraft,
   type ComposerDraft
 } from "@/lib/composerDrafts"
 import {
@@ -835,6 +837,7 @@ export default function App() {
   const [draft, setDraft] = useState("")
   const [draftImages, setDraftImages] = useState<ImagePayload[]>([])
   const [draftDocuments, setDraftDocuments] = useState<DocumentPayload[]>([])
+  const [externalComposerDraft, setExternalComposerDraft] = useState<{ key: string; draft: ComposerDraft } | null>(null)
   const [pinTick, setPinTick] = useState(0)
   const [titleTick, setTitleTick] = useState(0)
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
@@ -2166,6 +2169,7 @@ export default function App() {
         const localEcho = acknowledgedId && !isForwardedSubagentEvent(event)
           ? coordinatorRef.current.acknowledge(acknowledgedId) : false
         event = markAuthoredEvent(localEcho ? { ...event, claudinalAuthored: true } : event, run.state.entries)
+        if (isBackgroundBatchReceipt(event)) return
         const subagentTransition = reduceSubagentRegistry(run.subagents, event)
         if (subagentTransition.changed) {
           run.subagents = subagentTransition.registry
@@ -2174,6 +2178,7 @@ export default function App() {
         applyRunningAction(run, { kind: "event", event, subagentTransition })
         if (isForwardedSubagentEvent(event)) return
         const t = (event as { type?: string }).type
+        if ((t === "user" || t === "attachment") && isTaskNotificationEvent(event as Record<string, unknown>)) setRunningSessionTurnActive(run, true)
         if (t === "notification" || t === "system" || t === "result") {
           // Native fields only; do not infer Fast from preferences or message text.
           if (applyFastModeReport(run.actualConfig, ev as { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown })) setRunningTick((tick) => tick + 1)
@@ -2292,8 +2297,9 @@ export default function App() {
             : "仍有已写入引导或输入未被本次结果确认，文件边界无法单独归属本轮"
           const reviewBoundary = subagentTransition.resultDisposition === "intermediate" ? undefined
             : run.reviewUnreliableReason ? run.reviewLifecycle?.rejectBoundary(run.reviewUnreliableReason) : finishRunReview(run)
-          const completedAttemptId = run.activeInputId ? coordinatorRef.current.tasks.get(run.activeInputId)?.attemptId : eventInputIds(event)?.[0]
-          run.activeInputId = null
+          const activeAttemptId = run.activeInputId ? coordinatorRef.current.tasks.get(run.activeInputId)?.attemptId : undefined
+          const completedAttemptId = activeAttemptId && (!resultIds || resultIds.includes(activeAttemptId)) ? activeAttemptId : resultIds?.[0]
+          if (completedAttemptId === activeAttemptId) run.activeInputId = null
           // 软中断在此收尾：result 到达即回合已终止，清掉 interrupting 态与强杀兜底定时器
           clearInterruptState(run)
           // 把网络相关的失败 result 也走一遍 toast；主要看 result/error 文本。
@@ -2335,11 +2341,11 @@ export default function App() {
           run.compacting = false
           if (completedAttemptId && resultSessionId) run.suggestionTracker.completeTurn(completedAttemptId, resultSessionId, !isError && !interrupted)
           coordinatorRef.current.complete(owner.key, isError || interrupted, eventInputIds(event), () => reviewBoundary ?? Promise.resolve())
-          if (!interrupted) noteCompletion(sidebarSessionKey(run.project.id, resultSessionId ?? owner.key), run.project.name, isError, (event as { result?: unknown }).result)
           if (!interrupted && !isError && resultSessionId) maybeGenerateSessionTitle(run, resultSessionId)
           // A guide sent at the boundary may already be waiting in the CLI for
           // the next turn. Keep it active; this result must not settle that input.
           const stillRunning = coordinatorRef.current.hasRunning(owner.key)
+          if (!interrupted && !stillRunning) noteCompletion(sidebarSessionKey(run.project.id, resultSessionId ?? owner.key), run.project.name, isError, (event as { result?: unknown }).result)
           if (stillRunning) run.phase = { kind: "starting", since: Date.now(), detail: "仍有已写入输入等待 CLI 后续回合确认" }
           if (!stillRunning) run.reviewUnreliableReason = null
           setRunningSessionTurnActive(run, stillRunning)
@@ -2896,17 +2902,16 @@ export default function App() {
     if (viewOwnerRef.current.key !== task.conversationKey || currentApiLaunchProfileKey(context.providerId) !== profileRevision) return
     coordinatorRef.current.retryWithContext(task.messageId, { context, profileRevision, payload })
   }
-  const editSubmittedMessage = async (id: string, payload: InputPayload) => {
+  const editSubmittedMessage = (id: string) => {
     const task = coordinatorRef.current.tasks.get(id)
-    if (!task) return
-    const edited = { text: payload.text, images: payload.images, documents: payload.documents }
-    if (hasLaterExecution(task)) {
-      if (!(await confirmInputAction("编辑内容作为新请求", "后续执行历史保持不变，编辑后的内容将追加为新消息；已执行的操作不会回滚。", "发送新请求"))) return
-      const context = selectedRetryContext(task, "current")
-      if (!context) return
-      coordinatorRef.current.submit({ conversationKey: task.conversationKey, sourceDraftRevision: 0, payload: edited, profileRevision: currentApiLaunchProfileKey(context.providerId), context: { ...context, options: {} } })
-      coordinatorRef.current.resume(task.conversationKey)
-    } else await retrySubmittedInput(task, "current", edited)
+    const key = activeComposerDraftKey
+    if (!task || !key || task.conversationKey !== viewOwnerRef.current.key) return
+    const payload = coordinatorRef.current.withdraw(id)
+    if (!payload) { toast.info("此消息已开始发送，无法取回编辑"); return }
+    const draft = restoreInputToDraft(composerDraftsRef.current.get(key) ?? emptyComposerDraft(), payload)
+    rememberComposerDraft(key, draft)
+    setExternalComposerDraft({ key, draft })
+    if (payload.pendingNames?.length) toast.info("附件准备失败，请重新添加", { description: payload.pendingNames.join("、") })
   }
 
   const retryUserMessage = useCallback(async (messageId: string, selection: "current" | "original" = "current") => {
@@ -3823,7 +3828,8 @@ export default function App() {
     retry: retryUserMessage,
     retryCurrent: (id) => retryUserMessage(id, "current"),
     retryOriginal: (id) => retryUserMessage(id, "original"),
-    edit: (id, payload) => { void editSubmittedMessage(id, payload) },
+    canEdit: (id) => coordinatorRef.current.canWithdraw(id),
+    edit: editSubmittedMessage,
     cancel: (id) => coordinatorRef.current.cancel(id),
     canDiscard: (id) => coordinatorRef.current.canDiscard(id),
     discard: (id) => { coordinatorRef.current.discard(id) },
@@ -4211,6 +4217,8 @@ export default function App() {
                     draftKey={activeComposerDraftKey}
                     initialDraft={activeComposerDraft}
                     onDraftChange={handleComposerDraftChange}
+                    externalDraft={externalComposerDraft && externalComposerDraft.key === activeComposerDraftKey ? externalComposerDraft.draft : undefined}
+                    onExternalDraftConsumed={() => setExternalComposerDraft(null)}
                     externalText={draft}
                     externalImages={draftImages}
                     externalDocuments={draftDocuments}

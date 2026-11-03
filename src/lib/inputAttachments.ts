@@ -1,9 +1,27 @@
-import type { ComposerDraftImage as Thumb, ComposerDraftDocument as DocumentThumb, ComposerDraftFileAttachment as FileAttachment } from "./composerDrafts"
-import { formatBytes, isDocxFile, isLegacyWordDocFile, isPdfFile, isSupportedUploadFile, supportedImageMime } from "./fileAttachments"
+import type { ComposerDraft, ComposerDraftImage as Thumb, ComposerDraftDocument as DocumentThumb, ComposerDraftFileAttachment as FileAttachment } from "./composerDrafts"
+import { formatBytes, isDocxFile, isLegacyWordDocFile, isPdfFile, isSupportedUploadFile, splitUploadedFileText, supportedImageMime } from "./fileAttachments"
+import type { InputPayload } from "./submissionCoordinator"
 import { extractDocxText } from "./docxText"
 export const MAX_TEXT_FILE_BYTES = 1024 * 1024
 export type PreparedBatch = { images: Thumb[]; documents: DocumentThumb[]; files: FileAttachment[] }
 const makeId = () => crypto.randomUUID()
+
+/** Restore the original attachments as editable chips, retaining an existing draft. */
+export function restoreInputToDraft(current: ComposerDraft, payload: InputPayload): ComposerDraft {
+  const blocks = splitUploadedFileText(payload.text)
+  const documents = payload.documents.map((document) => ({ ...document, id: makeId() }))
+  return {
+    text: [current.text, blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n\n")].filter(Boolean).join("\n\n"),
+    images: [...current.images, ...payload.images.map((image, index) => ({ ...image, id: makeId(), name: `image-${index + 1}`, size: Math.ceil(image.data.length * 3 / 4) }))],
+    documents: [...current.documents, ...documents],
+    fileAttachments: [...current.fileAttachments, ...blocks.filter((block) => block.type === "attachment" && block.attachmentContentMode !== "document").map((block) => ({
+      id: makeId(), name: block.attachmentName ?? "", mime: block.attachmentMime ?? "application/octet-stream",
+      size: block.attachmentSize ?? 0, text: block.attachmentText ?? null, contentMode: block.attachmentContentMode ?? "inline"
+    })), ...documents.map((document) => ({
+      id: document.id, name: document.name, mime: document.mime, size: document.size, text: null, contentMode: "document" as const
+    }))]
+  }
+}
 
 function readAsDataUrlPayload(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -65,49 +83,6 @@ export function buildOutgoingText(text: string, files: FileAttachment[]) {
     )
   }
   return parts.join("\n\n")
-}
-
-export interface OutgoingFileMarker {
-  name: string
-  mime: string
-  size?: number
-  mode: FileAttachment["contentMode"]
-  /** 原样保留的 `<uploaded_file>` 片段，重新组装时逐字写回 */
-  marker: string
-}
-
-/**
- * 把发送文本拆成「可编辑正文 + 文件标记」：就地编辑时正文进文本框、
- * 文件以 chip 展示，避免把 `<uploaded_file>` 原文暴露给用户。
- */
-export function splitOutgoingText(text: string): { body: string; files: OutgoingFileMarker[] } {
-  const files: OutgoingFileMarker[] = []
-  const body = text.replace(/<uploaded_file\s+([^>]*)>[\s\S]*?<\/uploaded_file>/gi, (marker, attributes: string) => {
-    const attr = (key: string) => new RegExp(`${key}="([^"]*)"`).exec(attributes)?.[1]
-    const size = Number(attr("size"))
-    const content = attr("content")
-    files.push({
-      name: unescapeAttr(attr("name") ?? ""),
-      mime: unescapeAttr(attr("mime") ?? ""),
-      size: Number.isFinite(size) ? size : undefined,
-      mode: content === "document" || content === "metadata-only" ? content : "inline",
-      marker
-    })
-    return ""
-  })
-  return { body: body.replace(/\n{3,}/g, "\n\n").trim(), files }
-}
-
-export function joinOutgoingText(body: string, files: OutgoingFileMarker[]): string {
-  return [body.trim(), ...files.map((file) => file.marker)].filter(Boolean).join("\n\n")
-}
-
-function unescapeAttr(value: string) {
-  return value
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&amp;", "&")
 }
 
 /** Removing a PDF also removes its generated text marker, preserving other raw input. */

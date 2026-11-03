@@ -1,5 +1,6 @@
 import type { ClaudeEvent } from "@/types/events"
 import { isTaskNotificationEvent, queuedCommandPrompt } from "./messageOrigin"
+import { isBackgroundBatchReceipt } from "./submission"
 
 export type SubagentStatus = "running" | "completed" | "failed" | "cancelled" | "unknown"
 
@@ -524,6 +525,7 @@ export function reduceSubagentRegistry(
 ): SubagentTransition {
   const obj = event as Record<string, unknown>
   const type = stringValue(obj.type)
+  if (isBackgroundBatchReceipt(event)) return { registry: current, changed: false, resultDisposition: "none" }
   if (obj.claudinalAuthored === true) return { registry: current, changed: false, resultDisposition: "none" }
   const ts = eventTimestamp(event)
   const backgroundMembership = backgroundMembershipTransition(current, event, ts)

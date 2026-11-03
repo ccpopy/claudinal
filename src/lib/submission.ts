@@ -1,3 +1,5 @@
+import { originKind } from "./messageOrigin"
+
 /** UI registration transfers ownership, without claiming durability. */
 export type SubmitOutcome =
   | { kind: "registered_in_ui"; messageId: string }
@@ -11,7 +13,7 @@ export type RunState = "idle" | "running" | "cancelling" | "cancelled" | "done" 
 /** Newer CLI results identify every input consumed by that turn, including guides. */
 export function eventInputIds(event: unknown): string[] | undefined {
   if (!event || typeof event !== "object") return undefined
-  const value = event as { user_message_uuids?: unknown; user_message_uuid?: unknown }
+  const value = event as Record<string, unknown>
   const valid = (id: unknown): id is string => typeof id === "string" && id.length > 0
     && new TextEncoder().encode(id).length <= 256
   // The array is authoritative when present. Partial validation could settle
@@ -22,7 +24,19 @@ export function eventInputIds(event: unknown): string[] | undefined {
     return Array.isArray(ids) && ids.length <= 64 && ids.every(valid) ? ids : []
   }
   if (Object.hasOwn(value, "user_message_uuid")) return valid(value.user_message_uuid) ? [value.user_message_uuid] : []
-  return undefined
+  const origin = originKind(value)
+  return origin && origin !== "human" ? [] : undefined
+}
+
+/** Batched task notifications emit empty receipts before their shared reply's result. */
+export function isBackgroundBatchReceipt(event: unknown): boolean {
+  if (!event || typeof event !== "object") return false
+  const value = event as Record<string, unknown>
+  return value.type === "result" && originKind(value) === "task-notification"
+    && value.subtype === "success" && value.is_error === false && value.num_turns === 0
+    && typeof value.result === "string" && !value.result.trim()
+    && (value.terminal_reason === undefined || value.terminal_reason === "completed")
+    && eventInputIds(value)?.length === 0
 }
 export type DeliveryState = "preparing" | "needs_confirmation" | "paused" | "cancelled" | "queued" | "writing" | "awaiting_ack" | "acknowledged" | "responded" | "failed" | "delivery_unknown"
 
