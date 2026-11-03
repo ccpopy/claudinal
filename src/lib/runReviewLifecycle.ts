@@ -107,7 +107,8 @@ export class RunReviewLifecycle {
     this.rounds.delete(round.id)
     this.latestId = round.id
     this.adapter.changed({ id: round.id, state: "unavailable", reason })
-    this.adapter.publish(this.unavailable(round, reason))
+    const review = this.unavailable(round, reason)
+    this.adapter.publish({ ...review, diff: { ...review.diff, patchError: null, patchNotice: reason } })
     void this.adapter.cancel(round.id).catch(() => {})
     return Promise.resolve()
   }

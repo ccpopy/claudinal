@@ -221,12 +221,13 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
         if (userVisible.length > 0) {
           state.hasFinalAssistantText = false
           if (m.delivery === "guide") {
-            groups.push({
-              kind: "msg",
-              key: `msg-${m.id}`,
-              msg: visibleMessage(m, userVisible)
-            })
-            if (!state.current) ensureRun(m.ts, m.id)
+            const group: MsgGroup = { kind: "msg", key: `msg-${m.id}`, msg: visibleMessage(m, userVisible) }
+            // The continuation result already opened this guide's stage run;
+            // after ACK reordering the guide still leads its own stage.
+            const stage = state.current?.key === `run-${m.id}` ? state.current : undefined
+            if (stage) groups.splice(groups.indexOf(stage), 0, group)
+            else groups.push(group)
+            if (!state.current && !groups.some((g) => g.kind === "run" && g.key === `run-${m.id}`)) ensureRun(m.ts, m.id)
             continue
           }
           if (m.deliveryState && ["preparing", "needs_confirmation", "queued", "paused", "cancelled", "failed", "delivery_unknown"].includes(m.deliveryState)) {
@@ -311,11 +312,14 @@ export function buildGroups(entries: UIEntry[], liveStreaming: boolean): Group[]
       if (!cur?.continuationResult) groups.push({ kind: "entry", key: `result-${i}`, entry: e })
       state.current = null
       state.hasFinalAssistantText = false
-      // Before its canonical echo, the guide may still be above this result.
-      // Open the same next-stage placeholder now; ACK reordering keeps its key.
+      // The next stage is keyed by its guide wherever the guide entry sits
+      // (above this result before its echo, below after ACK reordering), so
+      // reordering never remounts the run or opens a second one.
       const guideId = e.continuationInputIds?.[0]
-      const nextGuide = guideId ? groups.find((group) => group.kind === "msg" && group.msg.id === guideId) : undefined
-      if (nextGuide?.kind === "msg") ensureRun(nextGuide.msg.ts, nextGuide.msg.id)
+      if (guideId) {
+        const guide = entries.find((entry) => entry.kind === "message" && entry.id === guideId)
+        ensureRun(guide?.ts, guideId)
+      }
     } else if (rendersStandaloneEntry(e, entries, i)) {
       // 其它 entry（system_init / stderr / raw / hook）只渲染，不拉宽 endTs
       const group: EntryGroup = { kind: "entry", key: `entry-${i}-${e.kind}`, entry: e }

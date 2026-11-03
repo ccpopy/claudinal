@@ -19,7 +19,7 @@ import { isAuthoredUserMessage, isTaskNotificationEvent, markAuthoredEvent } fro
 import { routeCommand } from "@/lib/commandRegistry"
 import { saveOutbox, removeOutbox, updateOutboxState } from "@/lib/outbox"
 import { InputRecovery } from "@/components/InputRecovery"
-import { continuedGuideIds, eventInputIds, isBackgroundBatchReceipt, type SubmitOutcome } from "@/lib/submission"
+import { GUIDE_READ_UNCONFIRMED, eventInputIds, guideResultOutcome, isBackgroundBatchReceipt, type SubmitOutcome } from "@/lib/submission"
 import {
   useEffect,
   lazy,
@@ -2168,6 +2168,7 @@ export default function App() {
         const acknowledgedId = (event as { type?: string; uuid?: string }).type === "user" ? (event as { uuid?: string }).uuid : undefined
         const localEcho = acknowledgedId && !isForwardedSubagentEvent(event)
           ? coordinatorRef.current.acknowledge(acknowledgedId) : false
+        if (localEcho && !run.interrupting && coordinatorRef.current.hasRunning(owner.key)) setRunningSessionTurnActive(run, true)
         event = markAuthoredEvent(localEcho ? { ...event, claudinalAuthored: true } : event, run.state.entries)
         if (isBackgroundBatchReceipt(event)) return
         if (event.type === "system" && event.subtype === "init") event = { ...event, claudinalRuntimeId: run.runtimeId }
@@ -2184,7 +2185,11 @@ export default function App() {
           // Native fields only; do not infer Fast from preferences or message text.
           if (applyFastModeReport(run.actualConfig, ev as { fast_mode_state?: unknown; fast_mode_disabled_reason?: unknown })) setRunningTick((tick) => tick + 1)
         }
-        if (t === "assistant" || t === "stream_event") coordinatorRef.current.response(owner.key, eventInputIds(event))
+        if (t === "assistant" || t === "stream_event") {
+          const responseIds = eventInputIds(event)
+          coordinatorRef.current.response(owner.key, responseIds)
+          if (responseIds?.length && !run.interrupting && coordinatorRef.current.hasRunning(owner.key)) setRunningSessionTurnActive(run, true)
+        }
         const evSessionId = (event as { parent_tool_use_id?: string }).parent_tool_use_id ? undefined : (event as { session_id?: string }).session_id
         const knownSessionId = evSessionId ?? run.jsonlSessionId
         if (knownSessionId && run.jsonlSessionId !== knownSessionId) {
@@ -2292,9 +2297,11 @@ export default function App() {
           const resultIds = eventInputIds(event)
           const written = [...coordinatorRef.current.tasks.values()].filter((task) => task.conversationKey === owner.key
             && isAwaitingDefinitiveResult(task))
-          const continuingGuide = continuedGuideIds(event as Record<string, unknown>, written.filter((task) => task.mode === "guide" && task.runState === "running")
-            .map((task) => ({ id: task.messageId, attemptId: task.attemptId }))).length > 0
+          const guideOutcome = guideResultOutcome(event as Record<string, unknown>, written.filter((task) => task.mode === "guide" && task.runState === "running")
+            .map((task) => ({ id: task.messageId, attemptId: task.attemptId, received: task.deliveryState === "acknowledged" })))
+          const continuingGuide = guideOutcome.continued.length > 0
           const crossedGuide = crossesWrittenInputBoundary(written, resultIds)
+          coordinatorRef.current.unconfirmed(owner.key, guideOutcome.unconfirmed, GUIDE_READ_UNCONFIRMED)
           if (crossedGuide && !continuingGuide) run.reviewUnreliableReason = resultIds?.length === 0
             ? "CLI 结果输入关联无效，本轮文件边界无法可靠归属"
             : "仍有已写入引导或输入未被本次结果确认，文件边界无法单独归属本轮"

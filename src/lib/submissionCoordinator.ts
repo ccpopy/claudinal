@@ -1,5 +1,5 @@
 import type { DocumentPayload, ImagePayload, UIBlock } from "@/types/ui"
-import { deliveryAfterWriteError, type DeliveryState, type LocalState, type RunState, type SubmitOutcome } from "./submission"
+import { GUIDE_READ_UNCONFIRMED, deliveryAfterWriteError, type DeliveryState, type LocalState, type RunState, type SubmitOutcome } from "./submission"
 
 export interface InputPayload {
   text: string
@@ -267,6 +267,10 @@ export class SubmissionCoordinator<C> {
     attempt.acknowledgedAt ??= Date.now(); attempt.deliveryCertainty = "received"
     if (task) {
       if (task.attemptId === attemptId) {
+        if (task.error === GUIDE_READ_UNCONFIRMED) {
+          task.error = undefined
+          if (!task.controller.signal.aborted && this.paused.get(task.conversationKey)?.reason !== "user_stop") task.runState = "running"
+        }
         task.deliveryState = task.deliveryState === "responded" ? "responded" : "acknowledged"
         this.emit(task); this.adapter.settled(task)
       } else {
@@ -304,7 +308,25 @@ export class SubmissionCoordinator<C> {
       )
     } else if (!failed) void this.pump(key)
   }
+  /**
+   * A zero queue snapshot leaves these written inputs unconfirmed. Keep their
+   * payloads without replaying them or overriding a known main-thread receipt.
+   * A later exact receipt can restore activity; otherwise resend is explicit.
+   */
+  unconfirmed(key: string, messageIds: readonly string[], reason: string) {
+    for (const task of this.tasks.values()) {
+      if (task.conversationKey !== key || !messageIds.includes(task.messageId) || task.runState !== "running") continue
+      if (task.deliveryState === "acknowledged" || task.deliveryState === "responded") continue
+      task.deliveryState = "delivery_unknown"; task.runState = "failed"; task.error = reason
+      this.emit(task); this.adapter.settled(task)
+    }
+  }
   response(key: string, attemptIds?: readonly string[]) {
+    // An explicitly attributed main reply proves receipt even if its user echo is delayed.
+    if (attemptIds) for (const id of attemptIds) {
+      const task = this.tasks.get(this.attemptOwners.get(id) ?? "")
+      if (task?.conversationKey === key && task.attempts.some((attempt) => attempt.id === id && attempt.deliveryCertainty !== "received")) this.acknowledge(id)
+    }
     const active = [...this.tasks.values()].filter((t) => t.conversationKey === key && t.runState === "running")
     const responding = attemptIds ? active.filter((t) => attemptIds.includes(t.attemptId)) : active.slice(0, 1)
     for (const task of responding) if (task.timings.firstResponse === undefined) { task.timings.firstResponse = performance.now(); this.emit(task) }

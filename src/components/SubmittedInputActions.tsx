@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { guideDescription } from "@/lib/composerCapabilities"
+import { GUIDE_READ_UNCONFIRMED } from "@/lib/submission"
 import type { UIMessage } from "@/types/ui"
 import type { InputPayload, SubmissionQueueState } from "@/lib/submissionCoordinator"
 import { cn } from "@/lib/utils"
@@ -67,7 +68,7 @@ function submissionStatus(message: UIMessage, queue?: SubmissionQueueState): Sub
       text: message.submissionPendingNames?.length ? "附件准备失败，尚未发送" : "本地保存失败，尚未发送"
     }
   }
-  if (state === "delivery_unknown") return { icon: CircleAlert, tone: "error", text: "连接中断，无法确认是否已接收" }
+  if (state === "delivery_unknown") return { icon: CircleAlert, tone: "error", text: message.submissionError === GUIDE_READ_UNCONFIRMED ? "引导读取未确认" : "连接中断，无法确认是否已接收" }
   if (state === "failed") return { icon: CircleAlert, tone: "error", text: "未能发送" }
   if (state === "cancelled") return { icon: CircleStop, tone: "muted", text: "已取消，尚未发送" }
   if (state === "queued") return { icon: Clock, tone: "muted", text: message.delivery === "guide" ? "引导准备中，即将提交" : "排队中，本轮结束后发送" }
@@ -199,7 +200,7 @@ export function SubmissionFooter({
       </DropdownMenu>
     </div>
     {details && <div className="max-h-48 w-full overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/40 px-3 py-2 text-left text-xs leading-relaxed text-muted-foreground">
-      {unknown ? "管道可能已接收部分或全部请求。请检查本会话回复、工具结果及文件差异；再次发送可能重复操作。\n" : ""}
+      {unknown && message.submissionError !== GUIDE_READ_UNCONFIRMED ? "管道可能已接收部分或全部请求。请检查本会话回复、工具结果及文件差异；再次发送可能重复操作。\n" : ""}
       {message.submissionError || "原文和附件由此对话保留。"}
       {queue?.blockerId ? `\n阻塞输入：${queue.blockerId}` : ""}
       {queue ? `\n待发送顺序：第 ${queue.pendingIds.indexOf(message.id) + 1} 条，共 ${queue.pendingCount} 条` : ""}

@@ -4,7 +4,7 @@ import { decodeCliCommandEnvelope } from "./commandRegistry"
 import { splitUploadedFileText } from "./fileAttachments"
 import { parseSkillContent, skillLoadFromEvent, SKILL_META_PROMPT_PREFIX } from "./skillContent"
 import { activityLabel, eventUserText, isAuthoredUserMessage, markAuthoredEvent, originKind, queuedCommandPrompt, userActivityCategory } from "./messageOrigin"
-import { continuedGuideIds, isBackgroundBatchReceipt } from "./submission"
+import { guideResultOutcome, isBackgroundBatchReceipt } from "./submission"
 import {
   initSubagentRegistry,
   isForwardedSubagentEvent,
@@ -541,7 +541,22 @@ function reduceUser(state: State, ev: Record<string, unknown>, ts: number): Stat
       // first canonical echo, rather than stdin write time, establishes that boundary.
       if (local.delivery === "guide" && local.deliveryState !== "responded" && !local.transcriptUuid
         && state.entries.slice(state.entries.indexOf(local) + 1).some((entry) => entry.kind === "result")) {
-        return { ...state, entries: [...state.entries.filter((entry) => entry !== local), { ...acknowledged, ts }] }
+        const entries = state.entries.filter((entry) => entry !== local)
+        // A late exact receipt resolves an earlier empty-queue snapshot. The
+        // preceding successful human stage is now known to have a continuation.
+        if (local.runState === "running") {
+          for (let index = entries.length - 1; index >= 0; index--) {
+            const boundary = entries[index]
+            if (boundary.kind !== "result") continue
+            if (!boundary.isError && boundary.stopReason !== "max_tokens"
+              && !["interrupted", "api_error", "max_tokens"].includes(boundary.terminalReason ?? "")
+              && (!boundary.originKind || boundary.originKind === "human")) {
+              entries[index] = { ...boundary, continuationInputIds: [...new Set([...(boundary.continuationInputIds ?? []), local.id])] }
+            }
+            break
+          }
+        }
+        return { ...state, entries: [...entries, { ...acknowledged, ts }] }
       }
       return { ...state, entries: state.entries.map((entry) => entry === local ? acknowledged : entry) }
     }
@@ -866,9 +881,9 @@ function reduceResult(
   const terminalReason = state.pendingInterruption
     ? "interrupted"
     : (ev.terminal_reason as string | undefined)
-  const continuationInputIds = continuedGuideIds({ ...ev, terminal_reason: terminalReason, stop_reason: stopReason }, entries.flatMap((entry) =>
+  const continuationInputIds = guideResultOutcome({ ...ev, terminal_reason: terminalReason, stop_reason: stopReason }, entries.flatMap((entry) =>
     entry.kind === "message" && entry.role === "user" && entry.delivery === "guide" && entry.runState === "running" && entry.attemptId
-      ? [{ id: entry.id, attemptId: entry.attemptId }] : []))
+      ? [{ id: entry.id, attemptId: entry.attemptId, received: entry.deliveryState === "acknowledged" }] : [])).continued
   return {
     ...state,
     entries: [

@@ -39,13 +39,37 @@ export function isBackgroundBatchReceipt(event: unknown): boolean {
     && eventInputIds(value)?.length === 0
 }
 
-/** A successful CLI stage can end before a written guide is consumed. */
-export function continuedGuideIds(event: Record<string, unknown>, guides: readonly { id: string; attemptId: string }[]): string[] {
+export const GUIDE_READ_UNCONFIRMED = "本次结果未确认读取此引导（可能被 UserPromptSubmit hook 拦截，或回执尚未到达）"
+
+export interface GuideResultOutcome {
+  /** Queued or already received for a subsequent stage. */
+  continued: string[]
+  /** Not answered or queued in this snapshot; retain for receipt recovery or manual resend. */
+  unconfirmed: string[]
+}
+
+/**
+ * Classify written, running guides a successful CLI result did not answer.
+ * `queued_turn_count` counts human-origin messages still waiting in the CLI
+ * queue (guides are always human-origin). A hook-blocked guide appears in no
+ * result's `user_message_uuids`, but a received guide may already be executing
+ * in a later stage when this queue snapshot is empty. An absent count
+ * proves neither, and a zero snapshot is not proof that bytes never arrived.
+ */
+export function guideResultOutcome(event: Record<string, unknown>, guides: readonly { id: string; attemptId: string; received?: boolean }[]): GuideResultOutcome {
+  const none = { continued: [], unconfirmed: [] }
   if (event.type !== "result" || event.is_error === true || event.stop_reason === "max_tokens"
-    || ["interrupted", "api_error", "max_tokens"].includes(String(event.terminal_reason))) return []
+    || ["interrupted", "api_error", "max_tokens"].includes(String(event.terminal_reason))) return none
   const answered = eventInputIds(event)
-  if (answered?.length === 0) return []
-  return guides.filter((guide) => !answered?.includes(guide.attemptId)).map((guide) => guide.id)
+  if (answered?.length === 0) return none
+  const unanswered = guides.filter((guide) => !answered?.includes(guide.attemptId))
+  const queued = event.queued_turn_count
+  if (typeof queued !== "number") return none
+  if (queued > 0) return { continued: unanswered.map((guide) => guide.id), unconfirmed: [] }
+  if (queued !== 0) return none
+  // Without per-input attribution an unanswered guide cannot be told apart.
+  return { continued: unanswered.filter((guide) => guide.received).map((guide) => guide.id),
+    unconfirmed: answered ? unanswered.filter((guide) => !guide.received).map((guide) => guide.id) : [] }
 }
 export type DeliveryState = "preparing" | "needs_confirmation" | "paused" | "cancelled" | "queued" | "writing" | "awaiting_ack" | "acknowledged" | "responded" | "failed" | "delivery_unknown"
 
